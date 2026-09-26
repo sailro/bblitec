@@ -1,71 +1,15 @@
 import type { LoweringServices } from "../lowering-services.js";
-// The audio family.
-//
-// **Where the seam is, and why it is here.** Babylon Lite's audio module
-// (`packages/babylon-lite/src/audio/`) is a behavioural port of AudioV2
-// that touches exactly one platform surface -- the Web Audio API -- and
-// nothing else. So the boundary the pin itself draws is `AudioContext` /
-// `GainNode` / `AudioParam`, the same shape `createHavokWorld(scene, hknp)`
-// draws around `HP_*`, and that is what `bblite/pal_audio.hpp` mirrors.
-//
-// **What the corpus reaches.** Interactive applications use the Lite engine
-// for lifecycle only (`createAudioEngineAsync`, `engine.audioContext`,
-// `createSoundSourceAsync`, `unlockAudioEngineAsync`) and then synthesise
-// their own graph directly on the context. The audio module also has
-// `audio-demo.ts`, the audio module's own Tier-4 showcase, and it is the
-// one place `createSoundAsync`/`playSound`, the microphone, the
-// visualizer and the unmute UI are reached at all -- upstream marks it
-// manual and non-deterministic, never a gate. So this file lowers the raw
-// Web Audio calls beside the engine functions, and refuses the
-// sound/bus/spatial half by name: nothing gated reaches it.
-//
-// **What is still owed.** `createAudioEngineAsync` builds the two-gain
-// output graph (`mainBus -> mainOut -> destination`) that the pinned
-// `bus.ts` declares. That is Babylon behaviour and belongs in generated
-// code lowered from those declarations, exactly as `havok.ts` is; this
-// module folds the shape instead, and `src/lowering/audio-lowerer.ts`
-// asserts every rule of the fold against the pinned declaration that
-// states it, so a moved contract fails generation rather than drifting.
-// Everything the fold cannot state faithfully refuses by name --
-// `setMasterVolume` above all, because the pin has no un-ramped form of
-// it and emitting one would be a substitution wearing a subset's
-// clothes.
-// The audio family.
-//
-// **Where the seam is, and why it is here.** Babylon Lite's audio module
-// (`packages/babylon-lite/src/audio/`) is a behavioural port of AudioV2
-// that touches exactly one platform surface -- the Web Audio API -- and
-// nothing else. So the boundary the pin itself draws is `AudioContext` /
-// `GainNode` / `AudioParam`, the same shape `createHavokWorld(scene, hknp)`
-// draws around `HP_*`, and that is what `bblite/pal_audio.hpp` mirrors.
-//
-// **What the corpus reaches.** Interactive applications use the Lite engine
-// for lifecycle only (`createAudioEngineAsync`, `engine.audioContext`,
-// `createSoundSourceAsync`, `unlockAudioEngineAsync`) and then synthesise
-// their own graph directly on the context. The audio module also has
-// `audio-demo.ts`, the audio module's own Tier-4 showcase, and it is the
-// one place `createSoundAsync`/`playSound`, the microphone, the
-// visualizer and the unmute UI are reached at all -- upstream marks it
-// manual and non-deterministic, never a gate. So this file lowers the raw
-// Web Audio calls beside the engine functions, and refuses the
-// sound/bus/spatial half by name: nothing gated reaches it.
-//
-// **What is still owed.** `createAudioEngineAsync` builds the two-gain
-// output graph (`mainBus -> mainOut -> destination`) that the pinned
-// `bus.ts` declares. That is Babylon behaviour and belongs in generated
-// code lowered from those declarations, exactly as `havok.ts` is; this
-// module folds the shape instead, and `src/lowering/audio-lowerer.ts`
-// asserts every rule of the fold against the pinned declaration that
-// states it, so a moved contract fails generation rather than drifting.
-// Everything the fold cannot state faithfully refuses by name --
-// `setMasterVolume` above all, because the pin has no un-ramped form of
-// it and emitting one would be a substitution wearing a subset's
-// clothes.
+// Babylon's engine/source lifecycle retains the Web Audio context, output
+// routing, and sound ownership. The volume-only output graph is checked by
+// audio-lowerer; source disposal is lowered from the pinned declarations.
+// Unreached sound, bus, and spatial behavior remains an explicit refusal.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { refuseAudioName } from "../audio-surface.js";
+import { EmissionWeakMap } from "../emission-transaction.js";
+import { lowerAudioSourceDisposal } from "../../lowering/audio-source-lowerer.js";
 
 export interface AudioIntrinsicContext
     extends
@@ -79,7 +23,23 @@ export interface AudioIntrinsicContext
             | "registerNativeTemporary"
             | "audioSessionCpp"
             | "expectObjectLiteral"
+            | "nativeEmission"
         > {}
+
+const sourceDisposers = new EmissionWeakMap<object, string>();
+function sourceDisposer(context: AudioIntrinsicContext): string {
+    const existing = sourceDisposers.get(context);
+    if (existing) return existing;
+    const name = context.allocateTemporaryCppName("dispose_audio_source");
+    const lowered = lowerAudioSourceDisposal(name);
+    context.nativeEmission.registerNativeFunction(
+        lowered.prototype,
+        lowered.lines,
+    );
+    const cpp = `bblscene::${name}`;
+    sourceDisposers.set(context, cpp);
+    return cpp;
+}
 
 /**
  * The Lite engine functions a reached scene calls. Everything else the
@@ -127,6 +87,28 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
         "hold yet; it arrives with the lowered `bus.ts`",
 };
 
+function requireAbsentOptions(
+    context: AudioIntrinsicContext,
+    argument: ts.Expression | undefined,
+    name: string,
+): void {
+    if (!argument) return;
+    const value = ts.isIdentifier(argument)
+        ? context.compileValue(argument)
+        : undefined;
+    if (value?.kind === "json-null") return;
+    if (value?.dataType?.kind === "optional") {
+        context.emit(
+            `if ((${value.cpp}).has_value()) throw std::runtime_error("${name} options are not lowered");`,
+        );
+        return;
+    }
+    context.fail(
+        argument,
+        `${name} options are not lowered; the reached calls pass none.`,
+    );
+}
+
 export function compileAudioIntrinsic(
     context: AudioIntrinsicContext,
     importedName: string,
@@ -150,14 +132,7 @@ export function compileAudioIntrinsic(
             // listeners plus polling. Application `setInterval` calls are
             // separate platform input and run on the frame conductor.
             context.expectArgumentCount(call, 0, 1);
-            if (call.arguments[0]) {
-                context.expectObjectLiteral(call.arguments[0]);
-                context.fail(
-                    call.arguments[0],
-                    "createAudioEngineAsync options are not lowered; the " +
-                        "reached calls pass none.",
-                );
-            }
+            requireAbsentOptions(context, call.arguments[0], importedName);
             context.reachFeature("audio:engine", call);
 
             const engine = context.allocateTemporaryCppName("audio_engine");
@@ -198,18 +173,8 @@ export function compileAudioIntrinsic(
             context.registerNativeTemporary(`${engine}_main_bus`);
             return {
                 kind: "audio-engine",
-                cpp: `${engine}_ctx`,
-                audioMainBusCpp: `${engine}_main_bus`,
-                nativeCompanionCaptures: {
-                    audioMainBusCpp: [
-                        context.registerNativeBinding(
-                            `${engine}_main_bus`,
-                            false,
-                            false,
-                            "bbl::pal::AudioNodeHandle",
-                        ),
-                    ],
-                },
+                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
+                dataType: { kind: "handle", handle: "audio-engine" },
             };
         }
 
@@ -221,7 +186,7 @@ export function compileAudioIntrinsic(
             context.expectKind(engine, "audio-engine", argumentAt(call, 0));
             return {
                 kind: "void",
-                cpp: `bbl::pal::audio_resume(${engine.cpp})`,
+                cpp: `bbl::pal::audio_resume((${engine.cpp}).context)`,
             };
         }
 
@@ -229,9 +194,22 @@ export function compileAudioIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "audio-engine", argumentAt(call, 0));
+            context.emit(
+                `${sourceDisposer(context)}_engine_sources(${engine.cpp});`,
+            );
             return {
                 kind: "void",
-                cpp: `bbl::pal::audio_close_context(${engine.cpp})`,
+                cpp: `bbl::pal::audio_close_context((${engine.cpp}).context)`,
+            };
+        }
+
+        case "disposeSoundSource": {
+            context.expectArgumentCount(call, 1, 1);
+            const source = context.compileValue(argumentAt(call, 0));
+            context.expectKind(source, "audio-source", argumentAt(call, 0));
+            return {
+                kind: "void",
+                cpp: `${sourceDisposer(context)}(${source.cpp})`,
             };
         }
 
@@ -249,27 +227,14 @@ export function compileAudioIntrinsic(
             context.expectKind(engine, "audio-engine", argumentAt(call, 0));
             const node = context.compileValue(argumentAt(call, 1));
             context.expectKind(node, "audio-node", argumentAt(call, 1));
-            if (call.arguments[2]) {
-                context.expectObjectLiteral(call.arguments[2]);
-                context.fail(
-                    call.arguments[2],
-                    "createSoundSourceAsync options are not lowered; the " +
-                        "reached calls pass none.",
-                );
-            }
-            const mainBus = engine.audioMainBusCpp;
-            if (!mainBus) {
-                context.fail(
-                    argumentAt(call, 0),
-                    "Audio engine value carries no main bus.",
-                );
-            }
+            requireAbsentOptions(context, call.arguments[2], importedName);
+            const mainBus = `(${engine.cpp}).main_bus`;
             const source = context.allocateTemporaryCppName("audio_source");
             context.emit({
                 kind: "declaration",
                 type: "const bbl::pal::AudioNodeHandle",
                 name: source,
-                initializer: `bbl::pal::audio_create_gain(${engine.cpp})`,
+                initializer: `bbl::pal::audio_create_gain((${engine.cpp}).context)`,
             });
             context.emit({
                 kind: "expression",
@@ -279,9 +244,19 @@ export function compileAudioIntrinsic(
                 kind: "expression",
                 code: `bbl::pal::audio_connect(${node.cpp}, ${source});`,
             });
+            const stored =
+                context.allocateTemporaryCppName("audio_source_state");
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: stored,
+                initializer: `bbl::js::make_gc_shared<bbl::AudioSourceState>(bbl::AudioSourceState{${node.cpp}, ${source}, ${engine.cpp}})`,
+            });
+            context.emit(`(${engine.cpp}).sources.add(${stored});`);
             return {
-                kind: "audio-node",
-                cpp: source,
+                kind: "audio-source",
+                cpp: stored,
+                dataType: { kind: "handle", handle: "audio-source" },
                 requiresExplicitDiscard: true,
             };
         }

@@ -26,6 +26,7 @@ const UI_SELECTOR_TESTS = {
     "only-child": "OnlyChild",
     "only-of-type": "OnlyOfType",
     empty: "Empty",
+    root: "Root",
     not: "Not",
     is: "Is",
     where: "Where",
@@ -110,7 +111,7 @@ export function parseUiSelectorSequence(
                         return undefined;
                     tests.push({ kind: name, name: "", value: "" });
                 } else if (
-                    name === "empty" ||
+                    name === "empty" || name === "root" ||
                     name === "only-child" ||
                     name === "only-of-type"
                 ) {

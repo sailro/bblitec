@@ -6,6 +6,7 @@ import { declaredInDefaultLibrary } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { requireWindowHost } from "./window-events.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 export interface CanvasContext
     extends
@@ -64,8 +65,19 @@ export function compileCanvasValue(
     context: CanvasContext,
     expression: ts.Expression,
 ): Value | undefined {
-    if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
+    if (!context.options.workers) {
+        if (
+            (ts.isNewExpression(node) &&
+                ["MutationObserver", "ResizeObserver"].includes(
+                    context.libraryGlobal(node.expression) ?? "",
+                )) ||
+            (ts.isCallExpression(node) &&
+                context.libraryGlobal(node.expression) === "matchMedia")
+        )
+            throw new ApplicationRealmRequired();
+        return undefined;
+    }
     const ratio = devicePixelRatioValue(context, node);
     if (ratio) {
         requireWindowHost(context, node);
@@ -163,6 +175,24 @@ export function compileCanvasValue(
     if (
         !context.options.workers.namespace &&
         ts.isNewExpression(node) &&
+        context.libraryGlobal(node.expression) === "MutationObserver"
+    ) {
+        if (node.arguments?.length !== 1)
+            return context.fail(
+                node,
+                "MutationObserver requires one callback.",
+            );
+        requireWindowHost(context, node);
+        return {
+            kind: "worker-mutation-observer",
+            dataType: { kind: "handle", handle: "worker-mutation-observer" },
+            cpp: `bbl::pal::create_mutation_observer(${context.callbacks.compileFrameCallback(argumentAt(node, 0), "void")})`,
+            impure: true,
+        };
+    }
+    if (
+        !context.options.workers.namespace &&
+        ts.isNewExpression(node) &&
         context.libraryGlobal(node.expression) === "ResizeObserver"
     ) {
         if (node.arguments?.length !== 1)
@@ -195,7 +225,9 @@ export function compileCanvasValue(
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "addEventListener" &&
+            ["addEventListener", "removeEventListener"].includes(
+                callee.name.text,
+            ) &&
             hasDomInterface(context, callee.expression, "MediaQueryList")
         ) {
             const owner = context.compileValue(callee.expression);
@@ -212,9 +244,87 @@ export function compileCanvasValue(
                     "MediaQueryList requires an admitted change listener.",
                 );
             }
+            const callback = argumentAt(node, 1);
+            if (callee.name.text === "removeEventListener")
+                return {
+                    kind: "void",
+                    cpp: `${owner.cpp}->remove_change_listener(${context.callbacks.platformEventCallbackIdentity(context.compileValue(callback), callback)})`,
+                };
+            const compiled = context.callbacks.compilePlatformCallback(
+                callback,
+                undefined,
+                [],
+            );
             return {
                 kind: "void",
-                cpp: `${owner.cpp}->add_change_listener(${context.callbacks.compileFrameCallback(argumentAt(node, 1), "void")})`,
+                cpp: `${owner.cpp}->add_change_listener(${compiled.identity}, ${compiled.cpp})`,
+            };
+        }
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            hasDomInterface(context, callee.expression, "MutationObserver")
+        ) {
+            const owner = context.compileValue(callee.expression);
+            if (owner.kind !== "worker-mutation-observer") return undefined;
+            if (callee.name.text === "disconnect" && !node.arguments.length)
+                return { kind: "void", cpp: `${owner.cpp}->disconnect()` };
+            if (callee.name.text !== "observe" || node.arguments.length !== 2)
+                return context.fail(
+                    node,
+                    "MutationObserver supports observe(element, attributes options) and disconnect().",
+                );
+            const element = context.compileValue(argumentAt(node, 0));
+            if (element.kind !== "ui-element")
+                return context.fail(
+                    node,
+                    "MutationObserver requires a retained Window element.",
+                );
+            const options = context.unwrap(argumentAt(node, 1));
+            if (!ts.isObjectLiteralExpression(options))
+                return context.fail(
+                    options,
+                    "MutationObserver options must be an object literal.",
+                );
+            let attributes = false;
+            let filter: string[] | undefined;
+            for (const property of options.properties) {
+                if (!ts.isPropertyAssignment(property))
+                    return context.fail(
+                        property,
+                        "MutationObserver requires named options.",
+                    );
+                const name = context.propertyName(property.name);
+                if (
+                    name === "attributes" &&
+                    property.initializer.kind === ts.SyntaxKind.TrueKeyword
+                )
+                    attributes = true;
+                else if (
+                    name === "attributeFilter" &&
+                    ts.isArrayLiteralExpression(property.initializer)
+                ) {
+                    filter = property.initializer.elements.map((item) => {
+                        if (!ts.isStringLiteralLike(item))
+                            return context.fail(
+                                item,
+                                "MutationObserver attribute filters must be static strings.",
+                            );
+                        return context.cppString(item.text);
+                    });
+                } else
+                    return context.fail(
+                        property,
+                        "MutationObserver currently admits attribute notification callbacks without mutation records, old values or subtree observation.",
+                    );
+            }
+            if (!attributes && filter === undefined)
+                return context.fail(
+                    options,
+                    "MutationObserver requires attribute observation.",
+                );
+            return {
+                kind: "void",
+                cpp: `${owner.cpp}->observe(${element.cpp}, ${filter === undefined ? "std::nullopt" : `std::vector<std::string>{${filter.join(",")}}`})`,
             };
         }
         if (

@@ -1,5 +1,6 @@
 #include "pal_image.cpp"
 #include <cassert>
+#include <future>
 #include "image.hpp"
 
 namespace bbl::pal {
@@ -9,6 +10,15 @@ std::string environment_variable(const char*) { return {}; }
 int main() {
     const bbl::js::ArrayBuffer input(png_bytes);
 #if BBLITE_HAS_IMAGE_DECODER
+    std::vector<std::future<bbl::pal::DecodedImage>> native_decodes;
+    for (int index = 0; index < 8; ++index)
+        native_decodes.push_back(std::async(std::launch::async, [] {
+            return bbl::pal::decode_image(std::span<const std::uint8_t>{png_bytes});
+        }));
+    for (auto& result : native_decodes) {
+        const auto image = result.get();
+        assert(image.width == 3 && image.height == 2 && image.rgba == expected_pixels);
+    }
     const auto decoded = bbl::pal::decode_image(input);
     assert(decoded.width == 3 && decoded.height == 2);
     assert(decoded.rgba == expected_pixels);

@@ -32,11 +32,12 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
-#include <bblite/features/mesh_position_update.hpp>
+#include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#include "pal_billboard_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
 #endif
@@ -179,9 +180,7 @@ void release(GpuState& state) {
                        [](SharedPluginMaterialTextures& textures) { textures.clear(); });
 #endif
     release_all_shared(state.shared_composed_material_textures,
-                       [&](SharedComposedMaterialTextures& textures) {
-                           release_sprite_fragment_textures(state.device, textures.bindings);
-                       });
+                       [](SharedComposedMaterialTextures& textures) { textures.clear(); });
 #if BBLITE_GPU_MORPH_STORAGE
     if (state.empty_morph_deltas) {
         SDL_ReleaseGPUBuffer(state.device, state.empty_morph_deltas);
@@ -520,6 +519,114 @@ class SdlSceneRun {
         }
     }
 
+    void prepare_pipeline([[maybe_unused]] const Scene& scene,
+                          const upstream::RenderDrawCommand& draw, const FrameTaskRecord* task,
+                          [[maybe_unused]] std::vector<std::function<void()>>& pending) {
+        auto& state = data_.resources.state;
+        const auto& engine = data_.engine;
+        const auto* geometry = task && task->kind == FrameTaskKind::geometry ? task : nullptr;
+        const auto* shadow =
+            task && task->kind == FrameTaskKind::render
+                ? handle_find(engine.shadow_generators, task->render.shadow_generator)
+                : nullptr;
+        [[maybe_unused]] const auto esm = shadow && shadow->filter == ShadowFilter::esm_directional
+                                              ? shadow->esm_index
+                                              : invalid_handle;
+        [[maybe_unused]] const auto* material = handle_find(engine.materials, draw.item.material);
+        std::optional<ShaderTaskTarget> target;
+        if (task && task->kind == FrameTaskKind::render && !shadow) {
+            const auto& record = handle_at(engine.render_targets, task->render.target);
+            const auto& gpu = handle_at(state.render_targets, task->render.target);
+            target =
+                ShaderTaskTarget{gpu.color_format,
+                                 task->render.depth.source == RenderTextureSource::geometry_depth
+                                     ? state.depth_format
+                                     : gpu.depth_format,
+                                 task_sample_count(state, record.samples)};
+        }
+        [[maybe_unused]] const auto samples =
+            target ? std::optional<SDL_GPUSampleCount>{target->samples}
+                   : std::optional<SDL_GPUSampleCount>{};
+        [[maybe_unused]] const auto shader =
+            geometry ? static_cast<std::size_t>(geometry->geometry.shader_index) : npos;
+        const auto kind = draw.pipeline;
+        [[maybe_unused]] const bool shadow_pass = shadow != nullptr;
+        const auto prepare = [&](auto action) {
+#if BBLITE_WORKERS
+            if (!geometry) {
+                pending.emplace_back(std::move(action));
+                return;
+            }
+#endif
+            action();
+        };
+        switch (draw.item.material_kind) {
+#if BBLITE_PBR_VARIANTS > 0
+        case upstream::RenderMaterialKind::pbr: {
+            const auto variant = pinned_variant_for_draw(scene, engine, draw, shader);
+            if (variant == npos)
+                throw std::runtime_error("Startup PBR draw has no composed variant.");
+            prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target] {
+                static_cast<void>(pinned_variant_pipeline(state, variant, kind, geometry,
+                                                          shadow_pass, esm, samples, target));
+            });
+            break;
+        }
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+        case upstream::RenderMaterialKind::standard: {
+            const auto variant = standard_variant_for_draw(scene, engine, draw, shader);
+            if (variant == npos)
+                throw std::runtime_error("Startup Standard draw has no composed variant.");
+            prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target] {
+                static_cast<void>(standard_variant_pipeline(state, variant, kind, geometry,
+                                                            shadow_pass, esm, samples, target));
+            });
+            break;
+        }
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+        case upstream::RenderMaterialKind::node: {
+#if BBLITE_NODE_SHADOWS
+            const bool caster = material && (material->esm_shadow || material->no_color);
+#else
+            const bool caster = false;
+#endif
+            std::size_t geometry_variant = pal::no_node_geometry_variant;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (geometry)
+                geometry_variant =
+                    pal::require_node_geometry_variant(draw.item.shader_variant, shader);
+#else
+            if (geometry)
+                throw std::runtime_error("Startup node draw has no composed geometry view.");
+#endif
+            prepare([&state, variant = draw.item.shader_variant, kind, shadow_pass,
+#if BBLITE_NODE_SHADOWS
+                     caster,
+#endif
+                     esm,
+                     geometry, geometry_variant, target] {
+                static_cast<void>(node_variant_pipeline(state, variant, kind, shadow_pass, caster,
+                                                        esm, geometry, geometry_variant, target));
+            });
+            break;
+        }
+#endif
+        case upstream::RenderMaterialKind::shader:
+            if (target)
+                prepare([&state, variant = draw.item.shader_variant, kind, target] {
+                    static_cast<void>(state.shader_task_pipelines.at(variant).get(
+                        state.device, *target, pipeline_kind_wants_a2c(kind),
+                        state.shader_pipelines.at(variant),
+                        state.shader_a2c_pipelines.at(variant)));
+                });
+            break;
+        default:
+            throw std::runtime_error("Startup draw has no compiled material family.");
+        }
+    }
+
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_update;
     explicit SdlSceneRun(Engine& engine) : data_(engine) {}
@@ -527,7 +634,8 @@ public:
     void discard_frame() { frame_.reset(); }
     bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
 
-    void setup() {
+    Iteration<bool> setup() {
+        StartupWorkBudget startup_budget;
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& frame_options = data_.frame_options;
         [[maybe_unused]] auto& cpu_startup_mark = data_.cpu_startup_mark;
@@ -642,6 +750,10 @@ public:
             state.sample_count = SDL_GPU_SAMPLECOUNT_4;
         }
         cpu_startup_mark("window-device");
+        if (startup_budget.exhausted()) {
+            co_yield false;
+            startup_budget.resume();
+        }
 
         // The scene matrix, the deformation block, and the mesh world.
         auto vertex_shader = load_shader(state.device, "pbr.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0,
@@ -887,8 +999,9 @@ public:
             }
         }
 #endif
-        for (std::size_t index = 0;
-             depth_only_fragment_shader && index < state.depth_only_pipelines.size(); ++index) {
+        for (std::size_t index = 0; use_no_color_material && depth_only_fragment_shader &&
+                                    index < state.depth_only_pipelines.size();
+             ++index) {
             SDL_GPUGraphicsPipelineCreateInfo depth_pipeline_info = pipeline_info;
             depth_pipeline_info.fragment_shader = depth_only_fragment_shader.get();
             depth_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
@@ -1217,6 +1330,10 @@ public:
         create_background_arms(state, scene, background_base, background_target);
 #endif
         cpu_startup_mark("environment-background");
+        if (startup_budget.exhausted()) {
+            co_yield false;
+            startup_budget.resume();
+        }
         render_plan = upstream::build_render_plan(scene, engine);
         // Every item's kind and variant against the generated tables
         // before anything uploads — the same shared walk the Dawn
@@ -1257,8 +1374,25 @@ public:
             );
         };
 #endif
+        GpuBufferUploadBatch startup_uploads(state.device);
+        const auto prepare_image = [&state](const TextureData& data, bool srgb,
+                                            std::array<std::uint8_t, 4> fallback) {
+            return OwnedSdlTexture{upload_texture(state.device, data, srgb, fallback),
+                                   {state.device}};
+        };
         for (const upstream::RenderItem& item : render_plan.items) {
-            state.meshes.push_back(upload_sdl_gpu_scene_mesh(state, engine, item));
+            auto upload = upload_prepared_scene_mesh(
+                engine, item, state.shared_material_images, prepare_image, [&] {
+                    state.meshes.push_back(
+                        upload_sdl_gpu_scene_mesh(state, engine, item, &startup_uploads));
+                });
+            while (upload.advance())
+                co_yield false;
+            startup_uploads.submit();
+            if (startup_budget.exhausted()) {
+                co_yield false;
+                startup_budget.resume();
+            }
         }
         // Swapchain overlay layers: every scene registered after the first.
         // `configureSwapchainOverlayScene` is the pin's own trigger -- a
@@ -1277,7 +1411,18 @@ public:
             std::vector<GpuMesh> overlay_layer_meshes;
             overlay_layer_meshes.reserve(overlay_plan.items.size());
             for (const upstream::RenderItem& item : overlay_plan.items) {
-                overlay_layer_meshes.push_back(upload_sdl_gpu_scene_mesh(state, engine, item));
+                auto upload = upload_prepared_scene_mesh(
+                    engine, item, state.shared_material_images, prepare_image, [&] {
+                        overlay_layer_meshes.push_back(
+                            upload_sdl_gpu_scene_mesh(state, engine, item, &startup_uploads));
+                    });
+                while (upload.advance())
+                    co_yield false;
+                startup_uploads.submit();
+                if (startup_budget.exhausted()) {
+                    co_yield false;
+                    startup_budget.resume();
+                }
             }
             overlay_plans.push_back(std::move(overlay_plan));
             state.overlay_meshes.push_back(std::move(overlay_layer_meshes));
@@ -1291,6 +1436,31 @@ public:
         synced_render_topology_version = scene.render_topology_version;
         synced_draw_list_epoch = engine.draw_list_epoch;
         synced_material_family_mask = scene.material_family_mask;
+
+        if (!engine.render_targets.empty())
+            create_frame_graph_textures(state, engine, swapchain_format,
+                                        static_cast<std::uint32_t>(engine.options.width),
+                                        static_cast<std::uint32_t>(engine.options.height));
+        std::vector<std::function<void()>> pipeline_jobs;
+        for (std::size_t layer = 0; layer < active_registered_scenes.size(); ++layer) {
+            const Scene& layer_scene = *active_registered_scenes[layer];
+            auto pipelines = prepare_scene_pipeline_draws(
+                engine, layer_scene, layer == 0 ? render_plan : overlay_plans[layer - 1],
+                [&](TaskHandle handle) -> const upstream::RenderDrawLists& {
+                    return handle_at(task_draw_lists, handle);
+                },
+                [&](const upstream::RenderDrawCommand& draw, const FrameTaskRecord* task) {
+                    prepare_pipeline(layer_scene, draw, task, pipeline_jobs);
+                });
+            while (pipelines.advance())
+                co_yield false;
+        }
+#if BBLITE_WORKERS
+        auto preparation = run_native_preparation(std::move(pipeline_jobs));
+        while (preparation.advance())
+            co_yield false;
+#endif
+        cpu_startup_mark("draw-pipelines");
 
 #if BBLITE_HAS_TEXT
         state.text = std::make_unique<SdlTextRenderer>(
@@ -1337,6 +1507,7 @@ public:
 #if BBLITE_DEVICE_RECOVERY
         data_.draw_count_scope.emplace(engine);
 #endif
+        co_return true;
     }
 
     FramePreparation prepare() {
@@ -1564,7 +1735,7 @@ public:
         void write_mesh_blocks(const Scene&, const upstream::RenderItem&, const MeshRecord&,
                                GpuMesh&) {}
 
-#if BBLITE_MESH_POSITION_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE
         void upload_vertices(GpuMesh& gpu, const std::vector<GpuVertex>& vertices) {
             uploads.update(gpu.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
@@ -2221,7 +2392,7 @@ public:
 #endif
                                              pinned_lights_block(draw_context, engine);
 #endif
-                        const auto draw_list = [&](const upstream::RenderDrawList& list) {
+                        const auto draw_list = [&](const auto& list) {
                             SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
                             for (const upstream::RenderDrawCommand& draw : list.commands) {
                                 if (!upstream::render_item_draws_now(draw.item, engine))
@@ -2477,7 +2648,28 @@ public:
                                                      *draw_pass_matrices.view));
                         }
 #endif
-                        draw_list(draw_lists.transparent);
+#if BBLITE_HAS_BILLBOARDS
+                        if (draw_scene_billboard_stages) {
+                            const auto& view = *draw_pass_matrices.view;
+                            const auto& block = write_billboard_scene_block(
+                                pass_blocks.pass(draw_context, pass_task), draw_context, engine,
+                                draw_camera, draw_matrix, view);
+                            for (const auto& item : ordered_scene_billboards(
+                                     draw_lists.transparent, engine, state.billboard_passes,
+                                     draw_camera, view)) {
+                                if (item.billboard) {
+                                    record_billboard_pass(command, task_pass, engine,
+                                                          state.billboard_passes[item.index],
+                                                          block);
+                                    scene_matrix_bound = false;
+                                } else {
+                                    draw_list(BorrowedDrawList{
+                                        draw_lists.transparent.commands[item.index]});
+                                }
+                            }
+                        } else
+#endif
+                            draw_list(draw_lists.transparent);
                     };
 
 #if BBLITE_HAS_TAA
@@ -2902,13 +3094,6 @@ public:
 #if BBLITE_PINNED_BACKGROUNDS
                                 draw_task_background(task_pass, handle, task_matrix, task_camera,
                                                      state.background_draws.ground);
-#endif
-#if BBLITE_HAS_BILLBOARDS
-                                draw_task_billboards(
-                                    task_pass, BillboardDepthMode::transparent,
-                                    write_billboard_scene_block(pass_blocks.task(handle),
-                                                                graph_scene, engine, task_camera,
-                                                                task_matrix, task_view));
 #endif
                             }
                             task_pass.end();
@@ -3514,7 +3699,7 @@ public:
                 write_pass_scene_block(pass_blocks.scene(scene), scene, engine, camera, matrix);
             std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
 #endif
-            const auto draw_render_list = [&](const upstream::RenderDrawList& list) {
+            const auto draw_render_list = [&](const auto& list) {
                 SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
                 for (const upstream::RenderDrawCommand& draw : list.commands) {
                     if (!upstream::render_item_draws_now(draw.item, engine))
@@ -3779,7 +3964,26 @@ public:
 #endif
                     break;
                 case upstream::RenderStage::transparent:
+#if BBLITE_HAS_BILLBOARDS
+                {
+                    const auto& block = write_billboard_scene_block(
+                        pass_blocks.scene(scene), scene, engine, camera, matrix, frame_view);
+                    for (const auto& item :
+                         ordered_scene_billboards(render_plan.draw_lists.transparent, engine,
+                                                  state.billboard_passes, camera, frame_view)) {
+                        if (item.billboard) {
+                            record_billboard_pass(command, pass, engine,
+                                                  state.billboard_passes[item.index], block);
+                            scene_matrix_bound = false;
+                        } else {
+                            draw_render_list(BorrowedDrawList{
+                                render_plan.draw_lists.transparent.commands[item.index]});
+                        }
+                    }
+                }
+#else
                     draw_render_list(render_plan.draw_lists.transparent);
+#endif
 #if BBLITE_HAS_TEXT
                     state.text->scene.draw(state.text->borrow_pass(command, pass),
                                            bbl::text_surface(engine));
@@ -3808,11 +4012,6 @@ public:
                     break;
                 }
             }
-#if BBLITE_HAS_BILLBOARDS
-            // The transparent systems close the scene's pass: they blend
-            // over every stage above and test against the depth they wrote.
-            draw_billboards(BillboardDepthMode::transparent);
-#endif
             pass.end();
 #if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
             capture_render_state();
@@ -4175,7 +4374,9 @@ SceneRun run_gpu_engine(Engine& engine) {
     if (engine.scenes().empty() || !engine.scenes().front())
         throw std::runtime_error("GPU renderer requires a registered scene.");
     SdlSceneRun renderer(engine);
-    renderer.setup();
+    auto initialization = renderer.setup();
+    while (initialization.advance())
+        co_yield false;
     for (;;) {
         renderer.discard_frame();
         const FrameOutcome outcome = conduct_frame(renderer);

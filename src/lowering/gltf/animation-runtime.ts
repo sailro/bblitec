@@ -135,6 +135,8 @@ struct GltfAnimationMask {
 struct AnimationClip {
     std::string name;
     double time=0,duration=0,frame_rate=0,speed_ratio=0,weight=0;
+    double start_time=0;
+    std::size_t channel_count=0;
     bool playing=false,stopped=false,loop=false,additive=false;
     double additive_reference_time=0;
     GltfAnimationControllerPlayback controller;
@@ -372,6 +374,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
             }
             animation_runtime->source_morphs.entries.push_back(std::move(morph));
         }
+        if (animated) {
         for(const auto& value:required(source_animation.as_object(),"nodeNames").as_array())
             animation_runtime->node_names.push_back(value.is_null()?std::nullopt:std::optional<std::string>{value.as_string()});
         for(const auto& value:required(source_animation.as_object(),"clips").as_array()) {
@@ -380,16 +383,18 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
             AnimationClip clip;
             const auto* frame_rate=optional(source,"frameRate");
             gltf_initialize_animation_group(clip,required(source,"name").as_string(),required(source,"duration").as_number(),
-                frame_rate?frame_rate->as_number():std::numeric_limits<double>::quiet_NaN(),static_cast<double>(index));
+                frame_rate?frame_rate->as_number():std::numeric_limits<double>::quiet_NaN(),static_cast<double>(index),required(source,"startTime").as_number());
             clip.pose=read_gltf_animation_pose(source,animation_runtime->source_nodes,animation_runtime->source_skeletons,
                 animation_runtime->source_morphs,read_animation_floats,
                 ${options.animationPointer ? "[&](const ts::JsonValue& writer){return gltf_bind_animation_pointer(animation_runtime->pointers,writer);}" : '[](const ts::JsonValue&)->js::Callback<void(const GltfAnimationFloats&,double)>{throw std::runtime_error("Animation pointer feature is absent.");}'},${rootFlip});
             clip.pose->mask_resolver=${options.animationMask === true};
+            clip.channel_count=clip.pose->channels.size();
+            clip.controller.time=clip.time;
             for(const auto& targeted:required(source,"targetedAnimations").as_array()) {
                 const auto* name=optional(targeted.as_object(),"targetName");
                 clip.target_names.push_back(name?std::optional<std::string>{name->as_string()}:std::nullopt);
             }
-            engine.animation_groups.push_back(AnimationGroupRecord{clip.name,static_cast<std::uint32_t>(engine.assets.size()),index,clip.weight,{},clip.duration,clip.frame_rate});
+            engine.animation_groups.push_back(AnimationGroupRecord{clip.name,static_cast<std::uint32_t>(engine.assets.size()),index,clip.weight,{},clip.duration,clip.frame_rate,{},clip.start_time});
             asset.animation_groups.push_back(AnimationGroupHandle{static_cast<std::uint32_t>(engine.animation_groups.size()-1)});
             animation_runtime->clips.push_back(std::move(clip));
         }
@@ -401,6 +406,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
         };
         asset.animation_tick_group=[animation_runtime](std::size_t index,double delta_ms,bool with_engine){animation_runtime->tick_group(index,delta_ms,with_engine);};
         asset.set_clip_playing=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).playing=value;};
+        asset.clip_stopped=[animation_runtime](std::size_t index){return animation_runtime->clips.at(index).stopped;};
         asset.set_clip_stopped=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).stopped=value;};
         asset.set_clip_time=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).time=value;};
         asset.set_clip_loop=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).loop=value;};
@@ -476,6 +482,7 @@ ${
         };`
         : ""
 }
+        }
         asset.clone_mesh_animation=[animation_runtime,&engine](MeshHandle source,MeshHandle clone) {
             const auto found=std::find_if(animation_runtime->meshes.begin(),animation_runtime->meshes.end(),
                 [&](const auto& binding){return binding.mesh==source;});

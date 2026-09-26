@@ -102,6 +102,15 @@ function valueVector(
     node: ts.Node,
 ): string | undefined {
     if (
+        value.kind === "data" &&
+        value.dataType?.kind === "tuple" &&
+        dataType.element.kind === "number"
+    ) {
+        lowerer.context.reachJsData();
+        lowerer.markEscaped(value);
+        return `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`;
+    }
+    if (
         value.kind === "handle-collection" &&
         value.handleCollection &&
         dataType.element.kind === "handle" &&

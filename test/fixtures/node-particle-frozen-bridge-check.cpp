@@ -12,7 +12,7 @@ namespace bbl {
 std::string asset_path(const std::string& path) { return path; }
 namespace pal {
 std::vector<std::uint8_t> read_binary_file(const std::string&) { return {}; }
-DecodedImage decode_image(const js::ArrayBuffer&) { return {128, 64, {}}; }
+DecodedImage decode_image(std::span<const std::uint8_t>) { return {128, 64, {}}; }
 } // namespace pal
 } // namespace bbl
 

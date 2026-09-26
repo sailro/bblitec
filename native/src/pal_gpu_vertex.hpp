@@ -28,6 +28,16 @@ namespace bbl::pal {
 inline constexpr std::uint32_t instance_matrix_first_location = 16;
 inline constexpr std::uint32_t instance_color_location = instance_matrix_first_location + 4;
 
+inline constexpr std::uint32_t scene_vertex_attribute_limit() {
+#if BBLITE_GPU_INSTANCE_COLORS
+    return instance_color_location + 1;
+#elif BBLITE_GPU_INSTANCING
+    return instance_matrix_first_location + 4;
+#else
+    return 0;
+#endif
+}
+
 struct GpuVertex {
     float position[3];
     float normal[3];

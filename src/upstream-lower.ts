@@ -594,6 +594,7 @@ export interface UpstreamEmitOptions {
     nodeParticleRegistrations?: readonly NodeParticleRegistrationEmit[];
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
+    scenePbrMaterialIndices?: readonly number[];
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
     meshProfiles?: MeshProfileTable;
@@ -1068,6 +1069,12 @@ class GeneratedSourceWriter {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_mat4_invert.hpp",
                 pinnedMat4InvertHeader(context),
+            );
+        }
+        if (features.includes("picking:ray")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/picking_ray.hpp",
+                new PickingLowerer(context).rayHeader(),
             );
         }
         if (features.includes("math:mat4-create")) {
@@ -2194,6 +2201,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         options.animationPointerMaterials,
                     selectedMaterialVariant: options.selectedMaterialVariant,
                     gltfCameras: features.includes("loader:gltf-cameras"),
+                    cpuTangents: features.includes("loader:gltf-cpu-tangents"),
                     boneControl: features.includes("loader:gltf-bone-control"),
                 }),
                 generated,
@@ -3601,6 +3609,7 @@ ${shadow.blurFragmentWgsl}`,
                     options.renderableMeshFeatures ?? [],
                     options.runtimeMeshFeatures,
                     options.pinnedMaterialCount,
+                    options.scenePbrMaterialIndices,
                 ),
             );
         }

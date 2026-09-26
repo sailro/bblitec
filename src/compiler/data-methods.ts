@@ -339,8 +339,18 @@ export function compileDataMethodCall(
         return moduleMapGet;
     }
     const ownerExpression = lowerer.context.unwrap(callee.expression);
-    if (ts.isNewExpression(ownerExpression) && method === "fill") {
-        const created = lowerer.newArrayInfo(ownerExpression);
+    if (
+        (ts.isNewExpression(ownerExpression) ||
+            ts.isCallExpression(ownerExpression)) &&
+        method === "fill"
+    ) {
+        const created = lowerer.newArrayInfo(
+            ownerExpression,
+            expectedResult?.element ??
+                (call.arguments[0]
+                    ? lowerer.dataTypeAt(call.arguments[0])
+                    : undefined),
+        );
         if (created) {
             if (call.arguments.length !== 1) {
                 lowerer.context.fail(call, "Array.fill expects one argument.");
@@ -360,7 +370,9 @@ export function compileDataMethodCall(
                 },
             };
         }
-        const typed = lowerer.compileTypedArrayNew(ownerExpression);
+        const typed = ts.isNewExpression(ownerExpression)
+            ? lowerer.compileTypedArrayNew(ownerExpression)
+            : undefined;
         if (typed?.kind === "data" && isTypedArrayType(typed.dataType)) {
             if (call.arguments.length !== 1) {
                 lowerer.context.fail(
@@ -1864,13 +1876,14 @@ function compileArrayMap(
 ): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const mappedType = state.expectedResult ?? arrayResultType(lowerer, call);
-    if (mappedType?.kind !== "vector") {
+    const requested = state.expectedResult ?? arrayResultType(lowerer, call);
+    if (requested?.kind !== "vector") {
         lowerer.context.fail(
             call,
             `Array.${method} callback results must belong to the native data model.`,
         );
     }
+    let mappedType = requested;
     const callback = call.arguments[0]
         ? lowerer.context.unwrap(call.arguments[0])
         : undefined;
@@ -1921,90 +1934,102 @@ function compileArrayMap(
         };
     }
     const output = lowerer.context.allocateTemporaryCppName("map_result");
-    lowerer.emitArrayCallbackLoop(
-        call,
-        method,
-        narrowed,
-        dataType,
-        true,
-        (source) => {
-            lowerer.context.emit(
-                `bbl::js::Array<${lowerer.context.dataTypes.cppType(mappedType.element)}> ${output};`,
-            );
-            lowerer.context.emit({
-                kind: "expression",
-                code: `${output}.reserve(${source}.size());`,
-            });
-        },
-        (result, callback) => {
-            if (
-                method === "flatMap" &&
-                (result.kind === "tuple" ||
-                    result.dataType?.kind === "tuple" ||
-                    result.dataType?.kind === "vector" ||
-                    result.dataType?.kind === "span")
-            ) {
-                if (
-                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                        mappedType.element,
-                    )
-                )
-                    lowerer.context.refuseBorrowedPlatformEventEscape(
-                        result,
-                        callback,
-                        "Array.flatMap result",
-                    );
-                const values = lowerer.compileKnownValueForSink(
-                    result,
-                    mappedType,
-                    callback,
-                );
+    const lines = lowerer.context.captureEmittedLines(() =>
+        lowerer.emitArrayCallbackLoop(
+            call,
+            method,
+            narrowed,
+            dataType,
+            true,
+            (source) => {
                 lowerer.context.emit({
                     kind: "expression",
-                    code: `bbl::js::array_append(${output}, ${values});`,
+                    code: `${output}.reserve(${source}.size());`,
                 });
-                return;
-            }
-            let value: string;
-            if (
-                result.kind === "void" &&
-                mappedType.element.kind === "boolean"
-            ) {
-                // Promise<void> is represented by its synchronous
-                // settlement token. The callback body has already
-                // run; preserve a concise call expression too, then
-                // store the fulfilled token consumed by Promise.all.
-                if (result.cpp.length > 0) {
+            },
+            (result, callback) => {
+                if (method === "map")
+                    mappedType = {
+                        ...mappedType,
+                        element: lowerer.retainedResultType(
+                            result,
+                            mappedType.element,
+                            callback,
+                        ),
+                    };
+                if (
+                    method === "flatMap" &&
+                    (result.kind === "tuple" ||
+                        result.dataType?.kind === "tuple" ||
+                        result.dataType?.kind === "vector" ||
+                        result.dataType?.kind === "span")
+                ) {
+                    if (
+                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                            mappedType.element,
+                        )
+                    )
+                        lowerer.context.refuseBorrowedPlatformEventEscape(
+                            result,
+                            callback,
+                            "Array.flatMap result",
+                        );
+                    const values = lowerer.compileKnownValueForSink(
+                        result,
+                        mappedType,
+                        callback,
+                    );
                     lowerer.context.emit({
                         kind: "expression",
-                        code: `${result.cpp};`,
+                        code: `bbl::js::array_append(${output}, ${values});`,
                     });
+                    return;
                 }
-                value = "true";
-            } else {
+                let value: string;
                 if (
-                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                        mappedType.element,
-                    )
+                    result.kind === "void" &&
+                    mappedType.element.kind === "boolean"
                 ) {
-                    lowerer.context.refuseBorrowedPlatformEventEscape(
+                    // Promise<void> is represented by its synchronous
+                    // settlement token. The callback body has already
+                    // run; preserve a concise call expression too, then
+                    // store the fulfilled token consumed by Promise.all.
+                    if (result.cpp.length > 0) {
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `${result.cpp};`,
+                        });
+                    }
+                    value = "true";
+                } else {
+                    if (
+                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                            mappedType.element,
+                        )
+                    ) {
+                        lowerer.context.refuseBorrowedPlatformEventEscape(
+                            result,
+                            callback,
+                            "Array.map result",
+                        );
+                    }
+                    value = lowerer.compileKnownValueForSink(
                         result,
+                        mappedType.element,
                         callback,
-                        "Array.map result",
                     );
                 }
-                value = lowerer.compileKnownValueForSink(
-                    result,
-                    mappedType.element,
-                    callback,
-                );
-            }
-            lowerer.context.emit({
-                kind: "expression",
-                code: `${output}.push_back(${value});`,
-            });
-        },
+                lowerer.context.emit({
+                    kind: "expression",
+                    code: `${output}.push_back(${value});`,
+                });
+            },
+        ),
     );
+    lowerer.context.emit(
+        `bbl::js::Array<${lowerer.context.dataTypes.cppType(mappedType.element)}> ${output};`,
+    );
+    for (const line of lines) lowerer.context.emit(line);
     lowerer.registerLocal(output, "owned");
     return {
         kind: "data",

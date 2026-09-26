@@ -53,6 +53,7 @@ import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-varia
 import { packagedWgsl } from "./pinned-wgsl-build.js";
 import { lowerMaterialPluginUniformBody } from "./lowering/material-plugin-uniforms.js";
 import { stringLiteral } from "./cpp-literals.js";
+import { lowerMeshAttributeFeatures } from "./lowering/mesh-attribute-features.js";
 
 /**
  * A layer writer's presence test: the record flag standing for the pin's
@@ -1381,6 +1382,8 @@ inline constexpr std::uint32_t pinned_msh_vat =
 inline constexpr std::uint32_t pinned_msh_has_skeleton =
     ${skeletonBit}u;
 
+${lowerMeshAttributeFeatures(context)}
+
 enum class PinnedBindingKind {
     texture2d,
     // Read with textureLoad rather than sampled: rgba32float, which WebGPU
@@ -1476,6 +1479,7 @@ export function pinnedPbrVariantsHeader(
     renderableMeshFeatures: readonly number[],
     runtimeMeshFeatures?: number,
     pinnedMaterialCount?: number,
+    scenePbrMaterialIndices: readonly number[] = [],
 ): CppModule {
     const cpp = new CppDefinitions();
     const blocks: string[] = [];
@@ -2033,17 +2037,13 @@ struct PbrVariantSelector {
 
 ${cpp.table("PbrVariantSelector", "pbr_variant_selectors", selectors.length, `${selectors.join("\n")}`)}
 
-/**
- * How many materials the composed asset declares.
- *
- * The generated glTF loader appends one MaterialRecord per glTF material, in
- * document order, then every scene-code creation follows in creation order,
- * so a handle below this count names the material this table was composed
- * for. A PAL checks the HANDLE against it before using one as a key: records
- * appended past it are the shadow caster views the scene's own shadow task
- * builds, and those draw through their own no-colour variants.
- */
+/** Number of material rows in the composition namespace. Imported materials
+ * retain loader ordinals; source-created materials select through profiles. */
 ${cpp.constant("std::size_t", "pbr_variant_material_count", materialCount)}
+
+// Source creation profiles select composition rows independently of how many
+// physical materials a runtime branch or loop has already allocated.
+${cpp.table("std::uint32_t", "pbr_scene_material_indices", scenePbrMaterialIndices.length, scenePbrMaterialIndices.map((index) => `    ${index},`).join("\n"))}
 
 /**
  * The mesh attributes each material is drawn with, or \`npos\` when the asset

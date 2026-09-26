@@ -52,6 +52,8 @@ import {
     audioTypeof,
 } from "./audio-surface.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
+import { compilePhysicsMethodCall } from "./physics-surface.js";
+import { compileCustomEventConstructor } from "./custom-events.js";
 import {
     compileBrowserFileCall,
     compileBrowserFileConstructor,
@@ -431,6 +433,16 @@ export class ExpressionLowerer {
         ) {
             const asserted = this.compileValue(expression.expression);
             assertedValue = asserted;
+            if (asserted.kind === "scene-node") {
+                return {
+                    kind: "mesh",
+                    cpp: `std::get<bbl::MeshHandle>(${asserted.cpp})`,
+                    ...(asserted.engineCpp
+                        ? { engineCpp: asserted.engineCpp }
+                        : {}),
+                    dataType: { kind: "handle", handle: "mesh" },
+                };
+            }
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
@@ -684,6 +696,7 @@ export class ExpressionLowerer {
                     kind: "callback",
                     cpp: "",
                     intrinsicName: importedName,
+                    callbackDeclaration: unwrapped,
                 };
             const callback = tryResolveFunctionDeclaration(
                 this.context.checker,
@@ -713,6 +726,14 @@ export class ExpressionLowerer {
             return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            if (
+                unwrapped.name.text === "url" &&
+                ts.isMetaProperty(unwrapped.expression) &&
+                unwrapped.expression.keywordToken ===
+                    ts.SyntaxKind.ImportKeyword &&
+                unwrapped.expression.name.text === "meta"
+            )
+                return this.compileBrowserValue(unwrapped);
             const mathFunction = mathFunctionValue(this.context, unwrapped);
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
             if (arrayFunction) return arrayFunction;
@@ -869,6 +890,11 @@ export class ExpressionLowerer {
                     errorName,
                 );
             }
+            const customEvent = compileCustomEventConstructor(
+                this.context,
+                unwrapped,
+            );
+            if (customEvent) return customEvent;
             const constructed =
                 this.context.dataLowerer.compileNewExpression(unwrapped);
             if (constructed) {
@@ -927,7 +953,8 @@ export class ExpressionLowerer {
                     this.context.unwrap(unwrapped.expression.expression),
                 )
             ) {
-                const value = this.context.compileStringLiteral(unwrapped);
+                const value =
+                    this.context.evaluator.compileStringLiteral(unwrapped);
                 return {
                     kind: "string",
                     cpp: this.context.cppString(value),
@@ -2427,6 +2454,8 @@ export class ExpressionLowerer {
         }
         const numberPredicate = compileNumberPredicate(this.context, call);
         if (numberPredicate) return numberPredicate;
+        const array = this.context.dataLowerer.compileNewArray(call);
+        if (array) return array;
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
@@ -2541,9 +2570,22 @@ export class ExpressionLowerer {
                 callee,
             );
         }
-        if (ts.isCallExpression(callee)) {
+        if (
+            ts.isCallExpression(callee) ||
+            ts.isBinaryExpression(callee) ||
+            ts.isConditionalExpression(callee)
+        ) {
             const callable = this.compileValue(callee);
             if (callable.kind === "callback") {
+                if (callable.intrinsicName) {
+                    return this.context.compileRegisteredIntrinsic(
+                        callable.intrinsicName,
+                        call,
+                    ) ?? this.context.fail(
+                        callee,
+                        `Babylon Lite intrinsic '${callable.intrinsicName}' is not supported by this prototype.`,
+                    );
+                }
                 const native =
                     this.context.userFunctions.compileNativeCallbackCall(
                         this.context,
@@ -2613,12 +2655,17 @@ export class ExpressionLowerer {
                 callable.dataType?.kind === "function"
             ) {
                 const functionType = callable.dataType;
+                const selected = this.context.bindings.pinValueToTemporary(
+                    callable,
+                    "call_target",
+                    callee,
+                );
                 const argumentsCpp =
                     this.context.dataLowerer.compileFunctionArguments(
                         call,
                         functionType,
                     );
-                const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
+                const cpp = `${selected.cpp}(${argumentsCpp.join(", ")})`;
                 return functionType.result
                     ? this.context.dataLowerer.leafValue(
                           cpp,
@@ -2844,6 +2891,7 @@ export class ExpressionLowerer {
             }
             if (
                 value.nativeError ||
+                isJsonValue(value) ||
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
@@ -3204,10 +3252,20 @@ export class ExpressionLowerer {
             ts.isIdentifier(callback)
                 ? callback
                 : undefined;
-        const stored = this.context.dataLowerer.prepareCallbackValue(
-            callback,
-            "tuple",
-        );
+        // Static iterations specialize local callbacks with their exact inputs.
+        // Resource results can carry loader metadata without an erased stored
+        // function signature; already stored callbacks retain that signature.
+        const storedFunction =
+            ts.isIdentifier(callback) &&
+            this.context.bindings.lookupOptional(callback)?.dataType?.kind ===
+                "function";
+        const stored =
+            !local || storedFunction
+                ? this.context.dataLowerer.prepareCallbackValue(
+                      callback,
+                      "tuple",
+                  )
+                : undefined;
         if (!local && !stored) {
             this.context.fail(
                 callback,
@@ -3244,12 +3302,19 @@ export class ExpressionLowerer {
                       )
                     : result;
             }
-            return this.compileStaticTupleCallback(
+            const result = this.compileStaticTupleCallback(
                 local!,
                 values,
                 call,
                 method === "forEach",
             );
+            return method === "map"
+                ? this.context.bindings.pinValueToTemporary(
+                      result,
+                      "mapped_result",
+                      callback,
+                  )
+                : result;
         };
         if (method === "some") {
             // Keep each callback's statements inside its short-circuited
@@ -3284,6 +3349,7 @@ export class ExpressionLowerer {
         const mappedType = this.context.dataLowerer.dataTypeAt(call);
         if (
             mappedType?.kind === "vector" &&
+            !results.some((result) => result.kind === "promise") &&
             results.some(
                 (result) =>
                     result.staticNumber === undefined &&
@@ -3330,6 +3396,11 @@ export class ExpressionLowerer {
     ): Value {
         if (
             ts.isIdentifier(callback) ||
+            ts
+                .getModifiers(callback)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                ) ||
             callback.parameters.length === 0 ||
             !ts.isArrayBindingPattern(callback.parameters[0]!.name)
         ) {
@@ -4085,6 +4156,7 @@ export class ExpressionLowerer {
         if (
             conditionalType?.kind === "string" ||
             conditionalType?.kind === "number" ||
+            conditionalType?.kind === "function" ||
             conditionalType?.kind === "promise" ||
             conditionalType?.kind === "union" ||
             conditionalType?.kind === "product" ||
@@ -4454,11 +4526,20 @@ export class ExpressionLowerer {
                     index,
                     property.initializer,
                 );
+                const contextual =
+                    this.context.checker.getContextualType(unwrapped);
+                const declared =
+                    contextual &&
+                    this.context.checker.getPropertyOfType(contextual, name);
+                const propertyType = declared
+                    ? this.context.checker.getTypeOfSymbolAtLocation(
+                          declared,
+                          property.name,
+                      )
+                    : this.context.checker.getTypeAtLocation(property.name);
                 properties[name] =
                     value.staticString !== undefined &&
-                    this.context.checker
-                        .getTypeAtLocation(property.name)
-                        .isStringLiteral()
+                    propertyType.isStringLiteral()
                         ? { ...value, readOnly: true }
                         : value;
             } else if (ts.isShorthandPropertyAssignment(property)) {
@@ -4708,21 +4789,29 @@ export class ExpressionLowerer {
             if (
                 callee.name.text === "toFixed" &&
                 owner.kind === "number" &&
-                number === undefined &&
-                (call.arguments.length === 0 ||
-                    (digits !== undefined && Number.isInteger(digits)))
+                (number === undefined ||
+                    (call.arguments.length > 0 && digits === undefined))
             ) {
-                const precision = digits ?? 0;
-                if (precision < 0 || precision > 100) {
+                if (digits !== undefined && (digits < 0 || digits > 100)) {
                     this.context.fail(
                         call,
                         "Number.toFixed precision must be between 0 and 100.",
                     );
                 }
                 this.context.reachJsData();
+                const receiver = call.arguments[0]
+                    ? this.context.bindings.pinValueToTemporary(
+                          owner,
+                          "format_receiver",
+                          callee.expression,
+                      )
+                    : owner;
+                const precision = call.arguments[0]
+                    ? this.context.compileNumber(call.arguments[0], "double")
+                    : "0";
                 return {
                     kind: "data",
-                    cpp: `bbl::js::number_to_fixed(${owner.cpp}, ${precision})`,
+                    cpp: `bbl::js::number_to_fixed(${receiver.cpp}, ${precision})`,
                     dataType: { kind: "string" },
                 };
             }
@@ -4946,6 +5035,10 @@ export class ExpressionLowerer {
         if (found) {
             return found;
         }
+        const physics = this.context.probeEmission(() =>
+            compilePhysicsMethodCall(this.context, call, callee),
+        );
+        if (physics) return physics;
         const method = mayCompileDataMethodCall(this.context.checker, callee)
             ? this.context.probeEmission(() =>
                   this.context.dataLowerer.compileDataMethodCall(call),
@@ -5086,6 +5179,17 @@ export class ExpressionLowerer {
             const recordMethod = instance?.recordMethods?.[callee.name.text];
             const recordCallback =
                 instance?.recordProperties?.[callee.name.text];
+            if (recordCallback?.intrinsicName) {
+                const result = this.context.compileRegisteredIntrinsic(
+                    recordCallback.intrinsicName,
+                    call,
+                );
+                if (result) return result;
+                this.context.fail(
+                    call,
+                    `Babylon Lite intrinsic '${recordCallback.intrinsicName}' is not supported by this prototype.`,
+                );
+            }
             if (
                 instance &&
                 call.questionDotToken &&

@@ -12,6 +12,28 @@ Engine create_engine(EngineOptions) { return {}; }
 
 int main() {
     assert(generated_main() == 0);
+    {
+        bbl::NodeInputHandle retained_scalar;
+        {
+            bbl::Engine engine;
+            const auto first = bbl::create_node_material(engine, 1, {});
+            const auto second = bbl::create_node_material(engine, 1, {});
+            retained_scalar = *bbl::node_material_inputs(engine, first).get("rugMinWidth");
+            const auto other = *bbl::node_material_inputs(engine, second).get("rugMinWidth");
+            const float initial = other->values[0];
+            assert(bbl::set_node_input_scalar(retained_scalar, -20.1250001) == -20.1250001);
+            assert(retained_scalar->values[0] == static_cast<float>(-20.1250001));
+            assert(other->values[0] == initial);
+            assert(retained_scalar->uniforms->revision == 1 && other->uniforms->revision == 0);
+            const auto& table = bbl::upstream::node_variant_inputs;
+            for (const auto& row : table) {
+                if (row.variant == 1 && row.name == "rugMinWidth")
+                    assert(retained_scalar->uniforms->values[row.first_float] == retained_scalar->values[0]);
+            }
+        }
+        bbl::set_node_input_scalar(retained_scalar, 1.0 / 3.0);
+        assert(retained_scalar->values[0] == static_cast<float>(1.0 / 3.0));
+    }
     const auto before = bbl::js::managed_node_count();
     bbl::NodeInputHandle retained;
     {

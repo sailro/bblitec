@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerBoneControl } from "../src/lowering/gltf/bone-control.js";
+import { lowerMatrixComposeCpp } from "../src/lowering/gltf/matrix-leaves.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
@@ -66,6 +67,13 @@ test("bone visibility stores and eager-bake calls follow the complete source set
 #include <fstream>
 using namespace bbl;
 using Json=nlohmann::json;
+using Matrix=std::array<float,16>;
+Matrix identity_matrix(){return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};}
+${lowerMatrixComposeCpp(variants[0]!.sourceFile("src/math/compose-mat4-into-buffer.ts"), true)}
+void gltf_animation_compose(std::vector<float>& out,double offset,double px,double py,double pz,double rx,double ry,double rz,double rw,double sx,double sy,double sz){
+    const auto matrix=trs_matrix({px,py,pz},{rx,ry,rz,rw},{sx,sy,sz});
+    std::copy(matrix.begin(),matrix.end(),out.begin()+static_cast<std::size_t>(offset));
+}
 ${variants.map((context, index) => `namespace variant_${index} {${lowerBoneControl(context).entryPoints}}`).join("\n")}
 template<class Set> void check(const Json& expected,Set set){Engine engine;engine.assets.emplace_back().bone_overrides.resize(1);engine.bones.emplace_back().node_index=0;engine.skeletons.emplace_back().asset=0;
     int bakes=0;engine.assets[0].bake_skeletons=[&]{++bakes;};std::size_t index=0;
@@ -75,6 +83,14 @@ template<class Set> void check(const Json& expected,Set set){Engine engine;engin
 }
 int main(){Json cases;std::ifstream("cases.json")>>cases;
 ${variants.map((_context, index) => `check(cases.at(${index}),variant_${index}::set_bone_visible);`).join("\n")}
+    Engine engine;engine.assets.emplace_back();engine.bones.emplace_back().node_index=2;engine.skeletons.emplace_back().asset=0;
+    int bakes=0;engine.assets[0].bake_skeletons=[&]{++bakes;};
+    variant_0::set_bone_world_pose_deferred(engine,SkeletonHandle{0},BoneHandle{0},1.25,2.5,3.75,0,0,0,1);
+    auto& world=engine.assets[0].bone_world_overrides.at(2);const auto* allocation=world.data();
+    if(bakes||world.size()!=16||world[0]!=-1||world[5]!=1||world[10]!=1||world[12]!=1.25f)throw std::runtime_error("Deferred world pose mismatch");
+    variant_0::set_bone_world_pose_deferred(engine,SkeletonHandle{0},BoneHandle{0},9,8,7,0,0,0,1);
+    if(world.data()!=allocation||world[12]!=9||world[13]!=8||world[14]!=7||bakes)throw std::runtime_error("World override identity mismatch");
+    variant_0::bake_skeleton(engine,SkeletonHandle{0});if(bakes!=1)throw std::runtime_error("Explicit skeleton bake mismatch");
 }
 `,
     );

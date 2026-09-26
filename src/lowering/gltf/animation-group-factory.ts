@@ -40,6 +40,7 @@ export function lowerGltfAnimationGroupFactory(
         ["frameRate", "frame_rate"],
         ["isPlaying", "playing"],
         ["currentTime", "time"],
+        ["_startTime", "start_time"],
         ["speedRatio", "speed_ratio"],
         ["loopAnimation", "loop"],
         ["weight", "weight"],
@@ -57,11 +58,14 @@ export function lowerGltfAnimationGroupFactory(
         ["clip.duration", { cpp: "clip_duration", type: "scalar" }],
         ["clip.frameRate", { cpp: "clip_frame_rate", type: "scalar" }],
         ["started", { cpp: "started", type: "bool" }],
+        ["startTime", { cpp: "clip_start_time", type: "scalar" }],
     ]);
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: new Map(),
         expression(node, numeric) {
+            if (context.expressionMatchesShape(node, "startTime || undefined"))
+                return "clip_start_time";
             if (
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
@@ -124,7 +128,7 @@ export function lowerGltfAnimationGroupFactory(
     return `// ${context.provenance(module, "createAnimationGroups")}
 template<class Group>
 void gltf_initialize_animation_group(Group& group, const std::string& clip_name,
-    double clip_duration, double clip_frame_rate, double clip_index) {
+    double clip_duration, double clip_frame_rate, double clip_index, double clip_start_time = 0) {
     const bool started = ${started};
 ${stores}
 }

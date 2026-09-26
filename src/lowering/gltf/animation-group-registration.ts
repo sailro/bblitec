@@ -27,23 +27,20 @@ export function lowerAnimationGroupRegistration(
             declaration,
             "Expected source animation task construction boundary.",
         );
-    const push = statements[task + 1],
-        owner = statements[task + 2];
-    if (
-        !push ||
-        !owner ||
-        !ts.isExpressionStatement(push) ||
-        !ts.isExpressionStatement(owner)
-    )
+    const ownerIndex = statements.findIndex(
+        (statement) =>
+            ts.isExpressionStatement(statement) &&
+            context.expressionMatchesShape(
+                statement.expression,
+                "groupInternal._animationManager = manager",
+            ),
+    );
+    const owner = statements[ownerIndex];
+    if (!owner || ownerIndex <= task || !ts.isExpressionStatement(owner))
         context.contractError(
             declaration,
             "Expected ordered animation group and owner publication.",
         );
-    context.assertExpressionShape(
-        push.expression,
-        "getMutableAnimationGroups(manager).push(group)",
-        "Animation group registry publication",
-    );
     context.assertExpressionShape(
         owner.expression,
         "groupInternal._animationManager = manager",
@@ -57,15 +54,51 @@ export function lowerAnimationGroupRegistration(
             { cpp: "registration", type: "opaque" },
         ],
         ["group.name", { cpp: "name", type: "opaque" }],
+        [
+            "groupInternal._animationOrderManager",
+            { cpp: "order_state.manager.lock()", type: "opaque" },
+        ],
+        [
+            "groupInternal._animationOrder",
+            { cpp: "order_state.order", type: "scalar" },
+        ],
+        [
+            "managerInternal._nextAnimationGroupOrder",
+            { cpp: "manager->next_group_order", type: "scalar" },
+        ],
+        [
+            "groups.length",
+            {
+                cpp: "static_cast<double>(manager->ordered_groups.size())",
+                type: "scalar",
+            },
+        ],
     ]);
     const body = lowerPinnedBody(
         file,
-        [...statements.slice(0, task), push, owner],
+        [
+            ...statements.slice(0, task),
+            ...statements.slice(task + 1, ownerIndex + 1),
+        ],
         {
             bindings,
             calls: new Map(),
 
-            expression(node) {
+            expression(node, lowerer) {
+                if (
+                    context.expressionMatchesShape(
+                        node,
+                        "managerInternal._nextAnimationGroupOrder ?? 0",
+                    )
+                )
+                    return "manager->next_group_order";
+                if (
+                    context.expressionMatchesShape(
+                        node,
+                        "((groups[groupIndex - 1] as AnimationGroupTaskGroup)._animationOrder ?? -1)",
+                    )
+                )
+                    return `order_at(${lowerer.expression(context.findNodes(node, ts.isElementAccessExpression)[0]!.argumentExpression)})`;
                 if (ts.isTemplateExpression(node)) {
                     const parts = [
                         `std::string(${JSON.stringify(node.head.text)})`,
@@ -117,6 +150,22 @@ export function lowerAnimationGroupRegistration(
                         );
                         return [];
                     }
+                    if (variable.name.text === "managerInternal") {
+                        context.assertExpressionShape(
+                            variable.initializer,
+                            "manager as AnimationGroupTaskManager",
+                            "Animation order manager identity",
+                        );
+                        return [];
+                    }
+                    if (variable.name.text === "groups") {
+                        context.assertExpressionShape(
+                            variable.initializer,
+                            "getMutableAnimationGroups(manager)",
+                            "Animation group registry identity",
+                        );
+                        return [];
+                    }
                     if (variable.name.text === "owner") {
                         context.assertExpressionShape(
                             variable.initializer,
@@ -128,15 +177,40 @@ export function lowerAnimationGroupRegistration(
                         ];
                     }
                 }
-                if (statement === push) return [`${indent}append();`];
+                if (ts.isExpressionStatement(statement)) {
+                    if (
+                        context.expressionMatchesShape(
+                            statement.expression,
+                            "groupInternal._animationOrderManager = manager",
+                        )
+                    )
+                        return [`${indent}order_state.manager = manager;`];
+                    if (
+                        ts.isCallExpression(statement.expression) &&
+                        context.expressionMatchesShape(
+                            statement.expression.expression,
+                            "groups.splice",
+                        )
+                    ) {
+                        context.assertExpressionShape(
+                            statement.expression,
+                            "groups.splice(groupIndex, 0, group)",
+                            "Animation group registry publication",
+                        );
+                        return [
+                            `${indent}insert(static_cast<std::size_t>(${lowerer.expression(statement.expression.arguments[0]!)}));`,
+                        ];
+                    }
+                }
                 return undefined;
             },
         },
     );
     return `// ${context.provenance(module, "addAnimationGroup")}
-template<class Append>
+template<class OrderAt, class Insert>
 void register_animation_group(const PropertyAnimationManager& manager,
-    std::weak_ptr<PropertyAnimationManagerRecord>& registration, const std::string& name, Append append) {
+    std::weak_ptr<PropertyAnimationManagerRecord>& registration, AnimationGroupOrder& order_state,
+    const std::string& name, OrderAt order_at, Insert insert) {
 ${body}
 }`;
 }

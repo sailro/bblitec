@@ -98,6 +98,7 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:gltf": [],
     "loader:gltf-variants": [],
     "loader:gltf-cameras": [],
+    "loader:gltf-cpu-tangents": [],
     "loader:gltf-bone-control": [],
     "loader:splat": [],
     "loader:splat-bake": [],
@@ -148,7 +149,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:csg": [],
     "mesh:csg2": [],
     "mesh:from-data": [],
-    "mesh:update-positions": [],
+    "mesh:update-attributes": [],
     "mesh:resize-geometry": [],
     "mesh:ground": [],
     "mesh:ground-heightmap": [],
@@ -184,6 +185,7 @@ export const featureSources: Record<Feature, string[]> = {
     "math:mat4-create": [],
     "math:mat4-invert": [],
     "math:look-direction": [],
+    "picking:ray": [],
     "picking:gpu": [],
     "picking:detailed": [],
     "picking:billboard": [],
@@ -536,6 +538,7 @@ interface MainCppProjection {
         declarations: string;
         windowOptions?: string;
         hasEngine?: boolean;
+        waitForCanvasReady?: boolean;
     };
     features: readonly Feature[];
     jsDataReached: boolean;
@@ -695,6 +698,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         ? "#include <bblite/upstream/pinned_mat4_invert.hpp>\n"
         : "";
     const jsDataInclude =
+        (features.includes("picking:ray")
+            ? "#include <bblite/upstream/picking_ray.hpp>\n"
+            : "") +
         (features.includes("math:quaternion")
             ? "#include <bblite/upstream/pinned_quaternion.hpp>\n"
             : "") +
@@ -709,6 +715,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("data:json")
             ? "#include <bblite/js_json.hpp>\n"
+            : "") +
+        (features.includes("data:json") && features.includes("input:dom")
+            ? "#include <bblite/pal_custom_events.hpp>\n"
             : "") +
         (features.includes("data:locale")
             ? "#include <bblite/pal_locale.hpp>\n"
@@ -795,7 +804,7 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
     const workerEntry = workerNamespace
         ? `void initialize([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n}\n`
         : projection.workers?.windowOptions
-          ? `int main() {\n    return bbl::pal::run_window_application([]([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n    }, ${projection.workers.windowOptions});\n}\n`
+          ? `int main() {\n    return bbl::pal::run_window_application([]([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${projection.workers.waitForCanvasReady ? "        bbl::pal::window_defer_capture_until_canvas_ready();\n" : ""}${entryBody}\n    }, ${projection.workers.windowOptions});\n}\n`
           : projection.workers
             ? `int main() {\n    try {\n        const bbl::js::RealmScope state;\n        bbl::pal::EventLoop loop;\n        bbl::pal::WorkerRealm realm(loop);\n        loop.run([&] {\n${entryBody}\n        });\n        return 0;\n    } catch (...) {\n        return bbl::report_uncaught_error(std::current_exception());\n    }\n}\n`
             : undefined;

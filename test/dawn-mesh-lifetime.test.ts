@@ -34,6 +34,7 @@ test("Dawn mesh teardown releases bindings before resources and shared layouts",
             cppRecord(source, "enum class DawnLayoutFamily"),
             cppRecord(source, "struct DawnLayoutKey {"),
             cppRecord(source, "class DawnLayoutCache {"),
+            cppRecord(source, "struct DawnSharedComposedMaterialTextures {"),
             cppRecord(source, "struct DawnSharedMaterialTextures {"),
             "using DawnSharedShaderMaterialTextures = DawnSharedMaterialTextures;",
             ...[

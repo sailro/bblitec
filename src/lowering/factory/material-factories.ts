@@ -10,6 +10,7 @@ import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
 import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
+import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -146,6 +147,7 @@ export class FactoryLowerer extends MeshBuilderLowerer {
 
 namespace bbl {
 ${solidTextureDataFunction}
+${lowerNodeInputScalarSetter(this.context)}
 NodeMaterialTexture node_material_texture(
     std::string name,
     FileTexture texture) {
@@ -214,10 +216,16 @@ MaterialHandle create_node_material(
         : MaterialAlphaMode::opaque;
     material.node_inputs = std::make_shared<NodeMaterialInputsState>();
     auto& owner = *material.node_inputs;
+    owner.uniforms = std::make_shared<NodeUniformState>();
+    owner.uniforms->values.assign(
+        upstream::node_variant_uniform_floats.begin() + entry.first_uniform_float,
+        upstream::node_variant_uniform_floats.begin() + entry.first_uniform_float + entry.ubo_bytes / sizeof(float));
     for (const auto& input : upstream::node_variant_inputs) {
         if (input.variant != variant) continue;
         auto handle = std::make_shared<NodeInputState>();
         handle->type = input.type;
+        handle->uniforms = owner.uniforms;
+        handle->values = std::span<float>{owner.uniforms->values}.subspan(input.first_float, input.float_count);
         owner.inputs.set(std::string(input.name), handle);
     }
     // The graph's declared bindings, in the pin's own allocation order,
@@ -1317,6 +1325,7 @@ MaterialHandle create_pbr_material(
     MaterialRecord material;
 ${pbrMaterialRecordSeedCpp("material", "    ")}
     material.source_pbr_group_builder = true;
+    material.pbr_composition_profile = options.composition_profile;
     // The pin's createPbrMaterial is {...props}: a solid texture IS the
     // texture -- createSolidTexture2D writes the rounded texel into a 1x1
     // rgba8unorm sampled without decode -- and the factors stay the options'

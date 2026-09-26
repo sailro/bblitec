@@ -144,6 +144,13 @@ use readback. SDL submits on the acquiring thread; Dawn synchronizes the shared 
 
 The first document snapshot follows initialization microtasks. Image decode readiness and source
 callbacks remain on the application realm.
+Window scene preparation runs texture decoding/uploads and ordinary material-pipeline compilation
+as native jobs, yielding to realm timers until they finish. Jobs carry immutable texture snapshots and
+GPU data, not application callbacks. Dawn requires implicit device synchronization; geometry-output
+pipelines and worker-free builds prepare on the renderer thread. Readiness still requires the first
+complete published canvas frame. SDL batches each startup mesh's buffer writes into one copy submission.
+Material families share immutable image uploads while retaining their own samplers; SDL_image codec
+calls are serialized across native jobs and UI.
 
 ## Retained UI
 

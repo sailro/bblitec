@@ -601,7 +601,7 @@ export class CallbackLowerer {
     public compilePlatformCallback(
         callback: ts.Expression,
         parameter: { cppType: string; name: string } | undefined,
-        values: readonly Value[],
+        inputs: readonly Value[] | (() => readonly Value[]),
         documentHiddenCpp?: string,
         captureByValue = true,
         assignIdentity = true,
@@ -618,6 +618,25 @@ export class CallbackLowerer {
             asynchronous ??
             this.context.probeEmission(() => {
                 const value = this.context.compileValue(callback);
+                if (
+                    value.kind === "callback" &&
+                    ts.isCallExpression(this.context.unwrap(callback))
+                ) {
+                    const type = this.context.dataLowerer.dataTypeAt(callback);
+                    if (type?.kind !== "function")
+                        this.context.fail(
+                            callback,
+                            "A callback factory requires a native function signature.",
+                        );
+                    return this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            type,
+                            callback,
+                        ),
+                        type,
+                    );
+                }
                 return value.kind === "data" &&
                     value.dataType?.kind === "function"
                     ? value
@@ -645,6 +664,7 @@ export class CallbackLowerer {
             );
             const closure = this.context.captureManagedClosureLines(
                 () => {
+                    const values = typeof inputs === "function" ? inputs() : inputs;
                     if (parameter) {
                         this.context.registerNativeBindingType(
                             parameter.name,
@@ -711,6 +731,7 @@ export class CallbackLowerer {
         try {
             compiled = this.context.captureManagedClosureLines(
                 () => {
+                    const values = typeof inputs === "function" ? inputs() : inputs;
                     if (parameter) {
                         this.context.registerNativeBindingType(
                             parameter.name,
@@ -898,6 +919,21 @@ export class CallbackLowerer {
         const eventName = this.context.allocateTemporaryCppName(
             `physics_${event}`,
         );
+        if (this.context.options.workers) {
+            this.hoistForwardCallbackBindings(callback, expression.pos);
+            return this.compilePlatformCallback(
+                callback,
+                { cppType: `const ${infoType}&`, name: eventName },
+                () => [physicsEventInfoValue(
+                    event,
+                    eventName,
+                    this.context.registerNativeBinding(eventName, false, true, `const ${infoType}`),
+                )],
+                undefined,
+                true,
+                false,
+            ).cpp;
+        }
         const callbackName = this.context.allocateTemporaryCppName(
             `physics_${event}_callback`,
         );
@@ -930,7 +966,16 @@ export class CallbackLowerer {
             this.context.bindings.variableScopes.length = 0;
             this.context.bindings.variableScopes.push(...deferred.scopes);
             const event = deferred.eventName;
-            const info = physicsEventInfoValue(deferred.event, event);
+            const info = physicsEventInfoValue(
+                deferred.event,
+                event,
+                this.context.registerNativeBinding(
+                    event,
+                    false,
+                    true,
+                    `const ${physicsEventInfoType(deferred.event)}`,
+                ),
+            );
             const previousDepth = this.context.frameCallbackDepth;
             this.context.frameCallbackDepth += 1;
             try {

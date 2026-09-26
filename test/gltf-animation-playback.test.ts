@@ -50,6 +50,8 @@ interface Operation {
 }
 const scenarios: Array<{
     duration: number;
+    startTime?: number;
+    channels?: boolean;
     requiresEngine: boolean;
     ops: Operation[];
 }> = [
@@ -83,6 +85,31 @@ const scenarios: Array<{
             { op: "seek", value: 60, engine: true },
             { op: "frameRate", value: 0 },
             { op: "seek", value: 60, engine: true },
+        ],
+    },
+    {
+        duration: 0,
+        startTime: 2,
+        channels: true,
+        requiresEngine: false,
+        ops: [
+            { op: "tick", value: 500 },
+            { op: "time", value: 7 },
+            { op: "seek", value: 180 },
+            { op: "weighted", value: 500 },
+        ],
+    },
+    {
+        duration: 4,
+        startTime: 2,
+        requiresEngine: false,
+        ops: [
+            { op: "tick", value: 500 },
+            { op: "time", value: 5.75 },
+            { op: "tick", value: 500 },
+            { op: "speed", value: -2 },
+            { op: "weighted", value: 500 },
+            { op: "seek", value: 600 },
         ],
     },
     {
@@ -171,9 +198,7 @@ function sourceResult(context: LoweringContext): unknown[] {
         ...constants,
         () => events.push(["pose", current!._ctrl.time]),
         () => {},
-        () => {
-            throw new Error("No sampler is reached by this playback fixture.");
-        },
+        () => {},
         undefined,
         () => {},
         0,
@@ -201,8 +226,19 @@ function sourceResult(context: LoweringContext): unknown[] {
         const clip = {
             name: "clock",
             duration: scenario.duration,
-            samplers: [],
-            channels: [],
+            _startTime: scenario.startTime,
+            samplers: scenario.channels
+                ? [
+                      {
+                          input: new Float32Array([2]),
+                          output: new Float32Array([0, 0, 0]),
+                          interpolation: 0,
+                      },
+                  ]
+                : [],
+            channels: scenario.channels
+                ? [{ samplerIdx: 0, nodeIdx: 0, path: 0 }]
+                : [],
         };
         const group = runtime.createAnimationGroups({
             clips: [clip],
@@ -316,7 +352,7 @@ function contexts(): LoweringContext[] {
         ),
         doctoredContext(
             controllerModule,
-            "ThrowLiteError(544)",
+            "ThrowLiteError(604)",
             "ThrowLiteError(9999)",
         ),
     ];
@@ -392,11 +428,11 @@ ${variants
     .map(
         (context, index) => `namespace variant_${index} {
 ${lowerGltfAnimationPlayback(context, true)}
-struct Group { double time = 0, duration = 0; bool playing = true, stopped = false, loop = true; GltfAnimationControllerPlayback controller; };
+struct Group { double time = 0, duration = 0, start_time = 0;std::size_t channel_count=0; bool playing = true, stopped = false, loop = true; GltfAnimationControllerPlayback controller; };
 Json run(const Json& scenarios) {
     Json result = Json::array();
     for (const auto& scenario : scenarios) {
-        Group group; group.duration = scenario.at("duration");
+        Group group; group.duration = scenario.at("duration");group.start_time=scenario.value("startTime",0.0);group.time=group.start_time;group.controller.time=group.start_time;group.channel_count=scenario.value("channels",false)?1:0;
         double speed_ratio = 1, frame_rate = 60; bool managed = false;
         const bool requires_engine = scenario.at("requiresEngine");
         Json events = Json::array(), observations = Json::array();

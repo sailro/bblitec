@@ -304,7 +304,7 @@ std::vector<std::uint8_t> read_binary_file(const std::string& path) {
     if(fail_read) { fail_read=false; throw std::runtime_error("fixture read failure"); }
     return {1};
 }
-DecodedImage decode_image(const js::ArrayBuffer&) { return {1,1,{1,2,3,4}}; }
+DecodedImage decode_image(std::span<const std::uint8_t>) { return {1,1,{1,2,3,4}}; }
 std::string join_path(const std::string& a, const std::string& b) { return a+b; }
 }
 ${fileTexture}

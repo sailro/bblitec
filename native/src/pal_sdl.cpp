@@ -401,6 +401,9 @@ void pal::run_engine(Engine& engine) {
 js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
     if (engine->device_disposed)
         throw std::runtime_error("Cannot start an engine with a disposed GPU device.");
+    const auto options = read_frame_options();
+    if (options.frame_delta_ms > 0)
+        pal::EventLoop::current().use_fixed_animation_time(options.frame_delta_ms);
     engine->stopped = false;
     js::Promise<js::PromiseVoid> ready;
     run_realm_frames(std::move(engine), ready);

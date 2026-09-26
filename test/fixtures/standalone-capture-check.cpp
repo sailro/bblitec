@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <deque>
+#include <limits>
 
 struct SDL_GPUTexture {
     SDL_GPUTextureCreateInfo info{};
@@ -19,6 +20,7 @@ struct SDL_GPURenderPass {};
 struct SDL_GPUCopyPass {};
 struct SDL_GPUBuffer {
     std::vector<std::uint8_t> bytes;
+    bool released = false;
 };
 struct SDL_GPUTransferBuffer {
     std::vector<std::uint8_t> bytes;
@@ -45,6 +47,7 @@ WGPURenderPassEncoderImpl dawn_pass;
 WGPUSurfaceImpl dawn_surface;
 SDL_GPUCopyPass sdl_copy;
 std::deque<SDL_GPUTransferBuffer> transfers;
+std::deque<SDL_GPUBuffer> buffers;
 bool texture_uploads_enabled = false;
 struct TextureWrite {
     SDL_GPUTextureRegion destination;
@@ -75,6 +78,15 @@ extern "C" SDL_GPUTexture* SDLCALL SDL_CreateGPUTexture(SDL_GPUDevice*,
 extern "C" void SDLCALL SDL_ReleaseGPUTexture(SDL_GPUDevice*, SDL_GPUTexture* texture) {
     assert(texture && !texture->released);
     texture->released = true;
+}
+extern "C" SDL_GPUBuffer* SDLCALL SDL_CreateGPUBuffer(SDL_GPUDevice*,
+                                                      const SDL_GPUBufferCreateInfo* info) {
+    buffers.push_back({std::vector<std::uint8_t>(info->size)});
+    return &buffers.back();
+}
+extern "C" void SDLCALL SDL_ReleaseGPUBuffer(SDL_GPUDevice*, SDL_GPUBuffer* buffer) {
+    assert(buffer && !buffer->released);
+    buffer->released = true;
 }
 extern "C" SDL_GPUCommandBuffer* SDLCALL SDL_AcquireGPUCommandBuffer(SDL_GPUDevice*) {
     sdl_command = {};
@@ -550,6 +562,38 @@ void check_batched_uploads() {
     assert(transfers.back().released);
 }
 
+void check_batched_creation() {
+    reset_observations();
+    copied_regions = 0;
+    GpuBufferUploadBatch batch{nullptr};
+    const std::vector<std::uint8_t> values{1, 2, 3, 4};
+    OwnedSdlBuffer first{batch.upload(SDL_GPU_BUFFERUSAGE_VERTEX, values.data(), values.size()),
+                         {nullptr}};
+    OwnedSdlBuffer second{batch.upload(SDL_GPU_BUFFERUSAGE_INDEX, values.data(), values.size()),
+                          {nullptr}};
+    assert(submissions == 0 && copied_regions == 0);
+    batch.submit();
+    assert(submissions == 1 && copied_regions == 2);
+    assert(first->bytes == values && second->bytes == values);
+    bool rejected = false;
+    try {
+        static_cast<void>(batch.upload(SDL_GPU_BUFFERUSAGE_VERTEX, nullptr, values.size()));
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected && buffers.back().released);
+    const auto count = buffers.size();
+    rejected = false;
+    try {
+        static_cast<void>(
+            batch.upload(SDL_GPU_BUFFERUSAGE_VERTEX, nullptr,
+                         static_cast<std::size_t>(std::numeric_limits<Uint32>::max()) + 1));
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected && buffers.size() == count);
+}
+
 void check_texture_writes() {
     texture_uploads_enabled = true;
     texture_writes.clear();
@@ -595,6 +639,7 @@ int main() {
     check_registration<SdlSprite>();
     check_registration<DawnSprite>();
     check_batched_uploads();
+    check_batched_creation();
     check_texture_writes();
     surface_available = false;
     SdlEffect sdl_effect;

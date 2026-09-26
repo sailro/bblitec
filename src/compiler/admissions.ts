@@ -14,6 +14,7 @@ interface AdmissionContext
             LoweringServices,
             | "fail"
             | "isRuntimeResourceConstruction"
+            | "isRuntimeCallback"
             | "sceneManifest"
             | "sourceFile"
         > {
@@ -158,18 +159,18 @@ export class AdmissionRecorder {
         }
     }
 
-    public noteNodeGeometryMutation(node: ts.Node): void {
+    public noteNodeGeometryMutation(node: ts.Node, message?: string): void {
         this.deferredAdmissionFailures.push({
             capability: "node-geometry",
             node,
-            message:
+            message: message ??
                 "Node geometry views require static imported mesh transforms; mutation, cloning and unproven transform aliases are not represented.",
         });
     }
 
     public assertNodeInputMutable(node: ts.Node): void {
         if (
-            this.context.frameCallbackDepth > 0 ||
+            this.context.isRuntimeCallback() ||
             this.context.engineLifecycle.engineStartMark !== undefined ||
             this.temporalSceneRegistration
         ) {
@@ -335,7 +336,7 @@ export class AdmissionRecorder {
     ): void {
         if (
             always ||
-            this.context.frameCallbackDepth > 0 ||
+            this.context.isRuntimeCallback() ||
             this.context.engineLifecycle.engineStartMark !== undefined ||
             this.temporalSceneRegistration
         ) {
@@ -354,7 +355,7 @@ export class AdmissionRecorder {
         scene?: Value,
     ): void {
         const runtime =
-            this.context.frameCallbackDepth > 0 ||
+            this.context.isRuntimeCallback() ||
             this.context.engineLifecycle.engineStartMark !== undefined;
         if (
             mode === "always" ||

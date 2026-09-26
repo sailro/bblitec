@@ -165,12 +165,18 @@ test(
         root.children = [meshes[0]!, branch];
         meshes[0]!.children.push(meshes[2]!);
         const expected: { positions: number[]; indices: number[] }[] = [];
-        for (const [node, children, collect] of [
+        for (const [caseIndex, [node, children, collect]] of ([
             [root, true, true],
             [root, true, false],
             [meshes[0]!, false, true],
             [meshes[0]!, true, true],
-        ] as const) {
+            [meshes[0]!, false, true],
+        ] as const).entries()) {
+            if (caseIndex === 4) {
+                meshes[0]!._cpuPositions = new Float32Array(vertices);
+                meshes[0]!._cpuPositions[0] = 7;
+                meshes[0]!._cpuIndices = new Uint32Array([1,0,2]);
+            }
             const accumulator = new MeshAccumulator(collect);
             accumulator.addNodeMeshes(node, children);
             const HEAPU8 = new Uint8Array(4096);
@@ -251,6 +257,13 @@ int main() {
     };
     run(physics_node(TransformNodeHandle{0}),true,true);run(physics_node(TransformNodeHandle{0}),true,false);
     run(physics_node(MeshHandle{0}),false,true);run(physics_node(MeshHandle{0}),true,true);
+    js::F32Array retained_positions(std::vector<float>(values.begin(), values.end()));
+    engine.meshes[0].cpu_streams=std::make_shared<MeshCpuStreams>();
+    engine.meshes[0].cpu_streams->positions=retained_positions;
+    engine.meshes[0].cpu_streams->indices=js::U32Array{1,0,2};
+    retained_positions[0]=7;
+    run(physics_node(MeshHandle{0}),false,true);
+    engine.meshes[0].cpu_streams.reset();
     const auto refuse=[&](auto operation,const char* text){bool refused=false;try{operation();}catch(const std::runtime_error& e){refused=std::string(e.what()).find(text)!=std::string::npos;}assert(refused);};
     refuse([&]{run(physics_node(TransformNodeHandle{0}),false,true);},"without vertex");
     worlds[0].fill(0);refuse([&]{run(physics_node(TransformNodeHandle{0}),true,true);},"singular root");

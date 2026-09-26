@@ -41,7 +41,10 @@ import {
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
-import { requireDynamicBindingStorage } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    requireDynamicBindingStorage,
+} from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
 import { errorValue, thrownMessage } from "./error-values.js";
@@ -1026,6 +1029,17 @@ export class DataLowerer {
                     this.leafValue(temporary, owner.dataType),
                     owner,
                 );
+                owner = {
+                    ...owner,
+                    nativeCaptures: [
+                        this.context.registerNativeBinding(
+                            temporary,
+                            false,
+                            false,
+                            `const ${this.context.dataTypes.cppType(owner.dataType!)}`,
+                        ),
+                    ],
+                };
             }
             // A call can yield an intrinsic record or engine handle rather
             // than native data. Its owner has already been evaluated, so
@@ -1470,6 +1484,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.knownValueFitsSink(entry, element, expression, true),
             )
         ) {
+            if (
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                ts.isIdentifier(unwrapped) &&
+                this.context.bindings.lookupOptional(unwrapped)?.kind ===
+                    "tuple"
+            )
+                throw new DynamicBindingStorageRequired(declaration, {
+                    kind: "vector",
+                    element,
+                });
             const values = (known.tupleElements ?? []).map((entry) =>
                 this.compileKnownValueForSink(entry, element, expression),
             );
@@ -1565,6 +1590,53 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         return element;
+    }
+
+    /** Keep JSON-backed objects in typed aggregate results without copying their identity. */
+    public retainedResultType(
+        source: Value,
+        type: DataType,
+        node: ts.Node,
+    ): DataType {
+        if (
+            isJsonValue(source) &&
+            (type.kind === "struct" ||
+                type.kind === "vector" ||
+                type.kind === "map" ||
+                type.kind === "json")
+        )
+            return source.dataType;
+        if (type.kind === "product" && source.dataType?.kind === "vector")
+            return source.dataType;
+        if (source.kind === "tuple" && type.kind === "product") {
+            const elements = type.elements.map((element, index) => {
+                const value = source.tupleElements?.[index];
+                return value
+                    ? this.retainedResultType(value, element, node)
+                    : element;
+            });
+            return elements.some(
+                (element, index) => element !== type.elements[index],
+            )
+                ? { ...type, elements }
+                : type;
+        }
+        if (source.kind !== "record" || type.kind !== "struct") return type;
+        const fields = this.context.dataTypes.structFields(type.name, node);
+        const represented = fields.map((field) => {
+            const value = source.recordProperties?.[field.sourceName];
+            return {
+                ...field,
+                type: value
+                    ? this.retainedResultType(value, field.type, node)
+                    : field.type,
+            };
+        });
+        return represented.some(
+            (field, index) => field.type !== fields[index]!.type,
+        )
+            ? this.context.dataTypes.ownedRecordType(represented)
+            : type;
     }
 
     public knownValueFitsSink(
@@ -2038,6 +2110,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return left;
         }
         const leftFound = presenceFlagCpp(left);
+        if (left.kind === "data" && left.dataType?.kind === "function") {
+            const type = left.dataType;
+            const value =
+                leftFound === undefined
+                    ? left
+                    : {
+                          ...left,
+                          cpp: `(${leftFound} ? ${left.cpp} : ${this.context.dataTypes.cppType(type)}{})`,
+                      };
+            const selected = this.context.bindings.pinValueToTemporary(
+                value,
+                "nullish_callback",
+                expression.left,
+            );
+            return this.leafValue(
+                `(${selected.cpp} ? ${selected.cpp} : ${fallbackForSink(type)})`,
+                type,
+            );
+        }
         if (leftFound !== undefined) {
             // A handle a search produced: upstream's `find` yields
             // `undefined` on a miss, and `??` selects the fallback
@@ -5458,7 +5549,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * Recognizes `new Array(n)` and compiles the length, or undefined when
      * the expression is not a global Array construction.
      */
-    private newArrayCount(expression: ts.NewExpression): string | undefined {
+    private newArrayCount(
+        expression: ts.NewExpression | ts.CallExpression,
+    ): string | undefined {
         if (this.context.libraryGlobal(expression.expression) !== "Array") {
             return undefined;
         }
@@ -5472,7 +5565,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     public newArrayInfo(
-        expression: ts.NewExpression,
+        expression: ts.NewExpression | ts.CallExpression,
+        filledElement?: DataType,
     ): { count: string; element: DataType } | undefined {
         const count = this.newArrayCount(expression);
         if (count === undefined) {
@@ -5480,16 +5574,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         return {
             count,
-            element: this.newArrayElementType(expression),
+            element: this.newArrayElementType(expression, filledElement),
         };
     }
 
-    private newArrayElementType(expression: ts.NewExpression): DataType {
+    private newArrayElementType(
+        expression: ts.NewExpression | ts.CallExpression,
+        filledElement?: DataType,
+    ): DataType {
         const type = this.context.checker.getTypeAtLocation(expression);
         const mapped = this.context.dataTypes.fromTsType(type, expression);
         if (mapped?.kind === "vector") {
             return mapped.element;
         }
+        if (filledElement) return filledElement;
         this.context.fail(
             expression,
             "new Array requires a data element type (annotate the receiving declaration).",
@@ -5500,7 +5598,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * Compiles `new Array<T>(n)` without a fill chain: elements
      * zero-initialize (recorded as a fidelity adaptation).
      */
-    public compileNewArray(expression: ts.NewExpression): Value | undefined {
+    public compileNewArray(
+        expression: ts.NewExpression | ts.CallExpression,
+    ): Value | undefined {
         const created = this.newArrayInfo(expression);
         if (!created) {
             return undefined;
@@ -7293,6 +7393,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public emitDelete(expression: ts.DeleteExpression): void {
         const target = this.context.unwrap(expression.expression);
+        if (
+            ts.isPropertyAccessExpression(target) &&
+            ts.isPropertyAccessExpression(target.expression) &&
+            target.expression.name.text === "dataset"
+        ) {
+            const element = this.context.compileValue(
+                target.expression.expression,
+            );
+            if (element.kind === "ui-element") {
+                const name = `data-${target.name.text.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_remove_attribute(${this.context.requireEngine(element, expression)}, ${element.cpp}, ${this.context.cppString(name)});`,
+                });
+                return;
+            }
+        }
         if (ts.isElementAccessExpression(target)) {
             const recordOwner = ts.isIdentifier(target.expression)
                 ? this.context.bindings.lookupOptional(target.expression)
@@ -7423,6 +7540,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? this.narrowOptional(owner, ownerNode)
                 : owner;
         // LightBase's discriminator is absent on loadGltf's synthetic SceneNode.
+        if (
+            operator === "in" &&
+            (key.staticString === "material" || key.staticString === "_gpu")
+        ) {
+            if (narrowed.kind === "mesh") return "true";
+            if (
+                narrowed.kind === "asset-root" ||
+                narrowed.kind === "transform-node"
+            )
+                return "false";
+            if (narrowed.kind === "scene-node")
+                return `std::holds_alternative<bbl::MeshHandle>(${narrowed.cpp})`;
+        }
+        if (
+            operator === "in" &&
+            key.staticString === "thinInstances" &&
+            ["mesh", "scene-node", "transform-node", "asset-root"].includes(
+                narrowed.kind,
+            )
+        ) {
+            this.context.reachFeature("scene:node-transforms", ownerNode);
+            const engine = this.context.requireEngine(narrowed, ownerNode);
+            return `bbl::scene_node_has_thin_instance_property(${engine}, ${narrowed.cpp})`;
+        }
         if (operator === "in" && key.staticString === "lightType") {
             if (narrowed.kind === "asset-root") return "false";
             if (narrowed.kind === "light") return "true";
@@ -7895,9 +8036,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return false;
         }
-        if (isJsonRootedExpression(this.context, left.expression)) {
+        const jsonOwner = this.context.probeEmission(() => {
+            if (
+                !isJsonRootedExpression(this.context, left.expression) &&
+                !this.usesNativeDataPath(left.expression)
+            )
+                return undefined;
+            const value = this.context.compileValue(left.expression);
+            return isJsonValue(value) ? value : undefined;
+        });
+        if (jsonOwner) {
             const owner = this.context.bindings.pinValueToTemporary(
-                this.context.compileValue(left.expression),
+                jsonOwner,
                 "assignment_owner",
             );
             if (isJsonValue(owner)) {
@@ -9296,7 +9446,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.reachJsData();
             return whenPresent(`bbl::js::number_truthy(${value.cpp})`);
         }
-        if (value.kind === "tuple" || value.kind === "record") {
+        if (
+            value.kind === "tuple" ||
+            value.kind === "record" ||
+            value.kind === "asset-root"
+        ) {
             // Present arrays and objects are truthy even when empty.
             // Specialized records can also carry an optional-presence
             // guard instead of storing a native optional value.
@@ -9545,6 +9699,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const value =
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
+            if (isJsonValue(value)) {
+                const temporary = this.context.allocateTemporaryCppName(
+                    "json_absence_compare",
+                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: temporary,
+                    initializer: value.cpp,
+                });
+                const equal = loose
+                    ? `(${temporary}.is_null() || ${temporary}.is_undefined())`
+                    : `${temporary}.is_${literal ?? "undefined"}()`;
+                return negated ? `!(${equal})` : equal;
+            }
             // `==` takes null and undefined as one; `===` asks which absent
             // state the operand is in (`absenceKind`).
             const absentTest = (
@@ -9693,7 +9862,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (dictionary) return dictionary;
                 if (
                     !ts.isElementAccessExpression(unwrapped) &&
-                    !ts.isPropertyAccessExpression(unwrapped)
+                    !ts.isPropertyAccessExpression(unwrapped) &&
+                    !ts.isCallExpression(unwrapped)
                 )
                     return undefined;
                 // Flow narrowing changes checker types, while nullable storage
@@ -9713,10 +9883,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? value
                 : undefined;
         };
-        const leftOptional = loweredOptional(left);
-        const rightOptional = loweredOptional(right);
-        const leftType = leftOptional?.dataType ?? this.dataTypeAt(left);
-        const rightType = rightOptional?.dataType ?? this.dataTypeAt(right);
+        // Detect the representation without committing either operand's calls.
+        // Once selected, evaluate and snapshot both operands in source order.
+        const hasOptional = this.context.probeEmission(
+            () =>
+                optionalComparable(
+                    loweredOptional(left)?.dataType ?? this.dataTypeAt(left),
+                ) ||
+                optionalComparable(
+                    loweredOptional(right)?.dataType ?? this.dataTypeAt(right),
+                ),
+            () => false,
+        );
+        const compileOperand = (
+            operand: ts.Expression,
+            label: string,
+        ): Value => {
+            const lowered = this.context.probeEmission(() =>
+                loweredOptional(operand),
+            );
+            return this.context.bindings.pinValueToTemporary(
+                lowered ??
+                    this.compileDataPath(operand, "read") ??
+                    this.context.compileValue(operand),
+                label,
+                operand,
+            );
+        };
+        const leftOptional = hasOptional
+            ? compileOperand(left, "comparison_left")
+            : undefined;
+        const rightOptional = hasOptional
+            ? compileOperand(right, "comparison_right")
+            : undefined;
+        const leftType = optionalComparable(leftOptional?.dataType)
+            ? leftOptional.dataType
+            : this.dataTypeAt(left);
+        const rightType = optionalComparable(rightOptional?.dataType)
+            ? rightOptional.dataType
+            : this.dataTypeAt(right);
         const widenTag = (
             value: { cpp: string; dataType: DataType },
             node: ts.Node,
@@ -9865,7 +10070,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 { cpp: `(*${leftCpp})`, dataType: leftType.inner },
                 left,
             );
-            const rightCpp = this.compileForSink(right, present.dataType);
+            const rightCpp = rightOptional
+                ? this.compileKnownValueForSink(
+                      rightOptional,
+                      present.dataType,
+                      right,
+                  )
+                : this.compileForSink(right, present.dataType);
             const equal =
                 `(${optionalPresentCpp(leftCpp)} && ` +
                 `${present.cpp} == ${rightCpp})`;
@@ -9882,7 +10093,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 { cpp: `(*${rightCpp})`, dataType: rightType.inner },
                 right,
             );
-            const leftCpp = this.compileForSink(left, present.dataType);
+            const leftCpp = leftOptional
+                ? this.compileKnownValueForSink(
+                      leftOptional,
+                      present.dataType,
+                      left,
+                  )
+                : this.compileForSink(left, present.dataType);
             const equal =
                 `(${optionalPresentCpp(rightCpp)} && ` +
                 `${leftCpp} == ${present.cpp})`;
@@ -11035,7 +11252,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${elements.join(", ")}}`;
         }
-        if (ts.isNewExpression(unwrapped)) {
+        if (ts.isNewExpression(unwrapped) || ts.isCallExpression(unwrapped)) {
             const created = this.newArrayCount(unwrapped);
             if (created !== undefined) {
                 this.context.reachJsData();
@@ -11043,15 +11260,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         }
         if (ts.isCallExpression(unwrapped)) {
-            const fillOwner =
+            const candidateOwner =
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "fill" &&
-                ts.isNewExpression(
-                    this.context.unwrap(unwrapped.expression.expression),
-                )
-                    ? (this.context.unwrap(
-                          unwrapped.expression.expression,
-                      ) as ts.NewExpression)
+                unwrapped.expression.name.text === "fill"
+                    ? this.context.unwrap(unwrapped.expression.expression)
+                    : undefined;
+            const fillOwner =
+                candidateOwner &&
+                (ts.isNewExpression(candidateOwner) ||
+                    ts.isCallExpression(candidateOwner))
+                    ? candidateOwner
                     : undefined;
             const fillCount = fillOwner
                 ? this.newArrayCount(fillOwner)
@@ -11099,6 +11317,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 (isJsonValue(known) && dataType.element.kind === "json") ||
                 known.kind === "tuple" ||
+                (known.kind === "data" &&
+                    known.dataType?.kind === "tuple" &&
+                    dataType.element.kind === "number") ||
                 (known.kind === "data" &&
                     known.dataType?.kind === "span" &&
                     dataTypesEqual(known.dataType.element, dataType.element))

@@ -79,6 +79,7 @@ void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
                               js::Callback<void()> callback, bool capture = false,
                               bool once = false);
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture = false);
+void audio_set_ended_handler(AudioNodeHandle node, js::Callback<void()> callback);
 #endif
 
 /** Context ownership follows the generated engine, including failed startup. */

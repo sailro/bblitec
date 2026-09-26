@@ -568,7 +568,8 @@ function compileCreatePbrMaterial(
         `.occlusion_strength = ${occlusionStrength}, ` +
         `.metallic_f0_factor = ${metallicF0Factor}, ` +
         `.use_physical_light_falloff = ` +
-        `${usePhysicalLightFalloff}})`;
+        `${usePhysicalLightFalloff}, ` +
+        `.composition_profile = ${scenePbrMaterialIndex}u})`;
     if (baseColorFile || ormFile || plugins) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({

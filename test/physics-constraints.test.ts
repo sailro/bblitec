@@ -54,14 +54,15 @@ test("HINGE contracts retain anchor ordering, defaults, perpendicular math and a
         );
     }
     const result = compileSource(
-        `import Havok from "@babylonjs/havok"; import {createEngine, createSceneContext, createHavokWorld, createBox, createPhysicsAggregate, createPhysicsConstraint, PhysicsConstraintType, PhysicsShapeType} from "babylon-lite";
+        `import Havok from "@babylonjs/havok"; import {createEngine, createSceneContext, createHavokWorld, createBox, createPhysicsAggregate, createPhysicsConstraint, releasePhysicsConstraint, PhysicsConstraintType, PhysicsShapeType} from "babylon-lite";
         async function main() {const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);const scene=createSceneContext(engine);const world=createHavokWorld(scene, await Havok());const mesh=createBox(engine,1);
         const a=createPhysicsAggregate(world,mesh,PhysicsShapeType.BOX,{mass:0});const b=createPhysicsAggregate(world,mesh,PhysicsShapeType.BOX,{mass:1});
-        createPhysicsConstraint(world,a.body,b.body,PhysicsConstraintType.HINGE,{axisA:{x:0,y:0,z:-1},axisB:{x:0,y:0,z:1}});}main();`,
+        const constraint=createPhysicsConstraint(world,a.body,b.body,PhysicsConstraintType.HINGE,{axisA:{x:0,y:0,z:-1},axisB:{x:0,y:0,z:1}}); const handles = [constraint]; for (const handle of handles) releasePhysicsConstraint(world, handle);}main();`,
         { fileName: "hinge.ts" },
     );
     assert.ok(result.manifest.features.includes("physics:constraints"));
     assert.match(result.cpp, /create_physics_constraint/);
+    assert.match(result.cpp, /release_physics_constraint/);
 });
 
 const tools = optionalNativeFixtureTools();

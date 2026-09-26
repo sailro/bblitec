@@ -23,8 +23,10 @@ Check them before adding an implementation. Source rejection does not imply miss
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution and reduced-motion matchMedia queries retain identity/current matches and zero-argument change
-  listeners. Wider queries, event payloads and removal refuse. ResizeObserver entries are unavailable.
+  listeners with identity-based removal. Wider queries and event payloads refuse. ResizeObserver entries are unavailable.
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
+- MutationObserver supports microtask attribute notifications, static attribute filters and disconnect.
+  Mutation records, old values, child-list changes and subtree observation refuse.
 - Navigator and graphics guards follow the [environment contract](fidelity.md#semantic-contract). Heap
   snapshots, GPU adapter requests and GPU API instrumentation are unsupported.
 - Location follows deployment. A query value the deployment answers folds to a constant (alone, beside
@@ -37,6 +39,9 @@ Check them before adding an implementation. Source rejection does not imply miss
 
 Host multi-canvas companions retain canvases, dividers and labels. Canvas-only captures include every
 canvas at its page position.
+Reached canvas `dataset.ready` writes gate Window captures until a rendering canvas has `data-ready="true"`
+and publishes a fresh frame; startup rendering continues past a requested capture frame when necessary.
+Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 
 ## DOM and events
 
@@ -47,6 +52,7 @@ canvas at its page position.
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
+| Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Focus/forms | Focus, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
@@ -68,8 +74,9 @@ Values are six-digit opaque RGB; changing an input to or from color refuses.
 Native select keyboard navigation requires opening the menu first.
 
 Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.
-Copy owned fields before dispatch ends. Optional element calls snapshot the receiver and skip arguments
+Native input views borrow dispatch; CustomEvent retains its detail and identity. Optional element calls snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
+Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element methods.
 Queued form events copy value, checked, selected option and disclosure state before application callbacks.
 
 Window pagehide runs before realm cleanup on close/reload, with Document target and Window currentTarget.
@@ -79,6 +86,7 @@ Beforeunload and page-history caching are unsupported; native pagehide has persi
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
 across the Window mailbox; structural and special text changes rebuild projection.
+Dataset reads distinguish missing (`undefined`) and empty attributes.
 Source append arguments finish before insertion. Canvas backing dimensions are drawable pixels; client
 dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
 
@@ -118,18 +126,20 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 
 | Area | Supported | Limits |
 | --- | --- | --- |
-| Position/box | Reached defaults, fixed/inset, viewport/px calc/min/max/clamp, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; containing-block/font-relative math and unrepresented shorthands |
+| Position/box | Reached defaults, fixed/inset, viewport/px/rem calc/min/max/clamp, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; containing-block/element-font-relative math, rem math in font sizing or custom properties, and unrepresented shorthands |
 | Flex | Wrapping/reversal, grow/shrink/basis, numeric shorthand, flow, alignment, independent gaps | Intrinsic basis keywords and unrepresented CSS math |
 | Grid | Row-major grid/inline-grid; auto/px/fr, minmax(px,fr), integer repeat, implicit rows, gaps/alignment; positive grid-column start/end; intrinsic flexible spans | 256 explicit tracks; flexible spans require percentage width; span minimum-track growth, named/alternate placement, percentage tracks and broader intrinsic functions |
 | Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
-| Media | Reached max-width and reduced-motion rules | Reduced motion uses Windows preference polling; other platforms refuse that preference |
+| Media | Reached max-width, portrait/landscape and reduced-motion rules | Reduced motion uses Windows preference polling; other platforms refuse that preference |
 | Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures clip to viewport size |
 | Raster border images | Packaged stretch slices, number/percentage slices, live widths | Outset, center fill, repeat, SVG, longhands, runtime-generated declarations |
 | Images | Centered fill/contain/cover/none/scale-down; content-box clipping | object-position; Canvas2D supports fill only |
+| Raster backgrounds | Single packaged image, explicit inheritance, centered contain/cover, natural-size repeat and zero sizing | Sized repetition, arbitrary sizes/positions and multiple layers |
+| Transforms/clipping | Uniform nonnegative scale composed before transform; empty rectangular clips retain layout/focus | Nonuniform scale longhand and nonempty clip rectangles |
 | Scrollbars | auto/thin/none widths, auto/two-color styles, selected WebKit parts, stable gutter | Both-edge/vertical/viewport gutters; orientation states, track-piece, resizer |
 | Overscroll | Per-axis auto/contain/none through the native scroll path | Browser edge handoff/bounce/navigation; contain and none share behavior |
 | Lists | Unmarked block lists with default margins/indentation | Marker types, counters and images |
@@ -145,7 +155,7 @@ stylesheet text refuses.
 
 Stylesheet selectors support tags/IDs/classes, attribute presence/equality, descendant/child/sibling
 combinators, hover/active/focus/focus-visible/focus-within/disabled/checked, positional An+B/of-type,
-empty, not/is/where/has. Where has zero specificity. Has updates ancestor styles; nested has and
+root, empty, not/is/where/has. Where has zero specificity. Has updates ancestor styles; nested has and
 pseudo-elements within relative lists refuse. Wider attribute operators and nth-child of-lists remain limited.
 
 Before/after generate flow/positioned boxes from literal strings or attr text. None/normal remove boxes;
@@ -190,7 +200,7 @@ adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only captu
 - General mask-image and unsupported blend modes refuse; the reviewed difference crosshair degrades.
 - Backdrop blur(px)/none are represented; other reached backdrop functions may degrade.
 - will-change, touch-action, user-select and image-rendering are hints. Only -webkit-user-drag:none is admitted.
-- element.animate and listener removal outside shared input dispatch remain no-ops.
+- element.animate remains a no-op; listener removal outside shared input dispatch refuses.
 - CSS easing/steps, font variants and rasterization have approximations.
 - Retained UI is unavailable under standalone effect/frame-graph drivers.
 

@@ -1489,7 +1489,11 @@ inline void save_capture_png(std::span<const std::uint8_t> pixels, std::uint32_t
                     pixels.data() + static_cast<std::size_t>(row) * bytes_per_row,
                     static_cast<std::size_t>(width) * 4);
     }
-    const bool saved = IMG_SavePNG(surface, path.c_str());
+    bool saved = false;
+    {
+        std::lock_guard lock(image_decoder_mutex());
+        saved = IMG_SavePNG(surface, path.c_str());
+    }
     SDL_DestroySurface(surface);
     if (!saved) {
         dawn_error(std::string("IMG_SavePNG: ") + SDL_GetError());

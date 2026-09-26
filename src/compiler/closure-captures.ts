@@ -24,7 +24,6 @@ export const nativeCompanionKeys = [
     "optionalFoundCpp",
     "slotFoundCpp",
     "truthinessCpp",
-    "audioMainBusCpp",
     "spriteLayerCpp",
     "dynamicAssetPathCpp",
 ] as const;

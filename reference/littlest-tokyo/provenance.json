@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "scene": "littlest-tokyo",
+  "pin": {
+    "package": "@babylonjs/lite",
+    "version": "1.31.1",
+    "sourceVersion": "7d66215c1c897734a3c2f25bdd15d0e7062ed8f4"
+  },
+  "reference": {
+    "source": "reference/littlest-tokyo/babylon-lite-golden.png",
+    "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33"
+  },
+  "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
+  "capturedAt": "2026-09-26T07:08:44.464Z",
+  "pose": {
+    "search": "",
+    "width": 1280,
+    "height": 720,
+    "dpr": 1,
+    "referenceFrame": 180
+  },
+  "hostUi": {
+    "source": "ui/littlest-tokyo-host.json",
+    "sha256": "3a30511cb87b108e78660bb6d9a84bbea7e4c256f76bbcbad95ecb86938a0f97"
+  },
+  "moduleSha256": "c944b23f609cb5d9df45f3b9bbfef718837739ea4582872d28059892aa56d2db",
+  "sourceFiles": [
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
+      "sha256": "77c8407c2b121e8c46765dd13e2e6b410028bdc0446c7458872d41241e1e7519"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+      "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+      "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+      "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo/CREDITS.txt",
+      "sha256": "af7bc72c2aade5ef83dd68a4c011e904596746de3ee72e1dc199cba7ab7b0354"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo/LittlestTokyo.glb",
+      "sha256": "3504289bfb183f0cfef0f1606c9c7764a0fe642f8aba67c0eed46a6f5563b77c"
+    }
+  ]
+}

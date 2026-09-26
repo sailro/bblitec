@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.31.0",
+  "version": "1.31.1",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "3ce8ae6d34945f4c32c73e357714ffa43be41584",
+  "sourceVersion": "7d66215c1c897734a3c2f25bdd15d0e7062ed8f4",
   "scenes": [
     {
       "id": "scene1",
@@ -422,7 +422,7 @@
       "id": "scene173",
       "upstreamPath": "lab/lite/src/lite/scene173.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene173.ts",
-      "sha256": "052dc12236710f6bc109fd2430c61d472e74a549d2716902b1c097f37df63e11"
+      "sha256": "e668f49d17102d7fe7197a054f307cb8b6d3f96fd86a243bc3c13a361a84e54b"
     },
     {
       "id": "scene174",
@@ -1863,7 +1863,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/tetris/chamfered-box.ts",
@@ -2126,7 +2126,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         }
       ]
     },
@@ -2705,7 +2705,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         }
       ]
     },
@@ -2730,7 +2730,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/atlas.ts",
@@ -2925,7 +2925,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/brdf-lut.png",
@@ -3166,7 +3166,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/assets.ts",
@@ -3315,13 +3315,17 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
       "reference": {
         "source": "reference/littlest-tokyo/babylon-lite-golden.png",
-        "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33"
+        "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33",
+        "provenance": {
+          "source": "reference/littlest-tokyo/provenance.json",
+          "sha256": "f54307094eb8e557c198fe5c784df360d95e8cde3a4fd5b745bf5b2089de871a"
+        }
       },
       "files": [
         {
           "upstreamPath": "lab/lite/src/demos/littlest-tokyo.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
-          "sha256": "09100017c9b6f5ede345f18606ae3508e2c25f6f8353142e7db73f312fa96da3"
+          "sha256": "77c8407c2b121e8c46765dd13e2e6b410028bdc0446c7458872d41241e1e7519"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
@@ -3331,7 +3335,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/brdf-lut.png",
@@ -3371,7 +3375,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/bath_day.glb",
@@ -3416,7 +3420,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/freeciv/amplio2/animals.png",
@@ -3656,7 +3660,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "3d3408ce72fba2eb66c5985c2f925ccd880aee42c1ff022c9ffe018fbdd668a6"
+          "sha256": "0923a28e46471e0093b243e09d17ad825db0a33bb779c8224361286111b72dbb"
         }
       },
       "files": [
@@ -3678,7 +3682,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/ocean.ts",
@@ -3988,7 +3992,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/atlas.ts",
@@ -4397,7 +4401,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/screen-space-effects/cornellBox.glb",
@@ -4447,7 +4451,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/brdf-lut.png",
@@ -4477,7 +4481,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/models/Calculator.glb",
@@ -4535,7 +4539,531 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
+        }
+      ]
+    },
+    {
+      "id": "playroom",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
+      "reference": {
+        "source": "reference/playroom/babylon-lite-golden.png",
+        "sha256": "7787bf18b0b0aa0f2913bda5d4dac71ded95defd8f82acc60dcc6c679ca83348",
+        "provenance": {
+          "source": "reference/playroom/provenance.json",
+          "sha256": "e36394f646f937144b071739c17f484b0b7c617ad4dba9a3e1ab8b61e8a9267e"
+        }
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/demo-playroom.html",
+          "source": "corpus/babylon-lite/lab/lite/demo-playroom.html",
+          "sha256": "b605acda206c188498e3f536b20ecb4ec6e203f8790d3053f790906d409fb929"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
+          "sha256": "a796bb8639e8f2ffa316673875b103e5e6115b5ec8dce502df93a46bef9ede9a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/assets.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/assets.ts",
+          "sha256": "2e406463c3e7364ed5d4a1a56d2f1dd895c7e7d40efbff8fbc88e392e3974c65"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/audio.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/audio.ts",
+          "sha256": "835aa45e1d0d59ce1eacae7c10e49a5f1a1dbec82421fca631ae69dc5aa72ae1"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/camera.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/camera.ts",
+          "sha256": "87dddf5a2280a4e3974998cc6c14b202571eaec845cd53ecffe5503097001c63"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/constants.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/constants.ts",
+          "sha256": "e2ddcbd132f288211e0d5373a9c68cf8835550f8b6f38cd9c66f0db0d78302cc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/effects.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/effects.ts",
+          "sha256": "49672c58ebc06b34ff98b9548a6f3388d30a2971ff6a7f6fb487098f1ac0279c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/game.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/game.ts",
+          "sha256": "bda0cd7fdcd795513652ebea1b5bc831fd038704a41ce8e0a83f62163a320455"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/input.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/input.ts",
+          "sha256": "d6d84e0442171993d98dd5d70aa0df0b0c96b174fc7be3cde9c3011adf29e81b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/layout.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/layout.ts",
+          "sha256": "8fe2d6c846a266b8990cb0168035045d3f1c1a8ca6c6d7ca7a56e9a12d05333b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/physics-instances.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/physics-instances.ts",
+          "sha256": "547e44a6795e15b2db028fee6cd3702f870a56e6334c0ab369d3c1efca3bf00b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/physics.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/physics.ts",
+          "sha256": "29ef16c9c3bae50a42615533b72bf24db3a18a4d2ff64efad46a53d0fdd1a3c5"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/puzzles.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/puzzles.ts",
+          "sha256": "842391ad0b1fe75ace94bab519542b9a14025039e25131a3a61abf64564ffb8d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/ragdoll.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/ragdoll.ts",
+          "sha256": "a57317e78d66441688abd9a6e192d7d04cea8ba4bfa7d69a8247c37e9f9c38b0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/types.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/types.ts",
+          "sha256": "b3d7b481fce3038d4372e01559778c41e8120526e546cfdfbede7bdf0b804121"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/ui.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/ui.ts",
+          "sha256": "142686169763a0d05b9f07bf855b7e17e84b84e0dba3815149882de859c868dd"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/playroom/world.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/world.ts",
+          "sha256": "1b0d078afc5cdeafa8097064369976cec6bde0b8dd8979f4127ce242c3f34487"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/README.md",
+          "source": "corpus/babylon-lite/lab/public/playroom/README.md",
+          "sha256": "a63a4bc0333d9457443f7568ba4885c09feb8f3ec8afd9497dc006c5a318d562"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/SOURCE-NOTICE.md",
+          "source": "corpus/babylon-lite/lab/public/playroom/SOURCE-NOTICE.md",
+          "sha256": "e5af9ebcac12b30c530f46a4a37451cb37292cc438e2147e4adf60c79f577a4a"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/asset-manifest.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/asset-manifest.json",
+          "sha256": "658119f202d1d1c8c3e38eff42f699689755617fbd459713bd9a388a186b7214"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/childRoom_ibl.env",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/childRoom_ibl.env",
+          "sha256": "0e3974154c345954f5f555b55522475042fbb6e110e9a1335f5bd6e1c0f4048d"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/skybox/childRoom_1K_nx.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/skybox/childRoom_1K_nx.jpg",
+          "sha256": "e3b29ef53cccab5f48110d4b3372b5d7684f8dde31843443e87993733f66f6e1"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/skybox/childRoom_1K_ny.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/skybox/childRoom_1K_ny.jpg",
+          "sha256": "cedf64f9b50cfcd9a90783ce6f0f54ff33b7f011e48ac3002d64003b29c2b997"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/skybox/childRoom_1K_nz.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/skybox/childRoom_1K_nz.jpg",
+          "sha256": "75adb3e04d2da5521293c0f778bdc43b6bd588d525d42c1552a0ce80fe8a79a1"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/skybox/childRoom_1K_px.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/skybox/childRoom_1K_px.jpg",
+          "sha256": "13bcafc777950ae959084d333b243b849041886228885b824cca65a8c8c475e8"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/skybox/childRoom_1K_py.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/skybox/childRoom_1K_py.jpg",
+          "sha256": "52ccec2b72249c129b1dcb0568d89d4273367723971274b872c54e8a806571d9"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/env/skybox/childRoom_1K_pz.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/env/skybox/childRoom_1K_pz.jpg",
+          "sha256": "0223a9b9ce255ad6af3bb623c43af29f44bc8f21929f85873f9240e2cff1913b"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/archStackArch.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/archStackArch.glb",
+          "sha256": "08e1956e428f831f6e19e6745fe5e7acc9dbc190d71567b0711dea00f6978250"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/archStackCylinder.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/archStackCylinder.glb",
+          "sha256": "217241ae12f5193798e88e516a3e6fa24c9fd771e644cf2afdf7590aebc7611a"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/archStackTop.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/archStackTop.glb",
+          "sha256": "a3861f1c8d6c53f4cfa5e9cbf12afbb9a55b73d6e8a6280483037a3514a19db7"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/babylonBurster.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/babylonBurster.glb",
+          "sha256": "ef76f1218ec0997b0ce9a515ea558688cda1cb2677118afa2c565c02669e53c9"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/bowlingBall.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/bowlingBall.glb",
+          "sha256": "f1386c3433d91ee628b32eb42a634a18d6af556a1e0c3e8396331ba8debf8fdd"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/bowlingPin.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/bowlingPin.glb",
+          "sha256": "a155a38a418542c84d8bd496f44ed3b543483180f4eed97a86924d198fd8c043"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/bunny-rig.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/bunny-rig.json",
+          "sha256": "f237406f1cecaee9c98b6a6a6b74b57c7e929e8f2d5dc546ade11991d0960448"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/bunny_rigged.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/bunny_rigged.glb",
+          "sha256": "6aca7d464dd4bf857ba032c1657f14c46253cf35a96e8baad2bcb35e6e89d963"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/chessboard.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/chessboard.glb",
+          "sha256": "25f8934d661b7d23b238cdc8d45753b12cffa62c1e3f74077d119ed8dc26296d"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/chesspiece.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/chesspiece.glb",
+          "sha256": "a9ef52ad6504df3d2d08f1170242abda0b8d4a215b53d771d1758bcdbbe6905d"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/cubeBlock.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/cubeBlock.glb",
+          "sha256": "97c63881bc871cfb706b92c1bbac75295ec8abdb2e3f5595bec3ea9a97d88923"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/cup.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/cup.glb",
+          "sha256": "62cc65b41cd4cfb3b341631cc9048e901e59ae65678e63d216e805169e54b437"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/domino.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/domino.glb",
+          "sha256": "5a4a1d97c07f50bc28a7b3fac4e725c991b1404afdcb8967423e3ac6c8bb21b7"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/ramp.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/ramp.glb",
+          "sha256": "35e2a373712d86a8b9e51a843c5e8c571be54d6eb52ee742c53270d419e1c191"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/towerGameBlock.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/towerGameBlock.glb",
+          "sha256": "62702b8b33041e87344fe474cb364491a1b0483ec1891aa63d49976de6d51a1a"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/gltf/transformedTowerGameBlock.glb",
+          "source": "corpus/babylon-lite/lab/public/playroom/gltf/transformedTowerGameBlock.glb",
+          "sha256": "c93f52f87f7f4935100caf7d5a68cc9d3b8b14787fd0058bf416a4a4a1109d31"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/shader-texture-bindings.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/shader-texture-bindings.json",
+          "sha256": "a226498f5edc2041b419f154b421b9c0ef908c3e3efe44701a58ffc427bc89ef"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/shaders/aiming.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/shaders/aiming.json",
+          "sha256": "446e8813b77ec4c497ee9e3f899f560779a7cb9c8db57c4c5c4b11c240d61131"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/shaders/babylonBurster.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/shaders/babylonBurster.json",
+          "sha256": "82b69c729db2a2be160feee5b7bcd4d516c6a57efc64f3e125697a873a35eef7"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/shaders/domino.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/shaders/domino.json",
+          "sha256": "c58562128330fa0b399ce186a9cbd01d51202bc51583413daf377cb3a67f4e9f"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/shaders/rugShader.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/shaders/rugShader.json",
+          "sha256": "5d009a50850b83c581444e2b9de56c2d0d9302438d9a9e9f99389b923fbf4b27"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/shaders/towerGameBlockShader.json",
+          "source": "corpus/babylon-lite/lab/public/playroom/shaders/towerGameBlockShader.json",
+          "sha256": "ceba3674477caf869ed7792901836c685e411bc1bdb6285f2f4d3a0e9cde21db"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/bowling-ball-carpet-thump.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/bowling-ball-carpet-thump.mp3",
+          "sha256": "2ac4d8f246fcab0b5ca3956bc5583fb1dc118a0b1bfabb186c404705bfdab23e"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/bowling-pin-hard-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/bowling-pin-hard-1.mp3",
+          "sha256": "7f4d226fb85d68b33c2c4323a0b730ac2e5f93deafb618919a3647e0befcd9fc"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/bowling-pin-soft-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/bowling-pin-soft-1.mp3",
+          "sha256": "5ca5e2cd38ccfeef594420f0029a93eb47dc46849e63d675f21a3f8c8ef7b0bd"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/bowling-pin-soft-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/bowling-pin-soft-2.mp3",
+          "sha256": "1393786bd0cebb6753a3584a003e7562d2bf117a14f807324bfb9cdbe6d1d567"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/chess-board-hard-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/chess-board-hard-1.mp3",
+          "sha256": "f726607d619d82934a1e183851ac2aef3f679fed9e12f62fe97c36984702701c"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/chess-piece-hard-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/chess-piece-hard-1.mp3",
+          "sha256": "70c4d056e74c475416c8dea4849719c4b4b80715c93e7bf992c01e04261bd6b7"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/chess-piece-hard-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/chess-piece-hard-2.mp3",
+          "sha256": "7aa522ec89734b332605092c82f8886fbc582809a97dcc966b9d0bb7db3fab53"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/chess-piece-hard-3.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/chess-piece-hard-3.mp3",
+          "sha256": "69fb73df6ba98bdc7636d3e54ae709e5d1575c3ad202210d8b9d810bc4ba482c"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/domino.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/domino.mp3",
+          "sha256": "6fc0761dc9ff8d57691e9bff15723e425888f2423bda580d46cc85010d246e9e"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-block-hard-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-block-hard-1.mp3",
+          "sha256": "6f74673e3a9469bd40401460446c5af47cbe988bb58211d59f084e02f15940e2"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-block-hard-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-block-hard-2.mp3",
+          "sha256": "fbb9f2a7ebfb7813dedc4615d783d2addda4cbd258b12a83e13c1c5ad8bff097"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-block-hard-3.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-block-hard-3.mp3",
+          "sha256": "43d4cc3b533c1d64a92f10aa1c636169a11b97dd3bc96d8c7f635138b063b8fe"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-block-soft-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-block-soft-1.mp3",
+          "sha256": "fdfca17814f1ca7858d76c9167e66b57ee4e23901eeee917268676d96194d425"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-block-soft-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-block-soft-2.mp3",
+          "sha256": "2e672a641d7000f983e51c32f9b4ed4d321e44bafdab9f3242404618f24ded04"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-block-soft-3.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-block-soft-3.mp3",
+          "sha256": "cdc11a9cd5d43a0f6323385100e43f364324095f7271133a11761bd4f3c10f9f"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-cup-hard-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-cup-hard-1.mp3",
+          "sha256": "1ceed548201cb6c33653538d27e7a69daa2e35ef4c26be48332215f3f560ab87"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-cup-hard-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-cup-hard-2.mp3",
+          "sha256": "df4902d916ca70f2305fc1fc4c7784a9e70b95476f77a22233d180428dd18d73"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-cup-hard-3.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-cup-hard-3.mp3",
+          "sha256": "e6f591092d19b27aec11943522671aa1633421c2b037e121791cdb8879d96207"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/plastic-cup-soft-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/plastic-cup-soft-1.mp3",
+          "sha256": "ba59013445b5157f101c0b632fb10c6252d1e0410fc5e35a6f46d4474eb0e0ca"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/point-scored.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/point-scored.mp3",
+          "sha256": "e9232b7470cc35e89a40975f59a2883710c798bf3924fe57d16e3bc5810a0fea"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/popper.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/popper.mp3",
+          "sha256": "db15cbe0c406f90b4b4fd129e3cb9d21b54a3c722631a5962cd0490d6bb8e96c"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/projectile-carpet-thump.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/projectile-carpet-thump.mp3",
+          "sha256": "f434447702df0c256870a737984d18ce7544054c2aba4687c8e6d917599b1fb3"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/projectile-flight.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/projectile-flight.mp3",
+          "sha256": "898e4a826e97748848ba4488cfedbf648ac197de579d7837c5faf552c08f7db9"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/projectile-launch.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/projectile-launch.mp3",
+          "sha256": "d002464ab9e60d27b3c22ccb6ac4ac0ca16f463325eb7278a97cc40731cf5009"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/wood-block-hard-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/wood-block-hard-1.mp3",
+          "sha256": "c670370ea5280fa4b90e40b3f3435e16d95d90facdcc9028cbecf8feb2ec70b6"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/wood-block-hard-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/wood-block-hard-2.mp3",
+          "sha256": "a1b68dc7b0bc59bc377facee795a3f7b0637b353ab8d5e818da6c4aa0d6a2fd6"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/wood-block-soft-1.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/wood-block-soft-1.mp3",
+          "sha256": "47610e1acf359dbeed6abc77b2dd6165cf0a3ef5ec452728f6cdc37f09855c87"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/sounds/wood-block-soft-2.mp3",
+          "source": "corpus/babylon-lite/lab/public/playroom/sounds/wood-block-soft-2.mp3",
+          "sha256": "387546ef5a21c180e6c0a0b9e1180d6ee8be66a0e05cb3deb80615edc144109f"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/colorGradient_baseColor.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/colorGradient_baseColor.png",
+          "sha256": "f1ee942631465ab2b481a85fc8c4b79fc72a2c91dfa82dc5350569a7a461b6ab"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/confetti.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/confetti.png",
+          "sha256": "02025f9ee4c58288f57df33353e349496e514de773000fd6c715f0d2ce8ffc9e"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/flare.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/flare.png",
+          "sha256": "54450e62932b7b70d6f95ea6f858fa3836e7e1e4e75d441af51b40d3c69cb50d"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/pointStar.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/pointStar.png",
+          "sha256": "34d4f47e74f990e89cee34fe1c350028d6984006f4d96df81ab4dabebcce0327"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/rug_woven_basecolor.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/rug_woven_basecolor.png",
+          "sha256": "95126dbe2710688faeb195b3a9adbbbd98f73f4d42429f676a7fe9212f09048a"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/rug_woven_mask.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/rug_woven_mask.png",
+          "sha256": "c018f067a7c1403e715eaeebb6c8f0c40ccf5bd33c6bc00afa2da14be6bb823e"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/rug_woven_normal.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/rug_woven_normal.png",
+          "sha256": "0874965f20cbdd23cf7310b4b9b0f23651b40e3aeb65b33649b96191bdade2f0"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/rug_woven_orm.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/rug_woven_orm.png",
+          "sha256": "f3b06fc6f2c3a3c7d996d1fe1029e6085eabf02cbda80245d4c6b61e06fbc94b"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/shader-embedded/babylonBurster-55.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/shader-embedded/babylonBurster-55.jpg",
+          "sha256": "a4d4e45c53ab3cdf6b501186cdf8dcf16e91d708adc8c88f19f1da5b9c27fbbb"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/shader-embedded/babylonBurster-59.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/shader-embedded/babylonBurster-59.jpg",
+          "sha256": "9c7e42df2ef9686387cad8c78a190a23b673064c690cfd21cb7e3ba3a21f373e"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/shader-embedded/babylonBurster-63.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/shader-embedded/babylonBurster-63.jpg",
+          "sha256": "030dc8fb9003be9a0f15675889c452cb98b564e03f41b7908e8b2f6462bb9804"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/shader-embedded/domino-50.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/shader-embedded/domino-50.jpg",
+          "sha256": "b9f67ff9fb26275edf960e0c2ed8553f071ae5a0e5ab43985b2df9c2fd8a32f8"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/shader-embedded/domino-84.jpg",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/shader-embedded/domino-84.jpg",
+          "sha256": "c0194f90c3cb70be942b4ce02c7a28ca7711e85f473f672d0b4e8907ad25827f"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/woodGrain_baseColor.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/woodGrain_baseColor.png",
+          "sha256": "3c5269aa726d1a0bf1a45ff366aa323918703913b933ae771c6bb8a6235e0856"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/textures/woodGrain_normal.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/textures/woodGrain_normal.png",
+          "sha256": "884ce0302f65a915b6af17cba27b5d4c778447867a82a31855856e60b48409ad"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/freemode.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/freemode.png",
+          "sha256": "51ae5926919ee53be2ca6b2df7f79d4829380fe66457190cc54136cfaa5109db"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/havok_playButton_landscape_outlines.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/havok_playButton_landscape_outlines.png",
+          "sha256": "0730cc118f0575ea3791b5846f29a6d760a8143fea6125fee60d938a04d2f412"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/havok_splash_landscape_outlines.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/havok_splash_landscape_outlines.png",
+          "sha256": "1de3b409d2c896e4f564f57cd051cf48b36747c1fe43cb9e1e7bcad02ffa0776"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/havok_splash_portrait_outlines.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/havok_splash_portrait_outlines.png",
+          "sha256": "4307a3e23721a394ffabe120f53b1457e95dd79fb7f0e58a2aad86f4d69abd69"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/kick.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/kick.png",
+          "sha256": "9cb57c83dd35c52aefbb366b79fb39e20320cb75cc7b21d07209d95c16573d89"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/loading.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/loading.png",
+          "sha256": "f53d13bf506f2a48d48e72386af38cd85b5c0a6bf765e147479b21f8df6b730e"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/nextKickButton.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/nextKickButton.png",
+          "sha256": "d8e5d4f65d6cc6ff269b05f19fdac4b1c6dbcf2509c1806f4c033b7e1b595e46"
+        },
+        {
+          "upstreamPath": "lab/public/playroom/ui/playAgain.png",
+          "source": "corpus/babylon-lite/lab/public/playroom/ui/playAgain.png",
+          "sha256": "9c9aaaff214a79adf74e891f7e790429519621dbcda8b358a2ca53b0b7ae5f6f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         }
       ]
     }

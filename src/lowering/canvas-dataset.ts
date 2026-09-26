@@ -16,5 +16,9 @@ std::string canvas_dataset(const Engine& engine, const std::string& key) {
     const auto found = engine.canvas_dataset.find(key);
     return found == engine.canvas_dataset.end() ? std::string{} : found->second;
 }
+js::Nullable<std::string> canvas_dataset_value(const Engine& engine, const std::string& key) {
+    const auto found = engine.canvas_dataset.find(key);
+    return found == engine.canvas_dataset.end() ? js::Nullable<std::string>{} : js::Nullable<std::string>{found->second};
+}
 } // namespace bbl
 `;

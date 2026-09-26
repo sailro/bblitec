@@ -9,6 +9,12 @@ SpriteAtlasHandle create_grid_sprite_atlas(Engine& engine, const PixelsTexture& 
                                            GridSpriteAtlasOptions options);
 SpriteAtlasHandle create_grid_sprite_atlas(Engine& engine, SpriteRenderTextureHandle texture,
                                            GridSpriteAtlasOptions options);
+inline SpriteAtlasHandle create_grid_sprite_atlas(Engine& engine, const StoredTexture& texture,
+                                                 GridSpriteAtlasOptions options) {
+    return std::visit([&](const auto& stored) {
+        return create_grid_sprite_atlas(engine, stored, options);
+    }, texture);
+}
 SpriteRenderTextureHandle create_sprite_render_texture(Engine& engine, double width, double height);
 void dispose_sprite_render_texture(Engine& engine, SpriteRenderTextureHandle texture);
 void set_sprite_renderer_target(Engine& engine, SpriteRendererHandle renderer,

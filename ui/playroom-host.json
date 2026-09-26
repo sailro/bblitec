@@ -1,0 +1,326 @@
+{
+  "elements": [
+    {
+      "tag": "canvas",
+      "text": "",
+      "attributes": {
+        "id": "renderCanvas",
+        "aria-label": "The Playroom physics game"
+      }
+    },
+    {
+      "tag": "main",
+      "attributes": {
+        "class": "playroom-ui"
+      },
+      "children": [
+        {
+          "tag": "div",
+          "attributes": {
+            "class": "playroom-hud",
+            "hidden": ""
+          },
+          "children": [
+            {
+              "tag": "div",
+              "text": "throw 1 / 3",
+              "attributes": {
+                "id": "playroom-throw-count",
+                "class": "playroom-throw"
+              }
+            },
+            {
+              "tag": "div",
+              "text": "0 points",
+              "attributes": {
+                "id": "playroom-score",
+                "class": "playroom-points"
+              }
+            }
+          ]
+        },
+        {
+          "tag": "section",
+          "attributes": {
+            "id": "playroom-startup",
+            "class": "playroom-startup",
+            "data-state": "loading",
+            "aria-label": "The Playroom"
+          },
+          "children": [
+            {
+              "tag": "img",
+              "text": "",
+              "attributes": {
+                "id": "playroom-startup-art",
+                "class": "playroom-startup-art",
+                "src": "/playroom/ui/havok_splash_landscape_outlines.png",
+                "data-landscape-src": "/playroom/ui/havok_splash_landscape_outlines.png",
+                "data-portrait-src": "/playroom/ui/havok_splash_portrait_outlines.png",
+                "alt": ""
+              }
+            },
+            {
+              "tag": "button",
+              "text": "Loading",
+              "attributes": {
+                "id": "playroom-startup-action",
+                "type": "button",
+                "aria-label": "Loading The Playroom",
+                "aria-describedby": "playroom-loading-status",
+                "disabled": ""
+              }
+            },
+            {
+              "tag": "div",
+              "text": "",
+              "attributes": {
+                "id": "playroom-startup-error",
+                "class": "playroom-startup-error",
+                "role": "alert",
+                "hidden": ""
+              }
+            }
+          ]
+        },
+        {
+          "tag": "nav",
+          "attributes": {
+            "class": "playroom-controls",
+            "aria-label": "Game controls"
+          },
+          "children": [
+            {
+              "tag": "button",
+              "text": "Kick",
+              "attributes": {
+                "id": "playroom-kick",
+                "class": "playroom-control",
+                "type": "button",
+                "aria-label": "Kick",
+                "hidden": ""
+              }
+            },
+            {
+              "tag": "button",
+              "text": "Next kick",
+              "attributes": {
+                "id": "playroom-next",
+                "class": "playroom-control",
+                "type": "button",
+                "aria-label": "Next kick",
+                "hidden": ""
+              }
+            },
+            {
+              "tag": "button",
+              "text": "Play again",
+              "attributes": {
+                "id": "playroom-replay",
+                "class": "playroom-control",
+                "type": "button",
+                "aria-label": "Play again",
+                "hidden": ""
+              }
+            },
+            {
+              "tag": "button",
+              "text": "Free mode",
+              "attributes": {
+                "id": "playroom-free",
+                "class": "playroom-control",
+                "type": "button",
+                "aria-label": "Toggle free mode",
+                "aria-pressed": "false",
+                "hidden": ""
+              }
+            }
+          ]
+        },
+        {
+          "tag": "div",
+          "text": "Loading audio",
+          "attributes": {
+            "id": "playroom-audio",
+            "class": "sr-only",
+            "role": "status"
+          }
+        },
+        {
+          "tag": "div",
+          "text": "Loading The Playroom…",
+          "attributes": {
+            "id": "playroom-loading-status",
+            "class": "sr-only",
+            "role": "status"
+          }
+        }
+      ]
+    }
+  ],
+  "styleRules": [
+    {
+      "kind": "sequence",
+      "primary": ":root",
+      "style": "font-family: Verdana, sans-serif; color: white; --playroom-startup-action-size: 15vw; --playroom-kick-size: min(20vw, 40vh); --playroom-next-size: 20vw; --playroom-replay-size: 20vw; --playroom-free-size: 12vw;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "*",
+      "style": "box-sizing: border-box;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "html",
+      "style": "margin: 0px; width: 100%; height: 100%; overflow: hidden; background: rgb(21, 22, 38);"
+    },
+    {
+      "kind": "sequence",
+      "primary": "body",
+      "style": "margin: 0px; width: 100%; height: 100%; overflow: hidden; background: rgb(21, 22, 38);"
+    },
+    {
+      "kind": "sequence",
+      "primary": "canvas",
+      "style": "width: 100%; height: 100%; display: block; touch-action: none;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-ui",
+      "style": "position: fixed; inset: 0px; pointer-events: none; z-index: 10;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-hud",
+      "style": "position: absolute; inset: 0px 0px auto; text-align: center; text-shadow: rgb(17, 17, 17) 3px 3px 8px;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-throw",
+      "style": "height: 30px; font-size: 20px; line-height: 30px;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-points",
+      "style": "height: 30px; color: rgb(170, 0, 153); font-size: 24px; font-weight: bold; line-height: 30px; text-shadow: rgb(187, 187, 187) 0px 0px 3px;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-controls",
+      "style": "position: absolute; inset: 0px;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "button",
+      "style": "pointer-events: auto; border: 0px; padding: 0px; background: center center / contain no-repeat; color: transparent; cursor: pointer; filter: drop-shadow(rgba(0, 0, 0, 0.533) 0px 3px 5px); touch-action: manipulation; transition: scale 80ms linear; -webkit-tap-highlight-color: transparent;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "button:active:not(:disabled)",
+      "style": "scale: 0.95;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "button:disabled",
+      "style": "cursor: default; opacity: 1;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "button:focus-visible",
+      "style": "outline: white solid 3px; outline-offset: 3px;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-control",
+      "style": "position: absolute;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#playroom-kick",
+      "style": "right: 0px; bottom: 2vh; width: var(--playroom-kick-size); height: var(--playroom-kick-size); background-image: url(\"/playroom/ui/kick.png\");"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#playroom-next",
+      "style": "bottom: 2vh; left: 0px; width: var(--playroom-next-size); height: var(--playroom-next-size); background-image: url(\"/playroom/ui/nextKickButton.png\");"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#playroom-replay",
+      "style": "right: 0px; bottom: 7vh; width: var(--playroom-replay-size); height: var(--playroom-replay-size); background-image: url(\"/playroom/ui/playAgain.png\");"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#playroom-free",
+      "style": "top: 0px; right: 0px; width: var(--playroom-free-size); height: var(--playroom-free-size); background-image: url(\"/playroom/ui/freemode.png\");"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup",
+      "style": "position: absolute; inset: 0px; overflow: hidden; background: transparent;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup-art",
+      "style": "position: absolute; inset: 0px; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#playroom-startup-action",
+      "style": "position: absolute; right: 2vw; bottom: 2vh; width: var(--playroom-startup-action-size); height: var(--playroom-startup-action-size); background-size: 0px 0px; --playroom-action-rotation: 0rad;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#playroom-startup-action",
+      "pseudo": "before",
+      "style": "content: \"\"; position: absolute; inset: 0px; background-image: inherit; background-position: inherit; background-repeat: inherit; background-attachment: inherit; background-origin: inherit; background-clip: inherit; background-color: inherit; background-size: contain; transform: rotate(var(--playroom-action-rotation));"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup[data-state=\"loading\"] #playroom-startup-action",
+      "style": "background-image: url(\"/playroom/ui/loading.png\");"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup[data-state=\"ready\"] #playroom-startup-action",
+      "style": "background-image: url(\"/playroom/ui/havok_playButton_landscape_outlines.png\");"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup[data-state=\"error\"] #playroom-startup-action",
+      "style": "display: none;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup-error",
+      "style": "pointer-events: auto; position: absolute; top: 50%; left: 50%; max-width: min(36rem, 90vw); padding: 0.75rem 1rem; transform: translate(-50%, -50%); border: 2px solid rgb(255, 255, 255); background: rgba(21, 22, 38, 0.88); color: white; text-align: center;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".playroom-startup[hidden]",
+      "style": "display: none;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "button[hidden]",
+      "style": "display: none;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".sr-only",
+      "style": "position: absolute; width: 1px; height: 1px; padding: 0px; margin: -1px; overflow: hidden; clip: rect(0px, 0px, 0px, 0px); white-space: nowrap; border: 0px;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ":root",
+      "orientation": "portrait",
+      "style": "--playroom-startup-action-size: 20vw;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "button",
+      "reducedMotion": true,
+      "style": "transition: none;"
+    }
+  ]
+}

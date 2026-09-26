@@ -131,6 +131,23 @@ export function lowerGltfAnimationPlayback(
             ["ctrl.loop", { cpp: "ctrl.loop", type: "bool" }],
             ["clip", { cpp: "group", type: "opaque" }],
             ["clip.duration", { cpp: "group.duration", type: "scalar" }],
+            ["clip._startTime", { cpp: "group.start_time", type: "scalar" }],
+            [
+                "clip.channels.length",
+                {
+                    cpp: "static_cast<double>(group.channel_count)",
+                    type: "scalar",
+                },
+            ],
+            ["startTime", { cpp: "group.start_time", type: "scalar" }],
+            [
+                "endTime",
+                { cpp: "(group.start_time + group.duration)", type: "scalar" },
+            ],
+            [
+                "group._evaluate",
+                { cpp: "false", type: "bool", staticBoolean: false },
+            ],
             ["deltaMs", { cpp: "delta_ms", type: "scalar" }],
             ["frame", { cpp: "frame", type: "scalar" }],
             ["engine", { cpp: "engine", type: "bool", absentCpp: "!engine" }],
@@ -229,9 +246,11 @@ export function lowerGltfAnimationPlayback(
                         : initializer.kind === ts.SyntaxKind.FalseKeyword
                           ? "false"
                           : undefined
-                    : context.doubleLiteral(
-                          context.numericValue(initializer, controller.file),
-                      );
+                    : context.expressionMatchesShape(initializer, "startTime")
+                      ? "0.0"
+                      : context.doubleLiteral(
+                            context.numericValue(initializer, controller.file),
+                        );
             if (initial === undefined)
                 context.contractError(
                     initializer,

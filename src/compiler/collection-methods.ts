@@ -96,6 +96,43 @@ export function compileMapInitializer(
 }
 
 /** Consume key/value entries for Map constructors and Object.fromEntries. */
+export function compileCollectionEntries(
+    lowerer: DataLowerer,
+    expression: ts.Expression,
+    type: DataType<"map"> | undefined,
+): Value {
+    const input = lowerer.context.unwrap(expression);
+    const callee = ts.isCallExpression(input)
+        ? lowerer.context.unwrap(input.expression)
+        : undefined;
+    const owner =
+        callee && ts.isPropertyAccessExpression(callee)
+            ? lowerer.context.unwrap(callee.expression)
+            : undefined;
+    const staticOwner =
+        owner &&
+        (ts.isArrayLiteralExpression(owner) ||
+            (ts.isIdentifier(owner) &&
+                lowerer.context.bindings.lookupOptional(owner)?.kind ===
+                    "tuple"));
+    return (
+        (type &&
+        ts.isCallExpression(input) &&
+        callee &&
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "map" &&
+        !staticOwner
+            ? lowerer.compileDataMethodCall(input, {
+                  kind: "vector",
+                  element: {
+                      kind: "product",
+                      elements: [type.key, type.value],
+                  },
+              })
+            : undefined) ?? lowerer.context.compileValue(input)
+    );
+}
+
 export function compileEntryCollection(
     lowerer: DataLowerer,
     expression: ts.Expression,
@@ -103,10 +140,10 @@ export function compileEntryCollection(
 ): Value {
     const input = lowerer.context.unwrap(expression);
     const result = lowerer.context.allocateTemporaryCppName("map_initialized");
-    lowerer.context.emit(
-        `${lowerer.context.dataTypes.cppType(type)} ${result};`,
-    );
     if (ts.isArrayLiteralExpression(input)) {
+        lowerer.context.emit(
+            `${lowerer.context.dataTypes.cppType(type)} ${result};`,
+        );
         // The iterable literal evaluates completely before Map consumes it.
         const entries = input.elements.map((element) => {
             const pair = lowerer.context.unwrap(element);
@@ -151,7 +188,20 @@ export function compileEntryCollection(
                 code: `${result}.set(${entry.keyName}, ${entry.valueName});`,
             });
     } else {
-        const source = lowerer.context.compileValue(input);
+        const source = compileCollectionEntries(lowerer, input, type);
+        if (
+            source.dataType?.kind === "vector" &&
+            source.dataType.element.kind === "product" &&
+            source.dataType.element.elements.length === 2
+        )
+            type = {
+                ...type,
+                key: source.dataType.element.elements[0]!,
+                value: source.dataType.element.elements[1]!,
+            };
+        lowerer.context.emit(
+            `${lowerer.context.dataTypes.cppType(type)} ${result};`,
+        );
         if (source.kind === "tuple") {
             for (const pair of source.tupleElements ?? []) {
                 if (pair.kind !== "tuple" || pair.tupleElements?.length !== 2)

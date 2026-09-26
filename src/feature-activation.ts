@@ -554,6 +554,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/skeleton/skeleton-pose.ts",
         consumers: ["features.cmake", "loader flag"],
     },
+    "loader:gltf-cpu-tangents": {
+        provenance:
+            "src/loader-gltf/gltf-feature-cpu-tangents.ts#enableGltfCpuTangents",
+        consumers: ["features.cmake", "loader flag"],
+    },
     "loader:splat": {
         provenance:
             "src/loader-splat/load-splat.ts#loadSplat + " +
@@ -716,7 +721,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "material:node-inputs": {
         provenance:
             "src/material/node/node-material.ts inputs and texture slots",
-        consumers: ["variant table"],
+        consumers: INVENTORY,
     },
     "material:standard": {
         provenance: "src/material/standard/create-standard-material.ts",
@@ -763,8 +768,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/mesh/mesh-factories.ts (resizeMeshGeometry, resizeSharedMeshGeometry)",
         consumers: CMAKE,
     },
-    "mesh:update-positions": {
-        provenance: "src/mesh/mesh-factories.ts (updateMeshPositions)",
+    "mesh:update-attributes": {
+        provenance:
+            "src/mesh/mesh-factories.ts (updateMeshPositions, updateMeshUvs)",
         consumers: CMAKE,
     },
     "mesh:ground": {
@@ -904,6 +910,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/math/create-quat-from-look-direction-rh.ts + " +
             "src/math/create-quat-from-rotation-mat4.ts",
+        consumers: CMAKE,
+    },
+    "picking:ray": {
+        provenance: "src/picking/ray.ts",
         consumers: CMAKE,
     },
     "picking:gpu": {

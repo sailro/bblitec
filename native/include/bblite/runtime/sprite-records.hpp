@@ -138,6 +138,10 @@ struct BillboardSystemRecord {
     SpriteBlendDescriptor blend{};
     float opacity = 1.0f;
     bool visible = true;
+    double order = 0;
+    std::array<double, 3> world_center{};
+    double center_version = -1;
+    double drawable_count = 0;
     // Zero for a facing system: the facing basis reads the camera instead.
     Vec3 axis{};
     float alpha_cutoff = 0.0f;

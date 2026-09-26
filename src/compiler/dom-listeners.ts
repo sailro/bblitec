@@ -56,6 +56,29 @@ const pointerNames = new Set([
     "resize",
 ]);
 
+const serviceNames = new Set([
+    "change",
+    "input",
+    "error",
+    "unhandledrejection",
+    "rejectionhandled",
+    "visibilitychange",
+    "pointerlockchange",
+    "load",
+    "DOMContentLoaded",
+]);
+
+/** These names already carry a distinct native payload/service contract. */
+export function isCustomDomEventName(type: string): boolean {
+    return (
+        !pointerNames.has(type) &&
+        !serviceNames.has(type) &&
+        type !== "keydown" &&
+        type !== "keyup" &&
+        type !== "pagehide"
+    );
+}
+
 export function listenerOptions(
     context: Pick<
         Context,
@@ -286,12 +309,24 @@ export function emitDomEventListener(
     )
         return false;
     const keyboard = type === "keydown" || type === "keyup";
-    if (!keyboard && !pagehide && !pointerNames.has(type)) return false;
+    const custom = isCustomDomEventName(type);
+    if (!keyboard && !pagehide && !pointerNames.has(type) && !custom)
+        return false;
+    if (
+        custom &&
+        target !== "bbl::DomEventTarget::window()" &&
+        target !== "bbl::DomEventTarget::document()"
+    )
+        context.fail(
+            call,
+            "Custom event listeners require a Document or Window target.",
+        );
     context.reachFeature("input:dom", call);
+    if (custom) context.reachFeature("data:json", call);
     const callback = call.arguments[1]!;
     context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
     const removing = callee.name.text === "removeEventListener";
-    const family = keyboard ? "keyboard" : "pointer";
+    const family = custom ? "custom" : keyboard ? "keyboard" : "pointer";
     let identity: string;
     let listener: string | undefined;
     if (removing) {
@@ -306,19 +341,31 @@ export function emitDomEventListener(
         const compiled = context.callbacks.compilePlatformCallback(
             callback,
             {
-                cppType: keyboard
-                    ? "const bbl::PlatformKeyboardEvent&"
-                    : "const bbl::PlatformMouseEvent&",
+                cppType: custom
+                    ? "const bbl::PlatformCustomEvent&"
+                    : keyboard
+                      ? "const bbl::PlatformKeyboardEvent&"
+                      : "const bbl::PlatformMouseEvent&",
                 name,
             },
             [
                 {
-                    kind: keyboard
-                        ? "platform-keyboard-event"
-                        : "platform-mouse-event",
+                    kind: custom
+                        ? "custom-event"
+                        : keyboard
+                          ? "platform-keyboard-event"
+                          : "platform-mouse-event",
                     cpp: name,
                     readOnly: true,
                     engineCpp: engine,
+                    ...(custom
+                        ? {
+                              dataType: {
+                                  kind: "handle" as const,
+                                  handle: "custom-event" as const,
+                              },
+                          }
+                        : {}),
                 },
             ],
         );

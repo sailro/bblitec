@@ -86,6 +86,7 @@ test("mesh placement follows source hierarchy, local bounds and primitive windin
         [-10, 20, 30],
     );
     assert.equal(result.mesh.setup.clockwise, true);
+    assert.equal(result.mesh.setup.visibleDefined, false);
     const changed = await packageFixture(
         fixture(),
         doctoredContext(
@@ -292,6 +293,10 @@ test("initial visibility follows source node objects, primitive children and sel
     assert.deepEqual(
         plan.meshes.map((mesh) => mesh.setup.visible),
         [false, false, false, true, true],
+    );
+    assert.deepEqual(
+        plan.meshes.map((mesh) => mesh.setup.visibleDefined),
+        [true, true, true, false, false],
     );
     const changed = await gltfMeshPlan(
         document,

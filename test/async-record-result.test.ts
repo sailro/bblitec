@@ -6,8 +6,22 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    nativeFixtureVcpkgRoot,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("contextual maps store mesh and scene-node unions through the shared node handle", () => {
+    const result = compileSource(`
+        import type {Mesh, SceneNode, PhysicsBody} from "babylon-lite";
+        interface Body {readonly body:PhysicsBody; readonly mesh:Mesh|SceneNode;}
+        interface State {readonly bodies:Map<PhysicsBody,Body>;}
+        function create():State {return {bodies:new Map()};}
+        const state=create();
+        state.bodies.clear();
+    `);
+    assert.match(result.cpp, /bbl::SceneNodeHandle mesh/);
+    assert.match(result.cpp, /Map<bbl::upstream::PhysicsBody/);
+});
 
 test("async record results retain object identity and independent method captures", (t) => {
     const directory = resolve("artifacts/async-record-result-check");
@@ -23,7 +37,32 @@ test("async record results retain object identity and independent method capture
         const values:number[]=[];
         return {values, bump(delta:number) {count+=delta; values.push(count); return count;}, read(){return count;}};
     }
+    const events: number[] = [];
+    async function dictionary(): Promise<Record<string,number>> {
+        const definitions = [["first",2],["second",3]] as const;
+        const pairs = await Promise.all(definitions.map(async ([name, value]) => {
+            events.push(value);
+            const resolved = await Promise.resolve(value * 2);
+            events.push(resolved);
+            return [name, resolved] as const;
+        }));
+        return Object.fromEntries(pairs);
+    }
     async function main() {
+        interface Document {count: number; nested: {label:string};}
+        const document = JSON.parse('{"count":2,"nested":{"label":"first"}}') as Document;
+        async function documentResult(): Promise<{document: Document}> {return {document};}
+        const wrappedDocument = await documentResult();
+        document.count = 7;
+        wrappedDocument.document.nested.label = "changed";
+        if (wrappedDocument.document !== document || wrappedDocument.document.count !== 7 || document.nested.label !== "changed")
+            throw new Error("JSON result identity");
+        const dictionaryPromise = dictionary();
+        const entries = await dictionaryPromise;
+        const entriesAlias = await dictionaryPromise;
+        if (entries !== entriesAlias || entries.first !== 4 || entries.second !== 6)
+            throw new Error("dictionary results");
+        if (events.join(",") !== "2,3,4,6") throw new Error("parallel map activations");
         const pending=make(2);
         const first=await pending;
         const alias=await pending;
@@ -39,7 +78,7 @@ test("async record results retain object identity and independent method capture
     `,
         { fileName: resolve(directory, "entry.ts") },
     );
-    const tools = optionalNativeFixtureTools(false);
+    const tools = optionalNativeFixtureTools();
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");
         return;
@@ -71,6 +110,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_HAS_UI=1",
         `/I${resolve("native/include")}`,
+        `/external:I${resolve(nativeFixtureVcpkgRoot, "include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${exe}`,

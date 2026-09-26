@@ -27,8 +27,8 @@ function contexts(): LoweringContext[] {
         ),
         doctoredContext(
             propertyModule,
-            "if (ctrl.loop && ctrl.playing)",
-            "if (ctrl.loop)",
+            "ctrl.speedRatio >= 0 && ctrl.time >= toTime",
+            "ctrl.speedRatio >= 0 && ctrl.time > toTime",
         ),
         doctoredContext(
             groupModule,
@@ -49,6 +49,7 @@ function sourceResult(context: LoweringContext): unknown {
             "stopAnimation",
             "syncControllerFromGroup",
             "tickAnimationCore",
+            "goToFrame",
         ]
             .map((name) =>
                 context
@@ -61,15 +62,15 @@ function sourceResult(context: LoweringContext): unknown {
         "_pointerScratch",
         "_installTickAnimation",
         "DEFAULT_FRAME_RATE",
-        "evaluateSampler",
+        "evaluatePropertySampler",
         transpileCommonJs(
             source +
                 `
 const output=[],events=[];
-const group=createPointerAnimationGroup("property",2.5,60,[{sampler:{},stride:1,quaternion:false,mixTarget:{},mixProperty:"x",writer:(sample)=>events.push([group.currentTime,sample[0]])}],0.5,2.5,{});
+const group=createPointerAnimationGroup("property",2.5,60,[{sampler:{},stride:1,quaternion:false,mixTarget:()=>({}),mixProperty:"x",writer:(sample)=>events.push([group.currentTime,sample[0]])}],0.5,2.5,{});
 const tick=(delta)=>{tickAnimationCore(group,delta,{});output.push({time:group.currentTime,playing:group.isPlaying,stopped:group._stopped,events:events.splice(0)});};
 playAnimation(group);tick(250);pauseAnimation(group);group.currentTime=5;tick(100);
-stopAnimation(group);tick(250);playAnimation(group);tick(-500);
+stopAnimation(group);tick(250);playAnimation(group);tick(-500);group.loopAnimation=false;tick(4000);tick(1);goToFrame(group,600);tick(0);goToFrame(group,-60);tick(0);
 return output;`,
             propertyModule,
         ),
@@ -84,6 +85,7 @@ return output;`,
             time: number,
             _stride: number,
             _quat: boolean,
+            _easing: unknown,
             out: Float32Array,
         ) => {
             out[0] = time;
@@ -121,7 +123,7 @@ test("native property playback follows source clock, stopped writes and publicat
 #include <cmath>
 #include <fstream>
 using Json=nlohmann::json;
-struct Group{double current_time=0.5,from_time=0.5,to_time=2.5,speed_ratio=1;bool playing=false,stopped=false,loop=true;};
+struct Group{double current_time=0.5,from_time=0.5,to_time=2.5,speed_ratio=1;bool playing=false,stopped=false,loop=true;struct Clip{double frame_rate=60,duration=2.5;}clip;};
 ${variants
     .map(
         (context, index) => `namespace variant_${index}{
@@ -129,7 +131,7 @@ ${lowerPropertyAnimationPlayback(context)}
 Json run(){Group group;Json output=Json::array(),events=Json::array();
     const auto tick=[&](double delta){tick_property_animation_group(group,delta,[&](double time){events.push_back({group.current_time,static_cast<float>(time)});});output.push_back({{"time",group.current_time},{"playing",group.playing},{"stopped",group.stopped},{"events",events}});events.clear();};
     property_playAnimation(group);tick(250);property_pauseAnimation(group);group.current_time=5;tick(100);
-    property_stopAnimation(group);tick(250);property_playAnimation(group);tick(-500);return output;
+    property_stopAnimation(group);tick(250);property_playAnimation(group);tick(-500);group.loop=false;tick(4000);tick(1);const auto seek=[&](double frame){property_go_to_frame(group,frame,[&](double time){events.push_back({group.current_time,static_cast<float>(time)});});};seek(600);tick(0);seek(-60);tick(0);return output;
 }
 }`,
     )

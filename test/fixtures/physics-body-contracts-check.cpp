@@ -210,5 +210,53 @@ int main() {
             velocities(moving);
         }
     }
+    std::cout << "],\"boxes\":[";
+    first = true;
+    for (const std::array<double, 3> extents :
+         {std::array<double, 3>{.02, .04, .06}, {.04, .06, .08}, {.001, 1, 1}}) {
+        const auto shape = physics_shape_create_box({.25, -.5, .75}, {0, 0, 0, 1}, extents);
+        const auto properties = physics_shape_build_mass_properties(shape, 1);
+        btVector3 minimum, maximum;
+        const auto& entry = shape_at(shape);
+        entry.shape->getAabb(entry.node_from_body, minimum, maximum);
+        assert(((maximum - minimum) - to_bt(extents)).length() < btScalar(1e-6));
+        if (!first)
+            std::cout << ',';
+        first = false;
+        std::cout << '[' << physics_shape_default_mass(shape);
+        for (const auto value : properties.center_of_mass)
+            std::cout << ',' << value;
+        for (const auto value : properties.inertia)
+            std::cout << ',' << value;
+        std::cout << ']';
+    }
+    std::cout << "],\"hullBounds\":[";
+    first = true;
+    for (const double half : {.05, .5, 5.}) {
+        std::vector<std::array<double, 3>> points;
+        for (const auto x : {-half, half})
+            for (const auto y : {-half, half})
+                for (const auto z : {-half, half})
+                    points.push_back({x, y, z});
+        const auto shape = physics_shape_create_convex_hull(points);
+        const auto& entry = shape_at(shape);
+        const auto& collision = static_cast<const btConvexShape&>(*entry.shape);
+        if (!first)
+            std::cout << ',';
+        first = false;
+        std::cout << '[';
+        for (int axis = 0; axis < 3; ++axis) {
+            btVector3 direction(0, 0, 0);
+            direction[axis] = 1;
+            const auto maximum =
+                entry.node_from_body * collision.localGetSupportingVertex(
+                                           entry.node_from_body.getBasis().transpose() * direction);
+            const auto minimum = entry.node_from_body *
+                                 collision.localGetSupportingVertex(
+                                     entry.node_from_body.getBasis().transpose() * -direction);
+            std::cout << (axis ? "," : "") << minimum[axis] << ',' << maximum[axis];
+        }
+        std::cout << ']';
+    }
     std::cout << "]}\n";
 }

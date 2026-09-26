@@ -42,6 +42,16 @@ std::string read_file(const std::string& path) {
 void request_frame(bbl::pal::WorkerRealm& realm) {
     realm.request_animation_frame([&realm](double) { request_frame(realm); });
 }
+struct ReadyImage final : bbl::pal::OffscreenImage {};
+void request_ready_frame(bbl::pal::WorkerRealm& realm, bbl::UiElementHandle canvas,
+                         std::shared_ptr<bbl::pal::OffscreenRun> run, int frame = 0) {
+    realm.request_animation_frame([&realm, canvas, run, frame](double) {
+        run->publish(40, 40, std::make_shared<ReadyImage>());
+        if (frame == 12)
+            bbl::ui_set_attribute(bbl::pal::window_document_engine(), canvas, "data-ready", "true");
+        request_ready_frame(realm, canvas, run, frame + 1);
+    });
+}
 } // namespace
 
 namespace bbl::pal {
@@ -187,4 +197,29 @@ int main() {
         assert(captures == std::vector<std::string>{final_path});
         assert(presentation_count == final_presentation + 2);
     }
+    checkpoint_frames.clear();
+    captures.clear();
+    presentation_count = 0;
+    final_presentation = 0;
+    assert(run_window_application([](WorkerRealm& realm) {
+        window_defer_capture_until_canvas_ready();
+        auto& engine = window_document_engine();
+        const auto canvas = ui_create_element(engine, "canvas");
+        ui_set_attribute(engine, canvas, "style", "width:40px;height:40px;");
+        ui_append_to_root(engine, canvas);
+        request_ready_frame(realm, canvas, window_canvas(canvas)->rendering_context());
+    }, engine_options) == 0);
+    assert(captures == std::vector<std::string>{final_path});
+    assert(final_presentation >= 13);
+    captures.clear();
+    assert(run_window_application([](WorkerRealm& realm) {
+        window_defer_capture_until_canvas_ready();
+        auto& engine = window_document_engine();
+        const auto canvas = ui_create_element(engine, "canvas");
+        ui_append_to_root(engine, canvas);
+        static_cast<void>(window_canvas(canvas));
+        ui_set_attribute(engine, canvas, "data-error", "fixture startup failure");
+        request_frame(realm);
+    }, engine_options) == 1);
+    assert(captures.empty());
 }

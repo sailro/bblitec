@@ -70,13 +70,13 @@ int main(){
  assert(allocation->writes==1&&allocation->bytes[4]==8&&(*buffer->data)[7]==5);
  for(double offset:{-4.0,1.0,16.0}){bool failed=false;try{bbl::update_uniform_buffer(engine,buffer,data,offset);}catch(const std::exception&){failed=true;}assert(failed);}
  bbl::update_uniform_buffer(engine,buffer,{},16);assert(allocation->writes==1);
- bool foreign=false;try{(void)bbl::get_uniform_buffer_handle(std::make_shared<bbl::Engine>(),buffer);}catch(const std::exception& error){foreign=std::string(error.what())=="#808";}assert(foreign);
+ bool foreign=false;try{(void)bbl::get_uniform_buffer_handle(std::make_shared<bbl::Engine>(),buffer);}catch(const std::exception& error){foreign=std::string(error.what())=="#870";}assert(foreign);
  for(double size:{-1.0,1.5,257.0}){bool failed=false;try{(void)bbl::create_uniform_buffer(engine,bbl::storage_buffer_source(size));}catch(const std::exception&){failed=true;}assert(failed);}
  assert(device->calls==1);
  auto second=bbl::create_uniform_buffer(engine,bbl::storage_buffer_source(17.0));auto secondAllocation=device->last;
  assert(second->byte_length==32&&secondAllocation->bytes==std::vector<std::uint8_t>(32,0));
  bbl::dispose_uniform_buffer(buffer);bbl::dispose_uniform_buffer(buffer);assert(buffer->destroyed&&!buffer->data&&!buffer->allocation&&allocation->destroys==1&&engine->resource_epoch==1);
- bool dead=false;try{bbl::update_uniform_buffer(engine,buffer,data,0);}catch(const std::exception& error){dead=std::string(error.what())=="#807";}assert(dead);
+ bool dead=false;try{bbl::update_uniform_buffer(engine,buffer,data,0);}catch(const std::exception& error){dead=std::string(error.what())=="#869";}assert(dead);
  engine->dispose_managed_resources();assert(second->destroyed&&secondAllocation->destroys==1&&engine->resource_epoch==2&&engine->native_resource_owners.empty());
 }
 `,

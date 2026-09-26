@@ -218,14 +218,14 @@ test("pinned CSG2 replay preserves exact bytes and refuses missing materials and
     );
     assert.throws(
         () => bakeCsg2Meshes({ plan: box, name: "missing", materialCount: 2 }),
-        /#392/,
+        /#450/,
     );
     const empty: Csg2SolidPlan = { op: "csg2Subtract", left: box, right: box };
     assert.deepEqual(
         bakeCsg2Meshes({ plan: empty, name: "empty", materialCount: 3 }),
         [],
     );
-    assert.throws(() => bakeCsg2Meshes({ plan: empty, name: "empty" }), /#391/);
+    assert.throws(() => bakeCsg2Meshes({ plan: empty, name: "empty" }), /#449/);
 });
 
 test("CSG2 refusal boundary is anchored to the pinned slot reservation and bundled WASM", () => {

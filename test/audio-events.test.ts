@@ -21,7 +21,26 @@ test("scheduled audio events retain callbacks through playback and release their
             `
         const context=new AudioContext();
         const buffer=context.createBuffer(1,480,48000);
-        let natural=0,stopped=0,order=0,closed=0,unconnected=0,asynchronous=0;
+        let natural=0,stopped=0,order=0,closed=0,unconnected=0,asynchronous=0,propertyOrder=0;
+        const voices = new Set<AudioBufferSourceNode>();
+        function playPropertyVoice() {
+            const source = context.createBufferSource(); source.buffer = buffer;
+            voices.add(source);
+            source.onended = () => {throw new Error("cleared property handler");};
+            source.onended = null;
+            source.addEventListener("ended", () => {propertyOrder = 1;});
+            source.onended = () => {throw new Error("replaced property handler");};
+            source.addEventListener("ended", () => {if(propertyOrder !== 2)throw new Error("property position");propertyOrder = 3;});
+            const handler = () => {
+                if(propertyOrder !== 1)throw new Error("property ordering");
+                propertyOrder = 2; voices.delete(source); source.disconnect();
+                source.onended = null;
+            };
+            source.onended = handler;
+            source.removeEventListener("ended", handler);
+            source.start();
+        }
+        playPropertyVoice();
         function play(){
             const voice=context.createBufferSource();voice.buffer=buffer;voice.connect(context.destination);
             const alias=voice;
@@ -48,7 +67,7 @@ test("scheduled audio events retain callbacks through playback and release their
         finalVoice.buffer=buffer;finalVoice.connect(cleanup.destination);
         finalVoice.addEventListener("ended",()=>{closed++;void cleanup.close();});finalVoice.start();
         setTimeout(()=>{
-            if(natural!==1||stopped!==1||closed!==1||order!==2||unconnected!==1||asynchronous!==1)throw new Error("completion counts");
+            if(natural!==1||stopped!==1||closed!==1||order!==2||unconnected!==1||asynchronous!==1||propertyOrder!==3||voices.size!==0)throw new Error("completion counts");
             globalThis.close();
         },400);
     `,

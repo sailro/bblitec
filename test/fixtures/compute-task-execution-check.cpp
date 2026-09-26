@@ -6,7 +6,7 @@ bool reject_binding = false;
 namespace bbl {
 void assert_compute_shader_live(const std::shared_ptr<ComputeShader>& shader) {
     if (shader->destroyed)
-        throw std::runtime_error("#761");
+        throw std::runtime_error("#823");
 }
 std::shared_ptr<pal::ComputePipeline>
 get_compute_pipeline(const std::shared_ptr<ComputeShader>& shader) {
@@ -61,7 +61,7 @@ prepare_checks(bbl::pal::EventLoop& loop, std::shared_ptr<bbl::ComputeTask> task
     try {
         (void)co_await bbl::prepare_compute_task(task);
     } catch (const std::exception& error) {
-        rejected = std::string(error.what()) == "#780";
+        rejected = std::string(error.what()) == "#842";
     }
     assert(rejected);
     task->disposed = false;
@@ -91,31 +91,31 @@ int main() {
          second = bbl::create_compute_dispatch(shader, bindings, {{3, 2, 1}, false});
     assert((first->dimensions == std::array<double, 3>{2, 1, 1}) && first->enabled &&
            !second->enabled);
-    rejects([&] { bbl::set_compute_dispatch_size(first, {5, {}, {}}); }, "#731");
-    rejects([&] { bbl::set_compute_dispatch_size(first, {0.5, {}, {}}); }, "#731");
+    rejects([&] { bbl::set_compute_dispatch_size(first, {5, {}, {}}); }, "#791");
+    rejects([&] { bbl::set_compute_dispatch_size(first, {0.5, {}, {}}); }, "#791");
     auto wrong = std::make_shared<bbl::ComputeBindingSet>();
     wrong->shader = std::make_shared<bbl::ComputeShader>();
-    rejects([&] { (void)bbl::create_compute_dispatch(shader, wrong, {{1, {}, {}}, {}}); }, "#732");
+    rejects([&] { (void)bbl::create_compute_dispatch(shader, wrong, {{1, {}, {}}, {}}); }, "#792");
     bbl::set_compute_dispatch_dynamic_offset(first, "params", 256);
     bbl::set_compute_dispatch_dynamic_offset(second, "params", 512);
     assert(first->dynamic_offsets->size() == 2 && first->dynamic_offsets->at(0)->empty());
-    rejects([&] { bbl::set_compute_dispatch_dynamic_offset(first, "missing", 0); }, "#733");
-    rejects([&] { bbl::set_compute_dispatch_dynamic_offset(first, "params", 1); }, "#734");
-    rejects([&] { bbl::set_compute_dispatch_dynamic_offset(first, "params", 768); }, "#735");
+    rejects([&] { bbl::set_compute_dispatch_dynamic_offset(first, "missing", 0); }, "#793");
+    rejects([&] { bbl::set_compute_dispatch_dynamic_offset(first, "params", 1); }, "#794");
+    rejects([&] { bbl::set_compute_dispatch_dynamic_offset(first, "params", 768); }, "#795");
     auto task = bbl::create_compute_task(engine, "ordered");
     bbl::add_compute_dispatch(task, first);
     bbl::add_compute_dispatch(task, first);
     bbl::add_compute_dispatch(task, second);
     assert(task->dispatches.size() == 2);
     auto foreign = bbl::create_compute_task(std::make_shared<bbl::Engine>());
-    rejects([&] { bbl::add_compute_dispatch(foreign, first); }, "#776");
-    rejects([&] { bbl::submit_compute_tasks({task}); }, "#778");
+    rejects([&] { bbl::add_compute_dispatch(foreign, first); }, "#838");
+    rejects([&] { bbl::submit_compute_tasks({task}); }, "#840");
     task->flush_owned = [] { ++flushes; };
     task->one_shot_recorded = [](auto encoder) {
         assert(encoder && encoder->commands.size() > 0);
         ++recorded;
     };
-    engine->compute_one_shot_submitted = [](auto encoder) {
+    engine->gpu_task_timer_resolve = [](auto encoder, bool) {
         assert(!encoder->commands.size());
         ++submissions;
     };
@@ -138,10 +138,10 @@ int main() {
     reject_binding = false;
     assert(!engine->current_compute_encoder && device->commands.size() == 3);
     engine->current_compute_encoder = std::make_shared<bbl::pal::ComputeCommandEncoder>(device);
-    rejects([&] { bbl::submit_compute_tasks({task}); }, "#779");
+    rejects([&] { bbl::submit_compute_tasks({task}); }, "#841");
     engine->current_compute_encoder.reset();
     foreign->record();
-    rejects([&] { bbl::submit_compute_tasks({task, foreign}); }, "#777");
+    rejects([&] { bbl::submit_compute_tasks({task, foreign}); }, "#839");
     task->execution_enabled = false;
     bbl::submit_compute_tasks({task});
     assert(device->commands.size() == 3);
@@ -163,8 +163,8 @@ int main() {
     bbl::remove_compute_dispatch(task, second);
     assert(task->dispatches.size() == 1);
     task->dispose();
-    rejects([&] { task->record(); }, "#774");
-    rejects([&] { bbl::add_compute_dispatch(task, first); }, "#775");
+    rejects([&] { task->record(); }, "#836");
+    rejects([&] { bbl::add_compute_dispatch(task, first); }, "#837");
     assert(task->passes.empty() && task->dispatches.empty() && !task->pass && !shader->destroyed);
     auto scene = std::make_shared<bbl::Scene>();
     scene->engine = engine.get();
@@ -178,7 +178,7 @@ int main() {
     bbl::add_task_at_start(*scene, graph_task);
     assert(scene->tasks.size() == 2 && scene->tasks[0].value == 1 && scene->tasks[1].value == 0);
     int frame_completed = 0;
-    engine->compute_one_shot_frame_submitted = [&] {
+    engine->gpu_timer_resolve = [&](auto, bool) {
         assert(engine->current_compute_encoder && engine->current_compute_encoder->finished);
         ++frame_completed;
     };
@@ -211,7 +211,7 @@ int main() {
     bbl::finish_compute_frame_prefix(*engine);
     assert(!engine->current_compute_encoder && frame_completed == 2);
     graph_task->dispose();
-    engine->compute_one_shot_frame_submitted = {};
+    engine->gpu_timer_resolve = {};
     engine->frame_tasks.clear();
     engine->rendering_contexts.clear();
 }

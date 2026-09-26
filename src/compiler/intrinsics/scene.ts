@@ -150,18 +150,20 @@ export function compileSceneIntrinsic(
             const resource = context.compileValue(argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 0));
             // The pinned removal accepts the same union as addToScene. Mesh
-            // retirement and light-topology replacement are the two reached
-            // native paths; both retain their concrete handle kind here.
-            if (resource.kind !== "mesh" && resource.kind !== "light") {
+            // retirement, light topology and child recursion retain their
+            // concrete handle dispatch in the native implementation.
+            if (!["mesh", "light", "scene-node", "transform-node", "asset-root"].includes(resource.kind)) {
                 context.fail(
                     argumentAt(call, 1),
-                    `removeFromScene currently supports mesh and light values, received ${resource.kind}.`,
+                    `removeFromScene supports mesh, light and scene-node values, received ${resource.kind}.`,
                 );
             }
             context.expectSameEngine(scene, resource, call);
             if (resource.kind === "light") {
                 context.sceneManifest.removeSceneLight(scene, resource);
             }
+            if (["scene-node", "transform-node", "asset-root"].includes(resource.kind))
+                context.reachFeature("scene:node-transforms", call);
             context.reachFeature("scene:remove", call);
             return {
                 kind: "void",

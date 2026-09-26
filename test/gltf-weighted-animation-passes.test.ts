@@ -91,6 +91,9 @@ function sourceResult(context: LoweringContext): unknown[] {
         "accumulateAdditiveGroup",
         "uploadTarget",
         "GLTF_NODES",
+        "_propertyMixerHandler",
+        "_propertyMixerFinishHandler",
+        "_propertyMixerDirectHandler",
         transpileCommonJs(body, module) +
             "\nreturn updateWeightedGltfAnimations;",
     )(
@@ -125,6 +128,9 @@ function sourceResult(context: LoweringContext): unknown[] {
         (_manager: unknown, target: Target) =>
             events.push(["upload", target.key, target.value]),
         1,
+        null,
+        null,
+        null,
     ) as (manager: object, delta: number) => boolean;
     const run = () => ({
         handled: update({ engine: {} }, 20),
@@ -150,8 +156,16 @@ function contexts(): LoweringContext[] {
         "updateWeightedGltfAnimations",
     );
     const body = declaration.body!.statements;
-    const upload = body[body.length - 2]!,
-        additive = body[body.length - 3]!;
+    const upload = [...body]
+            .reverse()
+            .find(
+                (statement) =>
+                    ts.isExpressionStatement(statement) &&
+                    statement
+                        .getText(file)
+                        .startsWith("scratch.targets.forEach"),
+            )!,
+        additive = [...body].reverse().find(ts.isForStatement)!;
     assert.ok(ts.isForStatement(additive));
     const start = additive.getStart(file),
         end = upload.end;

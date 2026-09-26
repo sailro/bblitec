@@ -267,6 +267,7 @@ ${
     const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
     const auto& source_animation = required(mesh_plan, "animation");
     const bool animated = !source_animation.is_null() && required(source_animation.as_object(), "accepted").as_boolean();
+    const bool retained_pose = animated${boneControl ? ' || !required(mesh_plan, "animationBindings").is_null()' : ""};
 
     std::vector<BufferViewInfo> views;
     views.reserve(view_json.size());
@@ -619,6 +620,7 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
                 { name: "planned_geometries", type: "const JsonArray" },
                 { name: "node_json", type: "const JsonArray" },
                 { name: "animated", type: "const bool" },
+                { name: "retained_pose", type: "const bool" },
                 {
                     name: "animation_runtime",
                     type: "const std::shared_ptr<AnimationRuntime>",
@@ -916,6 +918,7 @@ ${
                 geometry.source_indices_reversed = true;
             }
             geometry.has_tangents = tangents != nullptr;
+            geometry.cpu_tangents = ${options.cpuTangents === true} && tangents != nullptr;
             geometry.has_uvs = true;
             geometry.has_vertex_colors = colors != nullptr;
             // The pin's object-local \`boundMin\`/\`boundMax\`.
@@ -951,7 +954,9 @@ ${
                 clockwise_front_face != mirrored_world;
             record.clockwise_front_face =
                 clockwise_front_face;
-            record.visible = required(setup, "visible").as_boolean();${
+            const auto* visible_defined = optional(setup, "visibleDefined");
+            if (!visible_defined || visible_defined->as_boolean())
+                record.visible = required(setup, "visible").as_boolean();${
                 !nodeVisibility
                     ? `
             if (!record.visible) throw std::runtime_error("Prepared glTF visibility requires visibility support.");`
@@ -964,9 +969,10 @@ ${
                     ? `
             // Scene code writes node transforms, so the node's world is its
             // transform node's, composed through the hierarchy live.
-            // Generation refused what the runtime poses apart from it.
-            if (deformed_geometry)
-                throw std::runtime_error("A deformed glTF primitive reached a node-carrying load.");
+            // Static skeleton palettes compose under the live mesh world;
+            // animation-owned worlds and morphs still require separate wiring.
+            if (animated || planned_morph)
+                throw std::runtime_error("An animated or morphed glTF primitive reached a node-carrying load.");
             record.parent_world.reset();`
                     : ""
             }
@@ -1068,7 +1074,7 @@ ${
                         std::move(morph_default_weights),
                         std::numeric_limits<std::size_t>::max(),
                         std::numeric_limits<std::size_t>::max(),
-                        animated ? std::move(initial_joint_matrices) : std::vector<Matrix>{},
+                        retained_pose ? std::move(initial_joint_matrices) : std::vector<Matrix>{},
                     });
             }
             asset.meshes.push_back(mesh_handle);${
@@ -1134,25 +1140,10 @@ ${
     }`
         : ""
 }
-    if (animated) {
+    if (retained_pose) {
 ${gltfAnimationLoadingCpp(options, lowered.animationRootFlip)}
 ${gltfAnimationPoseTransportCpp(options, lowered.gltfCameraPoseRefresh, animatedLight)}
 ${lowered.boneControlLoading}
-    }${
-        boneControl
-            ? `
-    // The pin builds a Skeleton per skin whatever the file animates. Here
-    // the joint list, the inverse bind matrices and the rest hierarchy all
-    // live on the animation runtime, which a file with no animations does
-    // not build -- so that pairing is refused by name rather than handing
-    // the scene an empty skeleton list it would read as "no skins".
-    if (!animated && !skin_json.empty()) {
-        throw std::runtime_error(
-            "enableBoneControl needs the skin runtime this loader builds "
-            "for an animated glTF; this file declares skins and carries "
-            "no animations.");
-    }`
-            : ""
     }
     if (asset.meshes.empty()${gaussianSplats ? " && prepared_splats->empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
     install_asset_scene_meshes(asset, double_array(&required(mesh_plan, "sceneMeshes")));

@@ -13,10 +13,12 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <atomic>
 #include <iostream>
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <semaphore>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,14 +35,30 @@ const bool* SDL_GetKeyboardState(int* count) {
 // The harness runs with no runtime trace requested.
 std::string bbl::pal::environment_variable(const char*) { return {}; }
 
+double fixture_clock = 0;
+double bbl::pal::monotonic_milliseconds() { return fixture_clock; }
+
 // The shared unit's environment decode reaches the image PAL; the harness
 // loads no texture.
-bbl::pal::DecodedImage bbl::pal::decode_image(const bbl::js::ArrayBuffer&) {
-    throw std::logic_error("Unexpected fixture image decode");
+std::atomic<unsigned> decoded_images = 0;
+std::atomic<bool> block_image_decode = false;
+std::binary_semaphore image_started{0}, image_continue{0};
+std::thread::id image_thread;
+bbl::pal::DecodedImage bbl::pal::decode_image(std::span<const std::uint8_t> bytes) {
+    ++decoded_images;
+    image_thread = std::this_thread::get_id();
+    if (bytes.empty() || bytes[0] != 11)
+        throw std::runtime_error("Fixture image decode failed");
+    if (block_image_decode) {
+        image_started.release();
+        image_continue.acquire();
+    }
+    assert(bytes[0] == 11);
+    return {1, 2, {80, 40, 20, 128, 20, 40, 80, 255}};
 }
 
 // The row sync's vertex write is compiled in, as a position-updating scene's.
-static_assert(BBLITE_MESH_POSITION_UPDATE);
+static_assert(BBLITE_MESH_ATTRIBUTE_UPDATE);
 
 namespace {
 
@@ -52,14 +70,14 @@ unsigned next_lease = 0;
 /** One uploaded row; the rematch moves a lease and never copies one. */
 struct Row {
     unsigned lease = 0;
-    std::uint64_t position_version = 0;
+    std::uint64_t attribute_version = 0;
     explicit Row(unsigned value) : lease(value) {}
     Row(Row&& other) noexcept
-        : lease(std::exchange(other.lease, 0u)), position_version(other.position_version) {}
+        : lease(std::exchange(other.lease, 0u)), attribute_version(other.attribute_version) {}
     Row& operator=(Row&& other) noexcept {
         assert(lease == 0);
         lease = std::exchange(other.lease, 0u);
-        position_version = other.position_version;
+        attribute_version = other.attribute_version;
         return *this;
     }
 };
@@ -420,14 +438,14 @@ void check_topology_and_rows() {
     // The first sync above uploaded every row's lanes once; a transform
     // reaches the draw through the mesh block alone.
     for (Row& row : run.meshes)
-        row.position_version = run.engine.geometries[0].position_version;
+        row.attribute_version = run.engine.geometries[0].attribute_version;
     run.engine.meshes[0].position.x += 5;
     set_mesh_rotation_quaternion(run.engine, MeshHandle{0}, {0, 0.6f, 0, 0.8f});
     Hooks transformed;
     run.synchronize(transformed);
     assert(transformed.rows.vertex_uploads == 0 && transformed.rows.blocks == 3);
     run.engine.geometries[0].vertices[0].position = {4, 5, 6};
-    ++run.engine.geometries[0].position_version;
+    ++run.engine.geometries[0].attribute_version;
     Hooks updated;
     run.synchronize(updated);
     assert(updated.rows.vertex_uploads == 3 && updated.rows.vertices.size() == 1);
@@ -438,6 +456,175 @@ void check_topology_and_rows() {
     assert(settled.rows.vertex_uploads == 0);
 }
 
+void check_pipeline_preparation() {
+    for (const int mode : {0, 1, 2}) {
+        const bool graph = mode != 0, geometry = mode == 2;
+        Run run;
+        if (geometry) {
+            run.engine.cameras.push_back(looking_down_z());
+            run.scene.camera = CameraHandle{0};
+        }
+        run.engine.meshes.resize(3);
+        auto& lists = run.render_plan.draw_lists;
+        for (std::uint32_t index = 0; index < 3; ++index) {
+            upstream::RenderDrawCommand draw;
+            draw.item.mesh = MeshHandle{index};
+            if (index == 1) {
+                draw.item.bucket = upstream::RenderBucket::alpha_blend;
+                draw.item.material_guard = [](MaterialHandle, MaterialHandle, bool) {
+                    return false;
+                };
+            }
+            (index == 0 ? lists.opaque : lists.transparent).commands.push_back(draw);
+        }
+        if (graph) {
+            run.engine.render_targets.resize(2);
+            run.engine.render_targets[0].has_color = true;
+            run.engine.render_targets[1].has_color = false;
+            run.engine.frame_tasks.resize(5);
+            run.engine.frame_tasks[0].render.target = RenderTargetHandle{0};
+            run.engine.frame_tasks[1].execution_enabled = false;
+            run.engine.frame_tasks[2].kind = FrameTaskKind::geometry;
+            run.engine.frame_tasks[3].kind = FrameTaskKind::post_process;
+            run.engine.frame_tasks[4].render.target = RenderTargetHandle{1};
+            for (std::uint32_t index = 0; index < 5; ++index)
+                run.scene.tasks.push_back(TaskHandle{index});
+        }
+        std::vector<std::uint32_t> prepared, tasks;
+        auto preparation = prepare_scene_pipeline_draws(
+            run.engine, run.scene, run.render_plan,
+            [&](TaskHandle task) -> const upstream::RenderDrawLists& {
+                tasks.push_back(task.value);
+                return lists;
+            },
+            [&](const upstream::RenderDrawCommand& draw, const FrameTaskRecord* task) {
+                assert((task != nullptr) == graph);
+                prepared.push_back(draw.item.mesh.value);
+                fixture_clock += 5;
+            });
+        std::size_t yields = 0;
+        while (preparation.advance())
+            assert(prepared.size() == ++yields);
+        assert(preparation.result() && run.frame == 0);
+        assert(prepared == (geometry ? std::vector<std::uint32_t>{0, 2, 0, 2}
+                                     : std::vector<std::uint32_t>{0, 2}));
+        assert(tasks == (geometry ? std::vector<std::uint32_t>{0, 2}
+                         : graph  ? std::vector<std::uint32_t>{0}
+                                  : std::vector<std::uint32_t>{}));
+        assert(run.scene.tasks.size() == (graph ? 5u : 0u));
+
+        auto failed = prepare_scene_pipeline_draws(
+            run.engine, run.scene, run.render_plan,
+            [&](TaskHandle) -> const upstream::RenderDrawLists& { return lists; },
+            [](const upstream::RenderDrawCommand&, const FrameTaskRecord*) {
+                throw std::runtime_error("pipeline creation failed");
+            });
+        bool propagated = false;
+        try {
+            static_cast<void>(failed.advance());
+        } catch (const std::runtime_error& error) {
+            propagated = std::string_view(error.what()) == "pipeline creation failed";
+        }
+        assert(propagated);
+    }
+}
+
+void check_image_preparation() {
+    Run run;
+    run.engine.materials.emplace_back();
+    auto& material = run.engine.materials[0];
+    material.shader_material = true;
+    material.shader_textures.resize(2);
+    auto& source = material.shader_textures[0].data;
+    source.bytes = SharedTextureBytes::Storage{11};
+    source.premultiply_alpha = source.invert_y = true;
+    material.shader_textures[1].data = source;
+    auto alias = source;
+    upstream::RenderItem item;
+    item.material = MaterialHandle{0};
+    item.material_kind = upstream::RenderMaterialKind::shader;
+    decoded_images = 0;
+    block_image_decode = true;
+    bool uploaded = false;
+    TextureUploadCache<DecodedImage> images;
+    std::vector<std::shared_ptr<DecodedImage>> bindings;
+    const auto prepare_image = [](const TextureData& data, bool,
+                                  std::array<std::uint8_t, 4> fallback) {
+        return decode_uploadable_image(data, fallback);
+    };
+    auto preparation = upload_prepared_scene_mesh(run.engine, item, images, prepare_image, [&] {
+        assert(image_thread != std::this_thread::get_id());
+        assert(decoded_images == 1);
+        for (const auto& texture : material.shader_textures) {
+            auto image = images.find(texture.data, texture.srgb, {255, 255, 255, 255});
+            assert(image && image->width == 1 && image->height == 2);
+            assert(image->rgba == std::vector<std::uint8_t>({20, 40, 80, 255, 40, 20, 10, 128}));
+            bindings.push_back(std::move(image));
+        }
+        assert(decoded_images == 1);
+        uploaded = true;
+    });
+    assert(preparation.advance() && !uploaded);
+    image_started.acquire();
+    alias.bytes[0] = 42;
+    block_image_decode = false;
+    image_continue.release();
+    while (preparation.advance())
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(preparation.result() && uploaded && decoded_images == 1);
+    assert(bindings[0] == bindings[1]);
+
+    uploaded = false;
+    auto cached = upload_prepared_scene_mesh(run.engine, item, images, prepare_image,
+                                             [&] { uploaded = true; });
+    assert(!cached.advance() && uploaded && decoded_images == 1);
+    bindings.clear();
+    assert(!images.find(source, false, {255, 255, 255, 255}));
+
+    source.bytes[0] = 99;
+    bool rejected = false;
+    auto failed = upload_prepared_scene_mesh(run.engine, item, images, prepare_image,
+                                             [] { assert(false && "failed image uploaded"); });
+    try {
+        while (failed.advance())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } catch (const std::runtime_error& error) {
+        rejected = std::string_view(error.what()) == "Fixture image decode failed";
+    }
+    assert(rejected);
+}
+
+void check_native_preparation() {
+    std::binary_semaphore started{0}, proceed{0};
+    std::vector<int> order;
+    std::thread::id worker;
+    auto preparation = run_native_preparation({[&] {
+                                                   worker = std::this_thread::get_id();
+                                                   order.push_back(1);
+                                                   started.release();
+                                                   proceed.acquire();
+                                               },
+                                               [&] { order.push_back(2); }});
+    assert(preparation.advance());
+    started.acquire();
+    assert(worker != std::this_thread::get_id() && order == std::vector<int>{1});
+    proceed.release();
+    while (preparation.advance())
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(preparation.result() && order == std::vector<int>({1, 2}));
+    auto failure =
+        run_native_preparation({[] { throw std::runtime_error("native preparation failed"); },
+                                [] { assert(false && "continued failed preparation"); }});
+    bool rejected = false;
+    try {
+        while (failure.advance())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } catch (const std::runtime_error& error) {
+        rejected = std::string_view(error.what()) == "native preparation failed";
+    }
+    assert(rejected);
+}
+
 } // namespace
 
 int main() {
@@ -446,5 +633,8 @@ int main() {
     check_camera_less_frame();
     check_transparent_sort();
     check_topology_and_rows();
+    check_pipeline_preparation();
+    check_image_preparation();
+    check_native_preparation();
     std::cout << "scene-topology-sync-check: ok\n";
 }

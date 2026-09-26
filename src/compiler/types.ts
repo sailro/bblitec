@@ -430,11 +430,9 @@ export interface SceneMeshManifest {
      * as `Float32Array | undefined`, so which attributes this mesh carries is
      * a RUN-time answer.
      *
-     * The three flags above then say only what generation could settle, which
-     * is not enough to compose a Standard or PBR variant for the mesh — those
-     * key on the attribute set. The node family needs no such key (its
-     * `MeshAttributeExistsBlock` reads a per-mesh uniform lane), so the
-     * refusal sits at the material assignment, where the pairing is known.
+     * The three flags above say what generation settled. Loaded PBR materials
+     * compose the bounded optional attribute product; node materials inspect
+     * uniform lanes. Other material families require a fixed profile.
      */
     runtimeStreams?: true;
     /** Whether this exact mesh reaches thin instancing before rendering, or
@@ -653,10 +651,9 @@ export interface ScenePbrMaterialManifest {
     readonly emissiveColor?: readonly number[];
     /**
      * How many glTF assets the program had loaded when this material was
-     * created. The runtime keys the variant table by material handle, which
-     * is creation order, so a scene material created after every load simply
-     * appends to the assets' materials; one created before a load would
-     * interleave, which no reached scene does.
+     * created. Composition interleaves source profiles with imported material
+     * rows; runtime source materials retain their profile independently of
+     * the number of physical handles earlier profiles allocated.
      */
     readonly gltfAssetsBefore: number;
     readonly hasBaseColorTexture: boolean;
@@ -669,8 +666,9 @@ export interface ScenePbrMaterialManifest {
     /** Present array whose contents remain runtime UBO data. */
     readonly baseColorFactorRuntime?: true;
     readonly hasOrmTexture: boolean;
-    readonly metallicFactor: number;
-    readonly roughnessFactor: number;
+    /** Uniform-only factors; absent when their values are runtime expressions. */
+    readonly metallicFactor?: number;
+    readonly roughnessFactor?: number;
     readonly directIntensity: number;
     readonly environmentIntensity: number;
     readonly alpha: number;
@@ -843,6 +841,7 @@ export interface NodeMaterialBlockEmitter {
 }
 
 export type CompiledNodeMaterial = {
+    hasInstances?: boolean;
     /**
      * The binding names the scene supplied textures for.
      *
@@ -1246,6 +1245,7 @@ export type ValueKind =
     | "worker"
     | "worker-scope"
     | "worker-resize-observer"
+    | "worker-mutation-observer"
     | "worker-media-query"
     | "worker-message-event"
     | "worker-error-event"
@@ -1431,15 +1431,21 @@ export type ValueKind =
     | "clustered-light-container"
     | "clustered-light"
     | "physics-world"
+    | "physics-native-body"
+    | "physics-module"
+    | "physics-thin-context"
+    | "physics-body-list"
     | "physics-viewer"
     | "physics-aggregate"
     | "physics-body"
+    | "physics-constraint"
     | "physics-character-controller"
     | "physics-character-observable"
     | "physics-shape"
     | "property-animation-group"
     /** Callback-local platform keyboard data; it has no storable JS shape. */
     | "platform-keyboard-event"
+    | "custom-event"
     /** Callback-local platform mouse data; it has no storable JS shape. */
     | "platform-mouse-event"
     // The navigation plugin: the Detour surface behind the PAL, held the
@@ -1460,6 +1466,7 @@ export type ValueKind =
     // engine record; `audio-context` is the `BaseAudioContext` it hands
     // back, which every reached demo builds its own graph on.
     | "audio-engine"
+    | "audio-source"
     | "audio-buffer"
     | "audio-context"
     | "audio-node"
@@ -1903,6 +1910,8 @@ export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
 /** Field types for payloads; producers use the discriminated Value type. */
 export interface ValueFields {
+    /** Exact immutable packaged response bytes retained by a text result. */
+    packagedBodySource?: string;
     /** Closed packaged candidates of a generation-time Response. */
     packagedSources?: readonly string[];
     /** A fresh response read; only that exact expression proves unchanged bytes. */
@@ -1939,6 +1948,7 @@ export interface ValueFields {
     };
     /** The live DOMStringMap view returned by an element's `dataset`. */
     uiDataset?: true;
+    uiStyle?: true;
     /**
      * Generation-known identity for one retained element construction site.
      * Runtime loops may evaluate the site more than once, but every resulting
@@ -2226,14 +2236,6 @@ export interface ValueFields {
      * read the native local.
      */
     impure?: true;
-    /**
-     * `mainBus._in` under an audio engine -- the gain a sound source
-     * connects into. It rides the engine value because the pin reaches it
-     * through the engine object rather than by name.
-     */
-    audioMainBusCpp?: string;
-    /** Primary native storage whose main-bus companion is materialized beside it. */
-    audioMainBusOwnerCpp?: string;
     /**
      * The materialized asset an `asset` value was loaded from.
      * `selectVariant` needs it the way the pin's own setter reaches
@@ -2692,6 +2694,7 @@ export type Feature =
     | "loader:gltf"
     | "loader:gltf-variants"
     | "loader:gltf-cameras"
+    | "loader:gltf-cpu-tangents"
     | "loader:gltf-bone-control"
     | "loader:splat"
     | "loader:splat-bake"
@@ -2728,7 +2731,7 @@ export type Feature =
     | "mesh:csg"
     | "mesh:csg2"
     | "mesh:from-data"
-    | "mesh:update-positions"
+    | "mesh:update-attributes"
     | "mesh:resize-geometry"
     | "mesh:ground"
     | "mesh:ground-heightmap"
@@ -2813,6 +2816,7 @@ export type Feature =
     // three modules behind one `pickAsync`, and this port reaches the
     // simple one and the detailed one. The GS contributor rides the splat
     // feature that already selected the cloud.
+    | "picking:ray"
     | "picking:gpu"
     // The detailed pick pipeline: `picking/picking-detailed-pipeline.ts`
     // plus `picking/detailed-picking.ts`. Its own row because the pin's own

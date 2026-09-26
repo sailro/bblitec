@@ -47,7 +47,10 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_COMPUTE_BINDINGS", anyOf: ["compute:bindings"] },
     { macro: "BBLITE_WORKERS", anyOf: ["platform:workers"] },
     { macro: "BBLITE_OFFSCREEN_SURFACES", anyOf: ["platform:window"] },
-    { macro: "BBLITE_MESH_POSITION_UPDATE", anyOf: ["mesh:update-positions"] },
+    {
+        macro: "BBLITE_MESH_ATTRIBUTE_UPDATE",
+        anyOf: ["mesh:update-attributes"],
+    },
     { macro: "BBLITE_HAS_IMAGE_DECODER", imageDecoder: true },
     { macro: "BBLITE_HAS_GAMEPAD", anyOf: ["input:gamepad"] },
     { macro: "BBLITE_HAS_DOM_INPUT", anyOf: ["input:dom"] },

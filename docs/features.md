@@ -54,7 +54,7 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`); methods recursing through stored instances | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; an uninitialized `let c: C \| undefined`; unsupported field storage |
-| Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
+| Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; borrowed input events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created and is not settled from a timer or frame callback, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
@@ -81,7 +81,8 @@ equality between operands of one primitive type is strict equality; across types
 and `=== undefined` on an absent value answer from what its type admits. A read whose slot may hold
 `null` -- a `Map.get`, an optional chain over a nullable field, an array index, `pop()`/`shift()` --
 knows whether the slot existed, so a missing slot (`undefined`) and a stored `null` compare and spell
-apart; a value that may be either with no such slot refuses a strict comparison (`== null` answers
+apart. Primitive unions containing both absence values retain distinct tags in dynamic storage;
+other values that may be either without a represented tag refuse strict comparison (`== null` answers
 either). An enum member reads as its constant wherever it is written,
 `Tone["Soft"]` included. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
@@ -124,7 +125,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | An iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
-| Strings | UTF-16 indexing/length, substring/repeat/concat, padding, trimming of JavaScript white space, replacement strings/callbacks, `+=` on locals, fields and elements; an absent value in concatenation, a template or `String()` spells `undefined` or `null` as its type admits, and so does a scalar element read past an array's end (an index proven in range, a canonical loop's counter or a static index under a known length, carries no test) | A concatenated operand is built before it is appended; a value whose type admits both `null` and `undefined` refuses in text |
+| Strings | UTF-16 indexing/length, substring/repeat/concat, padding, trimming of JavaScript white space, replacement strings/callbacks, `+=` on locals, fields and elements; an absent value in concatenation, a template or `String()` spells `undefined` or `null` from its represented tag or type, including scalar reads past an array's end | A concatenated operand is built before it is appended; unrepresented mixed absence states refuse in text |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
 | Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse |
@@ -305,11 +306,15 @@ existing scene cameras and fresh callback identities. Native animation retains s
 
 Reached primitives, data factories, ribbons/extrusions/polyhedra, lines, CSG and thin instances use their
 admitted option sets. Box/sphere data is mutable and shared through aliases. Unknown-count mesh/Standard/
-shader factories require compatible profiles. Static expansion is capped at 4,096 iterations/1 MiB;
+PBR/shader factories require compatible profiles. Static expansion is capped at 4,096 iterations/1 MiB;
 parameterized composition tables at 65,536 records each. Wider dynamic geometry updates, line
 topology/colors/dashes and dynamic draw counts remain limited.
 Owned data meshes support geometry resizing and shared-family rebinding; omitted clones retain their
-existing geometry. Imported geometry resizing refuses.
+existing geometry. Unshared, tightly packed meshes support GPU-only position and UV range uploads; imported
+geometry updates and resizing refuse. Data meshes retain their input CPU array aliases.
+Clones share those owners; resizing replaces them for the selected meshes.
+`getMeshGeometry` and `getMeshTriangles` return independent CPU stream copies. Authored glTF tangents
+are retained when `enableGltfCpuTangents` precedes loading.
 
 ## Scene hierarchy
 
@@ -319,9 +324,14 @@ Parent assignment and child insertion are separate. Synthetic glTF roots expose 
 Euler/quaternion rotation and copied world matrices. When scene code writes node transforms or looks up
 an imported node, a glTF asset loads with the pin's node hierarchy: `__root__` and one transform node per
 glTF node (a `matrix` node keeps its raw local, locked against TRS writes until setParent), each
-primitive an identity-TRS child of its node; animated, skinned or morphed assets and punctual lights or
+primitive an identity-TRS child of its node; animated or morphed assets and punctual lights or
 cameras then refuse. `findNode` over an imported root resolves the pin's DFS to a node or a uniquely named
 mesh. Broader imported hierarchy cloning refuses; child-mesh queries remain limited.
+Stored `SceneNode` handles retain imported-root and mesh cloning. Their `children` traversal is live,
+ordered and preserves mixed mesh/node identity; `"material" in node` distinguishes meshes.
+Optional visibility and thin-instance reads retain concrete node state. Removal snapshots children
+before recursion and uses the concrete mesh retirement path.
+Standalone transform-node cloning and child-list mutation through this view refuse.
 Detached imported leaves share geometry.
 Opaque cached lists require visibility invalidation; transparent/transmissive visibility is live.
 
@@ -354,8 +364,9 @@ value refuses. Alpha to coverage reaches shader materials; Standard and PBR targ
 
 ### Node materials
 
-Closed NME graphs compose once per shape with distinct owners. Texture slots may be filled before
-registration; required missing bindings refuse. Numeric inputs, reflective/map mutation and later
+Closed NME graphs compose once per shape with distinct owners, thin-instance matrix streams and instance IDs. Texture slots
+may be assigned before registration; scalar uniform inputs remain writable during rendering. Required missing bindings refuse.
+Numeric input reads, vector writes, geometry-view uniform writes, reflective/map mutation and later
 producer/topology changes refuse. Public input observations require one scene.
 
 Geometry MRTs admit IRRADIANCE, WORLD_POSITION, LOCAL_POSITION, REFLECTIVITY, VIEW_DEPTH,
@@ -373,7 +384,8 @@ and vertex/fragment bindings. Dynamic shader signatures and broader plugin hooks
 
 GLTF supports LINEAR/STEP/CUBICSPLINE, TRS, skin/morph and admitted material/light/visibility pointers,
 seeks, speed, masks and weighted/additive mixing. Property tracks support numeric leaves and linear/step
-interpolation.
+interpolation, weighted blending and replacement owners along data-object paths. Property easing
+callbacks refuse.
 
 Managers support fixed delta, onUpdate and autonomous RAF start/stop. First variable delta is zero;
 autonomous updates notify after evaluation. Autonomous managers cannot share a program with a persistent
@@ -387,16 +399,22 @@ share deformation resources. Standard skeletons require enablement. Thin-instanc
 GPU culling has an [adaptation](fidelity.md#semantic-contract). Broader VAT bakes, VAT storage/time
 setters and deformation queries, Standard-material VAT and animated/morphed imported GPU instances
 remain limited.
+Bone control supports dynamic name lookup, visibility and deferred world poses followed by explicit baking,
+including skinned assets without animation clips.
 
 ## Sprites
 
 Sprite2D, billboards, atlases, animation, offscreen/depth targets, custom fragments and Y-sort are bounded.
-Handle-object APIs, mixed transparent ordering, coverage gamma and broader picking combinations refuse.
+Transparent billboards and meshes share the pinned distance/order sort; mixed exact depth/order ties
+and mixed draws without a camera refuse because native lists lack the source's stable binding order.
+Custom cutout billboard order, handle-object APIs, coverage gamma and broader picking combinations refuse.
 Broader atlas options remain limited.
 UV-scroll attributes require float32 scalar/vector formats.
 
 ## Picking
 
+`createPickingRay` retains the pin's reverse-Z unprojection, nullable result and mutable numeric tuples
+with Float32 view-projection matrices; it requires no GPU picker.
 Basic/detailed picks retain resource identity, pending poses and supported skeleton/morph projection.
 Filter/ignore/discard, deformed thin instances, VAT IDs and wider result/contributor combinations refuse.
 Detailed picks exclude active thin instances, billboards and splats. PickingInfo retains identity;
@@ -421,16 +439,18 @@ Bounding-box and scale gizmo drags have no native editing.
 
 Bullet provides bodies, primitive/convex/mesh shapes, forces, motion, aggregates, mass, masks,
 collisions/triggers, raycasts, floating origin and character control. Constraints admit ball/socket,
-distance, hinge, prismatic, lock, slider and six-DOF with inline two-sided limits and discarded handles.
-Springs/motors, retained constraint handles and inertia orientation refuse.
+distance, hinge, prismatic, lock, slider and six-DOF with inline two-sided limits, retained handles and
+idempotent release. Springs/motors and inertia orientation refuse.
 
-Thin-instance physics uses one native body per matrix, shared shape/property fanout and instance-indexed
-ray/character/collision results. Collision callbacks retain removed bodies through after-step dispatch.
+Thin-instance physics uses one native body per matrix, carrier transforms, shared property fanout and
+instance-indexed ray/character/collision results. Advanced opt-in preserves scaled shapes and per-instance
+mass; native instance handles support transform, velocity, impulse and activation controls. Collision
+callbacks retain removed bodies through after-step dispatch.
 Thin physics with floating origin, body-aware trigger callbacks and retained trigger disposers are unsupported.
 
 Heightfields require square ground-mesh grids/static bodies. Zero/degenerate shapes refuse. Container
-construction precedes attachment; convex children admit finite nonzero scale. Mixed child
-filters/materials/triggers and triangle children refuse. Proximity/casts require inline query bags and
+construction precedes attachment; direct child transforms and parent-relative placement admit finite nonzero scale. Mixed
+child filters/triggers, differing leaf materials and triangle children refuse. Proximity/casts require inline query bags and
 convex targets. Viewers need construction-known shape descriptors and a native toolchain; constraint
 overlays and observable startup membership refuse.
 See [physics substitutions](fidelity.md#physics-contract).
@@ -441,11 +461,12 @@ Renderer-independent LabSound/SDL3 supports no-options AudioContext, lifecycle p
 AudioParam scheduling, decoded buffers and channel copying. Aliases retain identity and stopped clocks.
 Owned buffers can cross contexts. Invalid decode rejects; channel copies preserve overlap/untouched data.
 
-Async sources/oscillators support zero-argument ended listeners with removal/capture/once, including
-promise callbacks. Context close cancels delivery. Event payloads, onended, AbortSignal, context options,
-statechange and broader Babylon bus/spatial APIs refuse. Output selection/media streams/recording are
-unavailable; supported capability guards expose absence. Closed-context graph operations, master ramps,
-owned async main-bus metadata and nullable buffers remain limited.
+Babylon async engines and sources retain main-bus routing and source ownership through disposal.
+Scheduled sources/oscillators support zero-argument ended listeners with removal/capture/once and
+onended replacement/null clearing, including promise callbacks. Context close cancels delivery.
+Event payloads, AbortSignal, context options, statechange and broader bus/spatial APIs refuse.
+Output selection/media streams/recording are unavailable; capability guards expose absence.
+Closed-context graph operations, master ramps and nullable buffers remain limited.
 
 ## Shadows
 

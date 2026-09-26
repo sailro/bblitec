@@ -23,7 +23,21 @@ int main(int argc, char** argv) {
             return 1;
         }
         assert(bbl::js::concat("n=", bbl::js::NumberPart(value), ";") == "n=" + expected + ";");
-        assert(bbl::js::json_stringify(value) == line.substr(second + 1));
+        const auto third = line.find('\t', second + 1);
+        assert(third != std::string::npos);
+        assert(bbl::js::json_stringify(value) == line.substr(second + 1, third - second - 1));
+        auto start = third + 1;
+        for (const int digits : {0, 1, 2, 3, 20, 50, 100}) {
+            const auto end = line.find('\t', start);
+            const auto expected_fixed = line.substr(start, end - start);
+            const auto fixed = bbl::js::number_to_fixed(value, digits);
+            if (fixed != expected_fixed) {
+                std::cerr << line.substr(0, first) << ".toFixed(" << digits << "): expected "
+                          << expected_fixed << ", received " << fixed << '\n';
+                return 1;
+            }
+            start = end == std::string::npos ? line.size() : end + 1;
+        }
     }
     assert(input.eof() && count > 8192);
 }

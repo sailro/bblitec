@@ -154,7 +154,7 @@ can dispatch one frame earlier than the browser promise.
 | Boundary | Native substitution |
 | --- | --- |
 | Debug geometry | Node Havok WASM bakes complete shape descriptors; no poses/trajectories/reference pixels |
-| Solver | Bullet; identical Havok trajectories are not guaranteed |
+| Solver | Bullet with parallel collision detection and constraint batches; identical Havok trajectories and parallel contact order are not guaranteed |
 | Constraints | Source hinge frames; Bullet six-axis rows for other admitted constraints |
 | Radial correction | `0.4 * initialSignedViolation - predictedSignedViolation`, scaled for short steps |
 | Contacts/rebound | Fitted substeps, speculative contacts, rebound, damping and rest stabilization |
@@ -164,13 +164,24 @@ can dispatch one frame earlier than the browser promise.
 | Triangle meshes | Static BVH; dynamic GImpact with approximate inertia |
 | Heightfields | Static triangle BVH with measured source grid orientation/diagonal |
 | Containers | Source relative transforms; Bullet convex children/inertia |
+| Shape materials | Havok defaults and combine priority; container material writes leave leaf materials unchanged, as the pin ignores Havok's unsupported-operation result |
 | Floating origin | Separate worlds; no cross-region collisions |
 | Queries | GJK/EPA and convex sweep; measured cylinder/box margins and closest-feature tie selection |
 | Character contacts | Body sets can agree while contact order, instants and points differ |
 
-Cylinder margin is `min(0.015, 0.1 * minimumHalfExtent)`; box margin is 0.015 capped by its smallest
+Query cylinder margin is `min(0.015, 0.1 * minimumHalfExtent)`; query box margin is 0.015 capped by its smallest
 half-extent. Shape storage outlives native shapes. Per-step traces and rest/shape checks measure
 different properties.
+
+Positive box extents retain their authored size and center; only zero-thickness axes receive the
+ground-plane adaptation. Convex hull support planes are not expanded by Bullet's default margin.
+One native controller owns Bullet's scheduler across application realms. Workers run no application
+callbacks; contact initialization uses disjoint solver batches, reductions retain chunk order and
+contact/friction rows use Bullet's interleaved order in parallel worlds. Split-impulse solving keeps
+its convergence limit. Windows clang-cl and MSVC use the same Bullet
+SIMD solver-record layout.
+Constraints between two immovable bodies retain ownership and collision filtering without solver
+rows; a side becoming dynamic activates their rows.
 
 ## Text contract
 

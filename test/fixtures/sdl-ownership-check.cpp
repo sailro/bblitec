@@ -74,6 +74,8 @@ int main() {
             return images.acquire(source, srgb, {255, 255, 255, 255}, upload);
         };
         auto first = acquire(atlas);
+        assert(images.find(atlas, false, {255, 255, 255, 255}) == first);
+        assert(!images.find(atlas, true, {255, 255, 255, 255}));
         auto second_source = atlas;
         second_source.sampler.max_lod = 0;
         auto second = acquire(second_source);
@@ -146,6 +148,23 @@ int main() {
         variant_alias.compressed_alternatives =
             std::make_shared<const std::vector<bbl::CompressedTexture>>();
         assert(acquire(variant_alias) != variant_image);
+        bbl::TextureData fallback;
+        auto fallback_image = acquire(fallback);
+        assert(fallback_image);
+        for (const bool rendered : {false, true}) {
+            auto live = fallback;
+            if (rendered)
+                live.render_source = std::make_shared<bbl::RenderTextureData>();
+            else
+                live.gpu_source = std::make_shared<bbl::GpuTextureSource>();
+            bool rejected = false;
+            try {
+                static_cast<void>(acquire(live));
+            } catch (const std::runtime_error&) {
+                rejected = true;
+            }
+            assert(rejected);
+        }
     }
     assert(textures == 0 && samplers == 0);
     try {

@@ -55,7 +55,7 @@ interface PinnedInstanceAttribute {
  * fragment and needs both rows: the four `ti-matrix` columns the base list
  * holds and the one `ti-color` lane the `hasInstanceColor` branch pushes.
  */
-function pinnedInstanceAttributes(
+export function pinnedInstanceAttributes(
     context: LoweringContext,
 ): readonly PinnedInstanceAttribute[] {
     const declared =

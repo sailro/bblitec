@@ -45,6 +45,13 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
         1e22,
         1000000000000000100,
         0.1,
+        0.125,
+        0.625,
+        1.25,
+        1.75,
+        2.5,
+        3.5,
+        1.005,
         Math.PI,
     ]) {
         bits.setFloat64(0, value);
@@ -67,7 +74,10 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
     const cases = [...samples].map((raw) => {
         bits.setBigUint64(0, raw);
         const value = bits.getFloat64(0);
-        return `${raw.toString(16)}\t${String(value)}\t${JSON.stringify(value)}`;
+        const fixed = [0, 1, 2, 3, 20, 50, 100].map((digits) =>
+            value.toFixed(digits),
+        );
+        return `${raw.toString(16)}\t${String(value)}\t${JSON.stringify(value)}\t${fixed.join("\t")}`;
     });
     const input = join(directory, "cases.tsv"),
         executable = join(directory, "check.exe");

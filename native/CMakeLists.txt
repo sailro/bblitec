@@ -832,6 +832,13 @@ endif()
 # (`featureSources`). Nothing generated names Bullet.
 if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(Bullet CONFIG REQUIRED)
+    target_compile_definitions(bblite_features INTERFACE BT_THREADSAFE=1)
+    if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+       NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM")
+        # The Windows Bullet package uses MSVC's SIMD solver-record layout.
+        target_compile_definitions(bblite_features INTERFACE
+            BT_USE_SSE BT_NO_SIMD_OPERATOR_OVERLOADS)
+    endif()
     target_link_libraries(bblite_features INTERFACE BulletDynamics BulletCollision LinearMath
     )
 endif()

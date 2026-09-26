@@ -166,6 +166,7 @@ export interface LoweringServices {
         call: ts.CallExpression,
     ): Value | undefined;
     isRuntimeResourceConstruction(): boolean;
+    isRuntimeCallback(): boolean;
     compileThinInstanceUploadHelper(
         call: ts.CallExpression,
         callee: ts.Identifier,

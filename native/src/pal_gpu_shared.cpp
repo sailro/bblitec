@@ -528,8 +528,11 @@ DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
 
 std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
                                          [[maybe_unused]] const MeshRecord& mesh) {
+    const auto& vertices = geometry.render_vertices_override
+                               ? *geometry.render_vertices_override
+                               : geometry.vertices;
     std::vector<GpuVertex> result;
-    result.reserve(geometry.vertices.size());
+    result.reserve(vertices.size());
 #if BBLITE_GPU_DEFORMATION
     const auto morph_lane = [&](const std::vector<std::vector<Vec3>>& targets, std::size_t target,
                                 std::size_t vertex_index) {
@@ -539,8 +542,8 @@ std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
         return std::array<float, 3>{delta.x, delta.y, delta.z};
     };
 #endif
-    for (std::size_t vertex_index = 0; vertex_index < geometry.vertices.size(); ++vertex_index) {
-        const ModelVertex& vertex = geometry.vertices[vertex_index];
+    for (std::size_t vertex_index = 0; vertex_index < vertices.size(); ++vertex_index) {
+        const ModelVertex& vertex = vertices[vertex_index];
         GpuVertex packed{
             {vertex.position.x, vertex.position.y, vertex.position.z},
             {vertex.normal.x, vertex.normal.y, vertex.normal.z},
@@ -979,6 +982,8 @@ upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
     const upstream::NodeVariantEntry& entry = node_slot_view(slot);
 #if BBLITE_NODE_SHADOWS
     if (node_slot_is_caster(slot)) {
+        if (!entry.caster.present)
+            throw std::runtime_error("A node material caster has no composed shader view.");
         return {entry.caster.vertex_stem, entry.caster.fragment_stem};
     }
 #endif
@@ -994,14 +999,9 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
         key.refusal = "the draw names no PBR material";
         return key;
     }
-    // The table names the FIRST `pbr_variant_material_count` handles: the
-    // assets' materials in document order, then every scene-code creation in
-    // creation order. What has to hold is that a handle the table names is
-    // still the material generation composed for -- so what is checked is
-    // the handle, not the count. Records appended past the table are the
-    // shadow caster VIEWS `registerSceneWithShadowSupport` builds, and one
-    // of those draws through its own no-colour variant rather than a row
-    // here; a miss is then reported by the selector rather than guessed at.
+    // Imported materials retain generation-known loader slots. Source-created
+    // materials carry their creation profile, including when loops allocate a
+    // runtime number of handles. Caster views select their source's profile.
     if (draw.item.material.value >= engine.materials.size()) {
         key.refusal = "the draw material handle is invalid";
         return key;
@@ -1011,6 +1011,18 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
     key.material_index = draw_material.source_material.value == invalid_handle
                              ? draw.item.material.value
                              : draw_material.source_material.value;
+    if (key.material_index >= engine.materials.size()) {
+        key.refusal = "the source material handle is invalid";
+        return key;
+    }
+    const auto profile = engine.materials[key.material_index].pbr_composition_profile;
+    if (profile != invalid_handle) {
+        if (profile >= upstream::pbr_scene_material_indices.size()) {
+            key.refusal = "the source material composition profile is invalid";
+            return key;
+        }
+        key.material_index = upstream::pbr_scene_material_indices[profile];
+    }
     if (key.material_index >= upstream::pbr_variant_material_count) {
         key.refusal = "material " + std::to_string(key.material_index) + " is past the " +
                       std::to_string(upstream::pbr_variant_material_count) +
@@ -1037,6 +1049,16 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
     // this idempotent OR covers both origins with one rule.
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
+        if (record.runtime_attribute_features && record.geometry < engine.geometries.size()) {
+            const auto& geometry = engine.geometries[record.geometry];
+            if (geometry.owned_packed_geometry) {
+                const auto attributes = upstream::pinned_mesh_attribute_features(
+                    geometry.has_tangents, geometry.has_vertex_colors, geometry.cpu_uv2s);
+                key.mesh_features = (key.mesh_features &
+                    ~static_cast<std::size_t>(upstream::pinned_mesh_attribute_features(true, true, true))) |
+                    static_cast<std::size_t>(attributes);
+            }
+        }
         // `_computeMeshFeatures` writes MSH_VAT INSTEAD of
         // MSH_HAS_SKELETON for a baked mesh -- attachVat dropped the live
         // skeleton -- so this is a swap on the static row rather than an

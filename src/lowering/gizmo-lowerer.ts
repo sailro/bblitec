@@ -3995,7 +3995,6 @@ std::array<float, 16> bbox_mat4_from_quat(
         const computeAabb = lowerComputeAabb(this.context, {
             arm: "world",
             cppName: "bbox_compute_aabb",
-            positionsType: "BoundingBoxPositions",
         });
         const fromQuat = this.loweredMat4FromQuat(file);
         const refreshArguments = this.refreshInverseArguments(factory, file);
@@ -4298,7 +4297,8 @@ void bbox_fold_mesh(
     if (mesh.geometry >= engine.geometries.size()) return;
     const std::vector<ModelVertex>& vertices =
         engine.geometries[mesh.geometry].vertices;
-    if (vertices.empty()) return;
+    const auto* retained = mesh.cpu_streams.get();
+    if (retained ? (!retained->positions || retained->positions->empty()) : vertices.empty()) return;
     std::array<float, 16> world{};
     mat4_multiply_into(
         world,
@@ -4308,7 +4308,8 @@ void bbox_fold_mesh(
         upstream::mesh_world_matrix(engine, mesh),
         0);
     const std::array<std::array<double, 3>, 2> aabb =
-        bbox_compute_aabb(BoundingBoxPositions{&vertices}, world);
+        retained ? bbox_compute_aabb(*retained->positions, world) :
+                   bbox_compute_aabb(BoundingBoxPositions{&vertices}, world);
     gizmo_bounds_fold(bounds, aabb);
 }
 

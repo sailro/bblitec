@@ -44,7 +44,7 @@ const program = scene(
     if (observe(target) !== 1) throw new Error("Live update did not update the caller's object");
     target.position = { x: 42 };
     goToFrame(group, 10);
-    if (original.x !== 2 || observe(target) !== 42) throw new Error("Replacing a nested object retargeted the group");
+    if (original.x !== 1 || observe(target) !== 2) throw new Error("Replacing a nested object did not retarget the group");
     const scalar = createPropertyAnimationClip("value", [{ path: "value",
         keys: [{ frame: 0, value: 0 }, { frame: 10, value: 10 }] }], { frameRate: 10 });
     const scalarGroup = createPropertyAnimationGroup(manager, target, scalar, { loop: false });
@@ -91,6 +91,10 @@ const program = scene(
     updateAnimationManager(mixer, 0);
     if (mixed.position.x !== 5 || separate.position.x !== 2) throw new Error("Mixer lost resolved owner/property identity");
 
+    const oldMixed = mixed.position;
+    mixed.position = { x: 99 };
+    updateAnimationManager(mixer, 0);
+    if (mixed.position.x !== 1 || oldMixed.x !== 4) throw new Error("Mixer did not resolve replacement owner identity");
     const multiple: { position: { x: number }; value: number } = { position: { x: 0 }, value: 0 };
     const mixedPaths = createPropertyAnimationClip("multiple", [
         { path: "position.x", keys: [{ frame: 0, value: 4 }, { frame: 10, value: 4 }] },
@@ -160,7 +164,7 @@ test("the same ownership and blending assertions pass on the pinned implementati
 test("plain-data target fields bind independently of native lane spelling", () => {
     const result = compileSource(program);
     assert.match(result.cpp, /PropertyAnimationTargetKind::callback/);
-    assert.match(result.cpp, /property_animation_owner/);
+    assert.match(result.cpp, /property_animation_root/);
     const shared = compileSource(
         scene(`${clip}
         const target: Target = { position: { x: -2 }, value: 0 };
@@ -203,6 +207,18 @@ test("data bindings refuse missing, readonly and nonnumeric leaves", () => {
             diagnostic,
         );
     }
+});
+
+test("property tracks explicitly refuse unsupported easing callbacks", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                scene(
+                    `const clip=createPropertyAnimationClip("eased",[{path:"value",easing:(t:number)=>t*t,keys:[{time:0,value:0},{time:1,value:1}]}]);`,
+                ),
+            ),
+        /easing callbacks are not lowered/,
+    );
 });
 
 const tools = optionalNativeFixtureTools(false);

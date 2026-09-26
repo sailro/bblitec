@@ -1660,6 +1660,8 @@ export class UserFunctionLowerer {
         if (
             argumentValues.some(
                 (value) =>
+                    (value.staticJson !== undefined &&
+                        (value.kind === "record" || value.kind === "tuple")) ||
                     value.browserValue?.kind === "search-params" ||
                     (value.browserValue?.kind === "object" &&
                         value.browserValue.moduleUrl === true),
@@ -4785,6 +4787,16 @@ export class UserFunctionLowerer {
         expression: ts.Expression,
     ): Value {
         let returned = context.compileValue(expression);
+        // Mutable arrays in returned records retain their declared storage,
+        // including empty arrays and tuple fields written through aliases.
+        const signature = context.checker.getSignatureFromDeclaration(ir.declaration);
+        if (signature) {
+            const resultType = context.checker.getReturnTypeOfSignature(signature);
+            returned = context.bindings.materializeDeclaredRecordContainers(
+                returned, context.checker.getAwaitedType(resultType) ?? resultType,
+                expression, `return_${ir.name}_array`,
+            );
+        }
         if (returned.kind === "number" && returned.staticNumber === undefined) {
             const staticNumber = staticNumberValue(context, expression);
             if (staticNumber !== undefined && Number.isFinite(staticNumber)) {
@@ -5128,12 +5140,67 @@ export class UserFunctionLowerer {
         const signature = this.checker.getSignatureFromDeclaration(
             ir.declaration,
         );
-        const type = signature
+        let type = signature
             ? context.dataTypes.fromTsType(
                   this.checker.getReturnTypeOfSignature(signature),
                   ir.declaration,
               )
             : undefined;
+        if (
+            !type &&
+            signature &&
+            this.checker.getReturnTypeOfSignature(signature).flags &
+                (ts.TypeFlags.Unknown | ts.TypeFlags.Any)
+        ) {
+            // An erased source annotation can still carry one concrete native
+            // handle family. Probe the normal body lowering so local bindings,
+            // guards and return expressions determine its storage together.
+            let inferred: DataType | undefined;
+            let incompatible = false;
+            context.probeEmission(
+                () => {
+                    context.beginNativeFunctionBody({ kind: "number" }, false, {
+                        compileReturn: (expression) => {
+                            const value = context.compileValue(expression);
+                            const represented =
+                                value.dataType ??
+                                (isHandleKind(value.kind)
+                                    ? {
+                                          kind: "handle" as const,
+                                          handle: value.kind,
+                                      }
+                                    : undefined);
+                            const inner =
+                                represented?.kind === "optional"
+                                    ? represented.inner
+                                    : represented;
+                            const previous =
+                                inferred?.kind === "optional"
+                                    ? inferred.inner
+                                    : inferred;
+                            if (
+                                inner?.kind !== "handle" ||
+                                (previous && !dataTypesEqual(previous, inner))
+                            )
+                                incompatible = true;
+                            else
+                                inferred =
+                                    inferred?.kind === "optional"
+                                        ? inferred
+                                        : represented;
+                            return "0.0";
+                        },
+                    });
+                    try {
+                        emitReachableStatements(context, ir.statements);
+                    } finally {
+                        context.endNativeFunctionBody();
+                    }
+                },
+                () => false,
+            );
+            if (!incompatible) type = inferred;
+        }
         if (!type) {
             context.fail(
                 callNode,

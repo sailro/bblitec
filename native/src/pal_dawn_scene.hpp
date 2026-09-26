@@ -237,6 +237,9 @@ struct DawnState;
 struct DawnDrawResources {
     WGPUBuffer mesh_uniforms = nullptr;
     WGPUBuffer material_uniforms = nullptr;
+#if BBLITE_NODE_VARIANTS > 0
+    NodeUniformUploadState node_uniform_upload;
+#endif
     WGPUBuffer uv_uniforms = nullptr;
     // stdUvTransformExt's own block, beside the base `up` one: the pin binds
     // both on a marked material and the extension's assignment is what the
@@ -369,7 +372,7 @@ struct DawnMeshResources {
     WGPUTextureView reflection = nullptr;
     // Alpha-card shader vertex uniforms (center/angle/depth).
     WGPUBuffer shader_vertex_uniforms = nullptr;
-    std::uint64_t position_version = 0;
+    std::uint64_t attribute_version = 0;
 #if BBLITE_GPU_DEFORMATION
     WGPUBuffer deformation_uniforms = nullptr;
 #endif
@@ -457,6 +460,7 @@ struct DawnSharedComposedMaterialTextures {
     std::array<DawnTexture, mesh_texture_slots> textures{};
     std::array<DawnTextureView, mesh_texture_slots> views{};
     std::array<DawnSampler, mesh_texture_slots> samplers{};
+    std::vector<std::shared_ptr<DawnTexture>> image_leases;
     std::size_t users = 0;
 };
 
@@ -2853,11 +2857,12 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
 
 /** The per-draw buffers one compiled node view needs, created once. */
 void fill_node_draw_buffers(DawnState& state, DawnDrawState& draw_state,
-                            const upstream::NodeVariantEntry& view);
+                            const upstream::NodeVariantEntry& view, const MaterialRecord* material);
 
 /** The per-draw buffers a node graph's colour or caster view needs. */
 DawnDrawState& ensure_node_draw_buffers(DawnState& state, DawnMesh& mesh, std::uint32_t material,
-                                        const upstream::NodeVariantEntry& entry);
+                                        const upstream::NodeVariantEntry& entry,
+                                        const MaterialRecord& record);
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 /**
@@ -2921,7 +2926,7 @@ const upstream::NodeMeshUniforms& node_mesh_block_for(NodeMeshBlockCache& cache,
  * The one block a node draw rebuilds: the pin's own `MeshU`, carrying the
  * world matrix the vertex stage multiplies by and the shadow and light lanes
  * a graph reaching neither leaves at zero. The uniform block the graph
- * declared is a constant, so `ensure_node_draw_buffers` writes it once.
+ * declared is refreshed independently by `ensure_node_draw_buffers` when an input changes.
  */
 void write_node_mesh_block(DawnState& state, const upstream::NodeMeshUniforms& block,
                            const DawnDrawState& draw_state);

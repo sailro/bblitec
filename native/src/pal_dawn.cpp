@@ -31,11 +31,12 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
-#include <bblite/features/mesh_position_update.hpp>
+#include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
 #include "pal_dawn_scene.hpp"
+#include "pal_billboard_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
 #endif
@@ -739,9 +740,9 @@ class DawnSceneRun {
 #if BBLITE_NODE_VARIANTS > 0
             } else if (draw.item.material_kind == upstream::RenderMaterialKind::node) {
                 const std::size_t variant = draw.item.shader_variant;
-                DawnDrawState& node_state =
-                    ensure_node_draw_buffers(state, draw_mesh, draw.item.material.value,
-                                             upstream::node_variants.at(variant));
+                DawnDrawState& node_state = ensure_node_draw_buffers(
+                    state, draw_mesh, draw.item.material.value, upstream::node_variants.at(variant),
+                    handle_at(engine.materials, draw.item.material));
                 write_node_mesh_block(
                     state,
                     node_mesh_block_for(node_mesh_blocks, *pass_scene, engine, draw.item.mesh),
@@ -830,6 +831,113 @@ class DawnSceneRun {
         }
     }
 
+    void prepare_pipeline([[maybe_unused]] const Scene& scene,
+                          const upstream::RenderDrawCommand& draw, const FrameTaskRecord* task,
+                          [[maybe_unused]] std::vector<std::function<void()>>& pending) {
+        auto& state = data_.state;
+        const auto& engine = data_.engine;
+        const auto* geometry = task && task->kind == FrameTaskKind::geometry ? task : nullptr;
+        const auto* shadow =
+            task && task->kind == FrameTaskKind::render
+                ? handle_find(engine.shadow_generators, task->render.shadow_generator)
+                : nullptr;
+        [[maybe_unused]] const auto esm = shadow && shadow->filter == ShadowFilter::esm_directional
+                                              ? shadow->esm_index
+                                              : invalid_handle;
+        [[maybe_unused]] const auto* material = handle_find(engine.materials, draw.item.material);
+        std::uint32_t samples = geometry ? task_sample_count(state, geometry->geometry.samples)
+                                : shadow ? 1u
+                                         : state.sample_count;
+        bool has_depth = true;
+        std::optional<DawnTaskTarget> target;
+        if (task && task->kind == FrameTaskKind::render && !shadow) {
+            const auto& record = handle_at(engine.render_targets, task->render.target);
+            const auto& gpu = handle_at(state.render_targets, task->render.target);
+            const bool borrowed = task->render.depth.source == RenderTextureSource::geometry_depth;
+            samples = record.swapchain ? 1u : task_sample_count(state, record.samples);
+            has_depth = borrowed || record.has_depth;
+            target =
+                DawnTaskTarget{gpu.color_format,
+                               borrowed ? WGPUTextureFormat_Depth24PlusStencil8 : gpu.depth_format};
+        }
+        [[maybe_unused]] const auto shader =
+            geometry ? static_cast<std::size_t>(geometry->geometry.shader_index) : npos;
+        const auto kind = draw.pipeline;
+        const bool shadow_pass = shadow != nullptr;
+        const auto prepare = [&](auto action) {
+#if BBLITE_WORKERS
+            if (!geometry &&
+                wgpuDeviceHasFeature(state.device, WGPUFeatureName_ImplicitDeviceSynchronization)) {
+                pending.emplace_back(std::move(action));
+                return;
+            }
+#endif
+            action();
+        };
+        switch (draw.item.material_kind) {
+#if BBLITE_PBR_VARIANTS > 0
+        case upstream::RenderMaterialKind::pbr: {
+            const auto variant = pinned_variant_for_draw(scene, engine, draw, shader);
+            if (variant == npos)
+                throw std::runtime_error("Startup PBR draw has no composed variant.");
+            prepare([&state, variant, kind, samples, has_depth, geometry, shadow_pass, esm,
+                     target] {
+                static_cast<void>(pinned_variant_pipeline(state, variant, kind, samples, has_depth,
+                                                          geometry, shadow_pass, esm, target));
+            });
+            break;
+        }
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+        case upstream::RenderMaterialKind::standard: {
+            const auto variant = standard_variant_for_draw(scene, engine, draw, shader);
+            if (variant == npos)
+                throw std::runtime_error("Startup Standard draw has no composed variant.");
+            const bool unfilterable =
+                !geometry && material && material->has_emissive_render_texture;
+            prepare([&state, variant, kind, samples, has_depth, unfilterable, geometry, shadow_pass,
+                     esm, target] {
+                static_cast<void>(standard_variant_pipeline(state, variant, kind, samples,
+                                                            has_depth, unfilterable, geometry,
+                                                            shadow_pass, esm, target));
+            });
+            break;
+        }
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+        case upstream::RenderMaterialKind::node: {
+            const bool caster =
+                !geometry && material && (material->esm_shadow || material->no_color);
+            std::size_t geometry_variant = pal::no_node_geometry_variant;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (geometry)
+                geometry_variant =
+                    pal::require_node_geometry_variant(draw.item.shader_variant, shader);
+#else
+            if (geometry)
+                throw std::runtime_error("Startup node draw has no composed geometry view.");
+#endif
+            prepare([&state, variant = draw.item.shader_variant, kind, samples, has_depth,
+                     shadow_pass, caster, esm, geometry, geometry_variant, target] {
+                static_cast<void>(node_variant_pipeline(state, variant, kind, samples, has_depth,
+                                                        shadow_pass, caster, esm, geometry,
+                                                        geometry_variant, target));
+            });
+            break;
+        }
+#endif
+        case upstream::RenderMaterialKind::shader:
+            prepare([&state, kind, variant = draw.item.shader_variant, samples, has_depth,
+                     shadow_pass, target] {
+                static_cast<void>(
+                    pipeline_for(state, kind, variant, samples, has_depth, shadow_pass, target));
+            });
+            break;
+        default:
+            throw std::runtime_error("Startup draw has no compiled material family.");
+        }
+    }
+
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_encoding;
     explicit DawnSceneRun(Engine& engine) : data_(engine) {}
@@ -837,7 +945,8 @@ public:
     void discard_frame() { frame_.reset(); }
     bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
 
-    void setup() {
+    Iteration<bool> setup() {
+        StartupWorkBudget startup_budget;
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& frame_options = data_.frame_options;
         [[maybe_unused]] auto& cpu_startup_mark = data_.cpu_startup_mark;
@@ -890,17 +999,7 @@ public:
                                  : upstream::preferred_sample_count(engine.options.msaa_samples);
 
         DeviceOptions device_options = frame_device_options(frame_options);
-#if BBLITE_GPU_INSTANCE_COLORS
-        // With the per-instance RGBA lane the pin's own thin-instance module
-        // appends, the specialized WGSL reaches the lane after the matrix
-        // columns, and the limit has to cover that location.
-        device_options.max_vertex_attributes = instance_color_location + 1;
-#elif BBLITE_GPU_INSTANCING
-        // The SDL-specialized WGSL feeds per-instance matrix columns at
-        // locations 16-19; the WebGPU default caps attribute locations
-        // below 16, so raise the device limit to cover location 19.
-        device_options.max_vertex_attributes = 20;
-#endif
+        device_options.max_vertex_attributes = scene_vertex_attribute_limit();
         // Geometry MRT chains can exceed the default 32-byte color budget;
         // the entry's erased requiredLimits option is derived here from
         // the task records with the WebGPU render-target byte costs
@@ -937,6 +1036,10 @@ public:
         sync_engine_canvas_size(state.window, engine);
         resize_dawn_surface(state, engine.options);
         cpu_startup_mark("window-device");
+        if (startup_budget.exhausted()) {
+            co_yield false;
+            startup_budget.resume();
+        }
 
         width = state.surface_width;
         height = state.surface_height;
@@ -1081,6 +1184,10 @@ public:
             state.reflection_cube_views.push_back(cube_view(texture));
         }
         cpu_startup_mark("environment-background");
+        if (startup_budget.exhausted()) {
+            co_yield false;
+            startup_budget.resume();
+        }
 
         // Every scene registered after the first is a swapchain overlay layer,
         // which is the pin's own trigger (scene/swapchain-overlay.ts): a later
@@ -1110,14 +1217,30 @@ public:
             }
             rebuild_task_draw_lists();
         };
-        const auto rebuild_meshes = [&] {
+        {
+            const bool async_uploads =
+                wgpuDeviceHasFeature(state.device, WGPUFeatureName_ImplicitDeviceSynchronization);
+            const auto prepare_image = [&state](const TextureData& data, bool srgb,
+                                                std::array<std::uint8_t, 4> fallback) {
+                std::uint32_t mips = 1;
+                return DawnTexture{upload_material_texture(state, data, srgb, fallback, mips)};
+            };
             render_plan = upstream::build_render_plan(scene, engine);
             // Validate every item's kind and variant before uploading anything.
             validate_render_plan_items(render_plan);
             cpu_startup_mark("render-plan");
             state.meshes.reserve(render_plan.items.size());
             for (const upstream::RenderItem& item : render_plan.items) {
-                state.meshes.push_back(upload_dawn_scene_mesh(state, engine, item));
+                auto upload = upload_prepared_scene_mesh(
+                    engine, item, state.shared_material_images, prepare_image,
+                    [&] { state.meshes.push_back(upload_dawn_scene_mesh(state, engine, item)); },
+                    async_uploads);
+                while (upload.advance())
+                    co_yield false;
+                if (startup_budget.exhausted()) {
+                    co_yield false;
+                    startup_budget.resume();
+                }
             }
             for (std::size_t layer = 1; layer < data_.active_registered_scenes.size(); ++layer) {
                 Scene* overlay_scene = data_.active_registered_scenes[layer].get();
@@ -1129,7 +1252,19 @@ public:
                 std::vector<DawnMesh> overlay_layer_meshes;
                 overlay_layer_meshes.reserve(overlay_plan.items.size());
                 for (const upstream::RenderItem& item : overlay_plan.items) {
-                    overlay_layer_meshes.push_back(upload_dawn_scene_mesh(state, engine, item));
+                    auto upload = upload_prepared_scene_mesh(
+                        engine, item, state.shared_material_images, prepare_image,
+                        [&] {
+                            overlay_layer_meshes.push_back(
+                                upload_dawn_scene_mesh(state, engine, item));
+                        },
+                        async_uploads);
+                    while (upload.advance())
+                        co_yield false;
+                    if (startup_budget.exhausted()) {
+                        co_yield false;
+                        startup_budget.resume();
+                    }
                 }
                 overlay_plans.push_back(std::move(overlay_plan));
                 state.overlay_meshes.push_back(std::move(overlay_layer_meshes));
@@ -1141,15 +1276,35 @@ public:
             cpu_startup_mark("mesh-uploads");
             initialize_render_tasks();
             cpu_startup_mark("draw-lists-ready");
-        };
-        rebuild_meshes();
+        }
+
+        if (!engine.render_targets.empty())
+            create_frame_graph_textures(state, engine, width, height);
+        std::vector<std::function<void()>> pipeline_jobs;
+        for (std::size_t layer = 0; layer < active_registered_scenes.size(); ++layer) {
+            const Scene& layer_scene = *active_registered_scenes[layer];
+            auto pipelines = prepare_scene_pipeline_draws(
+                engine, layer_scene, layer == 0 ? render_plan : overlay_plans[layer - 1],
+                [&](TaskHandle handle) -> const upstream::RenderDrawLists& {
+                    return handle_at(state.render_tasks, handle).draw_lists;
+                },
+                [&](const upstream::RenderDrawCommand& draw, const FrameTaskRecord* task) {
+                    prepare_pipeline(layer_scene, draw, task, pipeline_jobs);
+                });
+            while (pipelines.advance())
+                co_yield false;
+        }
+#if BBLITE_WORKERS
+        auto preparation = run_native_preparation(std::move(pipeline_jobs));
+        while (preparation.advance())
+            co_yield false;
+#endif
+        cpu_startup_mark("draw-pipelines");
 
 #if BBLITE_PINNED_BACKGROUNDS
         state.background_draws = pal::select_pinned_backgrounds(frame_options, scene.environment);
         initialize_dawn_backgrounds(state, scene);
 #endif
-        // The composed variant modules load lazily in the loop, so this phase
-        // covers only the background/skybox/ground half SDL_GPU builds here too.
         cpu_startup_mark("shaders-pipelines");
 #if BBLITE_HAS_TEXT
         state.text = std::make_unique<DawnTextRenderer>(
@@ -1234,6 +1389,7 @@ public:
 #if BBLITE_DEVICE_RECOVERY
         data_.draw_count_scope.emplace(engine);
 #endif
+        co_return true;
     }
 
     FramePreparation prepare() {
@@ -1446,7 +1602,7 @@ public:
             write_mesh_stage_blocks(state, scene, engine, mesh, gpu);
         }
 
-#if BBLITE_MESH_POSITION_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE
         void upload_vertices(DawnMesh& gpu, const std::vector<GpuVertex>& vertices) {
             DawnGpuDevice{state.queue}.write_buffer(gpu.vertices, 0, vertices.data(),
                                                     vertices.size() * sizeof(GpuVertex));
@@ -2091,9 +2247,8 @@ public:
         // graph that presents through neither refuses capture below
         // instead of reading the raw surface back.
         frame_graph_presented = false;
-        const auto draw_list_into = [&](WGPURenderPassEncoder list_pass,
-                                        const upstream::RenderDrawList& list, std::uint32_t samples,
-                                        WGPURenderPipeline& bound_pipeline,
+        const auto draw_list_into = [&](WGPURenderPassEncoder list_pass, const auto& list,
+                                        std::uint32_t samples, WGPURenderPipeline& bound_pipeline,
                                         bool pass_has_depth = true,
                                         // Which per-pass block the composed
                                         // stages read: the frame's, or a
@@ -2257,7 +2412,11 @@ public:
                         node_state.group,
                         // A node graph reads the geometry's local lanes;
                         // its mesh block carries the world.
-                        mesh.vertices, InstanceStreams{}, mesh.indices, mesh.index_count);
+                        mesh.vertices,
+                        node_variant_instanced(pal::node_slot_view(node_slot))
+                            ? instance_streams_for(handle_at(engine.meshes, draw.item.mesh), mesh)
+                            : InstanceStreams{},
+                        mesh.indices, mesh.index_count);
                     continue;
                 }
 #endif
@@ -2375,7 +2534,7 @@ public:
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
             WGPURenderPipeline bound_pipeline = nullptr;
             bool transmission_copied = false;
-            const auto draw_render_list = [&](const upstream::RenderDrawList& list) {
+            const auto draw_render_list = [&](const auto& list) {
                 if (!transmission) {
                     draw_list_into(pass, list, state.sample_count, bound_pipeline);
                     return;
@@ -2459,7 +2618,23 @@ public:
 #endif
                     break;
                 case upstream::RenderStage::transparent:
+#if BBLITE_HAS_BILLBOARDS
+                    for (const auto& item : ordered_scene_billboards(
+                             render_plan.draw_lists.transparent, engine, state.billboard_passes,
+                             camera, current_frame().frame_camera.view)) {
+                        if (item.billboard) {
+                            const auto& billboard = state.billboard_passes[item.index];
+                            record_dawn_billboard_pass(pass, engine, billboard,
+                                                       billboard.frame_scene);
+                            bound_pipeline = nullptr;
+                        } else {
+                            draw_render_list(BorrowedDrawList{
+                                render_plan.draw_lists.transparent.commands[item.index]});
+                        }
+                    }
+#else
                     draw_render_list(render_plan.draw_lists.transparent);
+#endif
 #if BBLITE_HAS_TEXT
                     state.text->scene.draw(state.text->borrow_pass(pass),
                                            bbl::text_surface(engine));
@@ -2493,11 +2668,6 @@ public:
                     break;
                 }
             }
-#if BBLITE_HAS_BILLBOARDS
-            // The transparent systems close the scene's pass: they blend over
-            // every stage above and test against the depth they wrote.
-            draw_billboards(BillboardDepthMode::transparent);
-#endif
             wgpuRenderPassEncoderEnd(pass);
             pass.reset();
             // The swapchain overlay layers: one pass each on the same colour
@@ -3143,14 +3313,40 @@ public:
                                 draw_task_billboards(BillboardDepthMode::cutout);
                             }
 #endif
-                            draw_list_into(
-                                task_pass, render_task.draw_lists.transparent, samples,
-                                bound_pipeline, pass_has_depth, render_task.pinned_frame_group,
-                                false, invalid_handle, render_task.view_projection,
-                                DawnTaskTarget{target.color_format,
-                                               borrowed_depth_view
-                                                   ? WGPUTextureFormat_Depth24PlusStencil8
-                                                   : target.depth_format});
+                            const auto draw_transparent = [&](const auto& list) {
+                                draw_list_into(
+                                    task_pass, list, samples, bound_pipeline, pass_has_depth,
+                                    render_task.pinned_frame_group, false, invalid_handle,
+                                    render_task.view_projection,
+                                    DawnTaskTarget{target.color_format,
+                                                   borrowed_depth_view
+                                                       ? WGPUTextureFormat_Depth24PlusStencil8
+                                                       : target.depth_format});
+                            };
+#if BBLITE_HAS_BILLBOARDS
+                            if (task.render.scene_stages) {
+                                const auto view =
+                                    pass_camera ? upstream::build_view_matrix(
+                                                      upstream::camera_world_matrix(*pass_camera))
+                                                : std::array<float, 16>{};
+                                for (const auto& item : ordered_scene_billboards(
+                                         render_task.draw_lists.transparent, engine,
+                                         state.billboard_passes, pass_camera, view)) {
+                                    if (item.billboard) {
+                                        const auto& billboard = state.billboard_passes[item.index];
+                                        record_dawn_billboard_pass(
+                                            task_pass, engine, billboard,
+                                            dawn_billboard_task_scene(billboard, handle.value));
+                                        bound_pipeline = nullptr;
+                                    } else {
+                                        draw_transparent(
+                                            BorrowedDrawList{render_task.draw_lists.transparent
+                                                                 .commands[item.index]});
+                                    }
+                                }
+                            } else
+#endif
+                                draw_transparent(render_task.draw_lists.transparent);
 #if BBLITE_PINNED_BACKGROUNDS
                             // Ground is the final scene stage, after transparent
                             // meshes, exactly as in the non-frame-graph pass.
@@ -3159,13 +3355,6 @@ public:
                                     state.background_arm(*state.background_draws.ground);
                                 draw_dawn_background_arm(task_pass, arm,
                                                          render_task.pinned_frame_group);
-                            }
-#endif
-#if BBLITE_HAS_BILLBOARDS
-                            if (task.render.scene_stages) {
-                                // Transparent systems close the compiler-owned scene
-                                // task just as they close the ordinary scene pass.
-                                draw_task_billboards(BillboardDepthMode::transparent);
                             }
 #endif
                             wgpuRenderPassEncoderEnd(task_pass);
@@ -3408,8 +3597,14 @@ public:
                                             // A node graph reads the baked
                                             // vertices under the identity world,
                                             // like the Standard family.
-                                            mesh.vertices, InstanceStreams{}, mesh.indices,
-                                            mesh.index_count);
+                                            mesh.vertices,
+                                            node_variant_instanced(pal::node_slot_view(
+                                                pal::node_geometry_slot(geometry_variant)))
+                                                ? instance_streams_for(
+                                                      handle_at(engine.meshes, draw.item.mesh),
+                                                      mesh)
+                                                : InstanceStreams{},
+                                            mesh.indices, mesh.index_count);
                                         continue;
                                     }
 #endif
@@ -3963,7 +4158,9 @@ SceneRun run_dawn_engine(Engine& engine) {
     if (engine.scenes().empty() || !engine.scenes().front())
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     DawnSceneRun renderer(engine);
-    renderer.setup();
+    auto initialization = renderer.setup();
+    while (initialization.advance())
+        co_yield false;
     for (;;) {
         renderer.discard_frame();
         const FrameOutcome outcome = conduct_frame(renderer);

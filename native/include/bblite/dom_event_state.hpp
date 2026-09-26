@@ -5,6 +5,7 @@
 #include <string>
 #include <stdexcept>
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace bbl {
@@ -31,12 +32,15 @@ struct DomEventTarget {
 struct DomEventTargetValue {
     Engine* engine = nullptr;
     DomEventTarget target{};
-    [[nodiscard]] bool operator==(const DomEventTargetValue&) const = default;
+    std::weak_ptr<const int> owner_lifetime;
+    [[nodiscard]] bool operator==(const DomEventTargetValue& other) const {
+        return engine == other.engine && target == other.target &&
+               !owner_lifetime.owner_before(other.owner_lifetime) &&
+               !other.owner_lifetime.owner_before(owner_lifetime);
+    }
 };
 
-inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target) {
-    return {&engine, target};
-}
+DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target);
 
 struct DomEventState {
     std::string type;

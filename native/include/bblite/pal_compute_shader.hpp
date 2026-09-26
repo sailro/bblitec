@@ -42,6 +42,7 @@ struct ComputeShader {
     std::vector<ComputeBindingDeclPtr> decls;
     std::map<std::string, ComputeBindingSlot> slots;
     std::vector<double> dynamic_counts;
+    bool automatic_layout = false;
     std::shared_ptr<pal::OffscreenDevice> device;
     std::shared_ptr<pal::ComputeShaderModule> module;
     std::shared_ptr<pal::ComputeGroupLayouts> layouts;

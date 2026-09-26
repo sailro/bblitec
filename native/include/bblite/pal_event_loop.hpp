@@ -9,6 +9,8 @@
 #include <cmath>
 #include <coroutine>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -19,6 +21,7 @@
 #include <optional>
 #include <queue>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -161,7 +164,18 @@ public:
 
     std::shared_ptr<Inbox> inbox() const { return inbox_; }
     double now() const {
+        if (fixed_frame_delta_)
+            return fixed_frame_time_;
         return std::chrono::duration<double, std::milli>(Clock::now() - origin_).count();
+    }
+    void use_fixed_animation_time(double delta_ms) {
+        require_owner();
+        if (!std::isfinite(delta_ms) || delta_ms <= 0)
+            throw std::invalid_argument(
+                "A fixed animation clock requires a positive finite delta.");
+        if (fixed_frame_delta_ && *fixed_frame_delta_ != delta_ms)
+            throw std::logic_error("Engines in one realm must share their capture clock.");
+        fixed_frame_delta_ = delta_ms;
     }
 
     static EventLoop& current() {
@@ -258,6 +272,13 @@ public:
         turn(std::move(callback));
     }
 
+    /** Source dispatchEvent remains on the caller's stack and does not create
+     * a microtask checkpoint between its listeners. */
+    void dispatch_synchronous_callback(Task callback) {
+        require_owner();
+        invoke(std::move(callback));
+    }
+
     void post(Task task) {
         require_owner();
         if (!task)
@@ -288,9 +309,17 @@ public:
         const TimerId id = next_timer_++;
         if (id == 0)
             throw std::overflow_error("Timer identifiers exhausted.");
-        const auto due = Clock::now() + delay;
-        timers_.emplace(id, Timer{std::move(task), delay, repeat, nesting});
-        deadlines_.push(Deadline{due, id});
+        if (fixed_frame_delta_) {
+            timers_.emplace(id,
+                            Timer{std::move(task), delay, repeat, nesting,
+                                  fixed_frame_time_ +
+                                      std::chrono::duration<double, std::milli>(delay).count()});
+            std::lock_guard lock(inbox_->mutex_);
+            inbox_->animation_requested_ = true;
+        } else {
+            timers_.emplace(id, Timer{std::move(task), delay, repeat, nesting});
+            deadlines_.push(Deadline{Clock::now() + delay, id});
+        }
         return id;
     }
 
@@ -434,6 +463,7 @@ private:
         Clock::duration delay;
         bool repeat;
         unsigned nesting;
+        std::optional<double> frame_due = std::nullopt;
     };
     struct Deadline {
         Clock::time_point due;
@@ -517,6 +547,26 @@ private:
         if (found == timers_.end())
             return;
         const Timer timer = found->second;
+        static const bool profile = [] {
+#if defined(_MSC_VER)
+            char* text = nullptr;
+            std::size_t size = 0;
+            if (_dupenv_s(&text, &size, "BBLITE_TIMER_PROFILE") != 0)
+                throw std::runtime_error("Cannot read BBLITE_TIMER_PROFILE.");
+            const std::unique_ptr<char, decltype(&std::free)> owned(text, &std::free);
+            const char* value = owned.get();
+#else
+            const char* value = std::getenv("BBLITE_TIMER_PROFILE");
+#endif
+            return value && std::string_view(value) == "1";
+        }();
+        if (profile)
+            std::fprintf(stderr,
+                         "[cpu][timer] realm=%p id=%llu repeat=%u delay_ms=%.3f now_ms=%.3f\n",
+                         static_cast<void*>(this), static_cast<unsigned long long>(id),
+                         timer.repeat ? 1u : 0u,
+                         std::chrono::duration<double, std::milli>(timer.delay).count(),
+                         std::chrono::duration<double, std::milli>(Clock::now() - origin_).count());
         if (!timer.repeat)
             timers_.erase(found);
         const unsigned previous_nesting = std::exchange(timer_nesting_, timer.nesting);
@@ -531,7 +581,10 @@ private:
             if (next.nesting > 5)
                 next.delay = std::max(next.delay, Clock::duration(std::chrono::milliseconds(4)));
             ++next.nesting;
-            deadlines_.push(Deadline{Clock::now() + next.delay, id});
+            if (next.frame_due)
+                *next.frame_due += std::chrono::duration<double, std::milli>(next.delay).count();
+            else
+                deadlines_.push(Deadline{Clock::now() + next.delay, id});
         }
     }
     void queue_due_timers() {
@@ -573,8 +626,15 @@ private:
             static_cast<void>(callback);
             batch.push_back(id);
         }
+        if (fixed_frame_delta_) {
+            if (fixed_frame_started_)
+                fixed_frame_time_ = static_cast<double>(++fixed_frame_index_) * *fixed_frame_delta_;
+            fixed_frame_started_ = true;
+        }
         const auto milliseconds =
-            std::chrono::duration<double, std::milli>(timestamp - origin_).count();
+            fixed_frame_delta_
+                ? fixed_frame_time_
+                : std::chrono::duration<double, std::milli>(timestamp - origin_).count();
         for (const auto id : batch) {
             const auto found = animation_callbacks_.find(id);
             if (found == animation_callbacks_.end())
@@ -582,6 +642,23 @@ private:
             auto callback = std::move(found->second);
             animation_callbacks_.erase(found);
             turn([&] { callback(milliseconds); });
+        }
+        if (fixed_frame_delta_) {
+            for (const bool repeat : {false, true}) {
+                std::vector<TimerId> due;
+                for (const auto& [id, timer] : timers_)
+                    if (timer.repeat == repeat && timer.frame_due &&
+                        *timer.frame_due <= fixed_frame_time_)
+                        due.push_back(id);
+                for (const auto id : due)
+                    turn([&] { fire_timer(id); });
+            }
+            if (std::any_of(timers_.begin(), timers_.end(),
+                            [](const auto& entry) { return entry.second.frame_due.has_value(); })) {
+                std::lock_guard lock(inbox_->mutex_);
+                if (!inbox_->closed_)
+                    inbox_->animation_requested_ = true;
+            }
         }
     }
     bool dispatch_one(bool wait) {
@@ -643,6 +720,10 @@ private:
     std::shared_ptr<Inbox> inbox_;
     std::thread::id owner_;
     Clock::time_point origin_;
+    std::optional<double> fixed_frame_delta_;
+    double fixed_frame_time_ = 0;
+    std::uint64_t fixed_frame_index_ = 0;
+    bool fixed_frame_started_ = false;
     std::deque<Task> microtasks_;
     std::map<TimerId, Timer> timers_;
     std::priority_queue<Deadline, std::vector<Deadline>, std::greater<Deadline>> deadlines_;

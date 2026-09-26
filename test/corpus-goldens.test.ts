@@ -192,3 +192,33 @@ test("Ocean reference preserves the pinned frozen pose and reached source graph"
         })),
     );
 });
+
+test("Playroom reference retains its unchanged host, source graph and capture pose", () => {
+    const application = manifest.applications.find(({ id }) => id === "playroom");
+    const scene = scenes.find(({ id }) => id === "playroom");
+    assert.ok(application?.reference.provenance);
+    assert.ok(scene?.parity);
+    const provenance = JSON.parse(readFileSync(application.reference.provenance.source, "utf8")) as {
+        pin: ReturnType<typeof readUpstreamPin>;
+        entry: string;
+        hostPage: string;
+        hostPageSha256: string;
+        reference: {source: string; sha256: string};
+        pose: {search: string; width: number; height: number; dpr: number; referenceFrame: number; seededRandom: boolean};
+        moduleSha256: string;
+        sourceFiles: Array<{path: string; sha256: string}>;
+    };
+    assert.deepEqual(provenance.pin, readUpstreamPin());
+    assert.equal(provenance.entry, scene.source);
+    assert.equal(provenance.hostPage, scene.parity.referenceHostPage);
+    assert.equal(provenance.hostPageSha256, sha256(provenance.hostPage));
+    assert.equal(scene.nativeHostUi, "ui/playroom-host.json");
+    assert.deepEqual(provenance.pose, {
+        search: "", width: 1280, height: 720, dpr: 1,
+        referenceFrame: scene.parity.referenceFrame, seededRandom: true,
+    });
+    assert.equal(provenance.reference.source, application.reference.source);
+    assert.equal(provenance.reference.sha256, application.reference.sha256);
+    assert.equal(provenance.moduleSha256, suiteBrowserModuleDigest(scene.source, undefined, undefined, scene.parity.referenceFrame));
+    assert.deepEqual(provenance.sourceFiles, application.files.map(({source, sha256}) => ({path: source, sha256})));
+});

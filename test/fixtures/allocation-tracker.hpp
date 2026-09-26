@@ -2,14 +2,17 @@
 
 #include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <new>
 
 // Include in one fixture translation unit: these replace its allocation functions.
 std::size_t allocation_count = 0;
 std::size_t outstanding_allocations = 0;
 std::size_t allocation_failure_at = std::numeric_limits<std::size_t>::max();
+std::mutex allocation_mutex;
 
 void* operator new(std::size_t size) {
+    std::lock_guard lock(allocation_mutex);
     if (allocation_count == allocation_failure_at)
         throw std::bad_alloc();
     if (void* memory = std::malloc(size ? size : 1)) {
@@ -21,6 +24,7 @@ void* operator new(std::size_t size) {
 }
 void* operator new[](std::size_t size) { return ::operator new(size); }
 void operator delete(void* memory) noexcept {
+    std::lock_guard lock(allocation_mutex);
     if (memory)
         --outstanding_allocations;
     std::free(memory);

@@ -517,6 +517,17 @@ export function resolveBundledAsset(
     if (source === "/environment.env") {
         return `${pinnedLabPublicUrl()}textures/environment.env`;
     }
+    if (
+        source.startsWith("/") &&
+        entryFileName &&
+        deployment.publicUrl === pinnedLabPublicUrl()
+    ) {
+        const repository = findRepositoryRoot(dirname(resolve(entryFileName)));
+        const directory = resolve(repository, "corpus/babylon-lite/lab/public");
+        const local = resolve(directory, "." + source.split(/[?#]/, 1)[0]);
+        if (local.startsWith(`${directory}${sep}`) && existsSync(local))
+            return local;
+    }
     if (source.startsWith("/") && entryFileName) {
         const entryDirectory = dirname(resolve(entryFileName));
         const local = resolve(entryDirectory, `.${source}`);

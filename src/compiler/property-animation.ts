@@ -51,7 +51,7 @@ export interface PropertyAnimationTargetContext extends Pick<
     | "bindings"
 > {}
 
-/** Callback writers bound to the owner resolved when the group is created. */
+/** Callback writers retain the root and resolve the current property owner. */
 export class PropertyAnimationTargetLowerer {
     compile(
         context: PropertyAnimationTargetContext,
@@ -59,7 +59,22 @@ export class PropertyAnimationTargetLowerer {
         paths: readonly string[],
         node: ts.Expression,
     ): { cpp: string; engineCpp: string } {
+        if (target.dataType?.kind === "struct") {
+            const root = context.allocateTemporaryCppName(
+                "property_animation_root",
+            );
+            context.useNativeValue(target);
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: root,
+                initializer: target.cpp,
+            });
+            const binding = context.registerNativeBinding(root);
+            target = { ...target, cpp: root, nativeCaptures: [binding] };
+        }
         const bindings = paths.map((path) => {
+            const ownerChecks: string[] = [];
             const segments = path.split(".");
             const property = segments.pop();
             if (!property || segments.some((segment) => !segment)) {
@@ -87,10 +102,9 @@ export class PropertyAnimationTargetLowerer {
                         );
                     }
                     context.useNativeValue(target);
-                    context.emit({
-                        kind: "expression",
-                        code: `if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
-                    });
+                    const check = `if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`;
+                    context.emit({ kind: "expression", code: check });
+                    ownerChecks.push(check);
                     owner = {
                         kind: "data",
                         cpp: `${owner.cpp}->${field.name}`,
@@ -134,32 +148,17 @@ export class PropertyAnimationTargetLowerer {
                         `Property animation path '${path}' requires a scalar track for a numeric data field.`,
                     );
                 }
-                const captured = context.allocateTemporaryCppName(
-                    "property_animation_owner",
-                );
+                const check = `if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`;
                 context.useNativeValue(target);
-                context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: captured,
-                    initializer: owner.cpp,
-                });
-                context.emit({
-                    kind: "expression",
-                    code: `if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
-                });
-                const binding = context.registerNativeBinding(captured);
+                context.emit({ kind: "expression", code: check });
+                ownerChecks.push(check);
                 return this.scalarTarget(
                     context,
                     property,
-                    {
-                        kind: "data",
-                        cpp: captured,
-                        dataType: owner.dataType,
-                        nativeCaptures: [binding],
-                    },
-                    `${captured}->${field.name}`,
-                    `${captured}.get()`,
+                    target,
+                    `${owner.cpp}->${field.name}`,
+                    owner.cpp,
+                    ownerChecks,
                 );
             }
             if (
@@ -189,7 +188,7 @@ export class PropertyAnimationTargetLowerer {
                     property,
                     field,
                     field.cpp,
-                    `${field.sharedStorageCpp}.get()`,
+                    field.sharedStorageCpp,
                 );
             }
             const setter =
@@ -240,6 +239,7 @@ export class PropertyAnimationTargetLowerer {
         retained: Value,
         fieldCpp: string,
         identityCpp: string,
+        ownerChecks: readonly string[] = [],
     ): string {
         const argument = context.allocateTemporaryCppName(
             "property_animation_value",
@@ -247,14 +247,25 @@ export class PropertyAnimationTargetLowerer {
         const closure = context.captureManagedClosureLines(() => {
             context.registerNativeBinding(argument, false, true, "float");
             context.useNativeValue(retained);
+            for (const check of ownerChecks)
+                context.emit({ kind: "expression", code: check });
             context.emit({
                 kind: "expression",
                 code: `${fieldCpp} = static_cast<double>(${argument});`,
             });
         });
+        const resolveIdentity = context.captureManagedClosureLines(() => {
+            context.useNativeValue(retained);
+            for (const check of ownerChecks)
+                context.emit({ kind: "expression", code: check });
+            context.emit({
+                kind: "expression",
+                code: `return bbl::property_animation_identity(${identityCpp});`,
+            });
+        });
         return (
             `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, {}, 0u, ` +
-            `${renderClosure(closure, `float ${argument}`)}, ${identityCpp}, ${context.cppString(property)}}`
+            `${renderClosure(closure, `float ${argument}`)}, nullptr, ${context.cppString(property)}, ${renderClosure(resolveIdentity, "", "bbl::PropertyAnimationIdentity")}}`
         );
     }
 }
@@ -492,6 +503,12 @@ export function compilePropertyAnimationClip(
         const track = context.expectObjectLiteral(
             context.resolveStaticExpression(element),
         );
+        const easing = context.objectProperty(track, "easing");
+        if (easing)
+            context.fail(
+                easing,
+                "Property animation easing callbacks are not lowered.",
+            );
         const pathExpression = context.objectProperty(track, "path");
         const keysExpression = context.objectProperty(track, "keys");
         if (!pathExpression || !keysExpression) {

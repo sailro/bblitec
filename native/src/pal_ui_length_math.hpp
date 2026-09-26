@@ -57,9 +57,8 @@ inline std::optional<double> css_decimal(std::string_view source, std::size_t& o
 
 } // namespace detail
 
-// RmlUi has no CSS math parser. Resolve viewport/absolute length expressions
-// before its ordinary cascade; containing-block and font-relative units need
-// a later layout stage and are deliberately rejected here.
+// Root-relative lengths reproject when the document's computed font changes.
+// Containing-block and element-relative units still require a later layout stage.
 class UiLengthMath {
     struct Value {
         double number;
@@ -68,10 +67,12 @@ class UiLengthMath {
     std::string_view source;
     std::size_t offset = 0;
     double width, height;
+    std::optional<double> root_font_size;
+    bool root_relative = false;
 
     [[noreturn]] void refuse() const {
         throw std::runtime_error(
-            "UI CSS math requires finite px/vw/vh/vmin/vmax lengths and scalar arithmetic: " +
+            "UI CSS math requires finite px/rem/vw/vh/vmin/vmax lengths and scalar arithmetic: " +
             std::string(source));
     }
     void space() {
@@ -153,6 +154,12 @@ class UiLengthMath {
             return {number, false};
         if (unit == "px")
             return {number, true};
+        if (unit == "rem") {
+            if (!root_font_size || !std::isfinite(*root_font_size) || *root_font_size <= 0)
+                throw std::runtime_error("Root-relative CSS math requires the computed root font size.");
+            root_relative = true;
+            return {number * *root_font_size, true};
+        }
         if (unit == "vw")
             return {number * width / 100, true};
         if (unit == "vh")
@@ -191,8 +198,10 @@ class UiLengthMath {
     }
 
 public:
-    UiLengthMath(std::string_view expression, double viewport_width, double viewport_height)
-        : source(expression), width(viewport_width), height(viewport_height) {}
+    UiLengthMath(std::string_view expression, double viewport_width, double viewport_height,
+                 std::optional<double> root_font = std::nullopt)
+        : source(expression), width(viewport_width), height(viewport_height), root_font_size(root_font) {}
+    bool uses_root_font() const { return root_relative; }
     std::pair<std::string, std::size_t> resolve() {
         const auto value = atom();
         if (!std::isfinite(value.number))
@@ -201,8 +210,12 @@ public:
     }
 };
 
-inline std::string rml_css_length_math(std::string value, double width, double height) {
+inline std::string rml_css_length_math(std::string value, double width, double height,
+                                      std::optional<double> root_font = std::nullopt,
+                                      std::string_view property_name = {}) {
     char quote = 0;
+    std::string property(property_name);
+    std::size_t declaration_start = 0;
     for (std::size_t index = 0; index < value.size(); ++index) {
         const char token = value[index];
         if (token == '\\') {
@@ -218,6 +231,15 @@ inline std::string rml_css_length_math(std::string value, double width, double h
             quote = token;
             continue;
         }
+        if (token == ';' || token == '{' || token == '}') {
+            declaration_start = index + 1;
+            property = property_name;
+        } else if (token == ':') {
+            property = value.substr(declaration_start, index - declaration_start);
+            const auto first = property.find_first_not_of(" \t\r\n");
+            const auto last = property.find_last_not_of(" \t\r\n");
+            property = first == std::string::npos ? "" : property.substr(first, last - first + 1);
+        }
         const auto tail = std::string_view(value).substr(index);
         if (tail.starts_with("url(")) {
             const auto end = value.find(')', index + 4);
@@ -232,7 +254,11 @@ inline std::string rml_css_length_math(std::string value, double width, double h
         if (!tail.starts_with("calc(") && !tail.starts_with("min(") && !tail.starts_with("max(") &&
             !tail.starts_with("clamp("))
             continue;
-        const auto [replacement, consumed] = UiLengthMath(tail, width, height).resolve();
+        UiLengthMath math(tail, width, height, root_font);
+        const auto [replacement, consumed] = math.resolve();
+        if (math.uses_root_font() &&
+            (property == "font" || property == "font-size" || property.starts_with("--")))
+            throw std::runtime_error("Root-relative CSS math in font sizing or custom properties is not represented.");
         value.replace(index, consumed, replacement);
         index += replacement.size() - 1;
     }

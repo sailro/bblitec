@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { declaredSymbol } from "./symbols.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
@@ -93,7 +94,23 @@ export function absenceKind(
     node: ts.Node,
 ): Absence {
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
-    const absent = nullability(checker.getTypeAtLocation(node));
+    let absent = nullability(checker.getTypeAtLocation(node));
+    if (
+        !absent.null &&
+        !absent.undefined &&
+        presenceFlagCpp(value) !== undefined
+    ) {
+        // A write through an alias can invalidate TypeScript's flow narrowing.
+        // The native slot still carries its declared kind of absence.
+        const symbol = declaredSymbol(checker, node);
+        if (symbol?.valueDeclaration)
+            absent = nullability(
+                checker.getTypeOfSymbolAtLocation(
+                    symbol,
+                    symbol.valueDeclaration,
+                ),
+            );
+    }
     if (value.preserveUncheckedLookup)
         return absent.null ? "either" : "undefined";
     if (absent.null) return absent.undefined ? "either" : "null";

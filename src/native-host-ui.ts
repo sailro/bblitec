@@ -148,6 +148,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
                     "maxWidth",
                     "containerMaxWidth",
                     "reducedMotion",
+                    "orientation",
                     "style",
                 ],
                 location,
@@ -219,7 +220,10 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ) {
                 throw new Error(`${location}.reducedMotion must be a boolean.`);
             }
+            if (item.orientation !== undefined && item.orientation !== "portrait" && item.orientation !== "landscape")
+                throw new Error(`${location}.orientation must be portrait or landscape.`);
             return {
+                ...(item.orientation !== undefined ? {orientation: item.orientation} : {}),
                 kind: item.kind,
                 primary: item.primary,
                 style: item.style,

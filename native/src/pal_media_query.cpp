@@ -41,6 +41,10 @@ bool MediaQueryList::matches() const {
 void MediaQueryList::add_change_listener(js::Callback<void()> callback) {
     listeners_.add(std::move(callback));
 }
+void MediaQueryList::add_change_listener(std::size_t identity, js::Callback<void()> callback) {
+    listeners_.add(identity, std::move(callback));
+}
+void MediaQueryList::remove_change_listener(std::size_t identity) { listeners_.remove(identity); }
 
 void MediaQueryList::deliver() {
     const bool next = matches();

@@ -16,6 +16,149 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "partial-record-replaced-data-fields",
+    `
+    function choose<T>(value: T): T { return value; }
+    interface State { select: typeof choose; point: {x: number; y: number}; }
+    function create(): State { return {select: choose, point: {x: 1, y: 2}}; }
+    const state = create();
+    const original = state.point;
+    const handlers: Array<() => void> = [];
+    handlers.push(() => { state.point = {x: 7, y: 8}; });
+    let observed = 0;
+    handlers.push(() => { observed = state.point.x + state.point.y; });
+    handlers[1]!();
+    if (observed !== 3) throw new Error("deferred record replacement");
+    handlers[0]!(); handlers[1]!();
+    if (observed !== 15 || original === state.point || original.x !== 1) throw new Error("record field ownership");
+    original.x = 9;
+    if (state.point.x !== 7) throw new Error("replacement preserves old aliases");
+`,
+);
+
+check(
+    "computed-function-target-evaluation-order",
+    `
+    type Operation = (value: number) => number;
+    const order: string[] = [];
+    function plus(value: number): number { order.push("plus"); return value + 1; }
+    function minus(value: number): number { order.push("minus"); return value - 1; }
+    let current: Operation | undefined = plus;
+    function read(): Operation | undefined { order.push("read"); return current; }
+    function fallback(): Operation { order.push("fallback"); return minus; }
+    function argument(): number { order.push("argument"); current = undefined; return 5; }
+    if ((read() ?? fallback())(argument()) !== 6) throw new Error("selected target changed");
+    if (order.join(",") !== "read,argument,plus") throw new Error("callee evaluated before arguments");
+    if ((read() ?? fallback())(argument()) !== 4) throw new Error("missing target fallback");
+    if (order.join(",") !== "read,argument,plus,read,fallback,argument,minus") throw new Error("lazy target fallback");
+    const gate = new Float32Array([0]);
+    if ((gate[0] ? plus : minus)(9) !== 8) throw new Error("conditional function target");
+`,
+);
+
+check(
+    "partial-record-declared-array-and-phase",
+    `
+    function choose<T>(value: T): T { return value; }
+    interface State {
+        select: typeof choose;
+        phase: "loading" | "ready";
+        cancel: () => void;
+        charge: {value: number} | null;
+        readonly cleanup: Array<() => void>;
+    }
+    let oldCalls = 0;
+    const state: State = {select: choose, phase: "loading", cancel: () => {oldCalls++;}, charge: null, cleanup: []};
+    const alias = state;
+    let calls = 0;
+    state.cleanup.push(() => {calls++; alias.phase = "ready";});
+    alias.cleanup.push(choose(() => {calls += 2;}));
+    const previous = state.cancel;
+    function install(target: State): void { target.cancel = () => {calls += 4; target.charge = {value: 9};}; }
+    install(alias);
+    state.cancel(); previous();
+    if (!state.charge) throw new Error("nullable record initialized");
+    const saved = state.charge;
+    alias.charge = null;
+    if (saved.value !== 9 || state.charge !== null) throw new Error("nullable record alias");
+    for (const callback of state.cleanup) callback();
+    if (String(state.phase) !== "ready" || calls !== 7 || oldCalls !== 1 || alias.cleanup !== state.cleanup) throw new Error("partial record storage");
+`,
+);
+
+check(
+    "evolving-empty-array-storage",
+    `
+    const count = new Float32Array([3]);
+    const rows = [];
+    for (let index = 0; index < count[0]!; index++) rows.push({value: index});
+    const alias = rows;
+    alias[0]!.value = 9;
+    if (rows.length !== 3 || rows[0]!.value !== 9 || rows[2]!.value !== 2) throw new Error("evolving array storage");
+`,
+);
+
+check("optional-call-comparison-evaluation-order", `
+    const values: string[] = ["a", "b"];
+    let calls = 0;
+    function first(): string { calls++; values[0] = "x"; return "x"; }
+    const equal = first() === values.shift();
+    if (!equal || values.join(",") !== "b" || calls !== 1) throw new Error("right optional ordering");
+    function second(): string { calls++; values[0] = "c"; return "b"; }
+    const other = values.shift() === second();
+    if (!other || values.join(",") !== "c" || calls !== 2) throw new Error("left optional snapshot");
+    const log: number[] = [];
+    function take(index: number): string | undefined { log.push(index); return values.shift(); }
+    const pair = take(1) === take(2);
+    if (pair || log.join(",") !== "1,2" || values.length !== 0) throw new Error("two optional calls");
+`);
+
+check(
+    "conditional-numeric-tuple-array-identity",
+    `
+    const gate = new Float32Array([1]);
+    const tuple: [number, number, number, number] = gate[0] ? [1, 2, 3, 4] : [5, 6, 7, 8];
+    const array: number[] = tuple;
+    array[0] = 9;
+    tuple[1] = 10;
+    if (tuple[0] !== 9 || array[1] !== 10 || array !== tuple) throw new Error("tuple array identity");
+    const fixed: [number, number] = [1, 2];
+    const alias: number[] = fixed;
+    alias[0] = 7;
+    if (fixed[0] !== 7 || alias !== fixed) throw new Error("tuple array static aliases");
+`,
+);
+
+check(
+    "callable-array-constructor-fill",
+    `
+    let evaluations = 0;
+    function count(): number { evaluations++; return 3; }
+    const words: string[] = Array(count()).fill("sound") as string[];
+    const typed = Array<number>(2).fill(7);
+    const values: number[] = Array<number>(2);
+    values[0] = 4; values[1] = 9;
+    if (evaluations !== 1 || words.join(",") !== "sound,sound,sound" || typed.join(",") !== "7,7" || values.join(",") !== "4,9") throw new Error("callable Array");
+`,
+);
+
+check(
+    "runtime-fixed-precision",
+    `
+    let number = 1.26;
+    function precision(): number { number = 9; return 1; }
+    const snapshot = number.toFixed(precision());
+    function format(value: number, digits: number): string { return value.toFixed(digits); }
+    if (snapshot !== "1.3" || format(4.6, 1.9) !== "4.6" || format(4.6, NaN) !== "5") throw new Error("toFixed runtime precision");
+    let rejected = 0;
+    for (const digits of [-1, 101, Infinity]) {
+        try { format(1, digits); } catch { rejected++; }
+    }
+    if (rejected !== 3) throw new Error("toFixed precision range");
+`,
+);
+
+check(
     "switch-on-temporary-string",
     `
     function classify(prefix: string, tail: string): number {
@@ -28,6 +171,22 @@ check(
     let total = 0;
     for (const tail of ["b", "bc", "x"]) total = total * 10 + classify("a", tail);
     if (total !== 120) throw new Error("switch on a concatenation " + total);
+`,
+);
+
+check(
+    "scoped-switch-returns",
+    `
+    function classify(value: number): number {
+        switch (value) {
+            case 0: { const local = 4; return local; }
+            case 1: { if (value > 0) return 7; else throw new Error("unreachable"); }
+            default: { const local = 9; return local; }
+        }
+    }
+    let total = 0;
+    for (const value of [0, 1, 2]) total += classify(value);
+    if (total !== 20) throw new Error("scoped returns");
 `,
 );
 
@@ -2956,17 +3115,17 @@ check(
 `,
 );
 
-test("text refuses a value that may be either null or undefined", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+check("text distinguishes null and undefined in mixed primitive storage", `
+    function main(): void {
         const values: Array<number | null | undefined> = [];
         values.push(null);
         const spelled = "value " + values[0];
-    `),
-        /may be null or undefined is spelled only once one of them is ruled out/,
-    );
-});
+        if (spelled !== "value null") throw new Error("null spelling");
+        values.push(undefined, 4);
+        if (String(values[1]) !== "undefined" || String(values[2]) !== "4") throw new Error("distinct spellings");
+    }
+    main();
+`);
 
 check(
     "strict null and undefined equality follows the operand's type",
@@ -3026,17 +3185,17 @@ check(
 `,
 );
 
-test("strict equality refuses a value that may be either null or undefined", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+check("strict equality distinguishes null and undefined in mixed primitive storage", `
+    function main(): void {
         const values: Array<number | null | undefined> = [];
-        values.push(null);
+        values.push(null, undefined, 0);
         const isNull = values[0] === null;
-    `),
-        /may be null or undefined is compared strictly with null only once one of them is ruled out/,
-    );
-});
+        if (!isNull || values[0] === undefined) throw new Error("stored null");
+        if (values[1] !== undefined || values[1] === null) throw new Error("stored undefined");
+        if (values[2] === undefined || values[2] === null || values[2] !== 0) throw new Error("stored zero");
+    }
+    main();
+`);
 
 check(
     "enum members inside array and object literals",

@@ -155,8 +155,8 @@ export function lowerComputeTaskExecution(
                             "(task->flush_owned ? task->flush_owned() : void())",
                         "pass._beforeExecute?.()": `(${passMember ? "this" : "pass"}->before ? ${passMember ? "this" : "pass"}->before() : void())`,
                         "pass._computeExecute?.(encoder)": `(${passMember ? "this" : "pass"}->body ? ${passMember ? "this" : "pass"}->body(encoder) : void())`,
-                        "engine._computeOneShotSubmitted?.(encoder)":
-                            "(engine->compute_one_shot_submitted ? engine->compute_one_shot_submitted(encoder) : void())",
+                        "engine._gpuTaskTimerResolve?.(encoder)":
+                            "(engine->gpu_task_timer_resolve ? engine->gpu_task_timer_resolve(encoder, true) : void())",
                     };
                     for (const [shape, cpp] of Object.entries(optional))
                         if (context.expressionMatchesShape(node, shape))

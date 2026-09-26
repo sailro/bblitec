@@ -17,6 +17,76 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 test(
+    "thin-instance matrices retain arrays passed through a record and local scope",
+    { skip: !native },
+    () => {
+        const result = compileSource(`
+        import {createEngine, createBox, setThinInstances} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const mesh = createBox(engine);
+        const gate = new Float32Array([1]);
+        if (gate[0]) {
+            const storage = {matrices: new Float32Array(16)};
+            setThinInstances(mesh, storage.matrices, 1);
+        }
+    `);
+        assert.match(result.cpp, /bbl::js::F32Array \w*thin_instances/);
+        const lowered = new MeshBuilderLowerer(
+            new LoweringContext(),
+        ).lowerMeshFactories(["mesh:thin-instances"]).source;
+        const functions = [
+            "void copy_thin_instance_range(",
+            "void update_thin_instance_draw_membership(",
+            "void set_thin_instances(\n",
+            "void set_thin_instances(Engine&",
+            "js::F32Array thin_instance_matrices(",
+        ]
+            .map((signature) =>
+                cppFunction(lowered.replaceAll("\r\n", "\n"), signature),
+            )
+            .join("\n");
+        const output = resolve("artifacts/thin-instance-matrix-lifetime");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
+#include <cassert>
+namespace bbl { ${functions} }
+int main() {
+    bbl::Engine engine; engine.meshes.emplace_back();
+    std::weak_ptr<std::vector<float>> lifetime;
+    {
+        bbl::js::F32Array matrices(16); matrices[12] = 7;
+        lifetime = matrices.storage();
+        bbl::set_thin_instances(engine, {0}, matrices, 1);
+    }
+    assert(!lifetime.expired());
+    auto alias = bbl::thin_instance_matrices(engine, {0});
+    alias[12] = 9;
+    assert((*engine.meshes[0].instance_source)[12] == 9);
+    bbl::copy_thin_instance_range(engine.meshes[0], *engine.meshes[0].instance_source, 1);
+    assert(engine.meshes[0].instance_matrices[0][12] == 9);
+}`,
+        );
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/I",
+            "native/include",
+            source,
+            `/Fe:${executable}`,
+            `/Fo:${output}/`,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
+
+test(
     "thin-instance color writes retain owned buffers and offset views with pinned rounding",
     { skip: !native },
     async () => {

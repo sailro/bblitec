@@ -313,6 +313,7 @@ test("registers unique generated scene targets", () => {
             "bath-day",
             "freeciv",
             "ocean",
+            "playroom",
             "sandblox",
             "minecraft",
             "screen-space-effects",

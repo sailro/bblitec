@@ -675,6 +675,14 @@ export class DeclarationLowerer {
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
         let value = this.context.compileValue(declaration.initializer);
+        if (value.kind === "record" && declaration.type) {
+            value = this.context.bindings.materializeDeclaredRecordContainers(
+                value,
+                this.context.checker.getTypeFromTypeNode(declaration.type),
+                declaration.initializer,
+                `${sourceName}_array`,
+            );
+        }
         if (
             value.kind === "number" &&
             value.staticNumber === undefined &&
@@ -816,6 +824,22 @@ export class DeclarationLowerer {
             );
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
+            const initializer = this.context.unwrap(declaration.initializer);
+            const aliasesRecord =
+                ts.isIdentifier(initializer) ||
+                ts.isPropertyAccessExpression(initializer) ||
+                ts.isElementAccessExpression(initializer);
+            if (
+                value.kind === "record" &&
+                !aliasesRecord &&
+                this.inferredObjectIsMutated(declaration.name)
+            ) {
+                value = this.context.bindings.materializeRecordScalars(
+                    value,
+                    `${sourceName}_fields`,
+                    true,
+                );
+            }
             this.context.bindings.defineVariable(declaration.name, value);
             if (value.kind === "record")
                 this.materializeAssignedRecordMethods(declaration.name, value);
@@ -1067,6 +1091,12 @@ export class DeclarationLowerer {
                     ...(narrowed.borrowedData
                         ? { borrowedData: true as const }
                         : {}),
+                    ...(narrowed.packagedBodySource &&
+                    !this.context.sharedClosures.identifierIsRebound(
+                        declaration.name,
+                    )
+                        ? { packagedBodySource: narrowed.packagedBodySource }
+                        : {}),
                     ...(narrowed.nativeVectorData
                         ? { nativeVectorData: true as const }
                         : {}),
@@ -1197,12 +1227,6 @@ export class DeclarationLowerer {
         // The local reads its own storage, not a counted loop's counter.
         delete writable(stored).integerCounterCpp;
         if (!sharedBinding) delete writable(stored).sharedStorageCpp;
-        if (stored.kind === "audio-engine" && stored.audioMainBusCpp) {
-            writable(stored).audioMainBusCpp = this.context.takeNativeTemporary(
-                stored.audioMainBusCpp,
-                initializerBoundary,
-            );
-        }
         if (value.kind === "animation-clip") {
             writable(stored).animationFrameRate = `${cppName}.frame_rate`;
             writable(stored).animationDuration = `${cppName}.duration`;
@@ -1218,6 +1242,7 @@ export class DeclarationLowerer {
             delete writable(stored).staticNumber;
             delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
+            delete writable(stored).packagedBodySource;
         }
         this.context.bindings.defineVariable(declaration.name, stored);
     }
@@ -1284,28 +1309,56 @@ export class DeclarationLowerer {
             });
         if (callbacks.size === 0) return;
         const assigned = new Set<string>();
-        aliasedMutationScan(
-            name,
-            (identifier) => this.context.symbols.valueSymbol(identifier),
-            {
-                aliasingInitializer: (expression, scan) => {
-                    const unwrapped = this.context.unwrap(expression);
-                    return (
-                        ts.isIdentifier(unwrapped) && scan.namesAlias(unwrapped)
-                    );
+        const visited = new Set<ts.Symbol>();
+        const collect = (identifier: ts.Identifier): void => {
+            const symbol = this.context.symbols.valueSymbol(identifier);
+            if (!symbol || visited.has(symbol)) return;
+            visited.add(symbol);
+            aliasedMutationScan(
+                identifier,
+                (candidate) => this.context.symbols.valueSymbol(candidate),
+                {
+                    aliasingInitializer: (expression, scan) => {
+                        const unwrapped = this.context.unwrap(expression);
+                        return (
+                            ts.isIdentifier(unwrapped) &&
+                            scan.namesAlias(unwrapped)
+                        );
+                    },
+                    mutates: (node, scan) => {
+                        if (
+                            isAssignmentExpression(node) &&
+                            ts.isPropertyAccessExpression(node.left) &&
+                            callbacks.has(node.left.name.text) &&
+                            scan.namesAlias(node.left.expression)
+                        )
+                            assigned.add(node.left.name.text);
+                        if (ts.isCallExpression(node)) {
+                            const called =
+                                this.context.checker.getResolvedSignature(
+                                    node,
+                                )?.declaration;
+                            if (isSupportedFunction(called) && called.body) {
+                                node.arguments.forEach((argument, index) => {
+                                    const parameter =
+                                        called.parameters[index]?.name;
+                                    if (
+                                        scan.namesAlias(
+                                            this.context.unwrap(argument),
+                                        ) &&
+                                        parameter &&
+                                        ts.isIdentifier(parameter)
+                                    )
+                                        collect(parameter);
+                                });
+                            }
+                        }
+                        return assigned.size === callbacks.size;
+                    },
                 },
-                mutates: (node, scan) => {
-                    if (
-                        isAssignmentExpression(node) &&
-                        ts.isPropertyAccessExpression(node.left) &&
-                        callbacks.has(node.left.name.text) &&
-                        scan.namesAlias(node.left.expression)
-                    )
-                        assigned.add(node.left.name.text);
-                    return assigned.size === callbacks.size;
-                },
-            },
-        );
+            );
+        };
+        collect(name);
         const ownerType = this.context.checker.getTypeAtLocation(name);
         for (const key of assigned) {
             const callback = callbacks.get(key)!;
@@ -2075,6 +2128,14 @@ export class DeclarationLowerer {
             this.inferredArrayIsMutated(name);
         const initializer = this.context.unwrap(declaration.initializer);
         if (
+            !annotated &&
+            inferredMutableArray &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.length === 0
+        ) {
+            annotated = this.evolvedArrayType(name);
+        }
+        if (
             ts.isObjectLiteralExpression(initializer) &&
             hasDynamicObjectSpread(this.context, initializer)
         )
@@ -2189,11 +2250,12 @@ export class DeclarationLowerer {
             (annotated.kind === "optional" &&
                 annotated.inner.kind === "handle") ||
             (annotated.kind === "tuple" &&
-                !ts.isArrayLiteralExpression(initializerLiteral))
+                !ts.isArrayLiteralExpression(initializerLiteral) &&
+                !ts.isConditionalExpression(initializerLiteral))
         ) {
             // Readonly views keep the legacy static-tuple declaration
             // semantics; only owning composites (and mutable tuple
-            // locals initialized from array literals) take the data
+            // locals initialized from array literals or their conditional) take the data
             // path. An optional HANDLE local (`Mesh | undefined` from a
             // search) keeps the value path too: a handle a search
             // produced carries its found flag, which is this port's
@@ -2332,10 +2394,12 @@ export class DeclarationLowerer {
         }
         const initializerBoundary = this.context.nativeBindingCheckpoint();
         const initializerSnapshot =
-            spreadTarget &&
-            ((ts.isObjectLiteralExpression(initializer) &&
-                !initializer.properties.some(ts.isSpreadAssignment)) ||
-                ts.isConditionalExpression(initializer))
+            (annotated.kind === "http-response" &&
+                !this.context.sharedClosures.identifierIsRebound(name)) ||
+            (spreadTarget &&
+                ((ts.isObjectLiteralExpression(initializer) &&
+                    !initializer.properties.some(ts.isSpreadAssignment)) ||
+                    ts.isConditionalExpression(initializer)))
                 ? this.context.compileValue(initializer)
                 : undefined;
         const boundCpp =
@@ -2476,6 +2540,9 @@ export class DeclarationLowerer {
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
+            ...(initializerSnapshot?.packagedBodySource
+                ? { packagedBodySource: initializerSnapshot.packagedBodySource }
+                : {}),
             ...(sharedDataBinding || selfReferentialBinding
                 ? { sharedStorageCpp: cppName }
                 : {}),
@@ -2539,16 +2606,52 @@ export class DeclarationLowerer {
         return true;
     }
 
-    /**
-     * Whether an inferred array literal needs actual array storage.
-     *
-     * The alias walk is `aliasedMutationScan`; the clauses here are what
-     * counts as an array mutation: a runtime element index (which needs
-     * storage even when nothing resizes), a mutating array method, the
-     * array escaping into any call argument, and assignment through an
-     * element or to the binding itself. Only a direct rebind
-     * (`const b = arr` or `b = arr`) creates an alias.
-     */
+    /** TypeScript's evolved reads supply storage for an initially empty array. */
+    private evolvedArrayType(identifier: ts.Identifier): DataType | undefined {
+        const checker = this.context.checker;
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        if (!symbol) return undefined;
+        let scope: ts.Node = identifier.parent;
+        while (!ts.isBlock(scope) && !ts.isSourceFile(scope))
+            scope = scope.parent;
+        const candidates: ts.Type[] = [];
+        forEachAnalysisNode(scope, (node) => {
+            if (
+                !ts.isIdentifier(node) ||
+                node === identifier ||
+                this.context.symbols.valueSymbol(node) !== symbol
+            )
+                return;
+            const type = checker.getTypeAtLocation(node);
+            if (!checker.isArrayType(type)) return;
+            const element = checker.getIndexTypeOfType(
+                type,
+                ts.IndexKind.Number,
+            );
+            if (
+                !element ||
+                (element.flags &
+                    (ts.TypeFlags.Any |
+                        ts.TypeFlags.Unknown |
+                        ts.TypeFlags.Never)) !==
+                    0
+            )
+                return;
+            candidates.push(type);
+        });
+        // TypeScript evolves `const values = []` at each read. Its widest
+        // compatible read supplies the array type after branch/loop appends.
+        const type = candidates.find((candidate) =>
+            candidates.every((other) =>
+                checker.isTypeAssignableTo(other, candidate),
+            ),
+        );
+        return type
+            ? this.context.dataTypes.fromStoredTsType(type, identifier)
+            : undefined;
+    }
+
+    /** Alias writes, mutating methods and call escapes require owning array storage. */
     private inferredArrayIsMutated(identifier: ts.Identifier): boolean {
         return aliasedMutationScan(
             identifier,

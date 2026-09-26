@@ -22,6 +22,7 @@
  * adds one refuses rather than composing a module this port cannot serve.
  */
 import type { JsonObject } from "./json-fields.js";
+import { pinnedInstanceAttributes } from "./lowering/thin-instance-attributes.js";
 import type {
     CompiledNodeMaterial,
     NodeMaterialBlockEmitter,
@@ -103,18 +104,22 @@ export interface ComposedNodeMaterial {
     /**
      * The block's bytes as floats, folded from the graph's own defaults.
      *
-     * `writeNodeUBO` scatters each named input's values at the offset the
-     * pin's layout gave it, and every reached scene leaves those values
-     * alone — the `inputs` handles that would change one are not lowered, so
-     * a scene writing one fails by name. That makes the block a constant,
-     * and this is what the pin's writer would have written into it.
+     * `writeNodeUBO` scatters each input's defaults at the pin's layout offsets.
+     * Each native material copies this block before applying its scalar writes.
      */
     uboFloats: readonly number[];
     attributes: readonly ComposedNodeAttribute[];
+    /** The emitted vertex entry point consumes the instance-index builtin. */
+    usesInstanceIndex: boolean;
     /** The texture pairs the graph declares, in the pin's allocation order. */
     textures: readonly ComposedNodeTextureBinding[];
     /** Public input handles, as the actual pinned factory exposes them. */
-    inputs: readonly { name: string; type: string }[];
+    inputs: readonly {
+        name: string;
+        type: string;
+        offset?: number;
+        count?: number;
+    }[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
     /** Whether the graph selects BJS alpha-combine mode for its draw. */
@@ -190,6 +195,7 @@ export interface ComposedNodeGeometryView {
     /** The block as `ensureGeometryNodeUBO` filled it, recorded. */
     uboFloats: readonly number[];
     attributes: readonly ComposedNodeAttribute[];
+    usesInstanceIndex: boolean;
     textures: readonly ComposedNodeTextureBinding[];
     /**
      * `NmeGeomParams`' group-1 binding, or null for a view that needs none.
@@ -204,6 +210,7 @@ export interface ComposedNodeGeometryView {
 }
 
 interface ComposeNodeMaterialOptions {
+    hasInstances?: boolean | undefined;
     shadowLights?: readonly {
         lightIndex: number;
         shadowType: "esm" | "pcf" | "csm";
@@ -330,7 +337,14 @@ function assertCasterBindingsMatch(
 
 /** The pin's build state, by the field names `node-types.ts` gives them. */
 interface PinnedNodeBuildState {
-    vertexAttributes: readonly { _name: string }[];
+    vertexAttributes: readonly {
+        _name: string;
+        _gpuFormat?: string;
+        _arrayStride?: number;
+        _stepMode?: string;
+        _bufferGroup?: string;
+        _offset?: number;
+    }[];
     [flag: string]: unknown;
 }
 
@@ -357,6 +371,8 @@ interface PinnedNodeMaterial {
         backFaceCulling: boolean;
         needsAlphaBlending: boolean;
         alphaMode: number;
+        namedInputs: ReadonlyMap<string, number>;
+        blocks: ReadonlyMap<number, unknown>;
     };
     _uniformValues: ReadonlyMap<
         string,
@@ -374,6 +390,7 @@ interface PinnedNodeMaterialModule {
             shadowGenerators?: readonly { _shadowType: string }[];
             shadowLightIndices?: readonly number[];
             blockLoader?: (className: string) => Promise<unknown>;
+            hasInstances?: boolean;
         },
     ) => Promise<PinnedNodeMaterial>;
 }
@@ -520,6 +537,7 @@ function compositionEngine(): CompositionEngine {
 const servedFlags = new Set([
     "hasSkeleton",
     "hasInstances",
+    "usesInstanceIndex",
     "usesLightsUbo",
     "usesEnv",
     // The two storage bindings are reflected from `_morphBindings`; both
@@ -565,6 +583,7 @@ const supportedAttributes = new Set([
     "color",
     "tangent",
 ]);
+const instanceAttributes = pinnedInstanceAttributes(sharedPinnedContext());
 
 function refuse(label: string, what: string): never {
     throw new Error(
@@ -612,11 +631,27 @@ function assertReachedSlice(material: PinnedNodeMaterial, label: string): void {
  * list is what `_vertexBuffers` and both PALs' vertex layouts are built from.
  */
 function composedAttributes(
-    names: readonly string[],
+    declarations: PinnedNodeBuildState["vertexAttributes"],
     label: string,
 ): readonly ComposedNodeAttribute[] {
-    return names.map((name, index) => {
-        if (!supportedAttributes.has(name)) {
+    return declarations.map((attribute, index) => {
+        const name = attribute._name;
+        const instance = instanceAttributes.find(
+            (row) => row.name === name && row.bufferGroup === "ti-matrix",
+        );
+        if (instance) {
+            if (
+                attribute._gpuFormat !== "float32x4" ||
+                attribute._stepMode !== "instance" ||
+                attribute._bufferGroup !== instance.bufferGroup ||
+                attribute._arrayStride !== instance.arrayStride ||
+                attribute._offset !== instance.offset
+            ) {
+                throw new Error(
+                    `Node material '${label}' instance input '${name}' differs from the pinned shared instance stream.`,
+                );
+            }
+        } else if (!supportedAttributes.has(name)) {
             throw new Error(
                 `Node material '${label}' declares the vertex input ` +
                     `'${name}', which our vertex does not carry.`,
@@ -646,6 +681,7 @@ export async function composeNodeMaterial(
         pinnedBlockLoader,
         castsPcfShadow = false,
         geometryTasks = [],
+        hasInstances = false,
     } = options;
     // `emitShadow` types its slots `"esm" | "pcf"` and forks on
     // `shadowType === "pcf"`, so a cascaded slot would silently take the
@@ -712,6 +748,7 @@ export async function composeNodeMaterial(
               : undefined;
     const material = await module.parseNodeMaterialFromSnippet(engine, "", {
         json,
+        hasInstances,
         ...(blockLoader ? { blockLoader } : {}),
         ...(shadowLights.length > 0
             ? {
@@ -726,12 +763,23 @@ export async function composeNodeMaterial(
     });
     assertReachedSlice(material, label);
     const attributes = composedAttributes(
-        material._state.vertexAttributes.map(({ _name }) => _name),
+        material._state.vertexAttributes,
         label,
     );
     const uboFloats = new Array<number>(
         (material._compile._nodeUboSpec?._totalBytes ?? 0) / 4,
     ).fill(0);
+    const parser = await importPinnedModule<{
+        nodeUniformName(
+            this: void,
+            graph: unknown,
+            block: unknown,
+            sanitize: (text: string) => string,
+        ): string;
+    }>("material/node/node-parser.js");
+    const emitter = await importPinnedModule<{
+        sanitize(this: void, text: string): string;
+    }>("material/node/node-emitter.js");
     for (const slot of material._uniformValues.values()) {
         const start = slot._offsetBytes / 4;
         slot._values.forEach((value, index) => {
@@ -756,15 +804,39 @@ export async function composeNodeMaterial(
         uboBinding: material._compile._nodeUboBinding,
         uboFloats,
         attributes,
+        usesInstanceIndex: material._state.usesInstanceIndex === true,
         textures: material._compile._textureBindings.map((binding) => ({
             name: binding._name,
             texture: binding._texBinding,
             sampler: binding._sampBinding,
         })),
-        inputs: Object.entries(material.inputs).map(([name, input]) => ({
-            name,
-            type: input.type,
-        })),
+        inputs: Object.entries(material.inputs).map(([name, input]) => {
+            const id = material._graph.namedInputs.get(name);
+            const slot =
+                id === undefined || input.type === "texture2d"
+                    ? undefined
+                    : material._uniformValues.get(
+                          parser.nodeUniformName(
+                              material._graph,
+                              material._graph.blocks.get(id),
+                              emitter.sanitize,
+                          ),
+                      );
+            if (input.type !== "texture2d" && !slot)
+                throw new Error(
+                    `Pinned node input '${name}' has no retained uniform slot.`,
+                );
+            return {
+                name,
+                type: input.type,
+                ...(slot
+                    ? {
+                          offset: slot._offsetBytes / 4,
+                          count: slot._values.length,
+                      }
+                    : {}),
+            };
+        }),
         backFaceCulling: material._graph.backFaceCulling,
         alphaBlending: material._graph.needsAlphaBlending,
         envBindings: env
@@ -950,7 +1022,11 @@ async function composeNodeGeometryViews(
             uboBytes,
             uboBinding: compile._nodeUboBinding,
             uboFloats,
-            attributes: composedAttributes(resources._attrNames, viewLabel),
+            attributes: composedAttributes(
+                resources._geomState.vertexAttributes,
+                viewLabel,
+            ),
+            usesInstanceIndex: resources._geomState.usesInstanceIndex === true,
             textures: compile._textureBindings.map((binding) => ({
                 name: binding._name,
                 texture: binding._texBinding,

@@ -2,6 +2,7 @@
 
 #include "pal_dawn_offscreen.hpp"
 #include "pal_dawn_sprite_ui.hpp"
+#include "pal_gpu_vertex.hpp"
 #include <deque>
 
 namespace bbl::pal {
@@ -12,7 +13,9 @@ public:
         EngineOptions engine;
         if (!SDL_GetWindowSizeInPixels(window, &engine.width, &engine.height))
             dawn_error(SDL_GetError());
-        create_dawn_device(engine, {}, state_, {window, &errors_});
+        DeviceOptions options;
+        options.max_vertex_attributes = scene_vertex_attribute_limit();
+        create_dawn_device(engine, options, state_, {window, &errors_});
         shared_.emplace(state_);
     }
     ~DawnWindowPresenter() override {

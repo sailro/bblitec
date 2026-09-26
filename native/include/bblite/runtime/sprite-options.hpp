@@ -106,6 +106,8 @@ struct BillboardSystemOptions {
     SpriteBlendDescriptor blend;
     float opacity;
     bool visible;
+    double order = 0;
+    bool has_order = false;
     float alpha_cutoff;
     bool has_alpha_cutoff;
     std::uint32_t custom_shader;

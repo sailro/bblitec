@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import { absentBinding } from "../pinned-numeric-lowerer.js";
 
 /** Source manager traversal; scratch identity and pose accumulation are supplied transports. */
 export function lowerGltfWeightedAnimationPasses(
@@ -18,6 +19,16 @@ export function lowerGltfWeightedAnimationPasses(
             "Weighted node tuple slot changed; establish its native identity transport.",
         );
     const bindings = new Map<string, PinnedBinding>([
+        // Only the USD loader installs these hooks; ordinary glTF and public
+        // property groups retain the module's absent initial bindings.
+        ["_propertyMixerHandler", absentBinding("null")],
+        [
+            "_propertyMixerHandler?.(manager, deltaMs, true)",
+            absentBinding("undefined"),
+        ],
+        ["_propertyMixerDirectHandler", absentBinding("null")],
+        ["_propertyMixerFinishHandler", absentBinding("null")],
+        ["group._propertyMixerHandled", absentBinding("undefined")],
         ["scratch", { cpp: "scratch", type: "opaque" }],
         ["keys", { cpp: "keys", type: "opaque" }],
         ["keys.size", { cpp: "keys.size()", type: "scalar" }],

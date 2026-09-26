@@ -142,7 +142,11 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
     if (!surface) {
         gpu_error("SDL_CreateSurfaceFrom screenshot");
     }
-    const bool saved = IMG_SavePNG(surface, path.c_str());
+    bool saved = false;
+    {
+        std::lock_guard lock(image_decoder_mutex());
+        saved = IMG_SavePNG(surface, path.c_str());
+    }
     SDL_DestroySurface(surface);
     if (!saved)
         gpu_error("IMG_SavePNG screenshot");
@@ -185,6 +189,8 @@ struct PinnedStageSlots {
 };
 
 inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
+    if (base_name.empty())
+        throw std::runtime_error("A compiled shader stage must have a name.");
     const std::string shader_override = environment_variable("BBLITE_GPU_SHADER_DIR");
     const std::string shader_root = shader_override.empty()
                                         ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
@@ -847,12 +853,12 @@ public:
     SDL_GPUBuffer* upload(SDL_GPUBufferUsageFlags usage, const void* data, std::size_t size) {
         SDL_GPUBufferCreateInfo buffer_info{};
         buffer_info.usage = usage;
-        buffer_info.size = static_cast<Uint32>(size);
-        SDL_GPUBuffer* buffer = SDL_CreateGPUBuffer(device, &buffer_info);
+        buffer_info.size = gpu_u32(size);
+        OwnedSdlBuffer buffer{SDL_CreateGPUBuffer(device, &buffer_info), {device}};
         if (!buffer)
             gpu_error("SDL_CreateGPUBuffer");
-        write_buffer(buffer, 0, data, size, false, size);
-        return buffer;
+        write_buffer(buffer.get(), 0, data, size, false, size);
+        return buffer.release();
     }
 
     void update(SDL_GPUBuffer* buffer, const void* data, std::size_t size) {

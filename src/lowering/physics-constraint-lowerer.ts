@@ -396,6 +396,11 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
         })
         .join("\n");
     const header = `
+struct PhysicsConstraint {
+    pal::PhysicsConstraintHandle handle;
+    std::shared_ptr<bool> disposed = std::make_shared<bool>(false);
+    bool operator==(const PhysicsConstraint& other) const { return disposed == other.disposed; }
+};
 struct PhysicsConstraintOptions {
     js::Nullable<Vec3d> pivot_a{}, pivot_b{}, axis_a{}, axis_b{}, perp_axis_a{}, perp_axis_b{};
     js::Nullable<double> max_distance{};
@@ -403,9 +408,44 @@ struct PhysicsConstraintOptions {
 };
 struct PhysicsConstraintLimit { double axis, minimum, maximum; };
 pal::PhysicsConstraintAxes physics_constraint_axes(double type, const PhysicsConstraintOptions& options, const std::vector<PhysicsConstraintLimit>& limits);
-void create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, double type, const PhysicsConstraintOptions& options = {}, const std::vector<PhysicsConstraintLimit>& limits = {});
+PhysicsConstraint create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, double type, const PhysicsConstraintOptions& options = {}, const std::vector<PhysicsConstraintLimit>& limits = {});
+void release_physics_constraint(PhysicsWorldHandle world, PhysicsConstraint constraint);
 `;
+    const release = context.functionDeclaration(
+        module,
+        "releasePhysicsConstraint",
+    );
+    const releaseBody = lowerPinnedBody(
+        release.file,
+        release.declaration.body!.statements,
+        {
+            bindings: new Map([
+                [
+                    "constraint._isDisposed",
+                    { cpp: "*constraint.disposed", type: "bool" },
+                ],
+                [
+                    "constraint._hkConstraint",
+                    { cpp: "constraint.handle", type: "opaque" },
+                ],
+            ]),
+            calls: new Map<string, (args: readonly string[]) => string>([
+                [
+                    "world._hknp.HP_Constraint_SetEnabled",
+                    () => "static_cast<void>(0)",
+                ],
+                [
+                    "world._hknp.HP_Constraint_Release",
+                    (args) =>
+                        `pal::physics_constraint_release(${args.join(", ")})`,
+                ],
+            ]),
+        },
+    );
     const source = `
+void release_physics_constraint([[maybe_unused]] PhysicsWorldHandle world, PhysicsConstraint constraint) {
+${releaseBody}
+}
 namespace {
 ${normalFunctions}
 ${nativeAxis}
@@ -416,7 +456,7 @@ ${configurations}
     throw std::runtime_error("Unknown constraint type.");
 }
 // ${context.provenance(module, "createPhysicsConstraint", "anchor defaults and source-selected axes; PAL joint solver")}
-void create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, double type, const PhysicsConstraintOptions& options, const std::vector<PhysicsConstraintLimit>& limits) {
+PhysicsConstraint create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, double type, const PhysicsConstraintOptions& options, const std::vector<PhysicsConstraintLimit>& limits) {
     const Vec3d pivot_a = options.pivot_a ? *options.pivot_a : Vec3d{0, 0, 0};
     const Vec3d pivot_b = options.pivot_b ? *options.pivot_b : Vec3d{0, 0, 0};
     const Vec3d axis_a = options.axis_a ? *options.axis_a : Vec3d{1, 0, 0};
@@ -426,9 +466,9 @@ void create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, Phy
     const pal::PhysicsConstraintAnchor parent{{pivot_a.x, pivot_a.y, pivot_a.z}, {axis_a.x, axis_a.y, axis_a.z}, {perpendicular_a.x, perpendicular_a.y, perpendicular_a.z}};
     const pal::PhysicsConstraintAnchor child{{pivot_b.x, pivot_b.y, pivot_b.z}, {axis_b.x, axis_b.y, axis_b.z}, {perpendicular_b.x, perpendicular_b.y, perpendicular_b.z}};
     if (type == ${typeMembers.find(([name]) => name === "HINGE")![1]}.0) {
-        pal::physics_world_create_hinge(physics_world_record(world).handle, body_a.handle, body_b.handle, parent, child, options.collision);
+        return PhysicsConstraint{pal::physics_world_create_hinge(physics_world_record(world).handle, body_a.handle, body_b.handle, parent, child, options.collision)};
     } else {
-        pal::physics_world_create_constraint(physics_world_record(world).handle, body_a.handle, body_b.handle, parent, child, physics_constraint_axes(type, options, limits), options.collision);
+        return PhysicsConstraint{pal::physics_world_create_constraint(physics_world_record(world).handle, body_a.handle, body_b.handle, parent, child, physics_constraint_axes(type, options, limits), options.collision)};
     }
 }
 `;

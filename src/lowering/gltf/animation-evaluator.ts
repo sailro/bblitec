@@ -14,7 +14,9 @@ export function lowerGltfAnimationEvaluator(
 ): string {
     const module = "src/animation/evaluate.ts";
     const types = context.sourceFile("src/animation/types.ts");
-    const functions = [
+    const functions: ReadonlyArray<
+        readonly [string, string, string, string, string]
+    > = [
         [
             "findKeyframe",
             `${prefix}_find_animation_key`,
@@ -30,20 +32,40 @@ export function lowerGltfAnimationEvaluator(
             "class Output",
         ],
         [
-            "quatSlerp",
+            prefix === "property" ? "propertyQuatSlerp" : "quatSlerp",
             `${prefix}_slerp_animation_quaternion`,
             "void",
             "Output& out, double ax, double ay, double az, double aw, double bx, double by, double bz, double bw, double t",
             "class Output",
         ],
+        ...(prefix === "property"
+            ? ([
+                  [
+                      "copySample",
+                      "property_copy_animation_sample",
+                      "void",
+                      "const Input& output, double srcOffset, double stride, Output& dst, double dstOffset",
+                      "class Input, class Output",
+                  ],
+                  [
+                      "interpolateLinearSample",
+                      "property_interpolate_animation_sample",
+                      "void",
+                      "const Input& output, double keyIndex, double stride, bool isQuat, double gradient, Output& dst, double dstOffset",
+                      "class Input, class Output",
+                  ],
+              ] as const)
+            : []),
         [
-            "evaluateSampler",
+            prefix === "property"
+                ? "evaluatePropertySampler"
+                : "evaluateSampler",
             `${prefix}_evaluate_animation_sampler`,
             "void",
             "const Sampler& sampler, double t, double stride, bool isQuat, Output& dst, double dstOffset",
             "class Sampler, class Output",
         ],
-    ] as const;
+    ];
     return functions
         .map(([symbol, cpp, result, parameters, templates]) => {
             const { file, declaration } = context.functionDeclaration(
@@ -60,7 +82,9 @@ export function lowerGltfAnimationEvaluator(
                 const name = parameter.name.text;
                 bindings.set(name, {
                     cpp: name,
-                    type: ["input", "buf", "out", "dst"].includes(name)
+                    type: ["input", "output", "buf", "out", "dst"].includes(
+                        name,
+                    )
                         ? "f32"
                         : name === "sampler"
                           ? "opaque"
@@ -70,6 +94,12 @@ export function lowerGltfAnimationEvaluator(
                 });
             }
             bindings.set("_quat", { cpp: "quaternion", type: "f32" });
+            if (prefix === "property")
+                bindings.set("easing", {
+                    cpp: "false",
+                    type: "bool",
+                    staticBoolean: false,
+                });
             for (const name of ["INTERP_STEP", "INTERP_CUBICSPLINE"])
                 bindings.set(name, {
                     cpp: context.doubleLiteral(
@@ -137,7 +167,7 @@ export function lowerGltfAnimationEvaluator(
             return `// ${context.provenance(module, symbol)}
 template<${templates}>
 ${result} ${cpp}(${parameters}) {
-${symbol === "evaluateSampler" ? "    std::array<float, 4> quaternion{};\n" : ""}${body}
+${symbol === "evaluateSampler" || symbol === "interpolateLinearSample" ? "    std::array<float, 4> quaternion{};\n" : ""}${body}
 }`;
         })
         .join("\n\n");

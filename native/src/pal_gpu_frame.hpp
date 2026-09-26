@@ -8,6 +8,7 @@
 
 #include <bblite/js_gc.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_iteration.hpp>
 #include <bblite/runtime.hpp>
 #if BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
@@ -412,6 +413,21 @@ private:
     const char* label_;
     double start_;
     double previous_;
+};
+
+/** Yield GPU preparation between uploads without publishing an incomplete frame. */
+class StartupWorkBudget {
+    double started_ = monotonic_milliseconds();
+
+public:
+    bool exhausted() const {
+#if BBLITE_WORKERS
+        return monotonic_milliseconds() - started_ >= 4.0;
+#else
+        return false;
+#endif
+    }
+    void resume() { started_ = monotonic_milliseconds(); }
 };
 
 /**

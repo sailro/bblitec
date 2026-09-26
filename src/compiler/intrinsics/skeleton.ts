@@ -186,14 +186,16 @@ export function compileSkeletonIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const skeleton = context.compileValue(argumentAt(call, 0));
             context.expectKind(skeleton, "skeleton", argumentAt(call, 0));
-            const name = context.compileStringLiteral(argumentAt(call, 1));
+            const name = context.compileForDataSink(argumentAt(call, 1), {
+                kind: "string",
+            });
             const engine = context.requireEngine(skeleton, call);
             const bone = context.allocateTemporaryCppName("bone");
             context.emit({
                 kind: "declaration",
                 type: `const ${handleCppType("bone")}`,
                 name: bone,
-                initializer: `bbl::get_bone_by_name(${engine}, ${skeleton.cpp}, ${context.cppString(name)})`,
+                initializer: `bbl::get_bone_by_name(${engine}, ${skeleton.cpp}, ${name})`,
             });
             return {
                 kind: "bone",
@@ -225,6 +227,31 @@ export function compileSkeletonIntrinsic(
             };
         }
 
+        case "setBoneWorldPoseDeferred": {
+            context.expectArgumentCount(call, 9, 9);
+            const skeleton = context.compileValue(argumentAt(call, 0));
+            context.expectKind(skeleton, "skeleton", argumentAt(call, 0));
+            const bone = context.compileValue(argumentAt(call, 1));
+            context.expectKind(bone, "bone", argumentAt(call, 1));
+            context.expectSameEngine(skeleton, bone, call);
+            const lanes = call.arguments
+                .slice(2)
+                .map((argument) => context.compileNumber(argument, "double"));
+            return {
+                kind: "void",
+                cpp: `bbl::set_bone_world_pose_deferred(${context.requireEngine(skeleton, call)}, ${skeleton.cpp}, ${bone.cpp}, ${lanes.join(", ")})`,
+            };
+        }
+        case "bakeSkeleton": {
+            context.expectArgumentCount(call, 1, 1);
+            const skeleton = context.compileValue(argumentAt(call, 0));
+            context.expectKind(skeleton, "skeleton", argumentAt(call, 0));
+            return {
+                kind: "void",
+                cpp: `bbl::bake_skeleton(${context.requireEngine(skeleton, call)}, ${skeleton.cpp})`,
+            };
+        }
+
         // Every other member of the chunk is unreached and refuses by
         // name, so a scene reaching one is told which arm it needs rather
         // than getting the visibility one.
@@ -232,14 +259,12 @@ export function compileSkeletonIntrinsic(
         case "setBoneRotationQuaternion":
         case "setBoneScaling":
         case "setBonePoseDeferred":
-        case "setBoneWorldPoseDeferred":
-        case "bakeSkeleton":
         case "clearBoneOverride": {
             return context.fail(
                 call,
                 `${importedName} is part of the bone-control chunk this ` +
                     "port has not lowered: the reached slice is " +
-                    "`getBoneByName` plus `setBoneVisible`.",
+                    "bone lookup, visibility, deferred world poses and baking.",
             );
         }
 

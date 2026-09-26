@@ -7,8 +7,8 @@ std::vector<std::uint8_t> read_binary_file(const std::string& path) {
         throw std::runtime_error("missing fixture LUT");
     return {static_cast<std::uint8_t>(path == "corrupt" ? 0 : 1)};
 }
-DecodedImage decode_image(const js::ArrayBuffer& bytes) {
-    if (!bytes.byte_length() || bytes.data()[0] != 1)
+DecodedImage decode_image(std::span<const std::uint8_t> bytes) {
+    if (bytes.empty() || bytes[0] != 1)
         throw std::runtime_error("corrupt fixture LUT");
     return {1, 1, {128, 128, 128, 255}};
 }
@@ -218,7 +218,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            disposed_update = std::string(value.what()) == "#134";
+                            disposed_update = std::string(value.what()) == "#136";
                         }
                         disposal.close();
                     });
@@ -228,7 +228,7 @@ int main() {
                !world.scene.state->environment_identity && !world.scene.environment.specular_gpu);
         assert(world.device->counters.images == 0 && world.device->counters.buffers == 0 &&
                !procedural_sky_generation(world.scene));
-        rejects([&] { assert_procedural_sky_environment_active(environment); }, "#134");
+        rejects([&] { assert_procedural_sky_environment_active(environment); }, "#136");
     }
     for (const std::string path : {"corrupt", "missing"}) {
         World world;
@@ -290,7 +290,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            cancelled = std::string(value.what()) == "#140";
+                            cancelled = std::string(value.what()) == "#142";
                         }
                         loop.close();
                     });
@@ -316,7 +316,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            cancelled = std::string(value.what()) == "#140";
+                            cancelled = std::string(value.what()) == "#142";
                         }
                         loop.close();
                     });
@@ -326,7 +326,7 @@ int main() {
                           try {
                               std::rethrow_exception(error);
                           } catch (const std::exception& value) {
-                              duplicate = std::string(value.what()) == "#139";
+                              duplicate = std::string(value.what()) == "#141";
                           }
                       });
             loop.post([&] { world.dispose(); });

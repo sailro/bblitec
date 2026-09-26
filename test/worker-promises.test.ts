@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -30,5 +31,15 @@ test("realm promises schedule reactions, adopt results, recover and release susp
         `/Fo${directory}/`,
         `/Fe${executable}`,
     ]);
-    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
+    const result = spawnSync(executable, {
+        encoding: "utf8",
+        timeout: 10000,
+        env: { ...tools.environment, BBLITE_TIMER_PROFILE: "1" },
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+        result.stderr,
+        /\[cpu\]\[timer\] realm=\S+ id=\d+ repeat=[01] delay_ms=[\d.]+ now_ms=[\d.]+/,
+    );
 });

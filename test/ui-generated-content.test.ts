@@ -53,6 +53,7 @@ test("generated content refuses unrepresented functions and originating declarat
         ".item::before{content:counter(item)}",
         '.item::before:hover{content:"x"}',
         '.item::before{content:"";outline:1px solid red}',
+        '.item::before{content:"";--bbl-authored-display:1}',
     ])
         assert.throws(() => compile(css));
     for (const css of [

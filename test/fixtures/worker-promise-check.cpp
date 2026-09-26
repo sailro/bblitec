@@ -2,8 +2,22 @@
 #include <bblite/js_promise_all.hpp>
 #include <bblite/js_realm_state.hpp>
 #include <bblite/pal_frame_driver.hpp>
+#include <bblite/pal_iteration.hpp>
+#include <bblite/pal_async_engine.hpp>
 
 #include <iostream>
+
+namespace {
+int asset_loads = 0;
+}
+namespace bbl {
+AssetHandle load_gltf(Engine&, const std::string& path) {
+    ++asset_loads;
+    if (path == "missing")
+        throw std::runtime_error("fixture asset unavailable");
+    return {17};
+}
+} // namespace bbl
 
 namespace {
 using namespace bbl;
@@ -219,6 +233,16 @@ void unhandled_rejections_reach_the_realm_error_handler() {
 
 int frame_steps = 0;
 int frame_cleanup = 0;
+int preparation_steps = 0;
+pal::Iteration<bool> renderer_preparation() {
+    bool timer_ran = false;
+    pal::EventLoop::current().set_timeout([&] { timer_ran = true; }, 0);
+    ++preparation_steps;
+    co_yield false;
+    require(timer_ran, "GPU preparation blocked the realm's loading timer");
+    ++preparation_steps;
+    co_return true;
+}
 pal::FrameDriver renderer_activation(Engine& engine) {
     const auto cleanup = js::finally([&] {
         require(pal::OffscreenRun::current() == engine.offscreen_run.get(),
@@ -227,6 +251,9 @@ pal::FrameDriver renderer_activation(Engine& engine) {
     });
     require(pal::OffscreenRun::current() == engine.offscreen_run.get(),
             "Renderer activation lost its canvas binding");
+    auto preparation = renderer_preparation();
+    while (preparation.advance())
+        co_yield false;
     ++frame_steps;
     co_yield false; // No output image was available yet.
     ++frame_steps;
@@ -248,7 +275,7 @@ void renderer_tasks_yield_and_retire() {
         auto driver = renderer_activation(engine);
         driver.ready().observe(
             [&](const js::PromiseVoid&) {
-                require(frame_steps == 2 && timer_ran,
+                require(frame_steps == 2 && preparation_steps == 2 && timer_ran,
                         "Readiness preceded output or renderer prevented timer dispatch");
                 require(!pal::OffscreenRun::current(),
                         "Renderer leaked its canvas binding into a reaction");
@@ -262,6 +289,45 @@ void renderer_tasks_yield_and_retire() {
     require(frame_cleanup == 1 && !pal::OffscreenRun::current(),
             "Renderer frame survived shutdown or kept its canvas bound");
 }
+
+void asset_tasks_preserve_owners_and_errors() {
+    const js::RealmScope realm;
+    pal::EventLoop loop;
+    int completed = 0;
+    loop.run([&] {
+        auto engine = std::make_shared<Engine>();
+        engine->realm_owner = engine;
+        const auto first = pal::load_realm_gltf(*engine, "ready");
+        const auto failed = pal::load_realm_gltf(*engine, "missing");
+        require(asset_loads == 0 && first.pending() && failed.pending(),
+                "Asset decoding blocked its promise creation");
+        const std::weak_ptr<Engine> weak = engine;
+        engine.reset();
+        require(!weak.expired(), "Pending asset work lost its engine");
+        const auto finish = [&] {
+            if (++completed == 2)
+                loop.close();
+        };
+        first.observe(
+            [finish](const AssetHandle& value) {
+                require(value.value == 17, "Asset task returned the wrong handle");
+                finish();
+            },
+            [](std::exception_ptr error) { std::rethrow_exception(error); });
+        failed.observe([](const AssetHandle&) { require(false, "Asset failure resolved"); },
+                       [finish](std::exception_ptr error) {
+                           try {
+                               std::rethrow_exception(error);
+                           } catch (const std::runtime_error& failure) {
+                               require(std::string_view(failure.what()) ==
+                                           "fixture asset unavailable",
+                                       "Asset failure lost its source error");
+                           }
+                           finish();
+                       });
+    });
+    require(completed == 2 && asset_loads == 2, "Asset tasks repeated or lost a decode");
+}
 } // namespace
 
 int main() {
@@ -272,6 +338,7 @@ int main() {
         shutdown_releases_suspended_activations();
         unhandled_rejections_reach_the_realm_error_handler();
         renderer_tasks_yield_and_retire();
+        asset_tasks_preserve_owners_and_errors();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

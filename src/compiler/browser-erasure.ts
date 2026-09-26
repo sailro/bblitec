@@ -19,6 +19,7 @@ import {
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
+import { customEventDispatchTarget } from "./custom-events.js";
 import { writesUnobservedCanvasMetadata } from "./canvas-instrumentation.js";
 import { staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
@@ -84,12 +85,14 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "static-fetch-response",
     "platform-keyboard-event",
     "platform-mouse-event",
+    "custom-event",
     "ui-element",
     "worker",
     "worker-scope",
     "worker-message-event",
     "worker-error-event",
     "worker-media-query",
+    "worker-mutation-observer",
     "offscreen-canvas",
 ]);
 
@@ -1344,6 +1347,7 @@ export class BrowserErasure {
     }
 
     private isNativeUiCall(call: ts.CallExpression): boolean {
+        if (customEventDispatchTarget(this.context, call)) return true;
         if (
             this.context.isNativeHostUiLookup(call) ||
             this.isPrimaryCanvas2DContext(call)

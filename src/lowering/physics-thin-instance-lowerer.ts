@@ -1,3 +1,4 @@
+import { lowerPhysicsThinAdvanced } from "./physics-thin-advanced-lowerer.js";
 import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
@@ -51,10 +52,28 @@ export function lowerPhysicsThinInstances(
                 pinned: "matrices",
                 cpp: "matrices",
                 kind: "matrix",
-                annotation: "Float32Array | Float64Array",
+                annotation: "Mat4Storage",
                 cppType: "std::vector<float>",
             },
             { pinned: "index", cpp: "index", kind: "number" },
+            {
+                pinned: "carrier",
+                cpp: "carrier",
+                kind: "matrix",
+                annotation: "Mat4",
+            },
+            {
+                pinned: "carrierIdentity",
+                cpp: "carrier_identity",
+                kind: "boolean",
+            },
+            {
+                pinned: "matrixScratch",
+                cpp: "matrix_scratch",
+                kind: "mat4F64",
+                cppType: "std::vector<double>",
+                mutableRecord: true,
+            },
             {
                 pinned: "transform",
                 cpp: "transform",
@@ -71,11 +90,78 @@ export function lowerPhysicsThinInstances(
                 cppType: "std::array<double, 4>",
                 mutableRecord: true,
             },
+            {
+                pinned: "scales",
+                cpp: "scales",
+                kind: "mat4F64",
+                annotation: "Float64Array",
+                cppType: "std::vector<double>",
+                mutableRecord: true,
+            },
         ],
         {
             cppName: "thin_instance_transform",
-            calls,
+            calls: new Map([
+                ...calls,
+                [
+                    "multiplyMat4IntoBuffer",
+                    (args) => `thin_multiply_f64(${args.join(", ")})`,
+                ],
+            ]),
+            localStorage: [
+                {
+                    pinned: "source",
+                    initializer: "matrices",
+                    binding: { cpp: "source", type: "f64-buffer" },
+                    declaration:
+                        "std::variant<std::span<const float>, std::span<const double>> source{std::span<const float>{matrices}};",
+                },
+            ],
+            expression: (expression, numeric) => {
+                if (
+                    ts.isElementAccessExpression(expression) &&
+                    context.expressionMatchesShape(
+                        expression.expression,
+                        "source",
+                    )
+                )
+                    return `std::visit([index = static_cast<std::size_t>(${numeric.expression(expression.argumentExpression)})](const auto values) { return static_cast<double>(values[index]); }, source)`;
+                return [
+                    "matrices instanceof Float32Array",
+                    "carrier instanceof Float32Array",
+                ].some((shape) =>
+                    context.expressionMatchesShape(expression, shape),
+                )
+                    ? "true"
+                    : undefined;
+            },
+            statement: (statement, _numeric, indent) => {
+                if (
+                    !ts.isExpressionStatement(statement) ||
+                    !ts.isBinaryExpression(statement.expression) ||
+                    !context.expressionMatchesShape(
+                        statement.expression.left,
+                        "source",
+                    )
+                )
+                    return undefined;
+                context.assertExpressionShape(
+                    statement.expression,
+                    "source = matrixScratch",
+                    "Thin transform scratch alias",
+                );
+                return [
+                    `${indent}source = std::span<const double>{matrix_scratch};`,
+                ];
+            },
             memberBindings: new Map<string, PinnedBinding>([
+                [
+                    "Number.EPSILON",
+                    {
+                        cpp: "std::numeric_limits<double>::epsilon()",
+                        type: "scalar",
+                    },
+                ],
                 [
                     "transform[0]",
                     { cpp: "transform.position", type: "f64-buffer" },
@@ -196,6 +282,10 @@ export function lowerPhysicsThinInstances(
             ],
             ["state[3]", binding("state->transform")],
             ["state[4]", binding("state->rotation")],
+            ["state[5]", binding("state->scales", "f64-buffer")],
+            ["state[6]", binding("state->scratch", "f64-buffer")],
+            ["state[9]", binding("state->carrier_identity", "bool")],
+            ["carrier", binding("carrier", "f32")],
             ["state[3][0]", binding("state->transform.position", "f64-buffer")],
             ["state[3][1]", binding("state->transform.rotation", "f64-buffer")],
             [
@@ -230,6 +320,14 @@ export function lowerPhysicsThinInstances(
             ],
         ]);
     const methodCalls = new Map(calls);
+    methodCalls.set(
+        "updateCarrier",
+        () => "thin_update_carrier(world, *state)",
+    );
+    methodCalls.set(
+        "writeInstanceMatrix",
+        (args) => `thin_write_matrix(*${args[0]}, ${args.slice(1).join(", ")})`,
+    );
     methodCalls.set(
         "thinInstanceTransform",
         (args) => `thin_instance_transform(${args.join(", ")})`,
@@ -266,6 +364,16 @@ export function lowerPhysicsThinInstances(
                 const local = statement.declarationList.declarations[0]!;
                 if (!ts.isIdentifier(local.name) || !local.initializer)
                     return undefined;
+                if (local.name.text === "carrier") {
+                    context.assertExpressionShape(
+                        local.initializer,
+                        "updateCarrier(state)",
+                        "Thin carrier transform",
+                    );
+                    return [
+                        `${indent}const auto carrier = thin_update_carrier(world, *state);`,
+                    ];
+                }
                 if (local.name.text === "state") {
                     context.assertExpressionShape(
                         local.initializer,
@@ -366,6 +474,11 @@ export function lowerPhysicsThinInstances(
         ["hkMotion", binding("hk_motion")],
         ["hkWorld", binding("world.handle")],
         ["body", binding("state.body")],
+        ["scales", binding("state.scales", "f64-buffer")],
+        ["matrixScratch", binding("state.scratch", "f64-buffer")],
+        ["inverseStorage", binding("state.inverse", "f64-buffer")],
+        ["carrier", binding("state.carrier", "f32")],
+        ["carrierIdentity", binding("state.carrier_identity", "bool")],
         ...["STATIC", "ANIMATED"].map((name): [string, PinnedBinding] => [
             `PhysicsMotionType.${name}`,
             binding(`PhysicsMotionType::${name}`, "scalar"),
@@ -380,6 +493,10 @@ export function lowerPhysicsThinInstances(
         ]),
     ]);
     const createCalls = new Map(methodCalls);
+    createCalls.set(
+        "setCarrierInverse",
+        (args) => `thin_set_carrier_inverse(${args.join(", ")})`,
+    );
     createCalls.set(
         "validate",
         (args) => `thin_validate(world, ${args.join(", ")})`,
@@ -405,6 +522,26 @@ export function lowerPhysicsThinInstances(
                     return undefined;
                 const storage: Record<string, readonly [string, string]> = {
                     handles: ["new Array<any>(thin.count)", ""],
+                    scales: [
+                        "new Float64Array(thin.count * 3)",
+                        "state.scales.resize(state.handles.size() * 3);",
+                    ],
+                    matrixScratch: [
+                        "new Float64Array(16)",
+                        "state.scratch.resize(16);",
+                    ],
+                    inverseStorage: [
+                        "new Float64Array(16)",
+                        "state.inverse.resize(16);",
+                    ],
+                    carrier: [
+                        "mesh.worldMatrix",
+                        `state.carrier = mesh_world_matrix(*world.engine, ${recordAt("world.engine->meshes", "std::get<MeshHandle>(node)")});`,
+                    ],
+                    carrierIdentity: [
+                        "isIdentity(carrier)",
+                        "state.carrier_identity = thin_is_identity(state.carrier);",
+                    ],
                     transform: [
                         "[[0, 0, 0], [0, 0, 0, 1]]",
                         "state.transform = {{0, 0, 0}, {0, 0, 0, 1}};",
@@ -456,7 +593,7 @@ export function lowerPhysicsThinInstances(
             ) {
                 context.assertExpressionShape(
                     statement.expression,
-                    "states.set(handles[0], [body, handles, new Array<any>(handles.length), transform, rotation])",
+                    "states.set(handles[0], [body, handles, new Array<any>(handles.length), transform, rotation, scales, matrixScratch, inverseStorage, mesh.worldMatrixVersion, carrierIdentity])",
                     "Thin state ownership",
                 );
                 return [
@@ -506,7 +643,7 @@ export function lowerPhysicsThinInstances(
         );
     context.assertExpressionShape(
         facadeLoop.expression,
-        '["HP_Body_SetShape", "HP_Body_SetMassProperties", "HP_Body_ApplyImpulse", "HP_Body_SetLinearVelocity", "HP_Body_SetAngularVelocity", "HP_Body_SetMotionType", "HP_Body_SetTargetQTransform", "HP_Body_SetEventMask"]',
+        '["HP_Body_SetMassProperties", "HP_Body_ApplyImpulse", "HP_Body_SetLinearVelocity", "HP_Body_SetAngularVelocity", "HP_Body_SetMotionType", "HP_Body_SetTargetQTransform", "HP_Body_SetEventMask"]',
         "Thin facade setters",
     );
     const assignment = facadeLoop.statement.statements[0];
@@ -725,9 +862,252 @@ export function lowerPhysicsThinInstances(
             ]),
         },
     );
+    const multiply = (width: "f32" | "f64") =>
+        lowerPinnedFunction(
+            context,
+            "src/math/multiply-mat4-into-buffer.ts",
+            "multiplyMat4IntoBuffer",
+            [
+                {
+                    pinned: "dst",
+                    cpp: "dst",
+                    kind: width === "f32" ? "mat4" : "mat4F64",
+                    cppType:
+                        width === "f32"
+                            ? "std::vector<float>"
+                            : "std::vector<double>",
+                    mutableRecord: true,
+                },
+                { pinned: "d", cpp: "d", kind: "number" },
+                { pinned: "a", cpp: "a", kind: "mat4F64", cppType: "MatA" },
+                { pinned: "i", cpp: "i", kind: "number" },
+                { pinned: "b", cpp: "b", kind: "mat4F64", cppType: "MatB" },
+                { pinned: "j", cpp: "j", kind: "number" },
+            ],
+            {
+                cppName: `thin_multiply_${width}`,
+                returns: "void",
+                templateParameters: ["typename MatA", "typename MatB"],
+            },
+        );
+    const identity = lowerPinnedFunction(
+        context,
+        modulePath,
+        "isIdentity",
+        [
+            {
+                pinned: "matrix",
+                cpp: "matrix",
+                kind: "matrix",
+                annotation: "Mat4",
+            },
+        ],
+        {
+            cppName: "thin_is_identity",
+            returns: {
+                type: "bool",
+                value: (numeric, expression) => numeric.expression(expression!),
+            },
+        },
+    );
+    const inverse = lowerPinnedFunction(
+        context,
+        modulePath,
+        "setCarrierInverse",
+        [
+            {
+                pinned: "carrier",
+                cpp: "carrier",
+                kind: "matrix",
+                annotation: "Mat4",
+            },
+            {
+                pinned: "inverseStorage",
+                cpp: "inverse_storage",
+                kind: "mat4F64",
+                annotation: "Float64Array",
+                cppType: "std::vector<double>",
+                mutableRecord: true,
+            },
+        ],
+        { cppName: "thin_set_carrier_inverse", returns: "void" },
+    );
+    const composeDouble = lowerPinnedFunction(
+        context,
+        "src/math/compose-mat4-into-buffer.ts",
+        "composeMat4IntoBuffer",
+        [
+            {
+                pinned: "dst",
+                cpp: "dst",
+                kind: "mat4F64",
+                cppType: "std::vector<double>",
+                mutableRecord: true,
+            },
+            ...numericNames.map((pinned) => ({
+                pinned,
+                cpp: pinned,
+                kind: "number" as const,
+            })),
+        ],
+        { cppName: "thin_compose_matrix_f64", returns: "void" },
+    );
+    const writeMatrix = lowerPinnedFunction(
+        context,
+        modulePath,
+        "writeInstanceMatrix",
+        [
+            {
+                pinned: "state",
+                cpp: "state",
+                kind: "record",
+                annotation: "ThinBodyState",
+                cppType: "ThinPhysicsState",
+                mutableRecord: true,
+            },
+            {
+                pinned: "matrices",
+                cpp: "matrices",
+                kind: "mat4",
+                cppType: "std::vector<float>",
+                mutableRecord: true,
+            },
+            { pinned: "index", cpp: "index", kind: "number" },
+            {
+                pinned: "position",
+                cpp: "position",
+                kind: "numberArray",
+                annotation: "number[]",
+                cppType: "std::array<double, 3>",
+            },
+            {
+                pinned: "rotation",
+                cpp: "rotation",
+                kind: "numberArray",
+                annotation: "number[]",
+                cppType: "std::array<double, 4>",
+            },
+        ],
+        {
+            cppName: "thin_write_matrix",
+            returns: "void",
+            memberBindings: new Map([
+                [
+                    "Number.EPSILON",
+                    binding("std::numeric_limits<double>::epsilon()", "scalar"),
+                ],
+                ["state[5]", binding("state.scales", "f64-buffer")],
+                ["state[6]", binding("state.scratch", "f64-buffer")],
+                ["state[7]", binding("state.inverse", "f64-buffer")],
+                ["state[9]", binding("state.carrier_identity", "bool")],
+            ]),
+            calls: new Map([
+                [
+                    "composeMat4IntoBuffer",
+                    (args) => `thin_compose_matrix_f64(${args.join(", ")})`,
+                ],
+                [
+                    "multiplyMat4IntoBuffer",
+                    (args) => `thin_multiply_f32(${args.join(", ")})`,
+                ],
+                [
+                    "matrices.set",
+                    (args) => `thin_copy_matrix(matrices, ${args.join(", ")})`,
+                ],
+            ]),
+        },
+    );
+    const update = lowerPinnedFunction(
+        context,
+        modulePath,
+        "updateCarrier",
+        [
+            {
+                pinned: "state",
+                cpp: "state",
+                kind: "record",
+                annotation: "ThinBodyState",
+                cppType: "ThinPhysicsState",
+                mutableRecord: true,
+            },
+        ],
+        {
+            cppName: "thin_update_carrier_impl",
+            returns: { type: "std::array<float, 16>", value: () => "carrier" },
+            localStorage: [
+                {
+                    pinned: "carrier",
+                    initializer: "mesh.worldMatrix",
+                    binding: binding("carrier", "f32"),
+                    declaration: `const auto carrier = mesh_world_matrix(*state.body.owner.lock()->engine, ${recordAt("state.body.owner.lock()->engine->meshes", "std::get<MeshHandle>(state.body.node)")});`,
+                },
+            ],
+            statement: (statement, numeric, indent) => {
+                if (
+                    !ts.isExpressionStatement(statement) ||
+                    !ts.isBinaryExpression(statement.expression)
+                )
+                    return undefined;
+                const assignment = statement.expression;
+                const field =
+                    assignment.left.getText() === "state[8]"
+                        ? "carrier_version"
+                        : assignment.left.getText() === "state[9]"
+                          ? "carrier_identity"
+                          : undefined;
+                return field &&
+                    assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                    ? [
+                          `${indent}state.${field} = ${numeric.expression(assignment.right)};`,
+                      ]
+                    : undefined;
+            },
+            memberBindings: new Map([
+                ["state[0].node", binding("state.body.node")],
+                [
+                    "mesh.worldMatrix",
+                    binding(
+                        `mesh_world_matrix(*state.body.owner.lock()->engine, ${recordAt("state.body.owner.lock()->engine->meshes", "std::get<MeshHandle>(state.body.node)")})`,
+                        "f32",
+                    ),
+                ],
+                [
+                    "mesh.worldMatrixVersion",
+                    binding(
+                        "state.carrier == carrier ? state.carrier_version : state.carrier_version + 1.0",
+                        "scalar",
+                    ),
+                ],
+                ["state[7]", binding("state.inverse", "f64-buffer")],
+                ["state[8]", binding("state.carrier_version", "scalar")],
+                ["state[9]", binding("state.carrier_identity", "bool")],
+            ]),
+            calls: new Map([
+                [
+                    "setCarrierInverse",
+                    (args) => `thin_set_carrier_inverse(${args.join(", ")})`,
+                ],
+                [
+                    "isIdentity",
+                    (args) => `thin_is_identity(${args.join(", ")})`,
+                ],
+            ]),
+        },
+    );
     return {
-        state: `struct ThinPhysicsState { PhysicsBody body; std::vector<pal::PhysicsBodyHandle> handles; pal::PhysicsTransform transform; std::array<double, 4> rotation; };`,
-        helpers: `${quat}\n${transform}\n${compose}
+        state: `using ThinScaledShapes = std::map<std::array<double, 3>, pal::PhysicsShapeHandle>;
+struct ThinPhysicsState { ThinScaledShapes scaled_shapes; PhysicsBody body; std::vector<pal::PhysicsBodyHandle> handles; pal::PhysicsTransform transform; std::array<double, 4> rotation; std::vector<double> scales; std::vector<double> scratch; std::vector<double> inverse; std::array<float, 16> carrier; double carrier_version = 0; bool carrier_identity = false; };`,
+        helpers: `${quat}\n${multiply("f32")}\n${multiply("f64")}\n${transform}\n${compose}\n${composeDouble}\n${identity}\n${inverse}
+void thin_copy_matrix(std::vector<float>& matrices, const std::vector<double>& values, double offset) {
+    std::transform(values.begin(), values.end(), matrices.begin() + static_cast<std::ptrdiff_t>(offset), [](double value) { return static_cast<float>(value); });
+}
+${writeMatrix}
+${update}
+std::array<float, 16> thin_update_carrier([[maybe_unused]] PhysicsWorld& world, ThinPhysicsState& state) {
+    auto carrier = thin_update_carrier_impl(state);
+    state.carrier = carrier;
+    return carrier;
+}
 MeshRecord* thin_mesh(PhysicsWorld& world, PhysicsNodeRef node) {
     const auto* handle = std::get_if<MeshHandle>(&node);
     if (!handle) return nullptr;
@@ -761,6 +1141,7 @@ ${resolveBody}
 }
 ${composeValue}
 ${kinematics("com")}
-${kinematics("matrix")}`,
+${kinematics("matrix")}
+${lowerPhysicsThinAdvanced(context)}`,
     };
 }

@@ -1,5 +1,6 @@
 import { EmissionMap, EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
+import type { NativeCaptureBinding } from "../closure-captures.js";
 // The physics family: `createHavokWorld`, `createPhysicsAggregate`,
 // `onPhysicsAfterStep`.
 //
@@ -475,9 +476,22 @@ export function physicsEventInfoType(
 export function physicsEventInfoValue(
     event: "collision" | "trigger" | "character",
     cpp: string,
+    binding: NativeCaptureBinding,
 ): Value {
+    const retained = (value: Value): Value =>
+        value.kind === "record"
+            ? {
+                  ...value,
+                  recordProperties: Object.fromEntries(
+                      Object.entries(value.recordProperties ?? {}).map(([name, field]) => [
+                          name,
+                          retained(field),
+                      ]),
+                  ),
+              }
+            : { ...value, nativeCaptures: [binding] };
     if (event === "character")
-        return {
+        return retained({
             kind: "record",
             cpp: "",
             recordProperties: {
@@ -489,21 +503,21 @@ export function physicsEventInfoValue(
                 impulse: characterVectorValue(`${cpp}.impulse`),
                 impulsePosition: characterVectorValue(`${cpp}.impulsePosition`),
             },
-        };
+        });
     const type = (name: string): Value => ({
         kind: "data",
         cpp: `std::string(bbl::upstream::${name}(${cpp}.type))`,
         dataType: { kind: "string" },
     });
     if (event === "trigger") {
-        return {
+        return retained({
             kind: "record",
             cpp: "",
             recordProperties: { type: type("physics_trigger_type_name") },
-        };
+        });
     }
     const vec3 = (member: string): Value => vec3Record(`${cpp}.${member}`);
-    return {
+    return retained({
         kind: "record",
         cpp: "",
         recordProperties: {
@@ -523,7 +537,7 @@ export function physicsEventInfoValue(
             },
             distance: { kind: "number", cpp: `${cpp}.distance` },
         },
-    };
+    });
 }
 
 function compileImpulsePoint(
@@ -795,11 +809,6 @@ function compileCreatePhysicsConstraint(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 4, 6);
-    if (!ts.isExpressionStatement(call.parent))
-        context.fail(
-            call,
-            "The reached constraint requires a discarded factory result.",
-        );
     const world = context.compileValue(argumentAt(call, 0));
     const parent = context.compileValue(argumentAt(call, 1));
     const child = context.compileValue(argumentAt(call, 2));
@@ -881,11 +890,12 @@ function compileCreatePhysicsConstraint(
         }
     }
     context.reachFeature("physics:constraints", call);
-    context.emit({
-        kind: "expression",
-        code: `bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`,
-    });
-    return { kind: "void", cpp: "" };
+    return {
+        kind: "physics-constraint",
+        ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
+        cpp: `bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}})`,
+        dataType: { kind: "handle", handle: "physics-constraint" },
+    };
 }
 
 function compileCreatePhysicsViewer(
@@ -1220,6 +1230,72 @@ function compileCreatePhysicsShape(
             `bbl::upstream::PhysicsShapeType::${shapeType}, bbl::upstream::physics_node(${mesh.cpp}), ` +
             `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
         ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+    };
+}
+
+function compileAddPhysicsShapeChild(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 6);
+    const [world, container, child] = call.arguments
+        .slice(0, 3)
+        .map((argument) =>
+            context.bindings.pinValueToTemporary(
+                context.compileValue(argument),
+                "shape_child_arg",
+                argument,
+            ),
+        );
+    context.expectKind(world!, "physics-world", argumentAt(call, 0));
+    context.expectKind(container!, "physics-shape", argumentAt(call, 1));
+    context.expectKind(child!, "physics-shape", argumentAt(call, 2));
+    context.expectSameEngine(world!, container!, call);
+    context.expectSameEngine(world!, child!, call);
+    const translation = compileNullableVec3(context, call.arguments[3]);
+    let rotation = "bbl::js::Nullable<bbl::Vec4d>{}";
+    const rotationNode = call.arguments[4];
+    if (rotationNode) {
+        const value = context.compileValue(rotationNode);
+        if (value.kind !== "json-null") {
+            const owner = context.bindings.pinValueToTemporary(
+                value,
+                "shape_child_rotation",
+                rotationNode,
+            );
+            const optional =
+                owner.dataType?.kind === "optional"
+                    ? owner.dataType
+                    : undefined;
+            const unwrapped = optional
+                ? { ...owner, cpp: `(*${owner.cpp})`, dataType: optional.inner }
+                : owner;
+            const lanes = ["x", "y", "z", "w"].map((name) => {
+                const lane = context.propertyAccess.readResolvedProperty(
+                    unwrapped,
+                    ts.factory.createPropertyAccessExpression(
+                        rotationNode,
+                        name,
+                    ),
+                );
+                if (!lane || lane.kind !== "number")
+                    return context.fail(
+                        rotationNode,
+                        "Physics child rotations require numeric quaternion lanes.",
+                    );
+                return lane.cpp;
+            });
+            const present = `bbl::js::Nullable<bbl::Vec4d>{bbl::Vec4d{${lanes.join(", ")}}}`;
+            rotation = optional
+                ? `(${optionalPresentCpp(owner.cpp)} ? ${present} : bbl::js::Nullable<bbl::Vec4d>{})`
+                : present;
+        }
+    }
+    const scale = compileNullableVec3(context, call.arguments[5]);
+    context.reachFeature("physics:container", call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::add_physics_shape_child(${world!.cpp}, ${container!.cpp}, ${child!.cpp}, ${translation}, ${rotation}, ${scale})`,
     };
 }
 
@@ -1558,9 +1634,10 @@ function compileSetPhysicsShapeFilterCollideMask(
     };
 }
 
-function compileGetPhysicsBodyLinearVelocity(
+function compileGetPhysicsBodyVelocity(
     context: PhysicsIntrinsicContext,
     call: ts.CallExpression,
+    angular = false,
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
@@ -1573,7 +1650,7 @@ function compileGetPhysicsBodyLinearVelocity(
         kind: "declaration",
         type: "const bbl::Vec3d",
         name: velocity,
-        initializer: `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp})`,
+        initializer: `bbl::upstream::get_physics_body_${angular ? "angular" : "linear"}_velocity(${world.cpp}, ${body.cpp})`,
     });
     return vec3Record(velocity);
 }
@@ -1927,6 +2004,55 @@ function compileApplyPhysicsImpulse(
     };
 }
 
+function compilePhysicsBodyVelocity(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+    angular: boolean,
+): Value {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0)),
+        body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", call);
+    context.expectKind(body, "physics-body", call);
+    context.expectSameEngine(world, body, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_velocity(${world.cpp}, ${body.cpp}, ${context.compileVec3(argumentAt(call, 2), "double")}, ${angular})`,
+    };
+}
+function compilePhysicsBodyTransform(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 4, 4);
+    const world = context.compileValue(argumentAt(call, 0)),
+        body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", call);
+    context.expectKind(body, "physics-body", call);
+    context.expectSameEngine(world, body, call);
+    const rotationNode = argumentAt(call, 3);
+    const rotation = context.bindings.pinValueToTemporary(
+        context.compileValue(rotationNode),
+        "physics_rotation",
+    );
+    const lanes = ["x", "y", "z", "w"].map((name) => {
+        const value = context.propertyAccess.readResolvedProperty(
+            rotation,
+            ts.factory.createPropertyAccessExpression(rotationNode, name),
+        );
+        if (!value || value.kind !== "number")
+            return context.fail(
+                rotationNode,
+                "Physics rotation requires four numeric quaternion lanes.",
+            );
+        return value.cpp;
+    });
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_transform(${world.cpp}, ${body.cpp}, ${context.compileVec3(argumentAt(call, 2), "double")}, bbl::Vec4d{${lanes.join(", ")}})`,
+    };
+}
+
 const physicsIntrinsicHandlers = new EmissionMap<
     string,
     (
@@ -1948,6 +2074,19 @@ const physicsIntrinsicHandlers = new EmissionMap<
         },
     ],
     [
+        "enableHavokThinInstanceAdvancedPhysics",
+        (context, call) => {
+            context.expectArgumentCount(call, 1, 1);
+            const world = context.compileValue(argumentAt(call, 0));
+            context.expectKind(world, "physics-world", call);
+            context.reachFeature("physics:thin-instances", call);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::enable_havok_thin_instance_advanced_physics(${world.cpp})`,
+            };
+        },
+    ],
+    [
         "getPhysicsBodyInstanceCount",
         (context, call) => {
             context.expectArgumentCount(call, 1, 1);
@@ -1961,6 +2100,21 @@ const physicsIntrinsicHandlers = new EmissionMap<
     ],
     ["createHeightFieldShape", compileCreateHeightFieldShape],
     ["createPhysicsConstraint", compileCreatePhysicsConstraint],
+    [
+        "releasePhysicsConstraint",
+        (context, call) => {
+            context.expectArgumentCount(call, 2, 2);
+            const world = context.compileValue(argumentAt(call, 0));
+            const constraint = context.compileValue(argumentAt(call, 1));
+            context.expectKind(world, "physics-world", call);
+            context.expectKind(constraint, "physics-constraint", call);
+            context.reachFeature("physics:constraints", call);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::release_physics_constraint(${world.cpp}, ${constraint.cpp})`,
+            };
+        },
+    ],
     ["createPhysicsViewer", compileCreatePhysicsViewer],
     ["showPhysicsBody", compileShowPhysicsBody],
     [
@@ -1978,6 +2132,7 @@ const physicsIntrinsicHandlers = new EmissionMap<
     ["setPhysicsGravity", compileSetPhysicsGravity],
     ["setPhysicsTimestepMs", compileSetPhysicsTimestepMs],
     ["createPhysicsShape", compileCreatePhysicsShape],
+    ["addPhysicsShapeChild", compileAddPhysicsShapeChild],
     ["addPhysicsShapeChildFromParent", compileAddPhysicsShapeChildFromParent],
     ["setPhysicsShapeIsTrigger", compileSetPhysicsShapeIsTrigger],
     ["createPhysicsBody", compileCreatePhysicsBody],
@@ -1997,10 +2152,33 @@ const physicsIntrinsicHandlers = new EmissionMap<
         },
     ],
     ["setPhysicsBodyShape", compileSetPhysicsBodyShape],
+    [
+        "releasePhysicsShape",
+        (context, call) => {
+            context.expectArgumentCount(call, 2, 2);
+            const world = context.compileValue(argumentAt(call, 0)),
+                shape = context.compileValue(argumentAt(call, 1));
+            context.expectKind(world, "physics-world", call);
+            context.expectKind(shape, "physics-shape", call);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::release_physics_shape(${world.cpp}, ${shape.cpp})`,
+            };
+        },
+    ],
     ["onPhysicsTrigger", compileOnPhysicsTrigger],
     ["onPhysicsAfterStep", compileOnPhysicsAfterStep],
     ["createPhysicsAggregate", compileCreatePhysicsAggregate],
     ["setPhysicsBodyMotionType", compileSetPhysicsBodyMotionType],
+    [
+        "setPhysicsBodyLinearVelocity",
+        (context, call) => compilePhysicsBodyVelocity(context, call, false),
+    ],
+    [
+        "setPhysicsBodyAngularVelocity",
+        (context, call) => compilePhysicsBodyVelocity(context, call, true),
+    ],
+    ["setPhysicsBodyTransform", compilePhysicsBodyTransform],
     ["setPhysicsBodyMass", compileSetPhysicsBodyMass],
     ["setPhysicsShapeMaterial", compileSetPhysicsShapeMaterial],
     ["setPhysicsBodyMassProperties", compileSetPhysicsBodyMassProperties],
@@ -2014,7 +2192,11 @@ const physicsIntrinsicHandlers = new EmissionMap<
         "setPhysicsShapeFilterCollideMask",
         compileSetPhysicsShapeFilterCollideMask,
     ],
-    ["getPhysicsBodyLinearVelocity", compileGetPhysicsBodyLinearVelocity],
+    ["getPhysicsBodyLinearVelocity", compileGetPhysicsBodyVelocity],
+    [
+        "getPhysicsBodyAngularVelocity",
+        (context, call) => compileGetPhysicsBodyVelocity(context, call, true),
+    ],
     ["applyPhysicsBodyForce", compileApplyPhysicsBodyForce],
     [
         "setPhysicsBodyCollisionEventsEnabled",

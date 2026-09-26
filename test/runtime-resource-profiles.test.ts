@@ -247,15 +247,14 @@ test("a runtime mesh profile keeps an earlier PBR material's physical slot", () 
     assert.deepEqual(result.manifest.runtimeMaterialProfiles, [2]);
 });
 
-test("runtime branches and retained callbacks cannot allocate untracked PBR slots", () => {
+test("runtime branches and retained callbacks allocate PBR composition profiles", () => {
     for (const body of [
         `if (Math.random() < 0.5) createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });`,
         `onBeforeRender(scene, () => { createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 }); });`,
     ]) {
-        assert.throws(
-            () => compileSource(scene(body)),
-            /generation-known iteration count for PBR material slots/,
-        );
+        const result = compileSource(scene(body));
+        assert.deepEqual(result.manifest.runtimeMaterialProfiles, [0]);
+        assert.match(result.cpp, /\.composition_profile = 0u/);
     }
 });
 

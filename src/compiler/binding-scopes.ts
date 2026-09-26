@@ -18,6 +18,7 @@ import {
     isOpaqueReference,
     isTypedArrayType,
     passesByReferenceKind,
+    propertyIsReadOnly,
     resourceValueCppType,
     type DataType,
     type DataTypeRegistry,
@@ -46,6 +47,7 @@ import {
     type VariableBinding,
 } from "./types.js";
 import { isSupportedFunction, parameterIsReadOnly } from "./user-functions.js";
+import { metadataFieldsForKind } from "./values/metadata.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -71,12 +73,6 @@ interface BindingScopesContext extends Pick<
     | "takeNativeTemporary"
     | "useNativeValue"
 > {
-    assignAudioMainBus(
-        target: Value,
-        value: Value | undefined,
-        node: ts.Node,
-    ): void;
-    bindAudioMainBusStorage(value: Value): void;
     describeNativeValue(value: Value): void;
     hasStableNativeBinding(value: Value): boolean;
     markImmutableNativeStorage(value: Value, immutable: boolean): void;
@@ -611,6 +607,15 @@ export class BindingScopes {
         }
         const innermost = this.variableScopes.at(-1)!;
         const binding = owner.get(symbol)!;
+        // Opaque handles with no generation-time payload carry their complete
+        // identity in native storage. Conditional writes need no static rebind.
+        if (
+            binding.value.dataType?.kind === "handle" &&
+            metadataFieldsForKind(binding.value.kind).length === 0 &&
+            !binding.value.pickingEngineKnown &&
+            !value.pickingEngineKnown
+        )
+            return;
         const destination: Value = { ...value, cpp: binding.value.cpp };
         delete writable(destination).ownedCpp;
         delete writable(destination).stableOwnerCpp;
@@ -622,23 +627,6 @@ export class BindingScopes {
             const storage = binding.value[property];
             if (storage === undefined) delete destination[property];
             else writable(destination)[property] = storage;
-        }
-        if (binding.value.kind === "audio-engine") {
-            this.context.assignAudioMainBus(binding.value, value, identifier);
-            for (const property of [
-                "audioMainBusCpp",
-                "audioMainBusOwnerCpp",
-            ] as const) {
-                const storage = binding.value[property];
-                if (storage === undefined) delete destination[property];
-                else writable(destination)[property] = storage;
-            }
-            writable(destination).nativeCompanionCaptures = {
-                ...destination.nativeCompanionCaptures,
-                audioMainBusCpp:
-                    binding.value.nativeCompanionCaptures?.audioMainBusCpp ??
-                    [],
-            };
         }
         this.context.describeNativeValue(destination);
         const rebound = {
@@ -767,7 +755,6 @@ export class BindingScopes {
             };
         }
         this.context.trackCollectionCardinality(identifier, value);
-        this.context.bindAudioMainBusStorage(value);
         this.context.describeNativeValue(value);
         this.context.markImmutableNativeStorage(value, immutable);
         const symbol = this.requireValueSymbol(identifier);
@@ -1253,6 +1240,7 @@ export class BindingScopes {
             return value;
         }
         if (value.kind === "engine" && value.ownedEngineCpp) {
+            if (value.stableOwnerCpp === value.ownedEngineCpp) return value;
             const owner = this.context.allocateTemporaryCppName(
                 `${label}_owner`,
             );
@@ -1294,6 +1282,22 @@ export class BindingScopes {
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }
+        if (value.kind === "promise") {
+            const cpp = this.context.allocateTemporaryCppName(label);
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: cpp,
+                initializer: value.cpp,
+            });
+            const binding = this.context.registerNativeConstBinding(cpp);
+            return {
+                ...value,
+                cpp,
+                nativeBinding: true,
+                nativeCaptures: [binding],
+            };
+        }
         const snapshotsData =
             value.kind === "data" &&
             value.dataType !== undefined &&
@@ -1304,6 +1308,7 @@ export class BindingScopes {
                     "dataview",
                     "bufferview",
                     "json",
+                    "function",
                     "optional",
                     "union",
                     "vector",
@@ -1520,6 +1525,128 @@ export class BindingScopes {
         return cppName;
     }
 
+    /** A partial compiler record still owns its declared arrays and nullable fields. */
+    public materializeDeclaredRecordContainers(
+        value: Value,
+        type: ts.Type,
+        node: ts.Expression,
+        label: string,
+        field?: ts.Symbol,
+    ): Value {
+        const present = this.context.checker.getNonNullableType(type);
+        if (
+            field &&
+            value.kind === "record" &&
+            !value.sceneNodeVector &&
+            !value.cameraVector &&
+            this.context.classOf(value) === undefined &&
+            !propertyIsReadOnly(field)
+        ) {
+            const mapped = this.context.dataTypes.fromStoredTsType(type, node);
+            if (mapped?.kind === "struct") {
+                const dataType = this.context.dataTypes.markStoredObjectReferences(mapped);
+                const storage = this.context.allocateTemporaryCppName(label);
+                const initial = this.context.dataLowerer.compileKnownValueForSink(value, dataType, node);
+                this.context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: storage,
+                    initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(dataType)}>(${initial})`,
+                });
+                const represented = this.context.dataLowerer.leafValue(`(*${storage})`, dataType);
+                if (represented.kind !== "data")
+                    this.context.fail(node, "A retained record field requires native data storage.");
+                return {
+                    ...represented,
+                    sharedStorageCpp: storage,
+                    sharedRecordContainer: true,
+                    nativeLvalue: true,
+                };
+            }
+        }
+        if (field && value.kind === "json-null" && present !== type) {
+            const mapped = this.context.dataTypes.fromStoredTsType(type, node);
+            if (mapped?.kind === "optional") {
+                const dataType =
+                    this.context.dataTypes.markStoredObjectReferences(mapped);
+                const storage = this.context.allocateTemporaryCppName(label);
+                const initial =
+                    this.context.dataLowerer.compileKnownValueForSink(
+                        value,
+                        dataType,
+                        node,
+                    );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: storage,
+                    initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(dataType)}>(${initial})`,
+                });
+                const represented = this.context.dataLowerer.leafValue(
+                    `(*${storage})`,
+                    dataType,
+                );
+                return represented.kind === "data"
+                    ? {
+                          ...represented,
+                          sharedStorageCpp: storage,
+                          sharedRecordContainer: true,
+                          nativeLvalue: true,
+                      }
+                    : {
+                          ...represented,
+                          sharedStorageCpp: storage,
+                          nativeLvalue: true,
+                      };
+            }
+        }
+        if (field && value.kind === "tuple" && present.getProperty("push")) {
+            const dataType = this.context.dataTypes.fromStoredTsType(
+                present,
+                node,
+            );
+            if (
+                dataType?.kind === "vector" ||
+                dataType?.kind === "tuple" ||
+                dataType?.kind === "product"
+            ) {
+                return this.pinValueToTemporary(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            dataType,
+                            node,
+                        ),
+                        dataType,
+                    ),
+                    label,
+                    node,
+                );
+            }
+        }
+        if (value.kind !== "record" || !value.recordProperties) return value;
+        const properties = value.recordProperties;
+        for (const [name, property] of Object.entries(properties)) {
+            const symbol = this.context.checker.getPropertyOfType(
+                present,
+                name,
+            );
+            if (!symbol) continue;
+            writable(properties)[name] =
+                this.materializeDeclaredRecordContainers(
+                    property,
+                    this.context.checker.getTypeOfSymbolAtLocation(
+                        symbol,
+                        node,
+                    ),
+                    node,
+                    `${label}_${name}`,
+                    symbol,
+                );
+        }
+        return value;
+    }
+
     /** Project a stored plain object once, preserving replacement of its members. */
     public referenceRecordValue(
         value: Value,
@@ -1660,7 +1787,12 @@ export class BindingScopes {
         preserveIdentity = false,
         node?: ts.Expression,
     ): Value {
-        if (record.retainedNativeRecord) return record;
+        if (
+            record.retainedNativeRecord ||
+            (record.dataType?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(record.dataType.name))
+        )
+            return record;
         if (record.cameraVector) {
             return this.bindCameraVector(record);
         }
@@ -1934,6 +2066,8 @@ export function cameraVectorProperties(
                 cpp: `${record}.${axis}`,
                 dataType: { kind: "number" },
                 engineCpp: vector.owner.engineCpp,
+                ...(vector.owner.nativeCaptures ? { nativeCaptures: vector.owner.nativeCaptures } : {}),
+                ...(vector.owner.nativeCompanionCaptures ? { nativeCompanionCaptures: vector.owner.nativeCompanionCaptures } : {}),
             } satisfies Value,
         ]),
     );
@@ -1961,6 +2095,8 @@ export function sceneNodeVectorProperties(
                 cpp: `${vector}.${name}`,
                 dataType: { kind: "number" },
                 engineCpp: engine,
+                ...(owner.nativeCaptures ? { nativeCaptures: owner.nativeCaptures } : {}),
+                ...(owner.nativeCompanionCaptures ? { nativeCompanionCaptures: owner.nativeCompanionCaptures } : {}),
                 ...(freshData ? { freshData: true } : {}),
             } satisfies Value,
         ]),

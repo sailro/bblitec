@@ -2,7 +2,7 @@ import { EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { handleCppType } from "../data-types.js";
+import { handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -25,6 +25,9 @@ export interface PickingIntrinsicContext
             | "dataTypes"
             | "checker"
             | "compileNumber"
+            | "compileTypedArrayArgument"
+            | "allocateTemporaryCppName"
+            | "reachJsData"
             | "requireEngine"
             | "conditions"
             | "fail"
@@ -62,6 +65,46 @@ export function compilePickingIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "createPickingRay": {
+            context.expectArgumentCount(call, 5, 5);
+            context.reachJsData();
+            context.reachFeature("picking:ray", call);
+            const argumentsCpp = call.arguments.map((argument, index) =>
+                index === 2
+                    ? context.compileTypedArrayArgument(argument, "f32array")
+                    : context.compileNumber(argument, "double"),
+            );
+            const names = argumentsCpp.map(() =>
+                context.allocateTemporaryCppName("ray_argument"),
+            );
+            const ray = context.allocateTemporaryCppName("ray");
+            const tupleField = (member: "origin" | "direction") => ({
+                cpp: `bbl::js::Tuple<3>{${ray}->${member}}`,
+                accepts: (type: DataType) =>
+                    type.kind === "tuple" && type.arity === 3,
+            });
+            return compileNullableHitRecord(context, call, {
+                intrinsic: importedName,
+                resultType: context.dataTypes.fromTsType(
+                    context.checker.getTypeAtLocation(call),
+                    call,
+                ),
+                fields: {
+                    origin: tupleField("origin"),
+                    direction: tupleField("direction"),
+                    length: { cpp: `${ray}->length`, accepts: numberField },
+                },
+                probe:
+                    argumentsCpp
+                        .map(
+                            (cpp, index) =>
+                                `const auto ${names[index]} = ${cpp};`,
+                        )
+                        .join(" ") +
+                    ` const auto ${ray} = bbl::upstream::picking_ray::create_picking_ray_array(${names.join(", ")});`,
+                miss: `!${ray}`,
+            });
+        }
         case "createGpuPicker": {
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));

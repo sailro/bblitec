@@ -750,6 +750,28 @@ export class HandleCollections {
         }
         const unwrapped = this.context.unwrap(expression);
         if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "children"
+        ) {
+            const ownerType = this.context.dataTypes.fromTsType(
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(unwrapped.expression),
+                ),
+                unwrapped.expression,
+            );
+            if (
+                ownerType?.kind === "handle" &&
+                ["mesh", "transform-node", "scene-node", "asset-root"].includes(
+                    ownerType.handle,
+                )
+            ) {
+                const value = this.context.compileValue(unwrapped);
+                return value.kind === "handle-collection"
+                    ? value.handleCollection
+                    : undefined;
+            }
+        }
+        if (
             ts.isCallExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
             this.context.importedName(unwrapped.expression) ===

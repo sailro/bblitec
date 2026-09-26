@@ -11,6 +11,26 @@ import {
 
 const tools = optionalNativeFixtureTools();
 
+test("opaque physics shape assignments survive runtime branches and switch blocks", () => {
+    const result = compileSource(`
+        import Havok from "@babylonjs/havok";
+        import {createEngine, createSceneContext, createHavokWorld, createPhysicsShape,
+            PhysicsShapeType, setPhysicsShapeMaterial} from "@babylonjs/lite";
+        import type {PhysicsShape} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const world = createHavokWorld(scene, await Havok());
+        const gate = new Float32Array([1]);
+        let shape: PhysicsShape;
+        switch (gate[0]) {
+            case 0: { shape = createPhysicsShape(world, {type: PhysicsShapeType.SPHERE, parameters: {radius: 1}}); break; }
+            default: { shape = createPhysicsShape(world, {type: PhysicsShapeType.BOX, parameters: {extents: {x: 1, y: 1, z: 1}}}); break; }
+        }
+        setPhysicsShapeMaterial(world, shape, 0.5, 0.1);
+    `);
+    assert.match(result.cpp, /bbl::upstream::set_physics_shape_material\(/);
+});
+
 function runProgram(name: string, source: string): string {
     const { cpp } = compileSource(source);
     const output = resolve("artifacts", "physics-enum-vector-alias", name);

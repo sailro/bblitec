@@ -8,7 +8,7 @@ using bbl::pal::EventLoop;
 using namespace std::chrono_literals;
 std::mutex producer_mutex;
 std::condition_variable producer_changed;
-std::atomic<bool> source_ready = false, slow_started = false;
+std::atomic<bool> fixture_source_ready = false, slow_started = false;
 std::atomic<int> fixture_callbacks = 0, retire_checks = 0, dispatched_ticks = 0;
 std::atomic<int> pointer_moves = 0;
 bool release_slow = false;
@@ -35,7 +35,7 @@ public:
     explicit ReceiptFixtureClock(bool = false, bool = false) {}
     bool available() const { return true; }
     std::optional<EventLoop::Clock::time_point> take_latest() {
-        if (!source_ready)
+        if (!fixture_source_ready)
             return std::nullopt;
         if (pulses == 0 || (pulses == 1 && attempts >= 2) || (pulses == 2 && slow_started)) {
             ++pulses;
@@ -127,7 +127,7 @@ struct ReceiptPresenter final : WindowPresenter {
     OffscreenDevice& device() override { return graphics; }
     bool can_present() override {
         ++retire_checks;
-        return source_ready;
+        return fixture_source_ready;
     }
     bool present(std::span<const WindowCanvasFrame> frames, const UiRenderFrame&,
                  const std::string&) override {
@@ -183,7 +183,7 @@ int main() {
         require(window_element_size(canvas).width == 40, "Initial canvas layout failed");
         run->publish(40, 40, std::make_shared<OffscreenImage>());
         request_frame(realm, run);
-        source_ready = true;
+        fixture_source_ready = true;
     };
     EngineOptions options;
     options.width = 320;

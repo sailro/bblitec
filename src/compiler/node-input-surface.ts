@@ -65,7 +65,7 @@ export function readNodeInputProperty(
         };
     context.fail(
         site,
-        `Node input '${name}' requires live numeric uniform storage that is not represented; only texture2d handles are supported.`,
+        `Node input '${name}' reads require numeric value projection that is not represented; type and texture reads are supported.`,
     );
 }
 
@@ -161,14 +161,15 @@ export function compileNodeInputMutation(
         !assignment ||
         assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
         !ts.isPropertyAccessExpression(left) ||
-        left.name.text !== "texture"
+        !["texture", "value"].includes(left.name.text)
     ) {
         context.fail(
             left,
-            "Node inputs support direct texture assignment only; numeric uniforms and computed mutation are not represented.",
+            "Node inputs support direct texture or scalar value assignment only; computed mutation is not represented.",
         );
     }
-    context.admissions.assertNodeInputMutable(node);
+    if (left.name.text === "texture")
+        context.admissions.assertNodeInputMutable(node);
     context.reachFeature("material:node-inputs", node);
     context.reachJsData();
     const owner = context.allocateTemporaryCppName("node_input");
@@ -181,6 +182,20 @@ export function compileNodeInputMutation(
             handle: "node-input",
         }),
     });
+    if (left.name.text === "value") {
+        context.admissions.noteNodeGeometryMutation(
+            node,
+            "Numeric node input writes do not yet represent the separate uniform layout of geometry views.",
+        );
+        const value = context.dataLowerer.compileForSink(assignment.right, {
+            kind: "number",
+        });
+        return {
+            kind: "number",
+            cpp: `bbl::set_node_input_scalar(${owner}, ${value})`,
+            freshData: true,
+        };
+    }
     const texture = context.dataLowerer.compileForSink(
         assignment.right,
         textureType,

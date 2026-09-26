@@ -44,6 +44,30 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
 
 js::Promise<js::PromiseVoid> start_realm_engine(std::shared_ptr<Engine> engine);
 
+/** Retain the engine and let its realm service tasks between packaged loads. */
+template <bool Cameras = false>
+js::Promise<AssetHandle> load_realm_gltf(Engine& engine, std::string path) {
+    const auto owner = engine.realm_owner.lock();
+    if (!owner)
+        throw std::logic_error("An asynchronous asset load requires an owned engine.");
+    js::Promise<AssetHandle> result;
+    EventLoop::current().post([owner, path = std::move(path), result] {
+        try {
+            if (owner->device_disposed)
+                throw std::runtime_error("Cannot load an asset into a disposed engine.");
+            if constexpr (Cameras)
+                result.resolve(load_gltf(*owner, path, true));
+            else
+                result.resolve(load_gltf(*owner, path));
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            result.reject(std::current_exception());
+        }
+    });
+    return result;
+}
+
 inline GpuCompletion submitted_gpu_work(const std::shared_ptr<OffscreenRun>& run) {
     struct Completion final : CompletionEvent {
         std::exception_ptr error;

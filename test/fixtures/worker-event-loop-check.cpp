@@ -127,6 +127,41 @@ void display_animation_frames() {
     require(!main.poll(), "Closed realm received an animation frame");
 }
 
+void fixed_animation_clock() {
+    bbl::pal::AnimationFrameSource display;
+    const auto origin = EventLoop::Clock::now();
+    EventLoop loop(std::make_shared<EventLoop::Inbox>(), origin);
+    display.subscribe(loop.inbox());
+    std::vector<std::string> order;
+    EventLoop::TimerId interval = 0;
+    loop.post([&] {
+        loop.set_timeout([&] { order.push_back("real"); }, 0);
+        loop.use_fixed_animation_time(10);
+        loop.set_timeout([&] { order.push_back("timeout"); }, 25);
+        interval = loop.set_timeout([&] {
+            order.push_back("interval:" + std::to_string(static_cast<int>(loop.now())));
+            if (loop.now() == 30) {
+                loop.clear_timer(interval);
+                loop.set_timeout([&] { order.push_back("late"); }, 0);
+            }
+        }, 1, true);
+        loop.request_animation_frame([&](double time) {
+            require(time == 0 && loop.now() == 0, "Fixed frame epoch");
+            order.push_back("frame");
+        });
+    });
+    while (loop.poll()) {}
+    for (int frame = 0; frame < 5; ++frame) {
+        display.tick(origin + std::chrono::milliseconds(1000 + frame * 3));
+        while (loop.poll()) {}
+    }
+    require(order == std::vector<std::string>{"real", "frame", "interval:10", "interval:20",
+                                             "timeout", "interval:30", "late"},
+            "Fixed frame timers must drain once per frame, after RAF, without wall-clock catch-up");
+    require(loop.now() == 40, "Fixed clock followed display frequency");
+    loop.close();
+}
+
 void animation_receipt_next_batch() {
     using Batch = bbl::pal::AnimationFrameSource::Batch;
     bbl::pal::AnimationFrameSource display;
@@ -433,6 +468,7 @@ int main() {
     try {
         ordering_and_cancellation();
         display_animation_frames();
+        fixed_animation_clock();
         animation_receipt_next_batch();
         animation_receipt_cancellation();
         computation_without_graphics();

@@ -445,7 +445,7 @@ struct Target { bool active = false, has_bone_overrides = false; double bone_ove
     std::optional<std::vector<float>> baseRot; std::vector<double> topo_order{0,1,2}; };
 struct Scratch { std::vector<float> sample = std::vector<float>(16), reference = std::vector<float>(16), delta = std::vector<float>(16); };
 struct Clip { std::vector<Channel> channels; std::vector<Sampler> samplers; };
-struct Group { double time = 0.25, duration = 2, speed_ratio = 1, weight = 1, additive_reference_time = 0.125;
+struct Group { double start_time = 0, time = 0.25, duration = 2, speed_ratio = 1, weight = 1, additive_reference_time = 0.125;
     bool playing = true, loop = true, additive = false; Mask* mask = nullptr; std::vector<std::optional<std::string>> target_names; };
 Json bits(const std::vector<float>& values) { Json result = Json::array(); for (float value : values) result.push_back(std::bit_cast<std::uint32_t>(value)); return result; }
 ${variants

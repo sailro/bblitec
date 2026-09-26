@@ -44,17 +44,25 @@ test(
             "BulletCollision.lib",
             "LinearMath.lib",
         ]);
-        const actual: number[][][] = jsonArray(
-            JSON.parse(
-                execFileSync(executable, {
-                    encoding: "utf8",
-                    env: {
-                        ...tools!.environment,
-                        PATH: `${nativeFixtureVcpkgRoot}/bin;${tools!.environment.PATH ?? ""}`,
-                    },
-                }),
-            ),
-        ).map((row3) => jsonArray(row3).map(jsonNumbers));
+        const run = (batched: boolean): number[][][] =>
+            jsonArray(
+                JSON.parse(
+                    execFileSync(executable, {
+                        encoding: "utf8",
+                        timeout: 30000,
+                        env: {
+                            ...tools!.environment,
+                            PATH: `${nativeFixtureVcpkgRoot}/bin;${tools!.environment.PATH ?? ""}`,
+                            BBLITE_PHYSICS_THREADS: "4",
+                            ...(batched
+                                ? { BBLITE_TEST_BATCHED_CONTACTS: "1" }
+                                : {}),
+                        },
+                    }),
+                ),
+            ).map((row3) => jsonArray(row3).map(jsonNumbers));
+        const actual = run(false);
+        const batched = run(true);
         const require = createRequire(import.meta.url);
         const hp = await HavokPhysics({
             wasmBinary: new Uint8Array(
@@ -139,13 +147,33 @@ test(
             ),
         );
         const maxPositionError = Math.max(...errors);
+        assert.equal(batched.length, cases.length);
+        const maxBatchedPositionError = Math.max(
+            ...batched.flatMap((poses, index) =>
+                poses.flatMap((step, frame) =>
+                    step.map((position, body) =>
+                        Math.abs(
+                            position - cases[index]!.expected[frame]![body]!,
+                        ),
+                    ),
+                ),
+            ),
+        );
         writeFileSync(
             join(directory, "report.json"),
-            JSON.stringify({ cases, maxPositionError }, null, 2),
+            JSON.stringify(
+                { cases, batched, maxPositionError, maxBatchedPositionError },
+                null,
+                2,
+            ),
         );
         assert(
             maxPositionError < 0.01,
             `Initial overlap recovery error ${maxPositionError}`,
+        );
+        assert(
+            maxBatchedPositionError < 0.01,
+            `Batched initial overlap recovery error ${maxBatchedPositionError}`,
         );
     },
 );

@@ -2,6 +2,7 @@
 
 #include <bblite/checked_handles.hpp>
 #include <bblite/pal_audio_types.hpp>
+#include <bblite/audio_types.hpp>
 #include <bblite/pal_storage_buffer.hpp>
 
 #include <bblite/js_callback.hpp>
@@ -36,6 +37,7 @@ namespace bbl {
 
 struct Engine;
 struct DomInput;
+struct PlatformCustomEvent;
 struct UiImageRequest;
 struct ComputeStorageTextureRegistry;
 struct UniformBufferRegistry;
@@ -232,21 +234,39 @@ public:
     void add(std::size_t identity, Callback callback, bool once = false) {
         const auto duplicate =
             std::find_if(entries_.begin(), entries_.end(), [identity](const auto& entry) {
-                return entry.active && entry.identity == identity;
+                return entry.active && !entry.handler && entry.identity == identity;
             });
         if (duplicate != entries_.end())
             return;
-        entries_.push_back(Entry{identity, next_sequence_++, std::move(callback), true, once});
+        entries_.push_back(Entry{identity, next_sequence_++, std::move(callback), true, once, false});
     }
 
     void remove(std::size_t identity) {
         for (Entry& entry : entries_) {
-            if (entry.identity == identity && entry.active) {
+            if (!entry.handler && entry.identity == identity && entry.active) {
                 entry.active = false;
                 needs_compaction_ = true;
             }
         }
         compact_if_idle();
+    }
+
+    /** Replacements retain the event handler's original listener position. */
+    void set_handler(Callback callback) {
+        for (Entry& entry : entries_) {
+            if (!entry.handler || !entry.active)
+                continue;
+            if (callback) {
+                entry.callback = std::move(callback);
+            } else {
+                entry.active = false;
+                needs_compaction_ = true;
+                compact_if_idle();
+            }
+            return;
+        }
+        if (callback)
+            entries_.push_back(Entry{0, next_sequence_++, std::move(callback), true, false, true});
     }
 
     void clear() {
@@ -315,6 +335,7 @@ private:
         Callback callback;
         bool active = true;
         bool once = false;
+        bool handler = false;
     };
     void compact_if_idle() {
         if (dispatch_depth_ != 0 || !needs_compaction_)
@@ -1567,6 +1588,8 @@ struct PbrMaterialOptions {
     // Both arms are composed into every punctual fragment; this is the lane
     // that selects one (`_writeMaterialData`).
     bool use_physical_light_falloff;
+    // Generation profile identity is independent of the runtime handle count.
+    std::uint32_t composition_profile;
 };
 
 enum class TextureFilter {
@@ -1953,6 +1976,8 @@ struct ModelGeometry {
      * these (`upstream::mesh_world_matrix`).
      */
     std::vector<ModelVertex> vertices;
+    /** GPU-only attribute writes leave retained CPU geometry unchanged. */
+    std::optional<std::vector<ModelVertex>> render_vertices_override;
     /** The loader reversed source triangles for the loaded world's winding. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
@@ -1975,6 +2000,9 @@ struct ModelGeometry {
     std::vector<std::uint32_t> indices;
     MeshTopology topology = MeshTopology::triangles;
     bool has_tangents = false;
+    bool cpu_uv2s = false;
+    bool cpu_tangents = false;
+    bool cpu_colors = false;
     /**
      * `mesh._gpu.hasUv` / `hasColor`, which `writeAttributeFlags` puts in
      * the node mesh block's spare lanes for `MeshAttributeExistsBlock`.
@@ -1991,8 +2019,8 @@ struct ModelGeometry {
     /** The object-local box `Mesh.boundMin`/`boundMax` hold. */
     Vec3 bounds_min{};
     Vec3 bounds_max{};
-    /** Bumped after each in-place procedural position upload. */
-    std::uint64_t position_version = 0;
+    /** Bumped after each in-place procedural attribute upload. */
+    std::uint64_t attribute_version = 0;
     /**
      * Mesh records whose `geometry` names this slot. A factory gives each
      * mesh its own slot; only an imported-root clone copies a record and so
@@ -2019,6 +2047,7 @@ template <typename T> void release_storage(std::vector<T>& storage) {
  */
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
+    geometry.render_vertices_override.reset();
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
     release_storage(geometry.morph_bounds);
@@ -2037,7 +2066,25 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
  * `composeTrsLocalMatrix`. The field names match `MeshRecord` for that
  * reason: one emitted composition serves both.
  */
+/** Source optional flag with the renderer's `visible !== false` projection. */
+struct MeshVisibility {
+    std::optional<bool> value;
+    MeshVisibility() = default;
+    MeshVisibility(std::nullopt_t) {}
+    MeshVisibility(bool visible) : value(visible) {}
+    MeshVisibility(js::Nullable<bool> visible) {
+        if (visible.has_value()) value = *visible;
+    }
+    operator bool() const { return value.value_or(true); }
+    bool operator==(bool visible) const { return value && *value == visible; }
+    bool operator!=(bool visible) const { return !(*this == visible); }
+    js::Nullable<bool> source_value() const {
+        return value ? js::Nullable<bool>{*value} : js::Nullable<bool>{};
+    }
+};
+
 struct TransformNodeRecord {
+    MeshVisibility visible;
     /** Bumped each time `create_transform_node` reuses this slot. */
     std::uint32_t generation = 0;
     /** Whether `reclaim_transform_nodes` reclaimed this record. */
@@ -2079,7 +2126,16 @@ struct TransformNodeRecord {
     std::uint64_t transform_version = 0;
 };
 
+/** Source CPU typed-array owners, independent of uploaded vertex bytes. */
+struct MeshCpuStreams {
+    std::optional<js::F32Array> positions, normals, uvs, uvs2, tangents, colors;
+    std::optional<js::U32Array> indices;
+};
+
 struct MeshRecord {
+    std::shared_ptr<MeshCpuStreams> cpu_streams;
+    /** The compiled factory accepts optional streams resolved at runtime. */
+    bool runtime_attribute_features = false;
     /**
      * The pinned Mesh name: the factory literal (`"sphere"`, `"box"`, …),
      * the caller's string for createMeshFromData, the glTF loader's
@@ -2260,7 +2316,7 @@ struct MeshRecord {
     // `setSubtreeVisible` materializes it per node: the extension cascades
     // through the subtree at set time so the render path and the camera
     // bounds only test one boolean.
-    bool visible = true;
+    MeshVisibility visible;
     // mesh.ts `pickable?: boolean`, undefined = pickable. Read only by the
     // generated `pick_candidate`, which both backends' pick passes ask; no
     // draw path consults it, because a non-pickable mesh still renders.
@@ -2277,17 +2333,16 @@ struct MeshRecord {
     // instance_matrices holds the fixed capacity pool, instance_count is
     // the active draw count, and instance_version gates the PAL re-upload
     // exactly like morph_weights_version. instance_source aliases the
-    // caller's matrix array bound by set_thin_instances; the compiler only
-    // accepts named bindings there, and generated main keeps every such
-    // binding alive for the whole frame loop, so the pointer cannot
-    // dangle. Loader-built instancing (glTF EXT_mesh_gpu_instancing)
+    // caller's matrix array bound by set_thin_instances; the typed-array
+    // overload also retains its storage in owned_instance_source.
+    // Loader-built instancing (glTF EXT_mesh_gpu_instancing)
     // leaves it null and never bumps the version.
     bool thin_instanced = false;
     bool source_runtime_thin_builder = false;
     std::uint32_t instance_count = 0;
     std::uint64_t instance_version = 0;
     std::vector<float>* instance_source = nullptr;
-    // The pool the engine owns rather than aliases: allocated by an
+    // Retained caller storage, or the pool allocated by an
     // `addThinInstance` that found no pool (the pin's own `new F32(capacity
     // * 16)`, which has no caller array to adopt) and again by every growth,
     // where the pin allocates a longer array and repoints `ti.matrices` at
@@ -2526,6 +2581,7 @@ struct MaterialRecord {
     std::optional<StoredTexture> source_albedo_texture{};
     bool source_colors_registered = false;
     bool source_pbr_group_builder = false;
+    std::uint32_t pbr_composition_profile = invalid_handle;
     // Standard/shader singleton keys and per-node builder closure identities.
     std::uint64_t source_group_builder = 0;
     bool source_gamma_albedo = false;
@@ -3062,6 +3118,8 @@ struct AnimationGroupRecord {
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
     double duration = 0;
     double frame_rate = 0;
+    AnimationGroupOrder animation_order;
+    double start_time = 0;
 };
 
 /**
@@ -3242,6 +3300,7 @@ struct AssetRecord {
     std::function<void(std::size_t, bool)> set_clip_playing;
     /** Sets one clip's _stopped, which decides whether a seek reaches it. */
     std::function<void(std::size_t, bool)> set_clip_stopped;
+    std::function<bool(std::size_t)> clip_stopped;
     /** Sets one clip's currentTime in seconds. */
     std::function<void(std::size_t, double)> set_clip_time;
     /**
@@ -3292,6 +3351,7 @@ struct AssetRecord {
      * nodes either way.
      */
     std::vector<BoneOverride> bone_overrides;
+    std::unordered_map<std::size_t, std::vector<float>> bone_world_overrides;
     /**
      * The pin's eager bake: recompute this file's node hierarchy from rest
      * plus overrides and refresh every skinned mesh's palette. Filled only
@@ -3390,6 +3450,7 @@ enum class UiStyleSelectorKind : std::uint8_t {
 
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
 enum class UiRangePart : std::uint8_t { None, Thumb, Track };
+enum class UiOrientation : std::uint8_t { Any, Portrait, Landscape };
 enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
 
 enum class UiSelectorTestKind : std::uint8_t {
@@ -3411,6 +3472,7 @@ enum class UiSelectorTestKind : std::uint8_t {
     NthLastOfType,
     OnlyChild,
     OnlyOfType,
+    Root,
     Empty,
     Not,
     Is,
@@ -3467,6 +3529,7 @@ struct UiStyleRule {
     UiRangePart range = UiRangePart::None;
     /** A negative value means no containing-block size query. */
     double container_max_width = -1.0;
+    UiOrientation orientation = UiOrientation::Any;
 };
 
 /**
@@ -3891,6 +3954,7 @@ struct Engine {
     } ui_document_roots;
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
+    std::function<void(UiElementHandle, const std::string&)> ui_attribute_changed;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
@@ -4000,8 +4064,8 @@ struct Engine {
     std::uint64_t render_targets_version = 0;
     std::vector<FrameTaskRecord> frame_tasks;
     std::shared_ptr<pal::ComputeCommandEncoder> current_compute_encoder;
-    js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>)> compute_one_shot_submitted;
-    js::Callback<void()> compute_one_shot_frame_submitted;
+    js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>, bool)> gpu_task_timer_resolve;
+    js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>, bool)> gpu_timer_resolve;
     RenderTargetHandle swapchain_target{};
     /**
      * Stable wrappers for registered JavaScript SceneContext identities.
@@ -4092,6 +4156,10 @@ struct Engine {
     std::vector<FileTexture> render_texture_facades;
 };
 
+inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target) {
+    return {&engine, target, engine.lifetime.token()};
+}
+
 /** Preserve the Texture2D identity when a render-target facade enters plain data. */
 inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
     if (reference.source != RenderTextureSource::render_target)
@@ -4166,6 +4234,7 @@ void add_gpu_error_listener(GpuDeviceIdentity device,
 void report_gpu_error(Engine& engine, const std::string& error);
 void set_canvas_dataset(Engine& engine, std::string key, std::string value);
 std::string canvas_dataset(const Engine& engine, const std::string& key);
+js::Nullable<std::string> canvas_dataset_value(const Engine& engine, const std::string& key);
 void set_global_callback(Engine& engine, std::string key, std::function<void()> callback);
 std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine);
 void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>& registration);
@@ -5469,8 +5538,14 @@ create_mesh_from_data(Engine& engine, const std::string& name, const std::vector
                       const std::vector<float>& normals, const std::vector<std::uint32_t>& indices,
                       const std::vector<float>& uvs, const std::vector<float>& uvs2,
                       const std::vector<float>& tangents, const std::vector<float>& colors);
+MeshHandle create_retained_mesh_from_data(Engine& engine, const std::string& name,
+    const js::F32Array& positions, const js::F32Array& normals, const js::U32Array& indices,
+    const std::optional<js::F32Array>& uvs, const std::optional<js::F32Array>& uvs2,
+    const std::optional<js::F32Array>& tangents, const std::optional<js::F32Array>& colors);
 void update_mesh_positions(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
-                           double vertex_offset, double vertex_count, double source_vertex_offset);
+                           double vertex_offset, std::optional<double> vertex_count, double source_vertex_offset);
+void update_mesh_uvs(Engine& engine, MeshHandle mesh, const std::vector<float>& uvs,
+                     double vertex_offset, std::optional<double> vertex_count, double source_vertex_offset);
 void resize_mesh_geometry(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
                           const std::vector<float>& normals,
                           const std::vector<std::uint32_t>& indices,
@@ -5482,12 +5557,22 @@ void resize_shared_mesh_geometry(
     const std::vector<float>& normals, const std::vector<std::uint32_t>& indices,
     const std::vector<float>& uvs = {}, const std::vector<float>& uvs2 = {},
     const std::vector<float>& tangents = {}, const std::vector<float>& colors = {});
+void resize_retained_mesh_geometry(Engine& engine, MeshHandle mesh,
+    const js::F32Array& positions, const js::F32Array& normals, const js::U32Array& indices,
+    const std::optional<js::F32Array>& uvs, const std::optional<js::F32Array>& uvs2,
+    const std::optional<js::F32Array>& tangents, const std::optional<js::F32Array>& colors);
+void resize_shared_retained_mesh_geometry(Engine& engine, std::span<const MeshHandle> meshes,
+    const js::F32Array& positions, const js::F32Array& normals, const js::U32Array& indices,
+    const std::optional<js::F32Array>& uvs, const std::optional<js::F32Array>& uvs2,
+    const std::optional<js::F32Array>& tangents, const std::optional<js::F32Array>& colors);
 // The matrices parameter is a non-const lvalue reference on purpose: the
 // record keeps aliasing the caller's array for later per-frame updates
 // (the pinned setThinInstances adopts the array by reference), so a
 // temporary here would dangle. The compiler only passes named bindings.
 void set_thin_instances(Engine& engine, MeshHandle mesh, std::vector<float>& matrices,
-                        double count);
+                       double count);
+void set_thin_instances(Engine& engine, MeshHandle mesh, js::F32Array& matrices, double count);
+[[nodiscard]] js::F32Array thin_instance_matrices(Engine& engine, MeshHandle mesh);
 HierarchyInstancePoolHandle create_hierarchy_instance_pool(Engine& engine, AssetHandle root,
                                                            double capacity);
 double add_hierarchy_instance(Engine& engine, HierarchyInstancePoolHandle pool,
@@ -5552,6 +5637,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path, bool load_cameras
 // re-bakes, so it works with no animation at all.
 BoneHandle get_bone_by_name(Engine& engine, SkeletonHandle skeleton, const std::string& name);
 void set_bone_visible(Engine& engine, SkeletonHandle skeleton, BoneHandle bone, bool visible);
+void set_bone_world_pose_deferred(Engine& engine, SkeletonHandle skeleton, BoneHandle bone,
+    double px, double py, double pz, double rx, double ry, double rz, double rw);
+void bake_skeleton(Engine& engine, SkeletonHandle skeleton);
 // The scene-authored skeleton surface (`src/skeleton/create-skeleton.ts`
 // and `src/skeleton/update-skeleton-bone-matrices.ts`), defined by the
 // generated `upstream/src/skeleton.cpp` when a scene reaches it.
@@ -6031,6 +6119,35 @@ void add_to_scene(Scene& scene, const SceneNodeHandle& node);
 void add_asset_entities(Scene& scene, AssetHandle asset);
 AssetHandle clone_asset_root(Engine& engine, AssetHandle asset);
 MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh);
+SceneNodeHandle clone_scene_node(Engine& engine, const SceneNodeHandle& node);
+
+/** Live ordered view of the concrete node's public traversal list. */
+class SceneNodeChildrenView {
+    Engine* engine_;
+    SceneNodeHandle node_;
+
+public:
+    SceneNodeChildrenView(Engine& engine, SceneNodeHandle node)
+        : engine_(&engine), node_(std::move(node)) {}
+    [[nodiscard]] std::size_t size() const;
+    [[nodiscard]] SceneNodeHandle operator[](std::size_t index) const;
+    struct Sentinel {};
+    struct Iterator {
+        const SceneNodeChildrenView* view;
+        std::size_t index;
+        SceneNodeHandle operator*() const { return (*view)[index]; }
+        Iterator& operator++() {
+            ++index;
+            return *this;
+        }
+        bool operator!=(Sentinel) const { return index < view->size(); }
+    };
+    Iterator begin() const { return {this, 0}; }
+    Sentinel end() const { return {}; }
+};
+inline SceneNodeChildrenView scene_node_children(Engine& engine, SceneNodeHandle node) {
+    return {engine, std::move(node)};
+}
 void set_asset_root_position(Engine& engine, AssetHandle asset, Vec3d value);
 void set_asset_root_position_component(Engine& engine, AssetHandle asset, std::size_t component,
                                        double value);
@@ -6048,6 +6165,9 @@ std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset)
 void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent);
 
 // A retained SceneNode may be a mesh, a transform node, or an imported root.
+MeshVisibility& scene_node_visibility(Engine& engine, const SceneNodeHandle& node);
+js::Nullable<MeshHandle> scene_node_thin_instance_pool(Engine& engine, const SceneNodeHandle& node);
+bool scene_node_has_thin_instance_property(Engine& engine, const SceneNodeHandle& node);
 Vec3d scene_node_position(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_rotation(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_scaling(Engine& engine, const SceneNodeHandle& node);
@@ -6066,6 +6186,7 @@ void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNod
                                                   std::size_t component, float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
+void remove_from_scene(Scene& scene, const SceneNodeHandle& node);
 void on_before_render(Scene& scene, js::Callback<void(float)> callback);
 void on_scene_dispose(Scene& scene, js::Callback<void()> callback);
 void on_key_down(Engine& engine, std::size_t identity,
@@ -6318,6 +6439,13 @@ void reparent_transform_node(Engine& engine, TransformNodeHandle child, Transfor
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_positions(const Engine& engine, MeshHandle mesh);
+struct MeshCpuGeometry {
+    js::F32Array positions, normals;
+    js::U32Array indices;
+    js::Nullable<js::F32Array> uvs, uvs2, tangents, colors;
+};
+[[nodiscard]] std::optional<MeshCpuGeometry> get_mesh_geometry(const Engine& engine, MeshHandle mesh);
+[[nodiscard]] std::optional<MeshCpuGeometry> get_mesh_triangles(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] std::vector<float> mesh_cpu_normals(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] std::vector<float> mesh_cpu_uvs(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] std::vector<std::uint32_t> mesh_cpu_indices(const Engine& engine, MeshHandle mesh);

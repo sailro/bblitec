@@ -464,6 +464,11 @@ export class ConditionLowerer {
             // Both operands were already compiled above to inspect static
             // values and string identity. Reuse them: compiling their ASTs
             // again would duplicate call-shaped numeric operands.
+            if (!leftValue.cpp || !rightValue.cpp)
+                this.context.fail(
+                    unwrapped,
+                    `Comparison requires represented operands, received ${leftValue.kind} and ${rightValue.kind}.`,
+                );
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (
@@ -508,7 +513,7 @@ export class ConditionLowerer {
             }
             return this.context.compileBoolean(unwrapped);
         }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
+        if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
             // A record member in condition position: a boolean member is
             // its own truth (`result.hit`), and a member that carries a
             // found flag — a search result's maybe-absent record

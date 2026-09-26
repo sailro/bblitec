@@ -60,6 +60,10 @@ namespace bbl::pal {
 struct PhysicsWorldState;
 struct PhysicsBodyState;
 struct PhysicsShapeState;
+struct PhysicsConstraintHandle {
+    std::uint32_t value = 0;
+    std::weak_ptr<PhysicsWorldState> owner;
+};
 
 /** `HP_World_Create`'s handle. */
 struct PhysicsWorldHandle {
@@ -102,16 +106,16 @@ struct PhysicsConstraintAxisLimit {
     double maximum = 0;
 };
 using PhysicsConstraintAxes = std::array<PhysicsConstraintAxisLimit, 7>;
+void physics_constraint_release(PhysicsConstraintHandle constraint);
 #if BBLITE_HAS_PHYSICS_CONSTRAINTS
-void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent,
-                                PhysicsBodyHandle child,
-                                const PhysicsConstraintAnchor& parent_anchor,
-                                const PhysicsConstraintAnchor& child_anchor, bool collisions);
-void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent,
-                                     PhysicsBodyHandle child,
-                                     const PhysicsConstraintAnchor& parent_anchor,
-                                     const PhysicsConstraintAnchor& child_anchor,
-                                     const PhysicsConstraintAxes& axes, bool collisions);
+PhysicsConstraintHandle
+physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent,
+                           PhysicsBodyHandle child, const PhysicsConstraintAnchor& parent_anchor,
+                           const PhysicsConstraintAnchor& child_anchor, bool collisions);
+PhysicsConstraintHandle physics_world_create_constraint(
+    PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
+    const PhysicsConstraintAxes& axes, bool collisions);
 #endif
 
 #if BBLITE_HAS_PHYSICS_HEIGHTFIELD
@@ -160,6 +164,7 @@ enum class PhysicsMotionType : std::int32_t {
  * re-decided by whichever back end is linked.
  */
 enum class PhysicsMaterialCombine : std::int32_t {
+    geometric_mean = -1,
     minimum = 0,
     maximum = 1,
     arithmetic_mean = 2,
@@ -331,6 +336,8 @@ physics_world_raycast(PhysicsWorldHandle world, std::array<double, 3> from,
                       std::array<double, 3> to, std::uint32_t membership,
                       std::uint32_t collide_with, bool should_hit_triggers);
 
+[[nodiscard]] bool physics_cpu_profile_enabled();
+
 // --- Shapes ----------------------------------------------------------
 //
 // One entry point per arm of `createPrimitivePhysicsShapeHandle`, with the
@@ -371,6 +378,7 @@ physics_shape_create_convex_hull(const std::vector<std::array<double, 3>>& posit
 physics_shape_create_mesh(const std::vector<std::array<double, 3>>& positions,
                           const std::vector<std::uint32_t>& indices);
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_container();
+void physics_shape_release(PhysicsShapeHandle shape);
 void physics_shape_add_child(PhysicsShapeHandle container, PhysicsShapeHandle child,
                              const PhysicsTransform& transform, std::array<double, 3> scale);
 /** `HP_Shape_SetMaterial`, taking the pin's own array as a record. */
@@ -397,6 +405,8 @@ void physics_body_release(PhysicsBodyHandle body);
 void physics_body_set_motion_type(PhysicsBodyHandle body, PhysicsMotionType motion_type);
 /** `HP_Body_SetShape`. */
 void physics_body_set_shape(PhysicsBodyHandle body, PhysicsShapeHandle shape);
+[[nodiscard]] PhysicsShapeHandle physics_body_get_shape(PhysicsBodyHandle body);
+void physics_body_set_active(PhysicsBodyHandle body, bool active);
 /** `HP_Body_GetQTransform`. */
 [[nodiscard]] PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body);
 /** `HP_Body_SetQTransform`. */

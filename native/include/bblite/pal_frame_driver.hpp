@@ -77,8 +77,12 @@ public:
                 state->ready.resolve(js::PromiseVoid{});
             // Keep the final GPU frame and suspended renderer alive until the
             // Window has captured every engine and tears down the realm.
-            if (rendered && state->capture_remaining && --state->capture_remaining == 0)
-                return {};
+            if (rendered && state->capture_remaining) {
+                if (state->capture_remaining > 1)
+                    --state->capture_remaining;
+                else if (state->offscreen_run->last_frame_capture_ready())
+                    return {};
+            }
             state->schedule();
             return {};
         }

@@ -1,48 +1,22 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-// Node-material lowering: the graph a scene hands the pin, read statically.
-//
-// `parseNodeMaterialFromSnippet` either fetches a snippet or takes the graph
-// inline. Only the inline form reaches native, because a fetch is a network
-// read at page load and generation has no later moment to perform it in --
-// the same boundary every other asset crosses, except that a graph is not a
-// URL to materialize but a value already present in the source.
-//
-// The corpus writes that value two ways, and each gets the answer it deserves.
-// A module exporting the object outright is read here as data: object, array,
-// string, number, boolean and null, and nothing else -- the fold, because a
-// literal cannot drift. A module that BUILDS its graph at load, through id
-// counters, spread-composed inputs and arrays it pushes into, is code this
-// compiler does not lower; that one is executed at generation, the way a drawn
-// atlas and a computed pixel buffer are, and only the module and export travel
-// from here.
-// Node-material lowering: the graph a scene hands the pin, read statically.
-//
-// `parseNodeMaterialFromSnippet` either fetches a snippet or takes the graph
-// inline. Only the inline form reaches native, because a fetch is a network
-// read at page load and generation has no later moment to perform it in --
-// the same boundary every other asset crosses, except that a graph is not a
-// URL to materialize but a value already present in the source.
-//
-// The corpus writes that value two ways, and each gets the answer it deserves.
-// A module exporting the object outright is read here as data: object, array,
-// string, number, boolean and null, and nothing else -- the fold, because a
-// literal cannot drift. A module that BUILDS its graph at load, through id
-// counters, spread-composed inputs and arrays it pushes into, is code this
-// compiler does not lower; that one is executed at generation, the way a drawn
-// atlas and a computed pixel buffer are, and only the module and export travel
-// from here.
+// Node graphs are specialized from inline objects, executed graph modules,
+// or immutable packaged text with statically known local JSON edits. Native
+// asset reads and source mutations remain in the generated startup code.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { pinnedLibraryRoot } from "../pinned-shader-composer.js";
 import { pinnedNodeBlockDescriptor } from "../pinned-node-block-loader.js";
+import { staticDocumentText } from "./static-document.js";
+import { isRecord } from "../json-fields.js";
 import {
     staticGraphDocument,
     type ExecutedModuleReferenceContext,
 } from "./assets.js";
 import {
     staticNumberValue,
+    compileOptionalStaticBoolean,
     validateObjectProperties,
     type ObjectValidationContext,
     type PositiveIntegerContext,
@@ -75,6 +49,13 @@ export interface NodeMaterialContext
             | "resolveStaticExpression"
             | "compileStaticString"
             | "compileValue"
+            | "dataLowerer"
+            | "dataTypes"
+            | "useNativeValue"
+            | "compileBoolean"
+            | "probeEmission"
+            | "libraryGlobal"
+            | "unwrap"
             | "knownValueWithoutEvaluation"
             | "expectKind"
             | "expectStaticArrayLiteral"
@@ -104,7 +85,7 @@ function nodeMaterialKey(material: CompiledNodeMaterial): string {
             : `module:${material.module}#${material.exportName}`;
     return (
         `${document}|emitters:${JSON.stringify(material.blockEmitters ?? [])}` +
-        `|loader:${material.pinnedBlockLoader ?? "default"}`
+        `|loader:${material.pinnedBlockLoader ?? "default"}|instances:${material.hasInstances ?? false}`
     );
 }
 
@@ -410,10 +391,11 @@ export function compileNodeMaterialOptions(
             "shadowGenerators",
             "shadowLightIndices",
             "blockLoader",
+            "hasInstances",
         ],
         "Reached node materials take an inline 'json' graph, its " +
             "'textures', its 'shadowGenerators', and a pinned geometry or " +
-            "closed blockLoader only; skinning and instancing are not lowered.",
+            "closed blockLoader, and static hasInstances flag only; skinning is not lowered.",
     );
     const jsonExpression = context.objectProperty(object, "json");
     if (!jsonExpression) {
@@ -436,14 +418,30 @@ export function compileNodeMaterialOptions(
         context,
         context.objectProperty(object, "blockLoader"),
     );
-    const document = staticGraphDocument(
-        context,
-        jsonExpression,
-        "node material",
-        // A module that COMPUTES the document would need the pin's own
-        // graph loader to run, which is the boundary this family keeps.
-        "export-only",
-    );
+    const text = staticDocumentText(context, jsonExpression);
+    const parsed: unknown = text === undefined ? undefined : JSON.parse(text);
+    if (text !== undefined && !isRecord(parsed))
+        context.fail(
+            jsonExpression,
+            "A node material JSON document must be an object.",
+        );
+    const document = isRecord(parsed)
+        ? { kind: "literal" as const, graph: parsed }
+        : staticGraphDocument(
+              context,
+              jsonExpression,
+              "node material",
+              "export-only",
+          );
+    const instancesExpression = context.objectProperty(object, "hasInstances");
+    const hasInstances = instancesExpression
+        ? compileOptionalStaticBoolean(
+              context,
+              instancesExpression,
+              false,
+              "A node material's hasInstances flag",
+          )
+        : undefined;
     const material: CompiledNodeMaterial =
         document.kind === "literal"
             ? {
@@ -452,6 +450,7 @@ export function compileNodeMaterialOptions(
                   textureNames,
                   shadowLights,
                   ...blockLoader,
+                  ...(hasInstances === undefined ? {} : { hasInstances }),
               }
             : {
                   kind: "module",
@@ -460,6 +459,7 @@ export function compileNodeMaterialOptions(
                   textureNames,
                   shadowLights,
                   ...blockLoader,
+                  ...(hasInstances === undefined ? {} : { hasInstances }),
               };
     // Two calls naming the same document compose one module and one variant,
     // so a repeat reach returns the first index. Linear over the reached
@@ -507,30 +507,38 @@ function compileShadowLights(
         }
         return [];
     }
-    const generators = context.expectStaticArrayLiteral(generatorsExpression);
+    const generatorsValue = context.compileValue(generatorsExpression);
+    const generators =
+        generatorsValue.tupleElements ??
+        generatorsValue.staticElementsOwner?.staticElements ??
+        generatorsValue.staticElements;
+    if (!generators)
+        context.fail(
+            generatorsExpression,
+            "A node material's shadowGenerators requires a generation-known generator list.",
+        );
     const indices = indicesExpression
         ? context.expectStaticArrayLiteral(indicesExpression).elements
         : undefined;
-    if (indices && indices.length !== generators.elements.length) {
+    if (indices && indices.length !== generators.length) {
         context.fail(
             indicesExpression!,
             "A node material's shadowLightIndices must name one light per " +
                 "shadow generator.",
         );
     }
-    return generators.elements.map((element, position) => {
-        const value = context.compileValue(element);
-        context.expectKind(value, "shadow-generator", element);
+    return generators.map((value, position) => {
+        context.expectKind(value, "shadow-generator", generatorsExpression);
         if (value.shadowGeneratorIndex === undefined) {
             context.fail(
-                element,
+                generatorsExpression,
                 "A node material's shadowGenerators takes the generator a " +
                     "filter factory returned.",
             );
         }
         const generator = context.sceneManifest.shadowGeneratorLight(
             value.shadowGeneratorIndex,
-            element,
+            generatorsExpression,
         );
         // A call that names the slot is checked against the one the
         // generator was built on; a call that omits the list takes the
@@ -582,6 +590,20 @@ function compileTextures(
 ): readonly NodeMaterialTexture[] {
     if (!expression) return [];
     const record = context.compileValue(expression);
+    if (record.kind === "data" && record.dataType?.kind === "struct") {
+        context.useNativeValue(record);
+        const access = context.dataTypes.isReferenceStruct(record.dataType.name)
+            ? "->"
+            : ".";
+        return context.dataTypes.structFields(record.dataType.name, expression).map((field) => {
+            const texture = context.dataLowerer.leafValue(
+                `${record.cpp}${access}${field.name}`,
+                field.type,
+            );
+            context.expectKind(texture, "texture", expression);
+            return { name: field.sourceName, texture };
+        });
+    }
     if (
         record.recordProperties === undefined ||
         Object.keys(record.recordMethods ?? {}).length > 0 ||
@@ -600,7 +622,12 @@ function compileTextures(
         // and still refuse rather than falling into a neighbouring overload.
         if (
             texture.textureStorage !== "file" &&
-            texture.textureStorage !== "solid"
+            texture.textureStorage !== "solid" &&
+            texture.textureStorage !== "stored" &&
+            !(
+                texture.dataType?.kind === "handle" &&
+                texture.dataType.handle === "texture"
+            )
         ) {
             context.fail(
                 expression,

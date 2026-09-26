@@ -45,6 +45,7 @@ const shaderFields: Record<string, string> = {
     _decls: "decls",
     _slots: "slots",
     _dynamicCounts: "dynamic_counts",
+    _automaticLayout: "automatic_layout",
     _device: "device",
     _module: "module",
     _layouts: "layouts",
@@ -126,6 +127,11 @@ function scope(
         cpp: "options.source",
         type: "opaque",
         absentCpp: "options.source.empty()",
+    });
+    bindings.set("options.automaticLayout", {
+        cpp: "false",
+        type: "bool",
+        staticBoolean: false,
     });
     bindings.set("engine._device", {
         cpp: "std::shared_ptr<pal::OffscreenDevice>(engine->offscreen_run, &engine->offscreen_run->device())",

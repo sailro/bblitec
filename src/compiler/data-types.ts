@@ -93,6 +93,8 @@ function literalTagValue(
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
+    AudioEngine: "audio-engine",
+    AudioInputSource: "audio-source",
     EngineContext: "engine",
     DeviceLostRecoveryHandle: "device-recovery",
     EnvironmentTextures: "gpu-environment",
@@ -142,7 +144,9 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     ComputeBindingSet: "compute-binding-set",
     ComputeUniformLayout: "compute-uniform-layout",
     Material: "material",
+    PhysicsWorld: "physics-world",
     PhysicsBody: "physics-body",
+    PhysicsConstraint: "physics-constraint",
     PhysicsAggregate: "physics-aggregate",
     PhysicsViewer: "physics-viewer",
     PhysicsCharacterController: "physics-character-controller",
@@ -395,7 +399,13 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
 
 export function platformHandleKind(
     type: ts.Type,
-): "gamepad" | "gamepad-button" | "gpu-device" | "gpu-texture" | undefined {
+):
+    | "gamepad"
+    | "gamepad-button"
+    | "gpu-device"
+    | "gpu-texture"
+    | "custom-event"
+    | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (type.symbol.name === "GPUDevice") return "gpu-device";
         if (type.symbol.name === "GPUTexture") return "gpu-texture";
@@ -403,6 +413,7 @@ export function platformHandleKind(
     if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
     if (type.symbol.name === "Gamepad") return "gamepad";
     if (type.symbol.name === "GamepadButton") return "gamepad-button";
+    if (type.symbol.name === "CustomEvent") return "custom-event";
     return undefined;
 }
 
@@ -558,6 +569,7 @@ export class DataTypeRegistry {
     private readonly runtimeEnumSerializers = new EmissionSet<string>();
     /** Named data types that reached emitted C++ rather than a type probe. */
     private readonly emittedNamedTypes = new EmissionSet<string>();
+    @journaled private accessor emittedJsonType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
     /**
@@ -863,12 +875,22 @@ export class DataTypeRegistry {
                         this.checker.getNonNullableType(type),
                         node,
                     );
+        // One optional flag cannot distinguish the two JavaScript absence values.
+        // Primitive dynamic storage carries both tags and keeps ordinary scalar sinks.
+        if (
+            inner &&
+            absent.null &&
+            absent.undefined &&
+            ["number", "boolean", "string", "enum"].includes(inner.kind)
+        )
+            return { kind: "json" };
         return inner ? this.nullableType(inner, !absent.null) : undefined;
     }
 
     /** Callbacks and shared objects already carry their own absent state. */
     public nullableType(inner: DataType, undefinedOnly = false): DataType {
         return inner.kind === "optional" ||
+            inner.kind === "json" ||
             inner.kind === "function" ||
             (inner.kind === "struct" && this.isReferenceStruct(inner.name))
             ? inner
@@ -1089,7 +1111,6 @@ export class DataTypeRegistry {
         if (audioHandle) return { kind: "handle", handle: audioHandle };
         if (
             isPinnedType(type, [
-                "AudioEngine",
                 "CsgSolid",
                 "Csg2Solid",
                 "Font",
@@ -1112,6 +1133,12 @@ export class DataTypeRegistry {
             declaredInDomLibrary(type.symbol)
         ) {
             return { kind: "handle", handle: "offscreen-canvas" };
+        }
+        if (
+            type.symbol?.name === "MutationObserver" &&
+            declaredInDomLibrary(type.symbol)
+        ) {
+            return { kind: "handle", handle: "worker-mutation-observer" };
         }
         if (
             type.symbol?.name === "MediaQueryList" &&
@@ -1400,6 +1427,9 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): DataType | undefined {
         const members = type.types;
+        const handles = members.map(pinnedHandleKind);
+        if (handles.every((kind) => kind === "mesh" || kind === "scene-node"))
+            return { kind: "handle", handle: "scene-node" };
         if (
             members.every(
                 (member) =>
@@ -3350,7 +3380,19 @@ export class DataTypeRegistry {
     }
 
     public cppType(dataType: DataType): string {
+        if (dataType.kind === "json") this.emittedJsonType = true;
         return dataTypeCppType(dataType, this.cppContext);
+    }
+
+    /** JSON storage can occur in a defaulted field with no JSON expression. */
+    public usesJsonStorage(): boolean {
+        if (this.emittedJsonType) return true;
+        const seen = new Set<string>();
+        return [...this.emittedNamedTypes].some((name) =>
+            this.structsByName.has(name) && containsDataKind(
+                {kind:"struct",name}, "json", (record) => this.structFieldTypes(record), true, seen,
+            ),
+        );
     }
 
     /** @unjournaled Closures over this registry; never written. */
