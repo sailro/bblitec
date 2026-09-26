@@ -129,13 +129,16 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
 | `BBLITE_SCREENSHOT_FRAMES` | Window only: ascending comma-separated presentation frames before the final screenshot, written as `<stem>.frame-<n>.png` with build stamps; excludes engine-frame capture |
-| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing |
+| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing; realm engine startup gives subsequent timers the fixed RAF clock, while pre-start timers retain wall time |
 | `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample/canvas-only diagnosis |
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Event tape/state trace |
 | `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAME` | Worker presentation trace/per-engine frame |
-| `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | Subsystem traces |
+| `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | UI boxes/display after tree changes, body positions/quaternions per step, and ray queries |
 | `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | CPU stages and memory every 30 frames; CPU also records renderer frames ≥10 ms, Window frames ≥4 ms, UI updates, font shaping and SDL presentation/resource costs |
+| `BBLITE_PHYSICS_PAIR_PROFILE=1` | With CPU profiling: narrow-phase timings grouped by collision-shape pair; adds per-pair timing overhead |
+| `BBLITE_PHYSICS_THREADS` | Bullet worker count including its controller; defaults to at most eight available hardware threads. `1` selects serial collision detection and solving |
 | `BBLITE_FPS_PROFILE` | Scene FPS over one-second windows, with p99 and maximum frame intervals |
+| `BBLITE_TIMER_PROFILE=1` | Actual realm-timer callback timestamps and requested delays; group by realm and timer ID to measure callback gaps, independently of capture clocks |
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS` | WAV path/duration in enabled builds |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
@@ -148,6 +151,10 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
 
 Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL assertion prompts.
+
+CPU physics output separates world phases from solver setup, contacts, split impulses, iterations
+and finish. Solver values sum the participating islands' CPU times, so parallel phases overlap;
+contacts are included in setup and split impulses in iterations.
 
 Android debug intents accept `nativeResolution=true` to bypass the source pixel-ratio cap for
 profiling. Automated captures also bypass it to retain the requested golden dimensions.

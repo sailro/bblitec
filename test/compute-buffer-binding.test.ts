@@ -44,17 +44,17 @@ int main(){
  resolved=bbl::resolve_compute_buffer_binding(engine,decl,range,expected,writable,false,true,16,512,256);
  assert(resolved.state.size==16&&resolved.dynamic->alignment==256&&resolved.dynamic->max_offset==240);
  const auto reject=[&](const bbl::ComputeBufferRange& value,bool dynamic,double minimum,double maximum,const char* code){bool failed=false;try{(void)bbl::resolve_compute_buffer_binding(engine,decl,value,expected,writable,false,dynamic,minimum,maximum,256);}catch(const std::exception& error){failed=std::string(error.what())==code;}assert(failed);};
- reject({},false,0,512,"#719");
- uniform->destroyed=true;reject(range,false,0,512,"#720");uniform->destroyed=false;
- auto other=std::make_shared<bbl::Engine>();ref->engine=other;reject(range,false,0,512,"#721");ref->engine=engine;
- for(double offset:{-256.0,1.0,0.5})reject({ref,offset,{}},false,0,512,"#723");
- reject(range,true,0,512,"#724");
- for(double size:{0.0,-4.0,3.0,4.5})reject({ref,0,size},false,0,512,"#725");
- reject({ref,512,{}},false,0,512,"#726");
- reject({ref,0,4},false,8,512,"#727");
- reject({ref,0,16},false,0,8,"#728");
- reject({ref,256,260},false,0,512,"#729");
- registry->buffers.erase(uniform);bool dead=false;try{(void)bbl::get_compute_buffer_binding_resource(engine,resolved.state,registered);}catch(const std::exception& error){dead=std::string(error.what())=="#730";}assert(dead);
+ reject({},false,0,512,"#779");
+ uniform->destroyed=true;reject(range,false,0,512,"#780");uniform->destroyed=false;
+ auto other=std::make_shared<bbl::Engine>();ref->engine=other;reject(range,false,0,512,"#781");ref->engine=engine;
+ for(double offset:{-256.0,1.0,0.5})reject({ref,offset,{}},false,0,512,"#783");
+ reject(range,true,0,512,"#784");
+ for(double size:{0.0,-4.0,3.0,4.5})reject({ref,0,size},false,0,512,"#785");
+ reject({ref,512,{}},false,0,512,"#786");
+ reject({ref,0,4},false,8,512,"#787");
+ reject({ref,0,16},false,0,8,"#788");
+ reject({ref,256,260},false,0,512,"#789");
+ registry->buffers.erase(uniform);bool dead=false;try{(void)bbl::get_compute_buffer_binding_resource(engine,resolved.state,registered);}catch(const std::exception& error){dead=std::string(error.what())=="#790";}assert(dead);
 }
 `,
     );

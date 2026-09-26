@@ -229,11 +229,11 @@ test("shape parameters are translated from _buildShapeParams", () => {
     // pin's own literal fallback, and the scaled extents.
     assert.match(
         lowered.source,
-        /shape\.scale_x = std::abs\(static_cast<double>\(scaling\.x\)\);/,
+        /shape\.scale_x = std::abs\(shape\.scale_x\);/,
     );
     assert.match(
         lowered.source,
-        /shape\.scale_y = \(\(\(static_cast<double>\(scaling\.x\) \* static_cast<double>\(scaling\.y\)\) \* static_cast<double>\(scaling\.z\)\) < 0\.0 \? \(-shape\.scale_y_magnitude\) : shape\.scale_y_magnitude\);/,
+        /shape\.scale_y = \(\(\(shape\.scale_x \* shape\.scale_y\) \* shape\.scale_z\) < 0\.0 \? \(-shape\.scale_y_magnitude\) : shape\.scale_y_magnitude\);/,
     );
     assert.match(
         lowered.source,

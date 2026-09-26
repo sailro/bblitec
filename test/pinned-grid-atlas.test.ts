@@ -3,12 +3,26 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { gridSpriteAtlasCpp } from "../src/lowering/pinned-grid-atlas.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("grid atlases accept textures retained in asynchronous source records", () => {
+    const result = compileSource(
+        `import {createEngine,loadTexture2D,createGridSpriteAtlas,type EngineContext,type Texture2D} from "@babylonjs/lite";
+        async function assets(engine:EngineContext):Promise<{texture:Texture2D}>{return {texture:await loadTexture2D(engine,"atlas.png")};}
+        async function main(){const engine=await createEngine(document.querySelector("canvas")!);const loaded=await assets(engine);createGridSpriteAtlas(loaded.texture,{cellWidthPx:loaded.texture.width,cellHeightPx:loaded.texture.height});}void main();`,
+        { fileName: "stored-grid-atlas.ts" },
+    );
+    assert(result.manifest.features.includes("sprite:2d"));
+    assert.match(result.cpp, /create_grid_sprite_atlas\(.*texture/);
+    assert.match(result.cpp, /std::visit\(.*texture.width/);
+    assert.match(result.cpp, /std::visit\(.*texture.height/);
+});
 
 test("the complete grid atlas factory preserves defaults, explicit zeroes and frame order natively", (t) => {
     const native = optionalNativeFixtureTools(false);
@@ -22,7 +36,16 @@ test("the complete grid atlas factory preserves defaults, explicit zeroes and fr
 #include <bblite/pinned_records.hpp>
 #include <cassert>
 ${gridSpriteAtlasCpp(new LoweringContext())}
+namespace bbl {
+SpriteAtlasHandle create_grid_sprite_atlas(Engine&, const FileTexture&, GridSpriteAtlasOptions) {return SpriteAtlasHandle{7};}
+SpriteAtlasHandle create_grid_sprite_atlas(Engine&, const PixelsTexture&, GridSpriteAtlasOptions) {return SpriteAtlasHandle{11};}
+}
 int main() {
+    bbl::Engine engine;
+    bbl::StoredTexture stored=bbl::FileTexture{};
+    assert(bbl::create_grid_sprite_atlas(engine,stored,{}).value==7);
+    stored=bbl::PixelsTexture{};
+    assert(bbl::create_grid_sprite_atlas(engine,stored,{}).value==11);
     bbl::SpriteAtlasRecord atlas;
     atlas.width = 64;
     atlas.height = 32;

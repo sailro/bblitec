@@ -291,6 +291,20 @@ function requiredStaticFiniteNumber(
     return { cpp: context.compileNumber(expression), value };
 }
 
+/** Metallic/roughness factors are unconditional UBO lanes in the pin. */
+function pbrUniformNumber(
+    context: MaterialOptionContext,
+    expression: ts.Expression | undefined,
+    fallback: number,
+): { cpp: string; value: number | undefined } {
+    return expression
+        ? {
+              cpp: context.compileNumber(expression),
+              value: selectedStaticNumberValue(context, expression),
+          }
+        : { cpp: floatLiteral(fallback), value: fallback };
+}
+
 /**
  * Scene 26's public subsurface setter: thin-surface translucency plus one
  * thickness texture. The pin's color/intensity texture arms and their live UV
@@ -536,17 +550,15 @@ export function compilePbrMaterialOptions(
     const hasVolume = "false";
     const attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
     const attenuationDistance = pinnedDefaultFloatCpp("attenuationDistance");
-    const metallicOption = requiredStaticFiniteNumber(
+    const metallicOption = pbrUniformNumber(
         context,
         metallic,
         pinnedDefaultNumber("pbrMetallicFactor"),
-        "PBR metallic factor",
     );
-    const roughnessOption = requiredStaticFiniteNumber(
+    const roughnessOption = pbrUniformNumber(
         context,
         roughness,
         pinnedDefaultNumber("pbrRoughnessFactor"),
-        "PBR roughness factor",
     );
     const directOption = requiredStaticFiniteNumber(
         context,
@@ -634,8 +646,8 @@ export function compilePbrMaterialOptions(
         : "false";
     // The resolved option values, in creation order, for the pinned
     // composer: the pin's `createPbrMaterial` is `{...props}`, so these
-    // ARE the material record its feature derivation reads. Scalar options
-    // are static; an array with runtime contents carries presence separately.
+    // ARE the material record its feature derivation reads. Composition
+    // options are static; uniform-only values may remain runtime expressions.
     const sceneMaterialIndex =
         context.sceneManifest.scenePbrMaterials.push({
             materialsBefore: context.sceneManifest.recordSceneMaterialSlot(),
@@ -647,8 +659,12 @@ export function compilePbrMaterialOptions(
                 : baseColorFactor
                   ? { baseColorFactorRuntime: true as const }
                   : {}),
-            metallicFactor: metallicOption.value,
-            roughnessFactor: roughnessOption.value,
+            ...(metallicOption.value === undefined
+                ? {}
+                : { metallicFactor: metallicOption.value }),
+            ...(roughnessOption.value === undefined
+                ? {}
+                : { roughnessFactor: roughnessOption.value }),
             directIntensity: directOption.value,
             environmentIntensity: environmentOption.value,
             alpha: alphaOption.value,

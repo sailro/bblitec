@@ -51,8 +51,8 @@ function make(){return createComputeUniformLayout([{name:"direction",type:"vec3<
 const first=make(),second=make(),alias=first;
 if(first===second||alias!==first||first.byteLength!==16)throw new Error("uniform layout identity");
 let caught=0;
-try{createComputeUniformLayout([]);}catch(error){if(error.message==="#816")caught++;}
-try{createComputeUniformLayout([{name:"a",type:"f32"},{name:"a",type:"u32"}]);}catch(error){if(error.message==="#818")caught++;}
+try{createComputeUniformLayout([]);}catch(error){if(error.message==="#878")caught++;}
+try{createComputeUniformLayout([{name:"a",type:"f32"},{name:"a",type:"u32"}]);}catch(error){if(error.message==="#880")caught++;}
 if(caught!==2)throw new Error("uniform layout validation");
 `);
     assert.ok(result.manifest.features.includes("compute:uniform-layout"));

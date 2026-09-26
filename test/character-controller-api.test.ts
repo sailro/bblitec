@@ -47,7 +47,11 @@ test("public character APIs transport collision values, vector aliases and dispo
     assert(result.manifest.features.includes("physics:character-controller"));
     assert.match(result.cpp, /CharacterCollisionEvent/);
     assert.match(result.cpp, /\.colliderIndex/);
-    assert.match(result.cpp, /physics_body_node_name/);
+    assert.match(
+        result.cpp,
+        /physics_world_state\(bbl::upstream::physics_body_world\([^;]+\.collider->value\)\)\.engine/,
+    );
+    assert.match(result.cpp, /physics_body_node\([^;]+\.collider->value\)/);
     assert.match(result.cpp, /onTriggerCollisionObservable\.add/);
     assert.match(result.cpp, /setShapeOptions/);
     assert.match(

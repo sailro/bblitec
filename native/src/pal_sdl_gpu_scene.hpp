@@ -355,7 +355,7 @@ struct GpuMeshResources {
     SharedComposedMaterialTextures* shared_composed_textures = nullptr;
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
-    std::uint64_t position_version = 0;
+    std::uint64_t attribute_version = 0;
 };
 struct GpuState;
 void release_gpu_mesh_resources(GpuState*, GpuMeshResources&) noexcept;

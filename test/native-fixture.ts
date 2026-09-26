@@ -222,6 +222,7 @@ const nativeFixtureBuildOptions: ReadonlyMap<string, string> = new Map([
     ["BBLITE_HAS_SDL_GPU", "0"],
     ["BBLITE_HAS_DAWN", "0"],
     ["BBLITE_DAWN_DXC", "0"],
+    ["BT_THREADSAFE", "1"],
 ]);
 const nativeFixtureReach: FeatureMacroReach = {
     features: [
@@ -355,7 +356,12 @@ function nativeFixtureArguments(
             .filter(([name]) => !defined.has(name))
             .map(([name, value]) => `/D${name}=${value}`),
         ...(clang
-            ? ["-Wundef", "-Werror=undef"]
+            ? [
+                  "-Wundef",
+                  "-Werror=undef",
+                  "/DBT_USE_SSE",
+                  "/DBT_NO_SIMD_OPERATOR_OVERLOADS",
+              ]
             : ["/we4668", "/external:env:INCLUDE", "/external:W0"]),
         ...rest,
     ];

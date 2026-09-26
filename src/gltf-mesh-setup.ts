@@ -27,6 +27,7 @@ export interface GltfMeshSetup {
     topology: string;
     clockwise: boolean;
     visible: boolean;
+    visibleDefined?: boolean;
     instances?: { matrices: number; count: number };
 }
 
@@ -95,6 +96,7 @@ export function packageMeshSetup(
         topology: primitiveTopology,
         clockwise: primitive?.frontFace === "cw",
         visible: mesh.visible !== false,
+        visibleDefined: mesh.visible !== undefined,
     };
     if (mesh.thinInstances) {
         const instances = mesh.thinInstances;
@@ -128,7 +130,9 @@ export function readMeshSetup(
         bounds === undefined ||
         bounds >= accessorCount ||
         typeof setup.clockwise !== "boolean" ||
-        typeof setup.visible !== "boolean"
+        typeof setup.visible !== "boolean" ||
+        (setup.visibleDefined !== undefined &&
+            typeof setup.visibleDefined !== "boolean")
     )
         throw new Error("Invalid packaged glTF mesh placement.");
     const result: GltfMeshSetup = {
@@ -137,6 +141,9 @@ export function readMeshSetup(
         topology: topology(setup.topology),
         clockwise: setup.clockwise,
         visible: setup.visible,
+        ...(typeof setup.visibleDefined === "boolean"
+            ? { visibleDefined: setup.visibleDefined }
+            : {}),
     };
     if (setup.instances !== undefined) {
         const instances = asObject(setup.instances);

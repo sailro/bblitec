@@ -14,7 +14,8 @@ import {
     lowerPinnedFunction,
     lowerPinnedFunctionParts,
 } from "./pinned-function-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { lowerPropertyAnimationMixer } from "./animation-property-mixer.js";
 
 import { recordAt } from "../compiler/record-access.js";
 
@@ -169,7 +170,12 @@ export class AnimationLowerer {
                             ? this.context.doubleLiteral(
                                   this.context.numericValue(right, file),
                               )
-                            : undefined;
+                            : this.context.expressionMatchesShape(
+                                    right,
+                                    "group._startTime ?? 0",
+                                )
+                              ? "record.start_time"
+                              : undefined;
                 if (value === undefined) {
                     this.context.contractError(
                         right,
@@ -291,14 +297,14 @@ export class AnimationLowerer {
             goToFrame,
             (node): node is ts.IfStatement => ts.isIfStatement(node),
         );
-        if (seekGuards.length !== 2) {
+        if (seekGuards.length !== 3) {
             this.context.contractError(
                 goToFrame,
                 "Expected the controller and stopped-group goToFrame guards.",
             );
         }
         this.context.assertExpressionShape(
-            seekGuards[1]!.expression,
+            seekGuards[2]!.expression,
             "engine || !group._stopped || !group._gltfMixer",
             "glTF stopped-group seek guard",
         );
@@ -763,22 +769,7 @@ void set_animation_additive_from_frame(
         }
     }
 
-    /**
-     * The pin's optional weighted property mixer
-     * (src/animation/weighted-pointer-mixer.ts), reached only through
-     * `enablePropertyAnimationBlending`. Without it two groups writing one
-     * property devolve into last-write-wins, which is exactly what the
-     * mixer exists to stop: it buckets the tracks by the (target,
-     * property) pair each binding resolved, samples every contributing
-     * group at its own time, and writes one weighted sum per bucket.
-     *
-     * The arithmetic is the pin's own: the group's time advance, the
-     * weighted accumulation with its quaternion hemisphere rule and the
-     * final normalize are lowered from their declarations. The walk around
-     * them runs over the native manager's ordered groups, so the shapes it
-     * follows -- which groups contest a bucket, the uncontested early-out,
-     * the zero-weight skip and the normalize guard -- are asserted here.
-     */
+    /** Public property blending uses source arithmetic and source manager traversal. */
     private lowerWeightedPointerMixer(): string {
         const mixerModule = "src/animation/weighted-pointer-mixer.ts";
         const weightModule = "src/animation/animation-weight.ts";
@@ -832,31 +823,8 @@ void set_animation_additive_from_frame(
                 enableBlending,
                 "setAnimationTaskCategoryHandler",
             ),
-            "setAnimationTaskCategoryHandler(manager, ANIMATION_GROUP_TASK_CATEGORY, updateWeightedPointerAnimations)",
+            "setAnimationTaskCategoryHandler(manager, ANIMATION_GROUP_TASK_CATEGORY, _updateWeightedPointerAnimations)",
             "Property animation blending opt-in",
-        );
-        const { declaration: mixer } = this.context.functionDeclaration(
-            mixerModule,
-            "updateWeightedPointerAnimations",
-        );
-        // A group at full weight never marks a bucket contested, so a
-        // scene that enables blending without weighting anything keeps
-        // the ordinary per-group writes.
-        this.expectOneShape(
-            mixer,
-            "group._stopped || group.weight === 1 || !mixer",
-            "contested-bucket skip",
-        );
-        this.expectOneShape(
-            mixer,
-            "contestedCount === 0",
-            "uncontested early-out",
-        );
-        this.expectOneShape(mixer, "weight === 0", "zero-weight skip");
-        this.expectOneShape(
-            mixer,
-            "bucket.quaternion && bucket.arity === 4",
-            "blended quaternion normalize guard",
         );
         const calls = new Map<string, PinnedCallSpelling>();
         const normalize = lowerPinnedFunction(
@@ -909,6 +877,11 @@ void set_animation_additive_from_frame(
 
                 memberBindings: new Map<string, PinnedBinding>([
                     ["bucket.active", { cpp: "bucket.active", type: "bool" }],
+                    ["bucket.mix", absentBinding("undefined")],
+                    [
+                        "bucket.totalWeight",
+                        { cpp: "bucket.total_weight", type: "scalar" },
+                    ],
                     [
                         "bucket.quaternion",
                         { cpp: "bucket.quaternion", type: "bool" },
@@ -967,6 +940,8 @@ void set_animation_additive_from_frame(
 
                 memberBindings: new Map<string, PinnedBinding>([
                     ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
+                    ["group._stopped", { cpp: "group.stopped", type: "bool" }],
+                    ["mixer[MIX_START]", absentBinding("undefined")],
                     [
                         "group.currentTime",
                         { cpp: "group.current_time", type: "scalar" },
@@ -991,144 +966,16 @@ void set_animation_additive_from_frame(
                 ]),
             },
         );
-        return `
-/**
- * ${this.context.provenance(mixerModule, "updateWeightedPointerAnimations")}
- *
- * The bucket key is the pin's (target object, property name) pair: a
- * lowered track resolves that pair from its target, its lane and the
- * component of it the path named -- "position" resolves to the mesh and
- * the name "position", while "position.x" resolves to the position vector
- * and the name "x" --
- * so the triple names the same bucket the pin's binding would. The pin
- * also carries the track's writer and rotation flag onto the bucket it
- * finds; the writer is the same generated one here, and the flag follows
- * from the same triple.
- */
-PropertyAnimationBucket& track_bucket(
-    std::vector<PropertyAnimationBucket>& buckets,
-    const PropertyAnimationTarget& target,
-    const PropertyAnimationTrack& track) {
-    for (PropertyAnimationBucket& candidate : buckets) {
-        if (
-            candidate.target.kind == target.kind &&
-            candidate.target.mesh == target.mesh &&
-            candidate.target.index == target.index &&
-            candidate.target.object_identity == target.object_identity &&
-            candidate.target.property == target.property &&
-            candidate.property == track.path &&
-            candidate.component == track.component) {
-            return candidate;
-        }
-    }
-    PropertyAnimationBucket bucket;
-    bucket.target = target;
-    bucket.property = track.path;
-    bucket.component = track.component;
-    bucket.quaternion = track.quaternion;
-    buckets.push_back(bucket);
-    return buckets.back();
-}
-
-// ${accumulate.provenance}
+        return `// ${accumulate.provenance}
 ${accumulate.declaration} {
 ${accumulate.body}
 }
-
 ${normalize}
-
 // ${advance.provenance}
 ${advance.declaration} {
 ${advance.body}
 }
-
-/**
- * Returns whether the mixer handled this tick, which is the pin's
- * category-handler contract: true means the manager skips the
- * animation-group tasks it would otherwise have ticked.
- *
- * Property and glTF groups share the source registration order.
- */
-bool update_weighted_property_animations(
-    Engine& engine,
-    PropertyAnimationManagerRecord& manager,
-    double delta_ms) {
-    for (PropertyAnimationBucket& bucket : manager.buckets) {
-        bucket.contested = false;
-        bucket.active = false;
-        bucket.has_reference = false;
-        bucket.values.fill(0.0f);
-    }
-    bool contested = false;
-    for (const PropertyAnimationGroup& group : manager.groups) {
-        if (!group || group->stopped || group->weight == 1.0) continue;
-        for (std::size_t index = 0;
-             index < group->clip.tracks.size();
-             ++index) {
-            const PropertyAnimationTrack& track =
-                group->clip.tracks[index];
-            track_bucket(
-                manager.buckets,
-                group->targets[index],
-                track).contested = true;
-            contested = true;
-        }
-    }
-    if (!contested) return false;
-    for (std::size_t group_index = 0; group_index < manager.ordered_groups.size(); ++group_index) {
-        const AnimationGroupReference reference = manager.ordered_groups[group_index];
-        if (reference.kind != AnimationWeightFadeTargetKind::property) {
-            tick_animation_group_reference(engine, reference, delta_ms);
-            continue;
-        }
-        const PropertyAnimationGroup group = reference.property_group;
-        if (!group || group->stopped) continue;
-        const double time =
-            advance_property_group_time(*group, delta_ms);
-        const double weight = group->weight;
-        if (weight == 0.0) continue;
-        for (std::size_t index = 0;
-             index < group->clip.tracks.size();
-             ++index) {
-            const PropertyAnimationTrack& track =
-                group->clip.tracks[index];
-            const PropertyAnimationTarget& target =
-                group->targets[index];
-            const std::array<float, 4> sample =
-                evaluate_track(track, time);
-            PropertyAnimationBucket& bucket = track_bucket(
-                manager.buckets,
-                target,
-                track);
-            if (!bucket.contested) {
-                write_track_value(
-                    engine,
-                    target,
-                    track.path,
-                    track.component,
-                    sample);
-                continue;
-            }
-            accumulate_weighted_track(bucket, track, sample, weight);
-        }
-    }
-    for (PropertyAnimationBucket& bucket : manager.buckets) {
-        if (!bucket.active) continue;
-        if (
-            bucket.quaternion &&
-            track_stride(bucket.property, bucket.component) == 4) {
-            normalize_blended_quaternion(bucket.values);
-        }
-        write_track_value(
-            engine,
-            bucket.target,
-            bucket.property,
-            bucket.component,
-            bucket.values);
-    }
-    return true;
-}
-`;
+${lowerPropertyAnimationMixer(this.context)}`;
     }
 
     /**
@@ -1278,8 +1125,10 @@ void add_animation_groups(
                 "Invalid animation group handle.");
         }
         auto& record = ${recordAt("engine.animation_groups", "group")};
-        register_animation_group(manager, record.animation_owner, record.name, [&] {
-            owner.ordered_groups.push_back(AnimationGroupReference::from_gltf(group));
+        register_animation_group(manager, record.animation_owner, record.animation_order, record.name,
+            [&](double index) { return animation_group_order(engine, owner.ordered_groups.at(static_cast<std::size_t>(index))); },
+            [&](std::size_t index) {
+            owner.ordered_groups.insert(owner.ordered_groups.begin() + static_cast<std::ptrdiff_t>(index), AnimationGroupReference::from_gltf(group));
             owner.gltf_groups.push_back(group);
         });
     }
@@ -1738,6 +1587,11 @@ PropertyAnimationManagerRecord& bind_manager_engine(
     return owner;
 }
 
+double animation_group_order(Engine& engine, const AnimationGroupReference& reference) {
+    if (reference.kind == AnimationWeightFadeTargetKind::property)
+        return reference.property_group->animation_order.order;
+    return ${recordAt("engine.animation_groups", "reference.gltf_group")}.animation_order.order;
+}
 ${lowerAnimationGroupRegistration(this.context)}
 ${lowerPropertyAnimationPlayback(this.context)}
 ${lowerAnimationManagerDispatch(this.context)}
@@ -2091,8 +1945,10 @@ PropertyAnimationGroup create_property_animation_group(
     group->speed_ratio = options.speed_ratio;
     group->loop = options.loop;
     property_playAnimation(*group);
-    register_animation_group(manager, group->animation_owner, group->clip.name, [&] {
-        owner.ordered_groups.push_back(AnimationGroupReference::from_property(group));
+    register_animation_group(manager, group->animation_owner, group->animation_order, group->clip.name,
+        [&](double index) { return animation_group_order(engine, owner.ordered_groups.at(static_cast<std::size_t>(index))); },
+        [&](std::size_t index) {
+        owner.ordered_groups.insert(owner.ordered_groups.begin() + static_cast<std::ptrdiff_t>(index), AnimationGroupReference::from_property(group));
         owner.groups.push_back(group);
     });
     return group;
@@ -2147,10 +2003,9 @@ void go_to_frame(
         throw std::runtime_error(
             "Property animation group is null.");
     }
-    group->current_time =
-        frame / group->clip.frame_rate;
-    group->playing = false;
-    apply_group(engine, group);
+    property_go_to_frame(*group,frame,[&](double time) {
+        apply_group_at(engine,group,time);
+    });
 }
 
 } // namespace bbl

@@ -4,7 +4,6 @@ import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
     isStringValue,
     optionalPresentCpp,
-    presenceCpp,
     presenceFlagCpp,
     valueForKind,
 } from "./compiler/types.js";
@@ -217,6 +216,7 @@ import { mutatingArrayMethods } from "./compiler/receiver-methods.js";
 import {
     ClosureCaptures,
     nativeCompanionKeys,
+    renderClosure,
     renderCoroutineInvocation,
     type CapturedClosure,
     type NativeCaptureBinding,
@@ -343,7 +343,7 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
         {
             origin: "babylon",
             kind: "audio-engine",
-            cppType: "bbl::pal::AudioContextHandle",
+            cppType: "bbl::AudioEngineHandle",
         },
     ],
     [
@@ -851,6 +851,7 @@ class Compiler implements LoweringServices {
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
         this.emitEntryBody(entry);
+        this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         if (this.features.has("engine:device-recovery")) {
             if (
@@ -890,6 +891,8 @@ class Compiler implements LoweringServices {
         this.refuseMixedStandaloneTextContexts();
         this.refuseUiWithoutPresentation();
         this.ui.validateUiStaticProjection();
+
+        if (this.dataTypes.usesJsonStorage()) this.reachJson();
 
         const features = featureOrder.filter((feature) =>
             this.features.has(feature),
@@ -1229,7 +1232,6 @@ class Compiler implements LoweringServices {
         const emitBody = (): boolean => {
             const terminated = emitReachableStatements(this, entry);
             this.callbacks.emitDeferredPhysicsCallbacks();
-            this.emitNativeHostUi();
             return terminated;
         };
         const suspends =
@@ -1397,7 +1399,9 @@ class Compiler implements LoweringServices {
         if (present.length !== 1 || (!allowDirect && !isNullable(type)))
             return undefined;
         const member = present[0]!;
-        if (this.options.workers && isPinnedType(member, ["EngineContext"])) {
+        if (isPinnedType(member, ["EngineContext"])) {
+            if (!this.options.workers && !isNullable(type)) return undefined;
+            if (!this.options.workers) throw new ApplicationRealmRequired();
             return { kind: "engine", cppType: "std::shared_ptr<bbl::Engine>" };
         }
         const pinned = pinnedHandleKind(member);
@@ -1406,6 +1410,7 @@ class Compiler implements LoweringServices {
             case "sprite-layer":
             case "navigation-obstacle":
             case "storage-buffer":
+            case "scene":
                 return { kind: pinned, cppType: handleCppType(pinned) };
         }
         const audio = domAudioHandleKind(member);
@@ -2023,9 +2028,9 @@ class Compiler implements LoweringServices {
     }
 
     public compileWorkerValue(expression: ts.Expression): Value | undefined {
+        const canvas = compileCanvasValue(this, expression);
+        if (canvas) return canvas;
         if (this.options.workers) {
-            const canvas = compileCanvasValue(this, expression);
-            if (canvas) return canvas;
             const promise = this.asyncLowerer.compile(expression);
             if (promise) return promise;
         }
@@ -2297,34 +2302,32 @@ class Compiler implements LoweringServices {
     ): Value | undefined {
         if (
             importedName === "parseNodeMaterialFromSnippet" &&
-            (this.frameCallbackDepth > 0 ||
+            ((this.frameCallbackDepth > 0 && this.isRuntimeResourceConstruction()) ||
                 this.engineLifecycle.engineStartMark !== undefined ||
                 this.admissions.temporalSceneRegistration)
         ) {
             this.fail(
                 call,
-                "Node material construction requires setup before scene registration; live group rebuilding is not represented.",
+                `Node material construction requires setup before scene registration; live group rebuilding is not represented (${this.frameCallbackDepth > 0 ? "callback" : this.engineLifecycle.engineStartMark !== undefined ? "engine started" : "scene registered"}).`,
             );
         }
         if (
             this.sceneManifest.hasRuntimeMaterialProfiles() &&
-            (importedName === "createPbrMaterial" ||
-                importedName === "loadGltf")
+            importedName === "loadGltf"
         ) {
             this.fail(
                 call,
-                "Runtime material construction leaves no generation-known physical material slot for a later PBR material or glTF load.",
+                "Runtime material construction leaves no generation-known physical material slot for a later glTF load.",
             );
         }
         if (
-            (importedName === "createPbrMaterial" ||
-                importedName === "loadGltf") &&
+            importedName === "loadGltf" &&
             this.isRuntimeResourceConstruction() &&
             (this.frameCallbackDepth > 0 || this.isInRuntimeControlFlow())
         ) {
             this.fail(
                 call,
-                "Runtime resource construction requires a generation-known iteration count for PBR material slots and glTF load order.",
+                "Runtime resource construction requires a generation-known iteration count for glTF load order.",
             );
         }
         const profile =
@@ -2357,14 +2360,26 @@ class Compiler implements LoweringServices {
         return value;
     }
 
-    public isRuntimeResourceConstruction(): boolean {
-        if (
+    /** Ordered awaited setup may branch without becoming a retained callback. */
+    public isRuntimeCallback(): boolean {
+        return this.frameCallbackDepth > 0 && !this.isEngineSetupCallback();
+    }
+
+    private isEngineSetupCallback(): boolean {
+        return !!(
             this.options.workers &&
             this.engineCreationExecution &&
             this.frameCallbackDepth ===
                 this.engineCreationExecution.callback +
                     this.asyncActivations.awaitedSetupDepth -
-                    this.engineCreationExecution.awaited &&
+                    this.engineCreationExecution.awaited
+        );
+    }
+
+    public isRuntimeResourceConstruction(): boolean {
+        if (
+            this.isEngineSetupCallback() &&
+            this.engineCreationExecution &&
             this.runtimeControlFlowDepth ===
                 this.engineCreationExecution.control &&
             this.runtimeIterationDepth ===
@@ -2805,7 +2820,8 @@ class Compiler implements LoweringServices {
             ts.isIdentifier(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped) ||
-            ts.isTemplateExpression(unwrapped)
+            ts.isTemplateExpression(unwrapped) ||
+            ts.isCallExpression(unwrapped)
                 ? this.probeEmission(
                       () => this.compileValue(unwrapped),
                       (value) => value.staticString !== undefined,
@@ -2877,6 +2893,15 @@ class Compiler implements LoweringServices {
         const candidates = new EmissionSet<string>();
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (node) => {
+                if (
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    this.symbols.isPhysicsEngineModule(node.expression)
+                ) {
+                    // Native physics substitutes the browser module; its
+                    // loader callbacks are never invoked or packaged.
+                    return "skip";
+                }
                 if (
                     ts.isCallExpression(node) &&
                     node.arguments.length === 2 &&
@@ -3070,6 +3095,11 @@ class Compiler implements LoweringServices {
                 cpp: this.cppString(staticString),
                 staticString,
             };
+        }
+        if (prefix.endsWith("/")) {
+            const candidates = this.staticAssetUrlCandidates();
+            if (!candidates.includes(prefix))
+                this.staticAssetUrlCandidateCache = [...candidates, prefix].sort();
         }
         return {
             kind: "data",
@@ -5427,82 +5457,6 @@ class Compiler implements LoweringServices {
         };
     }
 
-    public bindAudioMainBusStorage(value: Value): void {
-        if (
-            value.kind !== "audio-engine" ||
-            (value.audioMainBusCpp === undefined &&
-                value.optionalStorageCpp === undefined)
-        )
-            return;
-        const owner =
-            value.sharedStorageCpp ??
-            (cppIdentifierPattern.test(value.cpp)
-                ? value.cpp
-                : value.optionalStorageCpp) ??
-            value.cpp;
-        if (value.audioMainBusOwnerCpp === owner) return;
-        const name = this.allocateTemporaryCppName("audio_main_bus");
-        const initial = value.audioMainBusCpp ?? "bbl::pal::AudioNodeHandle{}";
-        const shared = value.sharedStorageCpp !== undefined;
-        const borrows =
-            !shared &&
-            value.audioMainBusCpp !== undefined &&
-            this.hasStableNativeExpression(value.audioMainBusCpp);
-        this.useNativeValue(value);
-        this.emit(
-            shared
-                ? `[[maybe_unused]] auto ${name} = bbl::js::make_gc_shared<bbl::pal::AudioNodeHandle>(${initial});`
-                : borrows
-                  ? `[[maybe_unused]] auto& ${name} = ${initial};`
-                  : `[[maybe_unused]] bbl::pal::AudioNodeHandle ${name} = ${initial};`,
-        );
-        writable(value).audioMainBusCpp = shared ? `(*${name})` : name;
-        writable(value).audioMainBusOwnerCpp = owner;
-        const binding = this.registerNativeBinding(
-            name,
-            false,
-            !shared,
-            shared
-                ? "std::shared_ptr<bbl::pal::AudioNodeHandle>"
-                : "bbl::pal::AudioNodeHandle",
-        );
-        if (borrows) this.nativeConstBindings.add(binding);
-        writable(value).nativeCompanionCaptures = {
-            ...value.nativeCompanionCaptures,
-            audioMainBusCpp: [binding],
-        };
-    }
-
-    public assignAudioMainBus(
-        target: Value,
-        value: Value | undefined,
-        node: ts.Node,
-    ): void {
-        if (target.kind !== "audio-engine") return;
-        const destination =
-            target.audioMainBusCpp ??
-            this.fail(
-                node,
-                "An audio engine assignment requires materialized main-bus storage.",
-            );
-        const source = value
-            ? (value.audioMainBusCpp ??
-              this.fail(
-                  node,
-                  "An audio engine assignment requires its source main bus.",
-              ))
-            : "bbl::pal::AudioNodeHandle{}";
-        const present = value && presenceCpp(value);
-        this.emit({
-            kind: "expression",
-            code: `${destination} = ${
-                present
-                    ? `(${present}) ? ${source} : bbl::pal::AudioNodeHandle{}`
-                    : source
-            };`,
-        });
-    }
-
     /**
      * A nullable local's storage from a maybe-absent handle. A nullable
      * handle property is represented by the invalid native handle, while
@@ -5548,7 +5502,6 @@ class Compiler implements LoweringServices {
             this.emit({ kind: "branch", code: "} else {" });
             this.emit({ kind: "expression", code: `    ${storage}.reset();` });
             this.emit({ kind: "close", code: "}" });
-            this.assignAudioMainBus(target, value, node);
             return;
         }
         if (value.kind !== target.kind) {
@@ -5561,9 +5514,15 @@ class Compiler implements LoweringServices {
             kind: "expression",
             code: `${storage} = ${this.optionalResourceCpp(value)};`,
         });
-        this.assignAudioMainBus(target, value, node);
         if (value.engineCpp !== undefined && target.kind !== "engine") {
             writable(target).engineCpp = value.engineCpp;
+        }
+        if (target.kind === "scene") {
+            for (const key of ["sceneEnvironmentState", "sceneTopologyState", "sceneCamera", "surfaceCanvas", "msaaSamples"] as const) {
+                const metadata = value[key];
+                if (metadata === undefined) delete writable(target)[key];
+                else Object.assign(writable(target), { [key]: metadata });
+            }
         }
         // A declaration without an initializer is represented by optional
         // native storage, but assigning into that storage must still make the
@@ -5673,14 +5632,12 @@ class Compiler implements LoweringServices {
         const right = this.unwrap(expression.right);
         if (right.kind === ts.SyntaxKind.NullKeyword) {
             this.emit({ kind: "expression", code: `${storage}.reset();` });
-            this.assignAudioMainBus(target, undefined, right);
             delete writable(target).spriteDepthMode;
             return true;
         }
         const value = this.compileValue(right);
         if (value.kind === "json-null") {
             this.emit({ kind: "expression", code: `${storage}.reset();` });
-            this.assignAudioMainBus(target, undefined, right);
             delete writable(target).spriteDepthMode;
             return true;
         }
@@ -6371,6 +6328,15 @@ class Compiler implements LoweringServices {
         dataType: DataType & { kind: "function" },
         owner?: Value,
     ): string {
+        if (ts.isIdentifier(expression)) {
+            const imported = this.symbols.importedName(expression);
+            if (imported)
+                return this.compileStoredIntrinsicFunction(
+                    expression,
+                    imported,
+                    dataType,
+                );
+        }
         const expressionIsFunctionObject =
             ts.isArrowFunction(expression) ||
             ts.isFunctionExpression(expression) ||
@@ -6449,6 +6415,58 @@ class Compiler implements LoweringServices {
                 this.defineThis(previousThis);
             }
         });
+    }
+
+    private compileStoredIntrinsicFunction(
+        expression: ts.Identifier,
+        imported: string,
+        type: DataType<"function">,
+    ): string {
+        const declaration = this.checker
+            .getTypeAtLocation(expression)
+            .getCallSignatures()[0]?.declaration;
+        if (!declaration || type.erasedParameters?.length || type.restParameter !== undefined)
+            this.fail(expression, "Stored intrinsics require one fixed native signature.");
+        const parameters = type.parameters.map((parameter, index) => {
+            const source = declaration.parameters[index];
+            if (!source || !ts.isIdentifier(source.name))
+                this.fail(expression, "Stored intrinsic parameters require declared identifiers.");
+            return { source: source.name, type: parameter, name: this.allocateTemporaryCppName("intrinsic_argument") };
+        });
+        const call = ts.factory.createCallExpression(expression, undefined, parameters.map(parameter => parameter.source));
+        ts.setTextRange(call, expression);
+        ts.setOriginalNode(call, expression);
+        const body = this.captureManagedClosureLines(() => {
+            const bound = parameters.map(parameter => ({
+                name: parameter.source,
+                compileTime: true,
+                value: {
+                    ...this.dataLowerer.leafValue(parameter.name, parameter.type),
+                    nativeCaptures: [this.registerNativeBinding(parameter.name, false, false, this.dataTypes.cppType(parameter.type))],
+                },
+            }));
+            this.bindings.withBoundParameters(bound, () => {
+                const value = this.compileRegisteredIntrinsic(imported, call) ??
+                    this.fail(expression, `Stored Babylon Lite intrinsic '${imported}' is not supported.`);
+                if (!type.result) {
+                    this.emitDiscardedValue(value);
+                    return;
+                }
+                if (type.result.kind === "promise" && value.kind !== "promise") {
+                    const result = type.result.result;
+                    const cpp = result
+                        ? this.dataLowerer.compileKnownValueForSink(value, result, expression)
+                        : "bbl::js::PromiseVoid{}";
+                    if (!result) this.emitDiscardedValue(value);
+                    this.emit(`return ${this.dataTypes.cppType(type.result)}::resolved(${cpp});`);
+                } else {
+                    this.emit(`return ${this.dataLowerer.compileKnownValueForSink(value, type.result, expression)};`);
+                }
+            });
+        });
+        this.reachJsData();
+        const closure = renderClosure(body, parameters.map(parameter => `[[maybe_unused]] ${this.dataTypes.cppType(parameter.type)} ${parameter.name}`).join(", "), type.result ? this.dataTypes.cppType(type.result) : "void");
+        return `${this.dataTypes.cppType(type)}{${this.callbackIdentity(declaration, undefined)}u, ${closure}}`;
     }
 
     public compilePredicateWithValues(
@@ -7137,6 +7155,7 @@ class Compiler implements LoweringServices {
                           namespace: this.options.workers.namespace,
                           declarations: this.options.workers.declarations(),
                           hasEngine: this.defaultEngineCpp !== undefined,
+                          waitForCanvasReady: this.ui.windowCanvasReadyGate,
                           ...(features.includes("platform:window")
                               ? {
                                     windowOptions: `bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}`,

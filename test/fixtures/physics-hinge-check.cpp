@@ -36,6 +36,13 @@ int main() {
     source_a.handle = a;
     u::PhysicsBody source_b;
     source_b.handle = b;
+    const auto temporary =
+        u::create_physics_constraint(source_handle, source_a, source_b, hinge_type);
+    const auto retained_alias = temporary;
+    assert(world.ownership->hinges.size() == 1);
+    u::release_physics_constraint(source_handle, temporary);
+    u::release_physics_constraint(source_handle, retained_alias);
+    assert(*retained_alias.disposed && world.ownership->hinges.empty());
     u::create_physics_constraint(source_handle, source_a, source_b, hinge_type,
                                  {.pivot_a = Vec3d{0, 0, -0.5},
                                   .pivot_b = Vec3d{0, 0, 0.5},
@@ -90,9 +97,24 @@ int main() {
     p::physics_world_add_body(other_world, a, false);
     p::physics_world_add_body(other_world, b, false);
     const p::PhysicsConstraintAnchor anchor{{0, 0, 0}, {0, 0, 1}, {0, 1, 0}};
+    const auto filtered = p::physics_world_create_hinge(other_world, a, b, anchor, anchor, false);
+    p::physics_world_step(other_world, 1.0 / 60);
+    assert(!a.ownership->body->checkCollideWith(b.ownership->body.get()));
+    assert(!other_world.ownership->hinges.front().joint->isEnabled());
+    p::physics_constraint_release(filtered);
+    assert(a.ownership->body->checkCollideWith(b.ownership->body.get()));
     p::physics_world_create_hinge(other_world, a, b, anchor, anchor, true);
     p::physics_world_step(other_world, 1.0 / 60);
     assert(a.ownership->body->checkCollideWith(b.ownership->body.get()));
+    assert(other_world.ownership->world->getNumConstraints() == 1);
+    assert(!other_world.ownership->hinges.front().joint->isEnabled());
+    p::physics_body_set_motion_type(b, p::PhysicsMotionType::simulated);
+    p::physics_body_set_mass_properties(b, mass);
+    p::physics_world_step(other_world, 1.0 / 60);
+    assert(other_world.ownership->hinges.front().joint->isEnabled());
+    p::physics_body_set_motion_type(b, p::PhysicsMotionType::node_driven);
+    p::physics_world_step(other_world, 1.0 / 60);
+    assert(!other_world.ownership->hinges.front().joint->isEnabled());
     bool same_body_refused = false;
     try {
         p::physics_world_create_hinge(other_world, a, a, anchor, anchor, false);

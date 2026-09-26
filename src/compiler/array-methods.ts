@@ -173,6 +173,23 @@ export function compileArrayValueMethod(
             dataType: type,
         };
     }
+    if (call.arguments.some(ts.isSpreadElement)) {
+        const arguments_ = lowerer.compileFunctionArguments(call, {
+            kind: "function",
+            restParameter: 2,
+            parameters: [
+                { kind: "number" },
+                { kind: "number" },
+                { kind: "vector", element: type.element },
+            ],
+        }, "Array.splice");
+        lowerer.invalidateAliases(owner.cpp);
+        return {
+            kind: "data",
+            cpp: `bbl::js::array_splice(${source}, ${arguments_.join(", ")})`,
+            dataType: type,
+        };
+    }
     const start = numericArgument(0, "0.0");
     const count = numericArgument(
         1,

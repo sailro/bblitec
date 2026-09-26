@@ -238,7 +238,7 @@ function compileLoadGltf(
     context.assetRegistry.recordGltfContainerLoad(asset, call);
     context.reachFeature("loader:gltf", call);
     context.reachFeature("renderer:scene", call);
-    return {
+    const result: Value = {
         kind: "asset",
         cpp:
             `bbl::load_gltf(${engine.cpp}, ` +
@@ -248,6 +248,14 @@ function compileLoadGltf(
         asset,
         assetRootState: { reparented: false },
     };
+    return context.options.workers
+        ? {
+              kind: "promise",
+              cpp: `bbl::pal::load_realm_gltf${context.hasFeature("loader:gltf-cameras") ? "<true>" : ""}(${engine.cpp}, bbl::asset_path(${context.cppString(asset.output)}))`,
+              promiseType: "bbl::AssetHandle",
+              promiseResult: result,
+          }
+        : result;
 }
 
 function compileLoadSplat(
@@ -990,6 +998,19 @@ const assetIntrinsicHandlers = new EmissionMap<
     ],
     ["selectVariant", compileSelectVariant],
     ["enableGltfCameras", compileEnableGltfCameras],
+    [
+        "enableGltfCpuTangents",
+        (context, call) => {
+            context.expectArgumentCount(call, 0, 0);
+            if (context.assetRegistry.gltfAlreadyLoaded())
+                context.fail(
+                    call,
+                    "CPU tangent retention must be enabled before the first glTF load.",
+                );
+            context.reachFeature("loader:gltf-cpu-tangents", call);
+            return { kind: "void", cpp: "" };
+        },
+    ],
     ["loadBabylon", compileLoadBabylon],
     ["loadTexture2D", compileLoadTexture2D],
     [

@@ -224,6 +224,8 @@ public:
         : values_(std::make_shared<std::vector<T>>(values)) {}
     TypedArray(std::vector<T> values)
         : values_(std::make_shared<std::vector<T>>(std::move(values))) {}
+    explicit TypedArray(std::shared_ptr<std::vector<T>> values)
+        : values_(std::move(values)) {}
     template <typename Iterator>
     TypedArray(Iterator first, Iterator last)
         : values_(std::make_shared<std::vector<T>>(first, last)) {}
@@ -652,7 +654,10 @@ public:
               static_cast<const T*>(borrowed)->prevent_default();
           }),
           default_prevented_([](const void* borrowed) noexcept {
-              return static_cast<const T*>(borrowed)->default_prevented;
+              if constexpr (requires(const T& event) { event.is_default_prevented(); })
+                  return static_cast<const T*>(borrowed)->is_default_prevented();
+              else
+                  return static_cast<const T*>(borrowed)->default_prevented;
           }) {
         dom = value.dom.get();
     }
@@ -2080,23 +2085,25 @@ template <typename T> using Span = std::span<T>;
 template <std::size_t N> class Tuple {
 public:
     using Storage = std::array<double, N>;
-    using iterator = typename Storage::iterator;
-    using const_iterator = typename Storage::const_iterator;
+    using RetainedStorage = std::vector<double>;
+    using iterator = typename RetainedStorage::iterator;
+    using const_iterator = typename RetainedStorage::const_iterator;
 
-    Tuple() : values_(std::make_shared<Storage>()) {}
-    Tuple(std::initializer_list<double> values) : values_(std::make_shared<Storage>()) {
+    Tuple() : values_(std::make_shared<RetainedStorage>(N)) {}
+    Tuple(std::initializer_list<double> values) : values_(std::make_shared<RetainedStorage>(values)) {
         if (values.size() != N) {
             throw std::runtime_error("Tuple initializer has the wrong length.");
         }
-        std::copy(values.begin(), values.end(), values_->begin());
     }
-    Tuple(Storage values) : values_(std::make_shared<Storage>(std::move(values))) {}
+    Tuple(Storage values) : values_(std::make_shared<RetainedStorage>(values.begin(), values.end())) {}
+    [[nodiscard]] const std::shared_ptr<RetainedStorage>& retained_storage() const { return values_; }
 
     [[nodiscard]] double& operator[](std::size_t index) { return (*values_)[index]; }
     [[nodiscard]] const double& operator[](std::size_t index) const { return (*values_)[index]; }
     [[nodiscard]] constexpr std::size_t size() const { return N; }
     [[nodiscard]] const void* identity() const { return values_.get(); }
     [[nodiscard]] bool operator==(const Tuple& other) const { return values_ == other.values_; }
+    [[nodiscard]] bool operator==(const Array<double>& other) const { return identity() == other.identity(); }
     [[nodiscard]] double* data() { return values_->data(); }
     [[nodiscard]] const double* data() const { return values_->data(); }
     [[nodiscard]] iterator begin() { return values_->begin(); }
@@ -2104,10 +2111,14 @@ public:
     [[nodiscard]] iterator end() { return values_->end(); }
     [[nodiscard]] const_iterator end() const { return values_->end(); }
 
-    [[nodiscard]] Tuple clone() const { return Tuple{*values_}; }
+    [[nodiscard]] Tuple clone() const {
+        Tuple result;
+        std::copy(values_->begin(), values_->end(), result.values_->begin());
+        return result;
+    }
 
 private:
-    std::shared_ptr<Storage> values_;
+    std::shared_ptr<RetainedStorage> values_;
 };
 
 /** Fixed heterogeneous tuple lanes retain the identity of the JS array. */
@@ -2314,8 +2325,11 @@ template <typename... Parts> [[nodiscard]] inline std::string concat(const Parts
 // Runtime Number.prototype.toFixed for retained UI values. JavaScript falls
 // back to its ordinary number spelling at 1e21, preserves the exceptional
 // spellings, and prints positive or negative zero without a minus sign.
-[[nodiscard]] inline std::string number_to_fixed(double value, int digits) {
-    assert(digits >= 0 && digits <= 100);
+[[nodiscard]] inline std::string number_to_fixed(double value, double precision) {
+    const double integer = std::isnan(precision) ? 0.0 : std::trunc(precision);
+    if (integer < 0 || integer > 100)
+        throw std::range_error("Number.toFixed precision must be between 0 and 100");
+    const int digits = static_cast<int>(integer);
     if (std::isnan(value))
         return "NaN";
     if (value == std::numeric_limits<double>::infinity())
@@ -2332,6 +2346,16 @@ template <typename... Parts> [[nodiscard]] inline std::string concat(const Parts
     const auto converted = number_chars::to_chars(buffer.data(), buffer.data() + buffer.size(),
                                                   value, number_chars::chars_format::fixed, digits);
     assert(converted.ec == std::errc{});
+    // to_chars uses ties-to-even; ECMAScript chooses the larger magnitude.
+    // Test the exact binary fraction, not a rounded multiplication by 10^digits.
+    const auto bits = std::bit_cast<std::uint64_t>(std::abs(value));
+    const auto encoded_exponent = static_cast<int>((bits >> 52u) & 0x7ffu);
+    const std::uint64_t significand =
+        (bits & 0x000fffffffffffffull) | (encoded_exponent ? 0x0010000000000000ull : 0);
+    const int trailing = std::countr_zero(significand);
+    const int exponent = encoded_exponent ? encoded_exponent - 1075 : -1074;
+    if (exponent + trailing + digits == -1 && ((significand >> trailing) & 3u) == 1u)
+        ++converted.ptr[-1];
     return std::string(buffer.data(), converted.ptr);
 }
 
@@ -3388,9 +3412,9 @@ template <typename Values, typename T>
     return value ? array_last_index_of(values, *value, from) : -1.0;
 }
 
-template <typename T>
-inline Array<T> array_splice(Array<T>& values, double start, double count,
-                             std::initializer_list<T> inserted) {
+template <typename T, typename Inserted>
+inline Array<T> array_splice_insertions(Array<T>& values, double start, double count,
+                                       const Inserted& inserted) {
     const auto first = relative_index(values.size(), start);
     count = std::isnan(count) ? 0.0 : std::max(0.0, std::trunc(count));
     const auto removed =
@@ -3399,8 +3423,25 @@ inline Array<T> array_splice(Array<T>& values, double start, double count,
     const auto end = begin + static_cast<std::ptrdiff_t>(removed);
     Array<T> result(begin, end);
     values.erase(begin, end);
-    values.insert(values.begin() + static_cast<std::ptrdiff_t>(first), inserted);
+    values.insert(values.begin() + static_cast<std::ptrdiff_t>(first), inserted.begin(), inserted.end());
     return result;
+}
+
+template <typename T>
+inline Array<T> array_splice(Array<T>& values, double start, double count,
+                            std::initializer_list<T> inserted) {
+    return array_splice_insertions(values, start, count, inserted);
+}
+
+template <typename T>
+inline Array<T> array_splice(Array<T>& values, double start, double count,
+                            const Array<T>& inserted) {
+    // Expanded arguments have their values before the receiver is modified.
+    if (values == inserted) {
+        const Array<T> copy(inserted.begin(), inserted.end());
+        return array_splice_insertions(values, start, count, copy);
+    }
+    return array_splice_insertions(values, start, count, inserted);
 }
 
 // `new Array<T>(count).fill(value)`.
@@ -3931,7 +3972,7 @@ template <typename Values> [[nodiscard]] inline I32Array i32_array_from(const Va
  * an out-of-bounds copy in a release parity build.
  */
 template <typename T>
-inline void typed_array_set(TypedArray<T>& target, const TypedArray<T>& source, double offset) {
+inline void typed_array_set(TypedArray<T> target, const TypedArray<T>& source, double offset) {
     const auto start = array_index(offset);
     if (start > target.size() || source.size() > target.size() - start) [[unlikely]] {
         throw std::runtime_error("TypedArray set does not fit the target array.");

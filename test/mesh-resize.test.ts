@@ -22,8 +22,8 @@ test("resize frontend admits individual meshes and typed shared families", () =>
     resizeMeshGeometry(engine,mesh,p,n,i);
     function family(engine:EngineContext,meshes:readonly Mesh[]) {resizeSharedMeshGeometry(engine,meshes,p,n,i);}
     family(engine,[mesh]);`);
-    assert.match(result.cpp, /bbl::resize_mesh_geometry\(/);
-    assert.match(result.cpp, /bbl::resize_shared_mesh_geometry\(/);
+    assert.match(result.cpp, /bbl::resize_retained_mesh_geometry\(/);
+    assert.match(result.cpp, /bbl::resize_shared_retained_mesh_geometry\(/);
     assert.ok(result.manifest.features.includes("mesh:resize-geometry"));
 });
 
@@ -72,18 +72,18 @@ int main(){using namespace bbl;Engine engine;
  assert(engine.geometries[1].bounds_max.x==2 && engine.geometries[1].bounds_max.y==2);
  assert(scene->render_topology_version==topology+1 && engine.draw_list_epoch==epoch+1);
  assert(engine.meshes[0].transform_version==1 && engine.meshes[1].transform_version==1);
- rejects([&]{resize_shared_mesh_geometry(engine,{},p,n,i);},"#415");
+ rejects([&]{resize_shared_mesh_geometry(engine,{},p,n,i);},"#473");
  const std::array<MeshHandle,2> duplicate{a,a},mixed{a,omitted};
- rejects([&]{resize_shared_mesh_geometry(engine,duplicate,p,n,i);},"#417");
- rejects([&]{resize_shared_mesh_geometry(engine,mixed,p,n,i);},"#417");
+ rejects([&]{resize_shared_mesh_geometry(engine,duplicate,p,n,i);},"#475");
+ rejects([&]{resize_shared_mesh_geometry(engine,mixed,p,n,i);},"#475");
  assert(engine.geometries.size()==2);
  resize_mesh_geometry(engine,omitted,p,n,i);assert(engine.geometries[0].vertices.empty());
  resize_mesh_geometry(engine,a,p,n,i);assert(engine.geometries[1].vertices.size()==4 && engine.geometries[1].owners==1);
  resize_mesh_geometry(engine,b,p,n,i);assert(engine.geometries[1].vertices.empty());
  engine.geometries[engine.meshes[a.value].geometry].owned_packed_geometry=false;
- rejects([&]{resize_mesh_geometry(engine,a,p,n,i);},"#414");
+ rejects([&]{resize_mesh_geometry(engine,a,p,n,i);},"#472");
  engine.meshes[b.value].retired=true;const std::array<MeshHandle,1> disposed{b};
- rejects([&]{resize_shared_mesh_geometry(engine,disposed,p,n,i);},"#417");
+ rejects([&]{resize_shared_mesh_geometry(engine,disposed,p,n,i);},"#475");
 }
 `,
     );

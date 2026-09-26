@@ -77,12 +77,12 @@ int main(){
  assert(arena->dirty_start==256&&arena->dirty_end==336);
  task->flush_owned();assert(device->last->writes==1&&device->last->last_offset==256&&device->last->last_size==80);
  bbl::set_compute_uniform_f32(another,"x",8);assert(data.get_float32(256,true)==8);
- bool missing=false;try{bbl::set_compute_uniform_f32(writer,"missing",1);}catch(const std::exception& e){missing=std::string(e.what())=="#822";}assert(missing);
- bool kind=false;try{bbl::set_compute_uniform_f32(writer,"v",1);}catch(const std::exception& e){kind=std::string(e.what()).starts_with("#824");}assert(kind);
- bool size=false;try{bbl::set_compute_uniform_matrix(writer,"m",bbl::UniformNumericView(vector));}catch(const std::exception& e){size=std::string(e.what()).starts_with("#826");}assert(size);
- auto tooBig=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{256,{}});bool large=false;try{bbl::create_compute_uniform_writer(arena,0,tooBig);}catch(const std::exception& e){large=std::string(e.what()).starts_with("#819");}assert(large);
- auto half=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{16,{{"h",{"f16",0,2,1,1,2,3,0}}}});bool f16=false;try{bbl::create_compute_uniform_writer(arena,0,half);}catch(const std::exception& e){f16=std::string(e.what())=="#820";}assert(f16);
- task->dispose();bool dead=false;try{bbl::set_compute_uniform_f32(writer,"x",1);}catch(const std::exception& e){dead=std::string(e.what())=="#821";}assert(dead);
+ bool missing=false;try{bbl::set_compute_uniform_f32(writer,"missing",1);}catch(const std::exception& e){missing=std::string(e.what())=="#884";}assert(missing);
+ bool kind=false;try{bbl::set_compute_uniform_f32(writer,"v",1);}catch(const std::exception& e){kind=std::string(e.what()).starts_with("#886");}assert(kind);
+ bool size=false;try{bbl::set_compute_uniform_matrix(writer,"m",bbl::UniformNumericView(vector));}catch(const std::exception& e){size=std::string(e.what()).starts_with("#888");}assert(size);
+ auto tooBig=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{256,{}});bool large=false;try{bbl::create_compute_uniform_writer(arena,0,tooBig);}catch(const std::exception& e){large=std::string(e.what()).starts_with("#881");}assert(large);
+ auto half=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{16,{{"h",{"f16",0,2,1,1,2,3,0}}}});bool f16=false;try{bbl::create_compute_uniform_writer(arena,0,half);}catch(const std::exception& e){f16=std::string(e.what())=="#882";}assert(f16);
+ task->dispose();bool dead=false;try{bbl::set_compute_uniform_f32(writer,"x",1);}catch(const std::exception& e){dead=std::string(e.what())=="#883";}assert(dead);
 }
 `,
     );

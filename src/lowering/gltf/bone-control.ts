@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerGltfBoneVisibility } from "./bone-visibility.js";
+import { lowerGltfBoneWorldPose } from "./bone-world-pose.js";
 import { stringLiteral } from "../../cpp-literals.js";
 import {
     coalescedPropertyDefault,
@@ -124,7 +125,10 @@ export function lowerBoneControl(context: LoweringContext): LoweredBoneControl {
     const unnamedBonePrefix = nameLookupPrefix(boneControlFile);
     return {
         loading: loadingCpp(unnamedBonePrefix),
-        entryPoints: lowerGltfBoneVisibility(context) + entryPointsCpp(),
+        entryPoints:
+            lowerGltfBoneVisibility(context) +
+            lowerGltfBoneWorldPose(context) +
+            entryPointsCpp(),
     };
 }
 
@@ -204,7 +208,11 @@ function loadingCpp(unnamedBonePrefix: string): string {
                     gltf_apply_animation_bone_overrides(overrides, trs, count, hidden);
                 };
                 gltf_bake_skeleton_pose(*bone_pose, static_cast<double>(overrides.size()),
-                    [](double) -> const GltfAnimationFloats* { return nullptr; },
+                    [&](double node) -> const GltfAnimationFloats* {
+                        const auto& worlds = engine.assets.at(asset_index).bone_world_overrides;
+                        const auto found = worlds.find(static_cast<std::size_t>(node));
+                        return found == worlds.end() ? nullptr : &found->second;
+                    },
                     apply_overrides, gltf_animation_compose, gltf_animation_multiply,
                     animation_runtime->upload_bones);
                 animation_runtime->publish_pose();
@@ -260,6 +268,18 @@ void set_bone_visible(
     gltf_set_bone_visibility(owner.bone_overrides, node, visible, [&] {
         if (owner.bake_skeletons) owner.bake_skeletons();
     });
+}
+
+void set_bone_world_pose_deferred(Engine& engine, SkeletonHandle skeleton, BoneHandle bone,
+    double px, double py, double pz, double rx, double ry, double rz, double rw) {
+    auto& asset = engine.assets.at(${recordAt("engine.skeletons", "skeleton")}.asset);
+    const auto node = ${recordAt("engine.bones", "bone")}.node_index;
+    gltf_set_bone_world_pose(asset.bone_world_overrides, node, px, py, pz, rx, ry, rz, rw, gltf_animation_compose);
+}
+
+void bake_skeleton(Engine& engine, SkeletonHandle skeleton) {
+    auto& asset = engine.assets.at(${recordAt("engine.skeletons", "skeleton")}.asset);
+    gltf_bake_controlled_skeleton(asset.bake_skeletons);
 }
 `;
 }

@@ -17,6 +17,7 @@ import {
     vertexAttributeTableCpp,
 } from "./pinned-vertex-attributes.js";
 import { recordAt } from "../compiler/record-access.js";
+import { billboardOrderHelpers } from "./billboard-order-lowerer.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -278,19 +279,6 @@ export class BillboardLowerer {
                 `Pinned billboard DEFAULT_CAPACITY changed: ${defaultCapacity}.`,
             );
         }
-        // The slot each depth mode draws in. Nothing stores this number --
-        // the record carries the mode and both backends select on it -- but
-        // the mapping it states is what the two draw slots ARE, so a pin
-        // that retunes it has to fail generation rather than leave the
-        // backends drawing in the old order.
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(
-                this.context.objectInitializer(declaration, "system"),
-                "order",
-            ),
-            'opts.order ?? (depthMode === "transparent" ? 200 : 100)',
-            "createBillboardSystem order",
-        );
         // A facing system's axis is the zero vector, which the UBO carries
         // and the facing basis ignores.
         this.context.assertExpressionShape(
@@ -913,6 +901,8 @@ inline constexpr std::array<std::uint16_t, 6> billboard_index_data{
  */
 ${this.systemUboCpp(layout.systemUboBytes)}
 
+${billboardOrderHelpers(this.context)}
+
 ${this.sortKeyCpp()}
 
 /**
@@ -1076,6 +1066,11 @@ BillboardSystemHandle create_billboard_system(
     const bool cutout =
         options.blend.depth_mode == BillboardDepthMode::cutout;
     system.depth_mode = options.blend.depth_mode;
+    system.order = upstream::billboard_system_order(options, cutout ? "cutout" : "transparent");
+    if (cutout && options.has_order && system.order !=
+        upstream::billboard_system_order(BillboardSystemOptions{}, "cutout")) {
+        throw std::runtime_error("Custom cutout billboard order requires interleaved opaque renderables.");
+    }
     // createAxisLockedBillboardSystem: the axis is normalised before it is
     // stored, and a non-finite or zero axis is rejected. The basis
     // normalises again in WGSL, but a zero axis has no direction to recover

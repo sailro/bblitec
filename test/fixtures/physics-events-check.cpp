@@ -4,7 +4,7 @@
 
 namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
-std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
 std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
 } // namespace bbl::upstream
 namespace bbl {

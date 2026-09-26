@@ -1,6 +1,7 @@
 import type { HandleKind } from "./model.js";
 
 const handleCppTypes: Record<HandleKind, string> = {
+    "custom-event": "bbl::PlatformCustomEvent",
     engine: "bbl::Engine*",
     asset: "bbl::AssetHandle",
     "gpu-device": "bbl::GpuDeviceIdentity",
@@ -19,11 +20,14 @@ const handleCppTypes: Record<HandleKind, string> = {
     "picking-info": "bbl::PickingInfo",
     "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
     "worker-media-query": "std::shared_ptr<bbl::pal::MediaQueryList>",
+    "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
     mesh: "bbl::MeshHandle",
     "animation-group": "bbl::AnimationGroupHandle",
     "flow-graph": "bbl::FlowGraphHandle",
     "flow-graph-runtime": "std::shared_ptr<bbl::FlowGraphRuntime>",
     "audio-buffer": "bbl::pal::AudioBufferHandle",
+    "audio-engine": "bbl::AudioEngineHandle",
+    "audio-source": "bbl::AudioSourceHandle",
     "audio-context": "bbl::pal::AudioContextHandle",
     "audio-node": "bbl::pal::AudioNodeHandle",
     "audio-param": "bbl::pal::AudioParamHandle",
@@ -41,6 +45,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     light: "bbl::LightHandle",
     "shadow-generator": "bbl::ShadowGeneratorHandle",
     "hierarchy-instance-pool": "bbl::HierarchyInstancePoolHandle",
+    "thin-instance-pool": "bbl::MeshHandle",
     "storage-buffer": "bbl::StorageBufferHandle",
     "compute-storage-texture": "std::shared_ptr<bbl::ComputeStorageTexture>",
     "compute-texture-resource": "std::shared_ptr<bbl::ComputeTextureResource>",
@@ -57,7 +62,13 @@ const handleCppTypes: Record<HandleKind, string> = {
     "compute-uniform-layout":
         "std::shared_ptr<const bbl::ComputeUniformLayout>",
     material: "bbl::MaterialHandle",
+    "physics-world": "bbl::upstream::PhysicsWorldHandle",
+    "physics-native-body": "bbl::upstream::PhysicsNativeBody",
+    "physics-module": "bbl::upstream::PhysicsWorldHandle",
+    "physics-thin-context": "bbl::upstream::PhysicsWorldHandle",
+    "physics-body-list": "bbl::upstream::PhysicsWorldHandle",
     "physics-body": "bbl::upstream::PhysicsBody",
+    "physics-constraint": "bbl::upstream::PhysicsConstraint",
     "physics-aggregate": "bbl::upstream::PhysicsAggregate",
     "physics-viewer": "bbl::upstream::PhysicsViewerHandle",
     "physics-character-controller":

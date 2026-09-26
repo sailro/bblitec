@@ -16,6 +16,7 @@ test("retained DOM queries observe authored tree changes and return ordered snap
         const root = document.createElement("div");
         root.id = "panel";
         const first = document.createElement("button");
+        first.id = "query-leaf";
         first.className = "entry";
         const second = document.createElement("button");
         second.className = "entry last";
@@ -54,6 +55,14 @@ test("retained DOM queries observe authored tree changes and return ordered snap
         third.remove();
         if (third.querySelector(".entry") !== first || first.closest("#other") !== third) throw new Error("detached tree");
         if (document.querySelector("#other") !== null) throw new Error("detached document query");
+        function ancestor(event: Event): Element | null { return (event.target as HTMLElement).closest("#other"); }
+        first.addEventListener("pointerdown", event => {
+            if (ancestor(event) !== third || (event.target as HTMLElement).closest("button") !== first)
+                throw new Error("event target closest identity");
+            if (!(event.target as HTMLElement).matches("button.entry") || (event.target as HTMLElement).closest(".absent") !== null)
+                throw new Error("event target selector semantics");
+            first.setAttribute("data-event-query", "complete");
+        });
         const log = document.createElement("div");
         log.id = "query-log";
         log.textContent = "complete";
@@ -67,7 +76,11 @@ test("retained DOM queries observe authored tree changes and return ordered snap
     assert.match(result.cpp, /bbl::ui_matches_element\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "dom-queries", {
-        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
     });
 });
 

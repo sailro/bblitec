@@ -912,10 +912,7 @@ export class StatementLowerer {
             statements.pop();
         } else if (
             !terminalBreakRemoved &&
-            (!last ||
-                (!ts.isReturnStatement(last) &&
-                    !ts.isContinueStatement(last) &&
-                    !ts.isThrowStatement(last)))
+            (!last || !terminatesFlow(last))
         ) {
             context.fail(
                 clause,
@@ -992,10 +989,22 @@ export class StatementLowerer {
         // iteration-local result: a `continue` taken by one element must
         // not make a later element skip the statement following the `if`.
         this.loweredTerminators.delete(statement);
+        const guard = context.unwrap(statement.expression);
+        const identityRead = (expression: ts.Expression): boolean => {
+            const value = context.unwrap(expression);
+            return context.libraryGlobal(value) !== undefined ||
+                (ts.isIdentifier(value) && context.bindings.lookupOptional(value) !== undefined);
+        };
+        const pureIdentity =
+            ts.isBinaryExpression(guard) &&
+            (guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                guard.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            identityRead(guard.left) &&
+            identityRead(guard.right);
         if (
-            context.browserErasure.isBrowserOnlyExpression(
+            (pureIdentity || context.browserErasure.isBrowserOnlyExpression(
                 statement.expression,
-            ) &&
+            )) &&
             this.statementIsBrowserOnly(context, statement.thenStatement) &&
             (!statement.elseStatement ||
                 this.statementIsBrowserOnly(context, statement.elseStatement))
@@ -1197,7 +1206,10 @@ export class StatementLowerer {
         if (
             ts.isBinaryExpression(expression) &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            browserLocal(expression.left) &&
+            (browserLocal(expression.left) ||
+                context.libraryGlobal(expression.left) === "fetch" ||
+                (ts.isPropertyAccessExpression(expression.left) &&
+                    context.browserErasure.isBrowserOnlyExpression(expression.left.expression))) &&
             pure(expression.right)
         ) {
             return true;
@@ -2291,29 +2303,20 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target =
-            context.handleCollections.assetRootChildrenIterationTarget(
-                statement.expression,
-            );
-        if (!target) {
-            return false;
-        }
-        if (!ts.isIdentifier(declaration.name)) {
-            context.fail(
-                declaration.name,
-                "Walking an imported root's children requires an identifier binding.",
-            );
-        }
+        if (!ts.isIdentifier(declaration.name)) return false;
         const materialAssignment = isRecursiveImportedMeshWalk(
             statement,
             declaration.name,
         );
-        if (!materialAssignment) {
-            context.fail(
-                statement,
-                "An imported root's children are lowered only for the effect-only recursive TransformNode material walk.",
-            );
-        }
+        if (!materialAssignment) return false;
+        const target = context.probeEmission(
+            () =>
+                context.handleCollections.assetRootChildrenIterationTarget(
+                    statement.expression,
+                ),
+            (value) => value !== undefined,
+        );
+        if (!target) return false;
         const material = context.compileValue(materialAssignment.right);
         if (material.scenePbrMaterialIndex === undefined) {
             context.fail(

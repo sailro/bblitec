@@ -249,7 +249,7 @@ test("maps a nested module asset URL to the bundle directory", () => {
     }
 });
 
-test("relocates the shared Havok binary to pinned lab/public root", () => {
+test("relocates demo bundle assets and the shared Havok binary to pinned lab/public", () => {
     assert.equal(
         pinnedLabPublicAssetPath(
             "/corpus/babylon-lite/lab/lite/src/demos/HavokPhysics.wasm",
@@ -260,6 +260,8 @@ test("relocates the shared Havok binary to pinned lab/public root", () => {
         pinnedLabPublicAssetPath("/textures/environment.env"),
         "textures/environment.env",
     );
+    for (const prefix of ["/bundle/demos/", "/lite/bundle/demos/", "/corpus/babylon-lite/lab/lite/src/demos/"])
+        assert.equal(pinnedLabPublicAssetPath(`${prefix}nested/image.png`), "nested/image.png");
 });
 
 test("serves assets at the demo bundle root while preferring existing module-relative files", async () => {

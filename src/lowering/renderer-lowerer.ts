@@ -1647,7 +1647,7 @@ void include_material_features(
     if (handle.value >= engine.materials.size()) return;
     const MaterialRecord& material = ${recordAt("engine.materials", "handle")};
     features.standard_material |= material.standard_material;
-    features.no_color_material |= material.no_color;
+    features.no_color_material |= material.no_color && !shadow_pass;
     features.shader_material |= material.shader_material;
     features.node_material |= material.node_material;
     if (shadow_pass && material.shader_material) {

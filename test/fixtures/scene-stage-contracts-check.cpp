@@ -72,6 +72,8 @@ enum class RenderStage { skybox, opaque, transparent, ground };
 enum class PinnedBackgroundArmKind { ground, hdr_skybox };
 // Image processing belongs to the generated shader contract, outside this attachment test.
 double inverse_image_processed_channel(double value, double, double, bool) { return value; }
+std::array<float, 16> camera_world_matrix(int) { return {}; }
+std::array<float, 16> build_view_matrix(std::array<float, 16> value) { return value; }
 } // namespace bbl::upstream
 namespace bbl::pal {
 enum class SkyboxLayer { solid, environment, image };
@@ -116,6 +118,36 @@ void record_sprite_pass(SDL_GPUCommandBuffer*, SDL_GPURenderPass*, Engine&, int 
 void record_dawn_sprite_pass(WGPURenderPassEncoder, Engine&, int pass) {
     draws.push_back(std::to_string(pass));
 }
+struct StageDrawList {
+    std::array<int, 1> commands;
+    operator int() const { return commands[0]; }
+};
+struct BorrowedDrawList {
+    int command;
+    operator int() const { return command; }
+};
+struct FixtureBillboardPass {
+    int frame_scene = 0;
+};
+struct OrderedStageItem {
+    bool billboard;
+    std::size_t index;
+};
+std::array<OrderedStageItem, 2> ordered_scene_billboards(
+    const StageDrawList&, const auto&, const std::vector<FixtureBillboardPass>& passes,
+    const auto&, const auto&) {
+    assert(passes.size() == 1);
+    return {{{false, 0}, {true, 0}}};
+}
+void record_billboard_pass(SDL_GPUCommandBuffer*, const auto&, const auto&,
+                          const FixtureBillboardPass&, int) {
+    draws.push_back("billboard-transparent");
+}
+void record_dawn_billboard_pass(WGPURenderPassEncoder, const auto&,
+                               const FixtureBillboardPass&, int) {
+    draws.push_back("billboard-transparent");
+}
+int dawn_billboard_task_scene(const FixtureBillboardPass&, std::uint32_t) { return 0; }
 struct Stages {
     Engine engine;
     Scene scene;
@@ -125,7 +157,7 @@ struct Stages {
             upstream::RenderStage::skybox, upstream::RenderStage::opaque,
             upstream::RenderStage::transparent, upstream::RenderStage::ground};
         struct {
-            int opaque = 1, transparent = 2;
+            StageDrawList opaque{{1}}, transparent{{2}};
         } draw_lists;
     } render_plan;
     static void draw_render_list(int list) {
@@ -145,7 +177,18 @@ struct SdlStages : Stages {
         SDL_GPUTexture* msaa_color;
         SDL_GPUTexture* color;
         BackgroundDraws background_draws;
+        std::vector<FixtureBillboardPass> billboard_passes{1};
     } state;
+    struct {
+        static int scene(const Scene&) { return 0; }
+    } pass_blocks;
+    int* camera = nullptr;
+    int matrix = 0, frame_view = 0;
+    bool scene_matrix_bound = false;
+    static int write_billboard_scene_block(int, const Scene&, const Engine&, const int*, int,
+                                           int) {
+        return 0;
+    }
     SDL_GPUTexture* swapchain = nullptr;
     SDL_GPUTexture* visible_color = nullptr;
     bool capture_frame = false, transmission_enabled = false, has_scene_sprite_pass = true;
@@ -165,7 +208,16 @@ struct DawnStages : Stages {
         std::vector<int> sprite_passes{10, 20, 30};
         std::vector<WGPUTextureView> sprite_render_texture_views;
         BackgroundDraws background_draws;
+        std::vector<FixtureBillboardPass> billboard_passes{1};
     } state;
+    int* camera = nullptr;
+    WGPURenderPipeline bound_pipeline = nullptr;
+    struct Frame {
+        struct {
+            int view = 0;
+        } frame_camera;
+    };
+    static Frame current_frame() { return {}; }
     WGPUTextureView surface_view = nullptr;
     WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
     WGPUTexture capture_source = nullptr;
@@ -179,7 +231,7 @@ struct Graph {
         } render;
     } task;
     struct Lists {
-        int opaque = 1, transparent = 2;
+        StageDrawList opaque{{1}}, transparent{{2}};
     } draw_lists;
     int draw_matrix = 0, task_matrix = 0, task_view = 0, task_camera_record = 0, task_aspect = 0;
     int* task_camera = &task_camera_record;
@@ -195,12 +247,15 @@ struct SdlGraph : Graph {
         SDL_GPUSampleCount samples;
     };
     int task_pass = 0, graph_scene = 0, graph_meshes = 0;
+    SDL_GPUCommandBuffer* command = nullptr;
+    bool scene_matrix_bound = false;
     struct {
         int shader_pipelines = 0, shader_a2c_pipelines = 0;
         BackgroundDraws background_draws;
         SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         SDL_GPUTextureFormat frame_color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
         SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+        std::vector<FixtureBillboardPass> billboard_passes{1};
     } state;
     struct {
         SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -256,6 +311,9 @@ struct DawnGraph : Graph {
     unsigned samples = 4;
     WGPURenderPipeline bound_pipeline = nullptr;
     bool pass_has_depth = true;
+    int engine = 0;
+    int* pass_camera = nullptr;
+    MeshHandle handle{0};
     struct {
         Lists draw_lists;
         WGPUBindGroup pinned_frame_group = nullptr;
@@ -263,6 +321,7 @@ struct DawnGraph : Graph {
     } render_task;
     struct {
         BackgroundDraws background_draws;
+        std::vector<FixtureBillboardPass> billboard_passes{1};
         DawnBackgroundArm background_arm(upstream::PinnedBackgroundArmKind kind) const {
             return {nullptr, kind};
         }
@@ -315,10 +374,11 @@ int main() {
         std::vector<std::string> expected{"skybox", "opaque"};
         if (sprites)
             expected.push_back("sprite-opaque");
-        expected.insert(expected.end(), {"billboard-cutout", "transparent"});
+        expected.insert(expected.end(),
+                        {"billboard-cutout", "transparent", "billboard-transparent"});
         if (sprites)
             expected.push_back("sprite-transparent");
-        expected.insert(expected.end(), {"ground", "billboard-transparent"});
+        expected.push_back("ground");
         draws.clear();
         sdl.stages();
         assert(draws == expected);
@@ -376,10 +436,10 @@ int main() {
             if (scene_stages)
                 expected.push_back("billboard-cutout");
             expected.push_back("transparent");
-            if (scene_stages && ground)
-                expected.push_back("ground");
             if (scene_stages)
                 expected.push_back("billboard-transparent");
+            if (scene_stages && ground)
+                expected.push_back("ground");
             draws.clear();
             dawn_graph.graph();
             assert(draws == expected);

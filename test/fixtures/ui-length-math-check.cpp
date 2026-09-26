@@ -95,6 +95,19 @@ int main() {
     assert(bbl::pal::rml_css_length_math("width: calc(10vw + 2.5px)", 800, 600) ==
            "width: 82.500000px");
     assert(bbl::pal::rml_css_length_math("clamp(1px, 50vmin, 1e2px)", 800, 600) == "100.000000px");
+    assert(bbl::pal::rml_css_length_math("width:min(36rem, 90vw)", 1280, 720, 16) ==
+           "width:576.000000px");
+    assert(bbl::pal::rml_css_length_math("width:min(36rem, 90vw)", 320, 720, 20) ==
+           "width:288.000000px");
+    for (const std::string text : {"font-size:min(2rem, 20px)", "--size:min(2rem, 20px)"}) {
+        bool refused = false;
+        try {
+            static_cast<void>(bbl::pal::rml_css_length_math(text, 800, 600, 16));
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        assert(refused);
+    }
     std::printf("%zu decimals identical\n", compared);
     return 0;
 }

@@ -170,7 +170,7 @@ int main() {
         geometry.morph_positions, geometry.morph_bounds, geometry.morph_normals,
         geometry.morph_tangents, geometry.indices);
     std::apply([](auto&... values) { (values.resize(4), ...); }, arrays);
-    geometry.bounds_min = {-1,-2,-3}; geometry.position_version = 17;
+    geometry.bounds_min = {-1,-2,-3}; geometry.attribute_version = 17;
     geometry.source_indices_reversed = true;
     // A factory mesh: createMeshFromData's record over its own packed streams.
     geometry.owned_packed_geometry = true;
@@ -198,7 +198,7 @@ int main() {
     std::apply([](auto&... values) { assert(((values.size() == 4) && ...)); }, arrays);
     bbl::remove_from_scene(scene, third);
     std::apply([](auto&... values) { assert(((values.empty() && values.capacity() == 0) && ...)); }, arrays);
-    assert(!geometry.source_indices_reversed && geometry.position_version == 17);
+    assert(!geometry.source_indices_reversed && geometry.attribute_version == 17);
     assert(geometry.bounds_min.x == -1 && geometry.bounds_min.z == -3);
     assert(scene.meshes.empty() && scene.render_topology_version == version + 3);
     bbl::remove_from_scene(scene, third);

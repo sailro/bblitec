@@ -58,7 +58,7 @@ std::vector<std::uint8_t> read_binary_file(const std::string& path) {
 }
 std::string parent_path(const std::string&) { return ""; }
 std::string join_path(const std::string& a,const std::string& b) { return a+b; }
-DecodedImage decode_image(const js::ArrayBuffer&) { throw std::runtime_error("Unexpected fixture texture."); }
+DecodedImage decode_image(std::span<const std::uint8_t>) { throw std::runtime_error("Unexpected fixture texture."); }
 }
 // The refusal reads a volatile flag: a factory MSVC proves always throws makes the
 // loader's checked camera writes after it unreachable code (C4702 under /WX).

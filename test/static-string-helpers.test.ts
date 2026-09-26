@@ -83,12 +83,17 @@ test("numeric template substitutions share constant evaluation beside string hel
     );
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"other"[^\n]*margin-top: 3\.141592653589793px; padding: 20\.0px/,
+        /ui_add_class_style[^\n]*"other"[^\n]*margin-top:3\.141592653589793px;padding:20\.0px/,
     );
 });
 
 test("unknown explicit formatting precision cannot fold as omitted precision", () => {
-    for (const method of ["toFixed", "toPrecision", "toExponential"]) {
+    const runtime = compileSource(`
+        const text = \`\${(1.25).toFixed(Math.random())}\`;
+        if (text === "") throw new Error("unexpected empty value");
+    `);
+    assert.match(runtime.cpp, /number_to_fixed\([^;\n]*random/);
+    for (const method of ["toPrecision", "toExponential"]) {
         assert.throws(
             () =>
                 compileSource(`
@@ -144,7 +149,7 @@ test("materialized modules retain computed constant facts across imports", () =>
     const result = compileSource(source, { fileName: entry });
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"module-panel"[^\n]*width: 20px; height: 10px/,
+        /ui_add_class_style[^\n]*"module-panel"[^\n]*width:20px;height:10px/,
     );
 });
 
@@ -172,11 +177,11 @@ test("enum-indexed constant palettes preserve strings through nested stylesheet 
     `);
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"water"[^\n]*background-color: #123456; color: white/,
+        /ui_add_class_style[^\n]*"water"[^\n]*--bbl-background-color:#123456;color:white/,
     );
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"beach"[^\n]*background-color: #fedcba; color: black/,
+        /ui_add_class_style[^\n]*"beach"[^\n]*--bbl-background-color:#fedcba;color:black/,
     );
 });
 
@@ -224,6 +229,12 @@ test("static string specialization evaluates argument effects once and preserves
         function mutateFlag(value: boolean): string { value = !value; return \`\${value}\`; }
         if (mutateText("ready") !== "ready!" || mutateFlag(true) !== "false")
             throw new Error("mutable primitive template parameters");
+        let precision = 1;
+        const roundedFirst = (1.25).toFixed(precision);
+        precision = 2;
+        const roundedSecond = (1.25).toFixed(precision);
+        if (roundedFirst !== "1.3" || roundedSecond !== "1.25")
+            throw new Error("runtime formatting precision");
         let text = "before";
         function replaceText():string { text = "after"; return "/"; }
         const textOrder = \`\${text}\${replaceText()}\${text}\`;

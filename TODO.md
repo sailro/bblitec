@@ -11,6 +11,8 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Qualification
 
+- [ ] Qualify `playroom` startup parity and declared controls on both backends without changing its source, references or gates.
+- [ ] Qualify retained data-mesh CPU aliases and GPU-only attribute writes across device recovery.
 - [ ] One captured-spawn variant beside `runChecked` for `package-demo.ts`, `package-output.ts`, `shipping-profile.ts` and `patch-inventory.ts`.
 - [ ] Move the scene180 uniform plugin onto `webgpu-recorder.init.js` and share one `observedState` helper in `checks/plugins/support.mjs`.
 - [ ] Read `test/native-fixture.ts` unit lists from the `pal_*_scene_all.cpp` includes and share one camera test fixture.
@@ -25,6 +27,7 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Performance
 
+- [ ] `playroom`: bound remaining loading-timer gaps during source initialization and environment preparation; sustain interactive frame pacing after impact.
 - [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).
 - [ ] `scene290`: at least 100 FPS uncapped through impact and settling (`BBLITE_BENCHMARK_FRAMES=0`, `BBLITE_FPS_PROFILE`); Bullet stepping is the bottleneck (`pal_physics_bullet.cpp`).
 

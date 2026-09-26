@@ -60,6 +60,7 @@ void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string marku
 UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
                                 std::string_view tag);
 std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::string_view name);
+js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle element, std::string_view name);
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name,
@@ -85,7 +86,8 @@ void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleSelect
                        std::vector<UiSelectorStep> sequence = {},
                        UiGeneratedPart generated = UiGeneratedPart::None,
                        std::optional<UiGeneratedContent> content = std::nullopt,
-                       UiRangePart range = UiRangePart::None, double container_max_width = -1.0);
+                       UiRangePart range = UiRangePart::None, double container_max_width = -1.0,
+                            UiOrientation orientation = UiOrientation::Any);
 void ui_add_host_style_rule(Engine& engine, UiStyleSelectorKind selector, std::string primary,
                             std::string secondary, std::string tag, bool hover, double max_width,
                             std::string style, bool focus_visible = false, bool active = false,
@@ -95,7 +97,8 @@ void ui_add_host_style_rule(Engine& engine, UiStyleSelectorKind selector, std::s
                             UiGeneratedPart generated = UiGeneratedPart::None,
                             std::optional<UiGeneratedContent> content = std::nullopt,
                             UiRangePart range = UiRangePart::None,
-                            double container_max_width = -1.0);
+                            double container_max_width = -1.0,
+                            UiOrientation orientation = UiOrientation::Any);
 js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
                                           std::string_view class_name);
 UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child);

@@ -281,6 +281,12 @@ export async function joinAssetFeatures({
             ]),
             gpuInstancing: activation([
                 [
+                    manifest.nodeMaterials.some(
+                        (material) => material.hasInstances === true,
+                    ),
+                    "a node material enables the pinned instance vertex transport",
+                ],
+                [
                     specialization.gpuInstancing,
                     "an asset uses EXT_mesh_gpu_instancing",
                 ],

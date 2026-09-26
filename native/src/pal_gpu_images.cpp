@@ -20,7 +20,8 @@ DecodedImage decode_uploadable_image(const TextureData& texture_data,
         image.height = static_cast<int>(texture_data.rgba_height);
         image.rgba = texture_data.bytes;
     } else {
-        image = decode_image(js::ArrayBuffer(texture_data.bytes));
+        image = decode_image(
+            std::span<const std::uint8_t>{texture_data.bytes.data(), texture_data.bytes.size()});
     }
     if (texture_data.premultiply_alpha) {
         premultiply_image_alpha(image);

@@ -154,17 +154,20 @@ export interface NativeHostUiStyleRule extends UiStyleSelectorShape {
     maxWidth?: number;
     containerMaxWidth?: number;
     reducedMotion?: boolean;
+    orientation?: "portrait" | "landscape";
     style: string;
 }
 
 export function uiStyleRuleHasConditions(rule: {
     maxWidth?: number;
     reducedMotion?: boolean;
+    orientation?: "portrait" | "landscape";
     containerMaxWidth?: number;
 }): boolean {
     return (
         rule.maxWidth !== undefined ||
         rule.reducedMotion !== undefined ||
+        rule.orientation !== undefined ||
         rule.containerMaxWidth !== undefined
     );
 }

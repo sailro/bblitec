@@ -261,7 +261,7 @@ export class StaticEvaluator {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
         const lanes = ["x", "y", "z"].map((name) => {
             const lane = value.recordProperties?.[name];
-            if (!lane || lane.kind !== "number") {
+            if (!lane || (lane.kind !== "number" && !isJsonValue(lane))) {
                 this.fail(node, `Vec3 record is missing numeric '${name}'.`);
             }
             return this.castNumber(lane, precision);

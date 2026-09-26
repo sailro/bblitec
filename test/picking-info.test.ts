@@ -92,6 +92,7 @@ async function main() {
 
 test("nullable picking results reuse data returns and preserve the unchanged scene", () => {
     const result = compileSource(program());
+    assert(!result.manifest.features.includes("platform:window"));
     assert.match(result.cpp, /Nullable<bbl::PickingInfo>/);
     assert.match(result.cpp, /return std::nullopt/);
     assert.match(result.cpp, /picked_normal\([^,]+, false\)/);

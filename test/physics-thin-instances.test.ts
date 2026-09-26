@@ -18,12 +18,15 @@ test("thin physics translates upstream arithmetic and both exact corpus entry pa
     const changed = lowerPhysicsThinInstances(
         doctoredContext(
             "src/physics/havok-thin-instances.ts",
-            "const offset = index * 16;",
-            "const offset = index * 32;",
+            "const matrixOffset = index * 16;",
+            "const matrixOffset = index * 32;",
         ),
         false,
     );
-    assert.match(changed.helpers, /const double offset = \(index \* 32\.0\)/);
+    assert.match(
+        changed.helpers,
+        /const double matrixOffset = \(index \* 32\.0\)/,
+    );
     for (const id of ["scene103", "scene290"]) {
         const fileName = `corpus/babylon-lite/lab/lite/src/lite/${id}.ts`;
         for (const search of [
@@ -60,8 +63,12 @@ test(
                 this: void,
                 matrices: Float32Array,
                 index: number,
+                carrier: Float32Array,
+                carrierIdentity: boolean,
+                matrixScratch: Float64Array,
                 transform: [number[], number[]],
                 rotation: Quat,
+                scales: Float64Array,
             ): [number[], number[]];
         }>("physics/havok-thin-instances.js", ["thinInstanceTransform"]);
         const matrices = [
@@ -79,11 +86,17 @@ test(
             const result = thinInstanceTransform(
                 matrix,
                 0,
+                Float32Array.from([
+                    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+                ]),
+                true,
+                new Float64Array(16),
                 [
                     [0, 0, 0],
                     [0, 0, 0, 1],
                 ],
                 { x: 0, y: 0, z: 0, w: 1 },
+                new Float64Array(3),
             );
             const bits = [...new Uint32Array(matrix.buffer)].map(
                 (word) => `std::bit_cast<float>(${word}u)`,

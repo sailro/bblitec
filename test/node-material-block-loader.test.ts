@@ -179,8 +179,8 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
         inputHeader,
         /std::array<NodeVariantInput, 2> node_variant_inputs/,
     );
-    assert.match(inputHeader, /\{0, "albedo", "texture2d"\}/);
-    assert.match(inputHeader, /\{1, "albedo", "texture2d"\}/);
+    assert.match(inputHeader, /\{0, "albedo", "texture2d", 0u, 0u\}/);
+    assert.match(inputHeader, /\{1, "albedo", "texture2d", 0u, 0u\}/);
     assert.equal(composed.geometryViews[0]!.colorTargetCount, 3);
     assert.deepEqual(
         composed.geometryViews[0]!.attributes.map(({ name }) => name),

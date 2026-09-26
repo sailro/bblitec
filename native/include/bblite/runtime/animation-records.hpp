@@ -2,6 +2,10 @@
 // Included within namespace bbl by runtime.hpp.
 
 struct PropertyAnimationManagerRecord;
+struct AnimationGroupOrder {
+    std::weak_ptr<PropertyAnimationManagerRecord> manager;
+    double order = 0;
+};
 struct GltfWeightedAnimationRuntimeState;
 
 enum class PropertyAnimationPath {
@@ -38,6 +42,23 @@ enum class PropertyAnimationTargetKind {
     callback,
 };
 
+struct PropertyAnimationIdentity {
+    const void* key = nullptr;
+    js::Callback<void()> owner;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(owner); }
+};
+
+template <class Owner> struct PropertyAnimationIdentityOwner {
+    Owner value;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(value); }
+};
+
+template <class Owner> PropertyAnimationIdentity property_animation_identity(Owner owner) {
+    const auto* key = owner.get();
+    return {key, js::make_closure(PropertyAnimationIdentityOwner<Owner>{std::move(owner)},
+                                 [](PropertyAnimationIdentityOwner<Owner>&) {})};
+}
+
 struct PropertyAnimationTarget {
     PropertyAnimationTargetKind kind = PropertyAnimationTargetKind::mesh;
     /**
@@ -51,11 +72,15 @@ struct PropertyAnimationTarget {
     // The pinned writer stores one Float32Array sample lane
     // (`target[property] = output[offset]`, property-animation.ts).
     js::Callback<void(float)> write_scalar;
-    // A plain-data writer retains this owner through its managed closure.
+    // Plain-data writers retain the root and resolve the current owner.
     // The mixer keys the pin's resolved (object, property) pair.
     const void* object_identity = nullptr;
     std::string property{};
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(write_scalar); }
+    js::Callback<PropertyAnimationIdentity()> resolve_object_identity;
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(write_scalar);
+        visitor(resolve_object_identity);
+    }
 };
 
 enum class PropertyAnimationInterpolation {
@@ -107,6 +132,7 @@ struct PropertyAnimationGroupRecord {
     /** `AnimationGroup.weight`: the mixer's contribution, default 1. */
     double weight = 1.0;
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
+    AnimationGroupOrder animation_order;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(targets); }
 };
 
@@ -166,6 +192,7 @@ struct PropertyAnimationWeightFade {
  */
 struct PropertyAnimationBucket {
     PropertyAnimationTarget target{};
+    PropertyAnimationIdentity resolved_identity;
     PropertyAnimationPath property = PropertyAnimationPath::position;
     PropertyAnimationComponent component = PropertyAnimationComponent::whole_lane;
     /** The pin's `values: new F32(arity)` (weighted-pointer-mixer.ts). */
@@ -175,9 +202,10 @@ struct PropertyAnimationBucket {
     bool contested = false;
     bool active = false;
     bool has_reference = false;
+    double total_weight = 0;
     /** `refX`..`refW`, JavaScript numbers. */
     std::array<double, 4> reference{0.0, 0.0, 0.0, 1.0};
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); visitor(resolved_identity); }
 };
 
 /**
@@ -203,6 +231,7 @@ struct PropertyAnimationManagerRecord {
     std::vector<PropertyAnimationGroup> groups;
     /** Source _animationGroups order, including property and glTF groups. */
     std::vector<AnimationGroupReference> ordered_groups;
+    double next_group_order = 0;
     /** Scheduled by crossFadeAnimationGroups, advanced before the mixer. */
     std::vector<PropertyAnimationWeightFade> weight_fades;
     /** The pin's one stable pre-update slot and the hook it preserves. */

@@ -110,6 +110,60 @@ async function composeImportedMesh(outputPath: string, source: string) {
     };
 }
 
+test("PBR profiles retain composed indices across imported and runtime materials", async () => {
+    const outputPath = resolve("artifacts/runtime-pbr-composition");
+    writeImportedMeshFixture(outputPath);
+    const { result, composed } = await composeImportedMesh(outputPath, `
+        import {createEngine, loadGltf, createBox, createPbrMaterial, createStandardMaterial} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        createPbrMaterial({metallicFactor: 0});
+        await loadGltf(engine, "level.glb");
+        const count = new Float32Array([3]);
+        for (let i = 0; i < count[0]!; i++) {
+            createStandardMaterial();
+            const mesh = createBox(engine);
+            mesh.material = createPbrMaterial({metallicFactor: i / 2, roughnessFactor: i ? 0.3 : 1});
+        }
+        const last = createBox(engine);
+        last.material = createPbrMaterial({metallicFactor: 0});
+    `);
+    assert.deepEqual(composed.scenePbrMaterialIndices, [0, 3, 4]);
+    assert.deepEqual(result.manifest.runtimeMaterialProfiles, [1, 2]);
+    const selectors = new Set(composed.pinnedVariants.flatMap((variant) =>
+        variant.selectors.map((selector) => selector.materialIndex)));
+    assert.ok(selectors.has(3) && selectors.has(4));
+    assert.match(result.cpp, /\.roughness_factor =.*\?/);
+});
+
+test("runtime shadow caster lists compose node material caster views", async () => {
+    const outputPath = resolve("artifacts/node-dynamic-caster");
+    writeImportedMeshFixture(outputPath);
+    const {result, composed} = await composeImportedMesh(outputPath, `
+        import {createEngine,loadGltf,createSceneContext,createDirectionalLight,createPcfDirectionalShadowGenerator,
+            parseNodeMaterialFromSnippet,createBox,addToScene,setShadowTaskCasterMeshes,type Mesh} from "@babylonjs/lite";
+        import {SCENE60_NME_JSON} from "../../corpus/babylon-lite/lab/lite/src/shared/scene60-nme.js";
+        const engine = await createEngine({});
+        await loadGltf(engine, "level.glb");
+        const scene = createSceneContext(engine);
+        const light = createDirectionalLight([0,-1,0], 1);
+        addToScene(scene, light);
+        const shadow = createPcfDirectionalShadowGenerator(engine, light, {mapSize: 64});
+        const material = await parseNodeMaterialFromSnippet(engine, "", {json: SCENE60_NME_JSON});
+        const meshes: Mesh[] = [];
+        const count = new Float32Array([2]);
+        for (let index=0; index<count[0]!; ++index) {
+            const mesh = createBox(engine);
+            mesh.material = material;
+            meshes.push(mesh);
+            addToScene(scene, mesh);
+        }
+        setShadowTaskCasterMeshes(shadow, meshes);
+    `);
+    assert.equal(result.manifest.shadowGenerators[0]?.dynamicCasters, true);
+    assert.equal(composed.nodeVariants.length, 1);
+    assert.equal(composed.nodeVariants[0]?.composed.caster?.kind, "pcf");
+});
+
 test("scene Standard materials compose for imported UV2 mesh features", async () => {
     const outputPath = resolve("artifacts/standard-imported-mesh-composition");
     writeImportedMeshFixture(outputPath);
@@ -129,6 +183,32 @@ test("scene Standard materials compose for imported UV2 mesh features", async ()
         ),
     );
     assert.equal(composed.standardRenderableMeshFeatures![0], MSH_HAS_UV2);
+});
+
+test("copied optional geometry streams compose every loaded PBR attribute key", async () => {
+    const outputPath = resolve("artifacts/copied-geometry-pbr-composition");
+    writeImportedMeshFixture(outputPath);
+    const { result, composed } = await composeImportedMesh(
+        outputPath,
+        `import {createEngine,loadGltf,getContainerMeshes,getMeshGeometry,createMeshFromData} from "@babylonjs/lite";
+        const engine=await createEngine({});const asset=await loadGltf(engine,"level.glb");
+        for(const source of getContainerMeshes(asset)){const data=getMeshGeometry(source);if(data){const copy=createMeshFromData(engine,"copy",data.positions,data.normals,data.indices,data.uvs,data.uvs2,data.tangents,data.colors);copy.material=source.material;}}`,
+    );
+    assert.equal(result.manifest.sceneMeshes[0]?.runtimeStreams, true);
+    assert.equal(result.manifest.sceneMeshes[0]?.assetPbrMaterial, true);
+    const { MSH_HAS_TANGENTS, MSH_HAS_UV2, MSH_HAS_VERTEX_COLOR } =
+        await importPinnedModule<{
+            MSH_HAS_TANGENTS: number;
+            MSH_HAS_UV2: number;
+            MSH_HAS_VERTEX_COLOR: number;
+        }>("material/mesh-features.js");
+    const mask = MSH_HAS_TANGENTS | MSH_HAS_UV2 | MSH_HAS_VERTEX_COLOR;
+    const features = new Set(
+        composed.pinnedVariants.flatMap((variant) =>
+            variant.selectors.map((selector) => selector.meshFeatures & mask),
+        ),
+    );
+    assert.equal(features.size, 8);
 });
 
 test("scene Standard markers do not compose for unrelated imported skeletons", async () => {

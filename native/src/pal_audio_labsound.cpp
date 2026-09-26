@@ -852,6 +852,21 @@ void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, boo
         record.source->event_pull = false;
     }
 }
+
+void audio_set_ended_handler(AudioNodeHandle node, js::Callback<void()> callback) {
+    require_node(node);
+    if (!node.ownership->source)
+        throw std::runtime_error("Audio node is not a scheduled source.");
+    node.ownership->ended[1].set_handler(std::move(callback));
+    auto& record = *node.ownership;
+    if (record.ended[0].empty() && record.ended[1].empty() && record.source->completion) {
+        EventLoop::current().cancel_completion(record.source->completion);
+        require_context(context_of(node.value)).context->removeAutomaticPullNode(record.node);
+        record.source->event_pull = false;
+    } else {
+        retain_audio_completion(node);
+    }
+}
 #endif
 
 double audio_current_time(AudioContextHandle context) {

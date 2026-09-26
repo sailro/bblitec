@@ -1709,9 +1709,6 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
         state.node_fragment_modules[slot] = load_wgsl_module(state, module_file);
     }
     VariantVertexAttributes inputs;
-    // A node graph declaring the thin-instance columns would need a second
-    // stream this pipeline does not bind, so the shared table's own marking
-    // is what refuses it.
     inputs.vertex.reserve(view.attribute_count);
     for (std::size_t index = 0; index < view.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
@@ -1721,23 +1718,15 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
                         std::string(input.name) + "'.")
                            .c_str());
         }
-        if (!inputs.instance_matrix.empty() || !inputs.instance_color.empty()) {
-            dawn_error((std::string("node variant declares the per-instance ") + "vertex input '" +
-                        std::string(input.name) + "', which its pipeline binds no stream for.")
-                           .c_str());
-        }
     }
-    WGPUVertexBufferLayout vertex_layout{};
-    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layout.arrayStride = sizeof(GpuVertex);
-    vertex_layout.attributeCount = inputs.vertex.size();
-    vertex_layout.attributes = inputs.vertex.data();
+    std::array<WGPUVertexBufferLayout, vertex_streams.size()> vertex_layouts{};
+    const std::uint32_t vertex_buffer_count = fill_variant_vertex_layouts(inputs, vertex_layouts);
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = node_pipeline_layout_for(state, variant, caster, geometry_variant);
     descriptor.vertex.module = state.node_vertex_modules[slot];
     descriptor.vertex.entryPoint = string_view("vs_main");
-    descriptor.vertex.bufferCount = 1;
-    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.vertex.bufferCount = vertex_buffer_count;
+    descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
     const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
@@ -1792,13 +1781,13 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
     }
 #endif
     descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline)
         dawn_error("node variant pipeline creation failed.");
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     if (state.node_capture.capture.enabled()) {
         NodeGpuPipelineCapture receipt;
-        receipt.id = state.node_capture.allocate(pipeline, "node-pipeline");
+        receipt.id = state.node_capture.allocate(pipeline.get(), "node-pipeline");
         receipt.variant = static_cast<std::uint32_t>(variant);
         receipt.geometry_variant = geometry_view ? static_cast<int>(geometry_variant) : -1;
         receipt.color_target_count = static_cast<std::uint32_t>(fragment.targetCount);
@@ -1810,25 +1799,39 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
                             : descriptor.primitive.cullMode == WGPUCullMode_Back ? "back"
                                                                                  : "front";
         receipt.front_face = descriptor.primitive.frontFace == WGPUFrontFace_CCW ? "ccw" : "cw";
-        for (std::size_t i = 0; i < vertex_layout.attributeCount; ++i) {
-            const auto& attribute = vertex_layout.attributes[i];
-            const char* format = attribute.format == WGPUVertexFormat_Float32x2   ? "float32x2"
-                                 : attribute.format == WGPUVertexFormat_Float32x3 ? "float32x3"
-                                 : attribute.format == WGPUVertexFormat_Float32x4 ? "float32x4"
-                                                                                  : "unknown";
-            receipt.attributes.push_back(
-                {std::string(upstream::node_variant_attributes[view.first_attribute + i].name),
-                 format, attribute.shaderLocation, 0, static_cast<std::size_t>(attribute.offset),
-                 static_cast<std::size_t>(vertex_layout.arrayStride)});
+        for (std::uint32_t buffer = 0; buffer < vertex_buffer_count; ++buffer) {
+            const auto& layout = vertex_layouts[buffer];
+            for (std::size_t i = 0; i < layout.attributeCount; ++i) {
+                const auto& attribute = layout.attributes[i];
+                const auto begin = upstream::node_variant_attributes.begin() + view.first_attribute;
+                const auto end = begin + view.attribute_count;
+                const auto source = std::find_if(begin, end, [&](const auto& entry) {
+                    return entry.location == attribute.shaderLocation;
+                });
+                if (source == end)
+                    throw std::runtime_error("Node pipeline attribute has no source declaration.");
+                const char* format = attribute.format == WGPUVertexFormat_Float32x2   ? "float32x2"
+                                     : attribute.format == WGPUVertexFormat_Float32x3 ? "float32x3"
+                                     : attribute.format == WGPUVertexFormat_Float32x4 ? "float32x4"
+                                                                                      : "unknown";
+                receipt.attributes.push_back({std::string(source->name), format,
+                                              attribute.shaderLocation, buffer,
+                                              static_cast<std::size_t>(attribute.offset),
+                                              static_cast<std::size_t>(layout.arrayStride)});
+            }
         }
         state.node_capture.capture.pipeline(std::move(receipt));
     }
 #endif
-    return map.emplace(key, pipeline).first->second;
+    const auto [entry, inserted] = map.emplace(key, pipeline.get());
+    if (inserted)
+        static_cast<void>(pipeline.release());
+    return entry->second;
 }
 
 void fill_node_draw_buffers(DawnState& state, DawnDrawState& draw_state,
-                            const upstream::NodeVariantEntry& view) {
+                            const upstream::NodeVariantEntry& view,
+                            const MaterialRecord* material) {
     const auto uniform_buffer = [&](std::uint64_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = size;
@@ -1845,25 +1848,28 @@ void fill_node_draw_buffers(DawnState& state, DawnDrawState& draw_state,
     if (!draw_state.mesh_uniforms) {
         draw_state.mesh_uniforms = uniform_buffer(sizeof(upstream::NodeMeshUniforms));
     }
-    if (!draw_state.material_uniforms && upstream::has_node_ubo(view)) {
-        draw_state.material_uniforms = uniform_buffer(static_cast<std::uint64_t>(view.ubo_bytes));
-        // The constants the graph declared, written with the buffer that
-        // holds them: nothing a reached scene does changes them.
-        DawnGpuDevice{state.queue}.write_buffer(
-            draw_state.material_uniforms, 0,
-            &upstream::node_variant_uniform_floats[view.first_uniform_float], view.ubo_bytes);
+    const auto uniforms =
+        material && material->node_inputs ? material->node_inputs->uniforms : nullptr;
+    if (upstream::has_node_ubo(view) &&
+        (!draw_state.material_uniforms || draw_state.node_uniform_upload.pending(uniforms))) {
+        if (!draw_state.material_uniforms)
+            draw_state.material_uniforms =
+                uniform_buffer(static_cast<std::uint64_t>(view.ubo_bytes));
+        const auto values = pal::node_uniform_values(view, material);
+        DawnGpuDevice{state.queue}.write_buffer(draw_state.material_uniforms, 0, values.data(),
+                                                values.size_bytes());
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-        state.node_capture.write(draw_state.material_uniforms,
-                                 &upstream::node_variant_uniform_floats[view.first_uniform_float],
-                                 view.ubo_bytes);
+        state.node_capture.write(draw_state.material_uniforms, values.data(), values.size_bytes());
 #endif
+        draw_state.node_uniform_upload.uploaded(uniforms);
     }
 }
 
 DawnDrawState& ensure_node_draw_buffers(DawnState& state, DawnMesh& mesh, std::uint32_t material,
-                                        const upstream::NodeVariantEntry& entry) {
+                                        const upstream::NodeVariantEntry& entry,
+                                        const MaterialRecord& record) {
     DawnDrawState& draw_state = mesh.node_states.try_emplace(material, state).first->second;
-    fill_node_draw_buffers(state, draw_state, entry);
+    fill_node_draw_buffers(state, draw_state, entry, &record);
     return draw_state;
 }
 #endif
@@ -1874,9 +1880,9 @@ DawnDrawState& ensure_node_geometry_draw_buffers(DawnState& state, DawnMesh& mes
                                                  std::size_t geometry_variant) {
     DawnDrawState& draw_state =
         mesh.node_geometry_states.try_emplace(geometry_variant, state).first->second;
-    fill_node_draw_buffers(
-        state, draw_state,
-        upstream::node_variants[upstream::node_geometry_entry(geometry_variant)]);
+    fill_node_draw_buffers(state, draw_state,
+                           upstream::node_variants[upstream::node_geometry_entry(geometry_variant)],
+                           nullptr);
     return draw_state;
 }
 #endif

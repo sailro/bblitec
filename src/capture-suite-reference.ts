@@ -82,7 +82,7 @@ export function pinnedLabPublicAssetPath(requestPath: string): string {
     return relative.endsWith("/HavokPhysics.wasm") ||
         relative === "HavokPhysics.wasm"
         ? "HavokPhysics.wasm"
-        : relative;
+        : relative.replace(/^(?:.*\/)?(?:lab\/lite\/src\/demos|(?:lite\/)?bundle\/demos)\//, "");
 }
 
 /**
@@ -411,6 +411,8 @@ function hostUiBootstrapScript(
             let body = `${uiStyleSelector(rule)}{${rule.style}}`;
             if (rule.containerMaxWidth !== undefined)
                 body = `@container(max-width:${rule.containerMaxWidth}px){${body}}`;
+            if (rule.orientation !== undefined)
+                body = `@media(orientation:${rule.orientation}){${body}}`;
             if (rule.reducedMotion !== undefined)
                 body = `@media(prefers-reduced-motion:${rule.reducedMotion ? "reduce" : "no-preference"}){${body}}`;
             return rule.maxWidth === undefined
@@ -675,6 +677,13 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
         // Pinned lab/public assets back every scene source: corpus
         // scenes and project-owned gates share the demo asset roots.
         {
+            const publicPath = resolve(root, "corpus/babylon-lite/lab/public", pinnedLabPublicAssetPath(relative));
+            const publicRoot = resolve(root, "corpus/babylon-lite/lab/public");
+            if (publicPath.startsWith(`${publicRoot}${sep}`) && existsSync(publicPath) && statSync(publicPath).isFile()) {
+                response.writeHead(200, {"Content-Type": mimeType(publicPath)});
+                response.end(readFileSync(publicPath));
+                return;
+            }
             const cached = pinnedAssets.get(url.pathname);
             if (cached) {
                 response.writeHead(200, {

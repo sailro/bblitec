@@ -881,6 +881,10 @@ template <typename T> [[nodiscard]] JsonValue json_value(const std::optional<T>&
 template <typename T> [[nodiscard]] JsonValue json_value(const Nullable<T>& value) {
     return value ? json_value(*value) : JsonValue{};
 }
+/** The caller's checked source type proves this optional carries null alone. */
+template <typename T> [[nodiscard]] JsonValue json_value_or_null(const Nullable<T>& value) {
+    return value ? json_value(*value) : JsonValue::null_value();
+}
 template <typename T> [[nodiscard]] JsonValue json_value(const Map<std::string, T>& value) {
     return JsonValue::from_native(value);
 }

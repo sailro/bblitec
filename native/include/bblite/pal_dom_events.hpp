@@ -133,6 +133,7 @@ inline double touch_wheel_delta_y(double previous, double current) {
 struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
+    DomEventListeners<PlatformCustomEvent> custom;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -153,6 +154,7 @@ struct DomInput {
     void gc_trace(const js::TraceVisitor& visitor) const {
         pointer.gc_trace(visitor);
         keyboard.gc_trace(visitor);
+        custom.gc_trace(visitor);
     }
 #endif
 };
@@ -321,16 +323,25 @@ inline js::Nullable<DomEventTargetValue> dom_target_value(Engine& engine,
     return dom_target_value(engine, *target);
 }
 
-inline UiElementHandle dom_target_element(DomEventTargetValue value) {
-    if (value.target.kind != DomEventTargetKind::Element)
-        throw std::runtime_error("The event target is not a retained element.");
-    return {value.target.element};
-}
-
 inline Engine& dom_target_owner(DomEventTargetValue value) {
     if (!value.engine)
         throw std::logic_error("An event target has no owning document.");
+    if (value.owner_lifetime.expired())
+        throw std::logic_error("The event target's owning document has expired.");
     return *value.engine;
+}
+
+inline UiElementHandle dom_target_element(DomEventTargetValue value) {
+    const auto& engine = dom_target_owner(value);
+    const auto element = value.target.kind == DomEventTargetKind::Element
+        ? UiElementHandle{value.target.element}
+        : value.target.kind == DomEventTargetKind::Canvas ? engine.primary_canvas : UiElementHandle{};
+    if (element.value >= engine.ui_elements.size())
+        throw std::runtime_error("The event target has no retained element in its owning document.");
+    const auto& record = engine.ui_elements[element.value];
+    if (record.tag.empty() || record.tag.front() == '#')
+        throw std::runtime_error("The event target is not an Element.");
+    return element;
 }
 
 #if BBLITE_HAS_UI

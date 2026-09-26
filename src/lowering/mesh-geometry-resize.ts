@@ -3,6 +3,7 @@ import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { retainedMeshResizeWrappers } from "./mesh-cpu-streams.js";
 
 /** Source ownership and invalidation over native retained geometry slots. */
 export function lowerMeshGeometryResize(context: LoweringContext): string {
@@ -280,6 +281,7 @@ static void retain_replacement_geometry_bounds(Engine& engine, MeshHandle mesh, 
     record.has_bounds=has_bounds;
     record.has_bounds_min_override=false;
     record.has_bounds_max_override=false;
+    record.cpu_streams.reset();
 }
 // ${context.provenance(module, "resizeMeshGeometry")}
 void resize_mesh_geometry(Engine& engine, MeshHandle mesh, ${parameters}) {
@@ -289,5 +291,6 @@ ${lower("resizeMeshGeometry")}
 void resize_shared_mesh_geometry(Engine& engine, std::span<const MeshHandle> meshes, ${parameters}) {
 ${lower("resizeSharedMeshGeometry")}
 }
+${retainedMeshResizeWrappers()}
 `;
 }

@@ -172,7 +172,10 @@ PhysicsShape create_physics_heightfield_from_ground(PhysicsWorldHandle world, Me
     const Engine& engine = *physics_world_record(world).engine;
     const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     std::vector<float> positions;
-    if (record.geometry < engine.geometries.size()) {
+    if (record.cpu_streams) {
+        if (record.cpu_streams->positions)
+            positions = static_cast<const std::vector<float>&>(*record.cpu_streams->positions);
+    } else if (record.geometry < engine.geometries.size()) {
         const auto& vertices = engine.geometries[record.geometry].vertices;
         positions.reserve(vertices.size() * 3);
         for (const auto& vertex : vertices) {

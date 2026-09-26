@@ -12,6 +12,7 @@ import { presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
+import { compileCustomEventDispatch } from "./custom-events.js";
 import {
     parseUiSelectorSequence,
     splitUiSelectorList,
@@ -234,6 +235,8 @@ export class PlatformCalls {
             }
         }
         if (ts.isPropertyAccessExpression(callee)) {
+            const dispatched = compileCustomEventDispatch(this.context, call);
+            if (dispatched) return dispatched;
             const value = this.compileUiCall(call, callee);
             if (value) return value;
         }
@@ -351,6 +354,7 @@ export class PlatformCalls {
             if (
                 platformEvent?.kind === "platform-keyboard-event" ||
                 platformEvent?.kind === "platform-mouse-event" ||
+                platformEvent?.kind === "custom-event" ||
                 platformEvent?.nativeErrorEvent
             ) {
                 if (call.arguments.length)
@@ -535,7 +539,10 @@ export class PlatformCalls {
         this.frameConductorOwner = owner;
     }
 
-    public emitPlatformEventListener(call: ts.CallExpression): boolean {
+    public emitPlatformEventListener(
+        call: ts.CallExpression,
+        preparedElement?: Value,
+    ): boolean {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
@@ -544,8 +551,29 @@ export class PlatformCalls {
         ) {
             return false;
         }
+        if (!preparedElement && callee.questionDotToken) {
+            const type = this.context.dataLowerer.dataTypeAt(callee.expression);
+            if (
+                type?.kind === "optional" &&
+                type.inner.kind === "handle" &&
+                type.inner.handle === "ui-element"
+            ) {
+                const result = this.context.dataLowerer.optionalAccess(
+                    this.context.compileValue(callee.expression),
+                    call,
+                    (element) =>
+                        this.emitPlatformEventListener(call, element)
+                            ? { kind: "void", cpp: "" }
+                            : undefined,
+                );
+                if (!result) return false;
+                this.context.emitDiscardedValue(result);
+                return true;
+            }
+        }
         const removing = callee.name.text === "removeEventListener";
-        const uiElement = this.ui.uiElementValue(callee.expression);
+        const uiElement =
+            preparedElement ?? this.ui.compileUiElementReceiver(callee.expression);
         if (
             this.context.probeEmission(() =>
                 emitDomEventListener(
@@ -871,14 +899,22 @@ export class PlatformCalls {
             }
         }
         const style = this.context.unwrap(callee.expression);
+        const retainedStyle = ts.isIdentifier(style)
+            ? this.context.bindings.lookupOptional(style)
+            : undefined;
         if (
-            ts.isPropertyAccessExpression(style) &&
-            style.name.text === "style" &&
+            ((ts.isPropertyAccessExpression(style) &&
+                style.name.text === "style") ||
+                retainedStyle?.uiStyle) &&
             ["setProperty", "getPropertyValue", "removeProperty"].includes(
                 callee.name.text,
             )
         ) {
-            const element = this.ui.uiElementValue(style.expression);
+            const element = retainedStyle?.uiStyle
+                ? retainedStyle
+                : ts.isPropertyAccessExpression(style)
+                  ? this.ui.uiElementValue(style.expression)
+                  : undefined;
             if (element) {
                 const setting = callee.name.text === "setProperty";
                 this.context.expectArgumentCount(
@@ -912,7 +948,7 @@ export class PlatformCalls {
                         argumentAt(call, 0),
                     );
                 const property = this.ui.nativeUiStyleProperty(name);
-                this.ui.auditUiStylePropertyName(property, argumentAt(call, 0));
+                this.ui.auditUiStylePropertyName(name, argumentAt(call, 0));
                 return {
                     kind: "string",
                     cpp: `bbl::ui_get_style_property(${this.context.requireEngine(element, call)}, ${element.cpp}, ${this.context.cppString(property)})`,

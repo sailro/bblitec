@@ -11,6 +11,22 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
+test("application asset merging retains independent texture and binary uses of one URL", () => {
+    const result = compileSource(`
+        import {createEngine, loadTexture2D, waitForGpuIdle} from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine(document.querySelector("canvas")!);
+            await loadTexture2D(engine, "shared.png");
+            await fetch("shared.png");
+            await waitForGpuIdle(engine);
+        }
+        void main();
+    `);
+    const shared = result.manifest.assets.filter(asset => asset.source === "shared.png");
+    assert.deepEqual(shared.map(asset => asset.kind).sort(), ["binary", "texture"]);
+    assert.equal(shared[0]!.output, shared[1]!.output);
+});
+
 test("module Worker compilation retains per-instance module state and cloned messages", (t) => {
     const directory = resolve("artifacts/worker-compilation-check");
     mkdirSync(directory, { recursive: true });

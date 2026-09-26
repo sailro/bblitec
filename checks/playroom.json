@@ -1,0 +1,41 @@
+{
+  "scene": "playroom",
+  "notes": "Pinned host at 1280x720. Source dataset transitions validate gameplay independently of the Havok/Bullet trajectories; the startup image retains the registry parity gate.",
+  "base": "registry",
+  "env": { "BBLITE_RUNTIME_TRACE": "1" },
+  "capture": false,
+  "timeoutMs": 120000,
+  "phases": [
+    { "id": "ready", "frame": 180 },
+    { "id": "aiming", "frame": 240, "tape": ["-*180", "UiClick@1150:610"] },
+    { "id": "orbit", "frame": 240, "tape": ["-*180", "UiClick@1150:610", "-*15", "+UiMouseLeft@640:360", "UiMove@660:366", "UiMove@680:372", "UiMove@700:378", "UiMove@720:384", "UiMove@740:390", "UiMove@760:396", "-UiMouseLeft@760:396"] },
+    { "id": "free", "frame": 240, "tape": ["-*180", "UiClick@1150:610", "-*15", "UiClick@1203:76"] },
+    { "id": "orbit-restored", "frame": 240, "tape": ["-*180", "UiClick@1150:610", "-*15", "UiClick@1203:76", "-*15", "UiClick@1203:76"] },
+    { "id": "watching", "frame": 240, "tape": ["-*180", "UiClick@1150:610", "-*15", "UiClick@1152:576"] }
+  ],
+  "expect": [
+    { "kind": "golden-mad", "phase": "ready", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "image-mad", "phase": "aiming", "vs": "ready", "min": 0.0001, "changedPixelsMin": 100 },
+    { "kind": "image-mad", "phase": "orbit", "vs": "aiming", "min": 0.05, "changedPixelsMin": 100 },
+    { "kind": "image-mad", "phase": "free", "vs": "aiming", "min": 0.0001, "changedPixelsMin": 100 },
+    { "kind": "image-mad", "phase": "watching", "vs": "aiming", "min": 0.0001, "changedPixelsMin": 100 },
+    { "kind": "plugin", "module": "checks/plugins/playroom-controls.mjs" }
+  ],
+  "observe": {
+    "viewport": [1280, 720],
+    "golden": false,
+    "reloadEachStep": true,
+    "state": "(() => { const canvas = document.getElementById('renderCanvas'); return {dataset:{...canvas.dataset},viewport:{width:canvas.width,height:canvas.height},startupHidden:document.getElementById('playroom-startup').hidden,freePressed:document.getElementById('playroom-free').getAttribute('aria-pressed'),kickHidden:document.getElementById('playroom-kick').hidden,camera:window.__playroomObserveCamera()}; })()",
+    "hooks": [
+      { "marker": "await startEngine(engine);", "position": "before", "inject": "window.__playroomObserveCamera = () => ({ alpha: game.camera.alpha, beta: game.camera.beta });" }
+    ],
+    "steps": [
+      { "id": "ready", "screenshot": "page" },
+      { "id": "aiming", "actions": [{ "click": [1150, 610] }], "settleFrames": 30, "screenshot": "page" },
+      { "id": "orbit", "actions": [{ "click": [1150, 610] }, { "frames": 15 }, { "drag": [640, 360, 760, 396], "steps": 6 }], "settleFrames": 30, "screenshot": "page" },
+      { "id": "free", "actions": [{ "click": [1150, 610] }, { "frames": 15 }, { "click": [1203, 76] }], "settleFrames": 30, "screenshot": "page" },
+      { "id": "orbit-restored", "actions": [{ "click": [1150, 610] }, { "frames": 15 }, { "click": [1203, 76] }, { "frames": 15 }, { "click": [1203, 76] }], "settleFrames": 30, "screenshot": "page" },
+      { "id": "watching", "actions": [{ "click": [1150, 610] }, { "frames": 15 }, { "click": [1152, 576] }], "settleFrames": 30, "screenshot": "page" }
+    ]
+  }
+}

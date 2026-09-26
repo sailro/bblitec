@@ -39,25 +39,14 @@ export function lowerPropertyAnimationPlayback(
         ["deltaMs", { cpp: "delta_ms", type: "scalar" }],
         ["fromTime", { cpp: "group.from_time", type: "scalar" }],
         ["toTime", { cpp: "group.to_time", type: "scalar" }],
+        ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
+        ["group._stopped", { cpp: "group.stopped", type: "bool" }],
     ]);
     const clock = lowerPinnedBody(file, tick.body.statements, {
         bindings,
-        calls: new Map(),
-
-        statement(statement, _lowerer, indent) {
-            if (!ts.isForStatement(statement)) return undefined;
-            context.assertStatementShapes(
-                tick,
-                [statement],
-                `for (let trackIndex = 0; trackIndex < tracks.length; trackIndex++) {
-                const track = tracks[trackIndex]!;
-                evaluateSampler(track.sampler, ctrl.time, track.stride, track.quaternion, _pointerScratch, 0);
-                track.writer(_pointerScratch, 0);
-            }`,
-                "Property sampler and writer storage callback",
-            );
-            return [`${indent}apply_pose(time);`];
-        },
+        calls: new Map([
+            ["applyAt", (args) => `apply_pose(${args.join(", ")})`],
+        ]),
     });
     const controls = ["playAnimation", "pauseAnimation", "stopAnimation"]
         .map((name) => {
@@ -68,8 +57,14 @@ ${lowerPinnedBody(source.file, source.declaration.body!.statements, {
         ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
         ["group._stopped", { cpp: "group.stopped", type: "bool" }],
         ["group.currentTime", { cpp: "group.current_time", type: "scalar" }],
+        ["group._startTime", { cpp: "group.from_time", type: "scalar" }],
     ]),
     calls: new Map(),
+    expression(node) {
+        if (context.expressionMatchesShape(node, "group._startTime ?? 0"))
+            return "group.from_time";
+        return undefined;
+    },
 })}
 }`;
         })
@@ -134,14 +129,106 @@ ${lowerPinnedBody(source.file, source.declaration.body!.statements, {
             },
         },
     );
+    const groupValue = context.unwrapExpression(
+        context.variableInitializer(declaration, "group"),
+    );
+    if (!ts.isObjectLiteralExpression(groupValue))
+        context.contractError(groupValue, "Expected property group record.");
+    const evaluate = groupValue.properties.find(
+        (property) =>
+            ts.isPropertyAssignment(property) &&
+            context.propertyName(property.name) === "_evaluate",
+    );
+    if (
+        !evaluate ||
+        !ts.isPropertyAssignment(evaluate) ||
+        !ts.isArrowFunction(evaluate.initializer) ||
+        !ts.isBlock(evaluate.initializer.body)
+    )
+        context.contractError(
+            groupValue,
+            "Expected explicit property pose evaluator.",
+        );
+    const seekBindings = new Map<string, PinnedBinding>([
+        ["group.currentTime", { cpp: "group.current_time", type: "scalar" }],
+        ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
+        ["group.frameRate", { cpp: "group.clip.frame_rate", type: "scalar" }],
+        ["ctrl", { cpp: "true", type: "bool", staticBoolean: true }],
+        ["ctrl.time", { cpp: "time", type: "scalar" }],
+        ["group._evaluate", { cpp: "true", type: "bool", staticBoolean: true }],
+        ["duration", { cpp: "group.clip.duration", type: "scalar" }],
+        ["frame", { cpp: "frame", type: "scalar" }],
+    ]);
+    const evaluateBody = lowerPinnedBody(
+        file,
+        evaluate.initializer.body.statements,
+        {
+            bindings: seekBindings,
+            calls: new Map([
+                ["applyAt", (args) => `apply_pose(${args.join(", ")})`],
+            ]),
+        },
+    );
+    const seek = context.functionDeclaration(groupModule, "goToFrame");
+    const seekBody = lowerPinnedBody(
+        seek.file,
+        seek.declaration.body!.statements,
+        {
+            bindings: seekBindings,
+            calls: new Map(),
+            expression(node, lowerer) {
+                if (
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+                    context.expressionMatchesShape(node.left, "group.frameRate")
+                )
+                    return `bbl::js::or_number(${lowerer.expression(node.left)}, ${lowerer.expression(node.right)})`;
+                return undefined;
+            },
+            statement(statement, _lowerer, indent) {
+                if (ts.isVariableStatement(statement)) {
+                    context.assertStatementShapes(
+                        statement,
+                        [statement],
+                        "const ctrl = group._ctrl;",
+                        "Property seek controller identity",
+                    );
+                    return [];
+                }
+                if (ts.isExpressionStatement(statement)) {
+                    if (
+                        context.expressionMatchesShape(
+                            statement.expression,
+                            "syncControllerFromGroup(group, ctrl)",
+                        )
+                    )
+                        return [`${indent}double time = group.current_time;`];
+                    if (
+                        context.expressionMatchesShape(
+                            statement.expression,
+                            "group._evaluate(engine)",
+                        )
+                    )
+                        return evaluateBody
+                            .split("\n")
+                            .map((line) => indent + line);
+                }
+                return undefined;
+            },
+        },
+    );
     return `// ${context.provenance(groupModule, "playAnimation,pauseAnimation,stopAnimation")}
 ${controls}
 // ${context.provenance(module, "createPointerAnimationGroup.tick")}
-template<class Group,class Apply> void property_controller_tick(const Group& group,double& time,double delta_ms,Apply apply_pose) {
+template<class Group,class Apply> void property_controller_tick(Group& group,double& time,double delta_ms,Apply apply_pose) {
 ${clock}
 }
 // ${context.provenance(groupModule, "tickAnimationCore")}
 template<class Group,class Apply> void tick_property_animation_group(Group& group,double delta_ms,Apply apply_pose) {
 ${coreBody}
+}
+// ${context.provenance(groupModule, "goToFrame")}
+template<class Group,class Apply> void property_go_to_frame(Group& group,double frame,Apply apply_pose) {
+${seekBody}
 }`;
 }

@@ -37,7 +37,7 @@ type RecordFieldAssignment = (
     collection: "materials" | "cameras" | "meshes";
     /** The record field, or the pair a two-element source writes. */
     field: string | readonly [string, string];
-    value: "color3" | "number" | "boolean" | "number2";
+    value: "color3" | "number" | "boolean" | "optional-boolean" | "number2";
     scalarPrecision?: "float" | "double";
     simpleOnly?: boolean;
     /** Stored as the logical inverse of what the source assigns. */
@@ -86,7 +86,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         property: "visible",
         collection: "meshes",
         field: "visible",
-        value: "boolean",
+        value: "optional-boolean",
         simpleOnly: true,
         feature: "mesh:visible",
     },
@@ -492,6 +492,7 @@ export interface AssignmentContext
         DeterministicRandomContext,
         Pick<
             LoweringServices,
+            | "options"
             | "libraryGlobal"
             | "admissions"
             | "isRuntimeResourceConstruction"
@@ -2593,6 +2594,18 @@ function emitTargetPropertyAssignment(
     )
         return true;
 
+    if (property === "visible" && ["scene-node", "transform-node", "asset-root"].includes(target.kind)) {
+        requireSimpleAssignment(context, expression, "SceneNode visible");
+        context.reachFeature("scene:node-transforms", expression);
+        const engine = context.requireEngine(target, expression);
+        const node = context.allocateTemporaryCppName("scene_node_visibility_target");
+        context.emit({kind: "declaration", type: "const auto", name: node, initializer: target.cpp});
+        const value = context.compileForDataSink(expression.right, {
+            kind: "optional", inner: {kind: "boolean"}, undefinedOnly: true,
+        });
+        context.emit({kind: "expression", code: `bbl::scene_node_visibility(${engine}, ${node}) = ${value};`});
+        return true;
+    }
     const recordField = recordFieldAssignments.find(
         (candidate) =>
             candidate.kind === target.kind && candidate.property === property,
@@ -2743,12 +2756,18 @@ function emitTargetPropertyAssignment(
                 ? context.compileColor3(expression.right)
                 : recordField.value === "boolean"
                   ? context.compileBoolean(expression.right)
-                  : context.compileNumber(
-                        expression.right,
-                        recordField.collection === "cameras"
-                            ? "double"
-                            : "float",
-                    ),
+                  : recordField.value === "optional-boolean"
+                    ? context.compileForDataSink(expression.right, {
+                          kind: "optional",
+                          inner: { kind: "boolean" },
+                          undefinedOnly: true,
+                      })
+                    : context.compileNumber(
+                          expression.right,
+                          recordField.collection === "cameras"
+                              ? "double"
+                              : "float",
+                      ),
         );
         const value = compiled.cpp;
         if (
@@ -3278,23 +3297,19 @@ function emitMaterialAssignment(
         const material = context.compileValue(expression.right);
         context.expectKind(material, "material", expression.right);
         context.expectSameEngine(target, material, expression);
-        // A `createMeshFromData` mesh whose optional streams are a run-time
-        // answer has no generation-known attribute set, and the Standard and
-        // PBR variant keys are built from exactly that. The node family
-        // needs none -- `MeshAttributeExistsBlock` reads the per-mesh
-        // uniform lane the PALs fill from the geometry -- so what cannot be
-        // composed is this PAIRING, and it is named here rather than at the
-        // factory, where the material is not yet known.
+        // Node materials inspect attributes through uniform lanes. Loaded PBR
+        // materials compose the bounded optional-stream feature product;
+        // other families still require a fixed attribute profile.
         if (
             target.runtimeMeshStreams === true &&
-            material.nodeMaterialIndex === undefined
+            material.nodeMaterialIndex === undefined &&
+            material.assetPbrMaterial !== true
         ) {
             context.fail(
                 expression.right,
                 "This mesh's optional vertex streams are decided at run time, " +
-                    "so its attribute set is not generation-known. Only a node " +
-                    "material draws such a mesh: the Standard and PBR variant " +
-                    "keys are built from the attribute set.",
+                    "so its attribute set is not generation-known. Node and " +
+                    "loaded asset PBR materials support this runtime attribute set.",
             );
         }
         context.emit({

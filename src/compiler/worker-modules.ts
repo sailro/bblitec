@@ -168,14 +168,15 @@ export function compileWorkerApplication(
     const assets = new EmissionMap<string, CompileManifest["assets"][number]>();
     for (const result of results)
         for (const asset of result.manifest.assets) {
-            const prior = assets.get(asset.source);
+            const key = `${asset.kind}:${asset.source}:${asset.faceSize ?? ""}`;
+            const prior = assets.get(key);
             if (prior && JSON.stringify(prior) !== JSON.stringify(asset)) {
                 fail(
                     frontend.sourceFile,
                     `Worker application specializes '${asset.source}' differently across realms.`,
                 );
             }
-            assets.set(asset.source, asset);
+            assets.set(key, asset);
         }
     const featureSites: CompileManifest["featureSites"] = {};
     for (const result of results)

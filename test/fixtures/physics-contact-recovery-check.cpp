@@ -3,6 +3,27 @@
 #include <iostream>
 using namespace bbl::pal;
 
+PhysicsWorldHandle create_fixture_world() {
+    const auto world = physics_world_create();
+    if (std::getenv("BBLITE_TEST_BATCHED_CONTACTS")) {
+        physics_scheduler().run([world] {
+            auto& entry = world_at(world);
+            const auto settings = entry.world->getSolverInfo();
+            entry.world.reset();
+            entry.profile_times = nullptr;
+            entry.solver_pool.reset();
+            entry.solver =
+                std::make_unique<OverlapRecoverySolver<btSequentialImpulseConstraintSolverMt>>();
+            btSequentialImpulseConstraintSolverMt::s_minimumContactManifoldsForBatching = 1;
+            entry.world = std::make_unique<btDiscreteDynamicsWorld>(
+                entry.dispatcher.get(), entry.broadphase.get(), entry.solver.get(),
+                entry.configuration.get());
+            entry.world->getSolverInfo() = settings;
+        });
+    }
+    return world;
+}
+
 int main() {
     std::cout << std::setprecision(17) << '[';
     bool first = true;
@@ -10,7 +31,7 @@ int main() {
         for (double mass : {0.1, 1.0, 10.0}) {
             for (double dt : {1.0 / 60, 1.0 / 120, 1.0 / 240}) {
                 for (double depth : {0.02, 0.04, 0.1, 0.3, 0.5}) {
-                    const auto world = physics_world_create();
+                    const auto world = create_fixture_world();
                     physics_world_set_gravity(world, {0, 0, 0});
                     const auto shape = physics_shape_create_box({0, 0, 0}, {0, 0, 0, 1}, {1, 1, 1});
                     std::vector<PhysicsBodyHandle> bodies;

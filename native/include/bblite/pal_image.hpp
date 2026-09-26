@@ -3,6 +3,8 @@
 #include <bblite/js_data.hpp>
 
 #include <cstdint>
+#include <mutex>
+#include <span>
 #include <vector>
 
 namespace bbl::pal {
@@ -13,7 +15,16 @@ struct DecodedImage {
     std::vector<std::uint8_t> rgba;
 };
 
-DecodedImage decode_image(const js::ArrayBuffer& buffer);
+inline std::mutex& image_decoder_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+DecodedImage decode_image(std::span<const std::uint8_t> bytes);
+
+inline DecodedImage decode_image(const js::ArrayBuffer& buffer) {
+    return decode_image(std::span<const std::uint8_t>{buffer.data(), buffer.byte_length()});
+}
 
 inline void premultiply_image_alpha(DecodedImage& image) {
     for (std::size_t index = 0; index + 3 < image.rgba.size(); index += 4) {

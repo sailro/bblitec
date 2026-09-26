@@ -200,7 +200,7 @@ std::vector<std::uint8_t> read_binary_file(const std::string& path) {
 }
 std::string parent_path(const std::string&) { return ""; }
 std::string join_path(const std::string& a,const std::string& b) { return a+b; }
-DecodedImage decode_image(const js::ArrayBuffer&) { throw std::runtime_error("Unexpected texture decode."); }
+DecodedImage decode_image(std::span<const std::uint8_t>) { throw std::runtime_error("Unexpected texture decode."); }
 }
 ${cppFunction(new CameraLowerer(context).lowerFreeFactory().source, "CameraHandle create_free_camera(")}
 ${cppFunction(new FactoryLowerer(context).lowerFileTextureFactory().source, "FileTexture load_file_texture(")}

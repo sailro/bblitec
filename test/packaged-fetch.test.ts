@@ -23,10 +23,22 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     );
     writeFileSync(join(files, "document.json"), '{"answer":42}');
     writeFileSync(join(files, "missing.bin"), "exists only while compiling");
+    const moduleFiles = join(publicDir, "module-files");
+    mkdirSync(moduleFiles, {recursive: true});
+    writeFileSync(join(moduleFiles, "sound.bin"), Buffer.from([7,8,9]));
     const result = compileSource(
         `
         const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
         worker.terminate();
+        function moduleUrl(path: string, source: string): string {
+            const value = new URL(path, source);
+            value.pathname = value.pathname.replace("/unused/", "/");
+            return value.href;
+        }
+        function fileUrl(name: string): string { return moduleUrl(\`/module-files/\${name}\`, import.meta.url); }
+        async function fetchSelected(urlFor: (name: string) => string, name: string): Promise<ArrayBuffer> {
+            const response = await fetch(urlFor(name)); return response.arrayBuffer();
+        }
         async function load(name:string):Promise<Response>{return fetch("/files/"+name);}
         function retain(response:Response):Response{return response;}
         let calls=0;
@@ -63,6 +75,8 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             const sized=new Uint8Array(await Promise.resolve(3));
             const sequence=new Uint8Array(await Promise.resolve([258,3]));
             if(sized.length!==3||sequence[0]!==2||sequence[1]!==3) throw new Error("awaited typed array constructor");
+            const selected=new Uint8Array(await fetchSelected(fileUrl, "sound.bin"));
+            if(selected.length!==3||selected[0]!==7||selected[2]!==9) throw new Error("module-relative callback assets");
             globalThis.close();
         })();
     `,
@@ -75,6 +89,7 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     assert.ok(result.manifest.features.includes("platform:packaged-fetch"));
     assert.ok(!result.manifest.features.includes("platform:http"));
     assert.ok(!result.manifest.runtimeSources.includes("src/pal_http.cpp"));
+    assert(result.manifest.assets.some(asset => asset.source.endsWith("sound.bin")));
     for (const asset of result.manifest.assets) {
         if (asset.source.endsWith("missing.bin")) continue;
         const output = join(directory, asset.output);

@@ -177,8 +177,8 @@ inline void finish_compute_frame_prefix(Engine& engine) {
     if (!engine.current_compute_encoder)
         return;
     try {
-        if (engine.compute_one_shot_frame_submitted)
-            engine.compute_one_shot_frame_submitted();
+        if (engine.gpu_timer_resolve)
+            engine.gpu_timer_resolve(engine.current_compute_encoder, true);
     } catch (...) {
         engine.current_compute_encoder.reset();
         throw;

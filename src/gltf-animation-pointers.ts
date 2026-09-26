@@ -313,6 +313,7 @@ interface SourceChannel {
     pointerWriter?: object;
 }
 interface SourceClip {
+    _startTime?: number;
     name: string;
     duration: number;
     channels: SourceChannel[];
@@ -402,6 +403,7 @@ export interface GltfAnimationReceipt {
             pointerQuaternion?: boolean;
             writer?: CaptureValue;
         }>;
+        startTime: number;
         targetedAnimations: Array<{
             target?: number;
             targetName?: string;
@@ -612,6 +614,7 @@ export function packageAnimationReceipt(
             return {
                 name: clip.name,
                 duration: clip.duration,
+                startTime: clip._startTime ?? 0,
                 samplers: clip.samplers.map((sampler) => ({
                     input: packer.float32(sampler.input, 1),
                     output: packer.float32(sampler.output, 1),
@@ -913,6 +916,8 @@ export function readAnimationReceipt(
         if (
             !clip ||
             typeof clip.name !== "string" ||
+            typeof clip.startTime !== "number" ||
+            !Number.isFinite(clip.startTime) ||
             typeof clip.duration !== "number" ||
             !Number.isFinite(clip.duration) ||
             !Array.isArray(clip.samplers) ||
@@ -1026,6 +1031,7 @@ export function readAnimationReceipt(
         return {
             name: clip.name,
             duration: clip.duration,
+            startTime: clip.startTime,
             samplers,
             channels,
             targetedAnimations,

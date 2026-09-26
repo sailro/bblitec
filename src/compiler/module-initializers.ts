@@ -95,6 +95,14 @@ function isContainerInitializer(initializer: ts.Expression): boolean {
     );
 }
 
+/** Array spread copies its iterable once during module evaluation. */
+function hasArraySnapshot(declaration: ts.VariableDeclaration): boolean {
+    if (!declaration.initializer) return false;
+    const initializer = unwrapExpression(declaration.initializer);
+    return ts.isArrayLiteralExpression(initializer) &&
+        initializer.elements.some(ts.isSpreadElement);
+}
+
 /** An object literal declaring a method or a function-valued property. */
 function isRecordWithMethods(initializer: ts.Expression): boolean {
     const current = unwrapExpression(initializer);
@@ -364,6 +372,7 @@ class ModuleInitializerPlanner {
                     // methods have a receiver to run against.
                     return (
                         isMutatedContainer(declaration, symbol, mutated) ||
+                        hasArraySnapshot(declaration) ||
                         (declaration.initializer !== undefined &&
                             isRecordWithMethods(declaration.initializer))
                     );
@@ -433,7 +442,8 @@ class ModuleInitializerPlanner {
                 if (
                     mutatedContainers &&
                     isConst &&
-                    !isMutatedContainer(declaration, symbol, mutatedContainers)
+                    !isMutatedContainer(declaration, symbol, mutatedContainers) &&
+                    !hasArraySnapshot(declaration)
                 ) {
                     continue;
                 }

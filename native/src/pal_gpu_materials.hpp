@@ -3,6 +3,7 @@
 // shadow rows, the node graph slots, and the bone and VAT palettes.
 #pragma once
 #include "pal_gpu_common.hpp"
+#include "pal_gpu_vertex.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 
@@ -17,12 +18,37 @@
 #include <string_view>
 #include <vector>
 #include "pal_gpu_variants.hpp"
+#if BBLITE_NODE_VARIANTS > 0
+#include <bblite/node_material.hpp>
+#endif
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/material_texture_slots.hpp>
 #endif
 
 namespace bbl::pal {
+
+#if BBLITE_NODE_VARIANTS > 0
+/** The composed graph's declared streams decide which pool a draw binds. */
+inline bool node_variant_instanced(const upstream::NodeVariantEntry& view) {
+    if (view.uses_instance_index) return true;
+    for (std::size_t index = 0; index < view.attribute_count; ++index) {
+        const auto& attribute = upstream::node_variant_attributes[view.first_attribute + index];
+        if (pinned_vertex_input(attribute.name).stream == VertexInputStream::instance_matrix)
+            return true;
+    }
+    return false;
+}
+
+inline std::span<const float> node_uniform_values(const upstream::NodeVariantEntry& view,
+                                                 const MaterialRecord* material,
+                                                 bool geometry_view = false) {
+    if (!geometry_view && material && material->node_inputs && material->node_inputs->uniforms)
+        return material->node_inputs->uniforms->values;
+    return std::span<const float>{upstream::node_variant_uniform_floats}.subspan(
+        view.first_uniform_float, view.ubo_bytes / sizeof(float));
+}
+#endif
 
 #if BBLITE_HAS_PBR_RENDERER
 /**

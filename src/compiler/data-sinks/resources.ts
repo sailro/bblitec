@@ -30,6 +30,10 @@ function expressionHandle(
     if (dataType.handle === "mesh" && rawValue.kind === "picked-node") {
         return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
     }
+    if (dataType.handle === "scene-node" &&
+        ["mesh", "transform-node", "asset-root"].includes(rawValue.kind)) {
+        return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
+    }
     if (
         dataType.handle === "property-animation-group" &&
         rawValue.kind === "animation-group" &&

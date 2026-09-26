@@ -41,6 +41,7 @@ test(
             "inline void billboard_sorted_instances(",
             "inline void billboard_unsorted_instances(",
             "inline void billboard_upload_instances(",
+            "inline double billboard_system_order(",
         ]
             .map((signature) => cppFunction(core.header, signature))
             .join("\n");

@@ -32,10 +32,15 @@ test("Window media queries retain typed nullable values, live matches and change
         if (state.query?.matches !== undefined) throw new Error("absent optional read");
         const resolution = state.query ?? fallback();
         if (!resolution.matches || fallbacks !== 1 || resolution.media !== "(resolution: 1dppx)") throw new Error("optional fallback");
-        reduced.addEventListener("change", () => {
+        const listener = () => {
             if (!reduced.matches) throw new Error("change observes new preference");
             state.changes++;
-        });
+        };
+        const removed = () => { throw new Error("removed media listener"); };
+        reduced.addEventListener("change", listener);
+        reduced.addEventListener("change", listener);
+        reduced.addEventListener("change", removed);
+        reduced.removeEventListener("change", removed);
         setTimeout(() => {
             if (state.changes !== 1) throw new Error("change delivery");
             globalThis.close();

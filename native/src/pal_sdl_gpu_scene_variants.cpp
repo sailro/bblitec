@@ -927,13 +927,6 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
                        std::string(input.name) + "'.")
                           .c_str());
         }
-        if (attributes.back().buffer_slot != 0) {
-            gpu_error(("node variant declares the per-instance vertex input '" +
-                       std::string(input.name) +
-                       "', which its pipeline binds no "
-                       "stream for.")
-                          .c_str());
-        }
     }
     SDL_GPUColorTargetDescription color_target{};
     color_target.format = color_format;
@@ -953,13 +946,11 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader.get();
     info.fragment_shader = fragment_shader.get();
-    SDL_GPUVertexBufferDescription vertex_buffer{};
-    vertex_buffer.slot = 0;
-    vertex_buffer.pitch = sizeof(GpuVertex);
-    vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()> vertex_buffers{};
+    const Uint32 vertex_buffer_count = fill_variant_vertex_buffers(attributes, vertex_buffers);
     info.vertex_input_state = SDL_GPUVertexInputState{
-        &vertex_buffer,
-        1u,
+        vertex_buffers.data(),
+        vertex_buffer_count,
         attributes.data(),
         static_cast<Uint32>(attributes.size()),
     };
@@ -1017,6 +1008,12 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
             info.rasterizer_state.front_face == SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE ? "ccw" : "cw";
         for (std::size_t i = 0; i < attributes.size(); ++i) {
             const auto& attribute = attributes[i];
+            const auto end = vertex_buffers.begin() + vertex_buffer_count;
+            const auto buffer = std::find_if(vertex_buffers.begin(), end, [&](const auto& entry) {
+                return entry.slot == attribute.buffer_slot;
+            });
+            if (buffer == end)
+                throw std::runtime_error("Node attribute has no vertex-buffer layout.");
             const char* format =
                 attribute.format == SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2   ? "float32x2"
                 : attribute.format == SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3 ? "float32x3"
@@ -1025,7 +1022,7 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
             receipt.attributes.push_back(
                 {std::string(upstream::node_variant_attributes[view.first_attribute + i].name),
                  format, attribute.location, attribute.buffer_slot, attribute.offset,
-                 vertex_buffer.pitch});
+                 buffer->pitch});
         }
         state.node_capture.capture.pipeline(std::move(receipt));
     }
@@ -1103,10 +1100,9 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
             return {&node_mesh, sizeof(node_mesh)};
         }
         if (block == "nodeU") {
-            return {
-                &upstream::node_variant_uniform_floats[view.first_uniform_float],
-                view.ubo_bytes,
-            };
+            const auto values = pal::node_uniform_values(
+                view, material, geometry_variant != pal::no_node_geometry_variant);
+            return {values.data(), values.size_bytes()};
         }
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
         // The task's gpUniforms, under the name the pin's own
@@ -1286,22 +1282,26 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
                        [&](const std::string& name, std::size_t storage_slot) {
                            return resolve_storage(name, true, storage_slot);
                        });
-    const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
-    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+    const bool instanced_draw = node_variant_instanced(view) &&
+                                pinned_record_instanced(handle_at(engine.meshes, draw.item.mesh));
+    bind_composed_mesh_vertex_buffers(pass, mesh.vertices,
+                                      instanced_draw ? mesh.instances : nullptr, nullptr);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count, 1, 0, 0, 0);
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count,
+                   instanced_draw ? mesh.instance_count : 1u, 0, 0, 0);
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     if (state.node_capture.capture.enabled()) {
         NodeGpuDrawCapture receipt;
         receipt.pipeline = state.node_capture.identity(variant_pipeline, "node-pipeline");
         receipt.mesh = draw.item.mesh.value;
         receipt.material = draw.item.material.value;
-        receipt.vertices = state.node_capture.identity(vertex_binding.buffer, "node-vertices");
+        receipt.vertices = state.node_capture.identity(mesh.vertices, "node-vertices");
         receipt.indices = state.node_capture.identity(index_binding.buffer, "node-indices");
-        receipt.vertex_offset = vertex_binding.offset;
+        receipt.vertex_offset = 0;
         receipt.index_offset = index_binding.offset;
         receipt.index_count = mesh.index_count;
+        receipt.instance_count = instanced_draw ? mesh.instance_count : 1u;
         receipt.bindings = std::move(captured_bindings);
         receipt.pushed_uniform_bytes = std::move(captured_mesh_uniform);
         state.node_capture.capture.draw(std::move(receipt));

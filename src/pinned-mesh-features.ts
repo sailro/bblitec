@@ -70,6 +70,29 @@ export async function pinnedSceneMeshFeatures(
     });
 }
 
+/** Optional typed streams select a bounded attribute product through the source predicate. */
+export async function pinnedSceneMeshFeatureSets(
+    mesh: SceneMeshManifest,
+): Promise<number[]> {
+    if (!mesh.runtimeStreams) return [await pinnedSceneMeshFeatures(mesh)];
+    const variants: Promise<number>[] = [];
+    for (const hasUv2 of [false, true])
+        for (const hasTangents of [false, true])
+            for (const hasColors of [false, true]) {
+                variants.push(
+                    pinnedSceneMeshFeatures({
+                        ...mesh,
+                        hasUv2: mesh.hasUv2 || hasUv2,
+                        hasTangents: mesh.hasTangents || hasTangents,
+                        hasColors: mesh.hasColors || hasColors,
+                    }),
+                );
+            }
+    return [...new Set(await Promise.all(variants))].sort(
+        (left, right) => left - right,
+    );
+}
+
 async function meshFeatureBits(): Promise<MeshFeatureBits> {
     bits ??= importPinnedModule<MeshFeatureBits>("material/mesh-features.js");
     return bits;

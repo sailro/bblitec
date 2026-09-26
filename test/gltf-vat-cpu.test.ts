@@ -79,7 +79,7 @@ function variants(): LoweringContext[] {
         ),
         doctoredContext(
             vatModule,
-            "ThrowLiteError(703, target.mesh.name, group.name)",
+            "ThrowLiteError(763, target.mesh.name, group.name)",
             "ThrowLiteError(9999, target.mesh.name, group.name)",
         ),
     ];
@@ -327,7 +327,7 @@ ${contexts
 using namespace bbl;
 ${lowerGltfAnimationPlayback(context)}
 ${lowerGltfVatPlayback(context)}
-struct Group {double time=0,duration=0.0625,frame_rate=60,speed_ratio=2;bool playing=true,stopped=true,loop=true;GltfAnimationControllerPlayback controller;};
+struct Group {double time=0,duration=0.0625,frame_rate=60,speed_ratio=2,start_time=0;std::size_t channel_count=0;bool playing=true,stopped=true,loop=true;GltfAnimationControllerPlayback controller;};
 std::vector<Group>* active_groups=nullptr;
 void fixture_stop_animation(Engine&,AnimationGroupHandle handle) {
     auto& group=active_groups->at(handle.value);group.playing=false;group.time=0;group.stopped=true;

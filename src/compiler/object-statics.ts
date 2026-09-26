@@ -5,7 +5,10 @@ import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
-import { compileEntryCollection } from "./collection-methods.js";
+import {
+    compileCollectionEntries,
+    compileEntryCollection,
+} from "./collection-methods.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -257,8 +260,13 @@ function compileObjectFromEntries(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 1);
+    const resultType = context.dataLowerer.dataTypeAt(call);
     const record = context.probeEmission(() => {
-        const entries = context.compileValue(argumentAt(call, 0));
+        const entries = compileCollectionEntries(
+            context.dataLowerer,
+            argumentAt(call, 0),
+            resultType?.kind === "map" ? resultType : undefined,
+        );
         if (entries.kind !== "tuple") return undefined;
         const properties = Object.create(null) as Record<string, Value>;
         for (const entry of entries.tupleElements ?? []) {
@@ -281,7 +289,6 @@ function compileObjectFromEntries(
         };
     });
     if (record) return record;
-    const resultType = context.dataLowerer.dataTypeAt(call);
     if (resultType?.kind !== "map") {
         return context.fail(
             call,

@@ -61,6 +61,11 @@ function gpuScope(
         cpp: "shader->destroyed",
         type: "bool",
     });
+    bindings.set("shader._automaticLayout", {
+        cpp: "false",
+        type: "bool",
+        staticBoolean: false,
+    });
     for (const [name, field] of Object.entries({
         name: "name",
         _source: "source",
@@ -130,7 +135,7 @@ function gpuScope(
     return {
         bindings,
         calls,
-        foldConditions: false,
+        foldConditions: true,
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node))
                 return `std::string{${stringLiteral(node.text)}}`;

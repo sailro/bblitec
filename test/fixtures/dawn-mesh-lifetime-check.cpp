@@ -27,6 +27,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_record_sync.hpp"
 #include "pal_texture_upload_cache.hpp"
+#include <bblite/node_material.hpp>
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -38,6 +39,7 @@
 
 struct Resource {
     bool alive = true;
+    unsigned references = 1;
     std::vector<Resource*> dependencies;
     virtual ~Resource() = default;
 };
@@ -63,6 +65,8 @@ template <typename T> T make(std::initializer_list<Resource*> dependencies = {})
 }
 void release(Resource* resource) {
     assert(resource && resource->alive);
+    if (--resource->references != 0)
+        return;
     for (const auto& dependent : allocations) {
         assert(!dependent->alive ||
                std::find(dependent->dependencies.begin(), dependent->dependencies.end(),
@@ -82,6 +86,10 @@ RELEASE(PipelineLayout)
 RELEASE(RenderPipeline)
 RELEASE(ShaderModule)
 #undef RELEASE
+extern "C" void wgpuTextureAddRef(WGPUTexture texture) {
+    assert(texture && texture->alive);
+    ++texture->references;
+}
 extern "C" WGPUBindGroupLayout
 wgpuDeviceCreateBindGroupLayout(WGPUDevice, const WGPUBindGroupLayoutDescriptor*) {
     return make<WGPUBindGroupLayout>();
@@ -107,12 +115,6 @@ inline WGPUStringView string_view(const char* text) { return WGPUStringView{text
 }
 struct DawnSharedShaderGeometry {
     DawnBuffer vertex_buffer, index_buffer;
-    std::size_t users = 0;
-};
-struct DawnSharedComposedMaterialTextures {
-    std::array<DawnTexture, mesh_texture_slots> textures;
-    std::array<DawnTextureView, mesh_texture_slots> views;
-    std::array<DawnSampler, mesh_texture_slots> samplers;
     std::size_t users = 0;
 };
 #include "records.hpp"
@@ -266,6 +268,36 @@ int main() {
         assert(state.shared_shader_geometries.empty() &&
                state.shared_composed_material_textures.empty());
         assert(!vertex->alive && !index->alive && !texture->alive);
+    }
+    for (const auto& resource : allocations)
+        assert(!resource->alive);
+    allocations.clear();
+    {
+        TextureUploadCache<DawnTexture> cache;
+        bbl::TextureData data;
+        data.bytes = bbl::SharedTextureBytes::Storage{1, 2, 3, 4};
+        int uploads = 0;
+        const auto upload = [&] {
+            ++uploads;
+            return DawnTexture{make<WGPUTexture>()};
+        };
+        auto first = cache.acquire(data, false, {255, 255, 255, 255}, upload);
+        auto second = cache.acquire(data, false, {255, 255, 255, 255}, upload);
+        assert(first == second && uploads == 1);
+        const auto texture = first->get();
+        DawnSharedComposedMaterialTextures a, b;
+        a.image_leases.push_back(first);
+        a.textures[0] = first->retain();
+        a.views[0] = make<WGPUTextureView>({texture});
+        b.image_leases.push_back(second);
+        b.textures[0] = second->retain();
+        b.views[0] = make<WGPUTextureView>({texture});
+        first.reset();
+        second.reset();
+        release_dawn_composed_material_textures(a);
+        assert(texture->alive);
+        release_dawn_composed_material_textures(b);
+        assert(!texture->alive);
     }
     for (const auto& resource : allocations)
         assert(!resource->alive);

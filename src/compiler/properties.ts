@@ -47,6 +47,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
+import { readPhysicsProperty } from "./physics-surface.js";
 import { geometryEnumMember } from "./intrinsics/engine-options.js";
 import type { PhysicsIntrinsicContext } from "./intrinsics/physics.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -109,6 +110,8 @@ interface PropertyRead {
      * node, say -- needs the collection as well as the value.
      */
     helperTakesEngine?: true;
+    /** A helper reads a member of the owner's stored resource record. */
+    helperOwnerField?: string;
     /** The helper returns an owning data wrapper by value; backing storage may be shared. */
     helperReturnsFreshData?: true;
     retag?: true;
@@ -703,19 +706,17 @@ export const propertyRules: readonly PropertyRule[] = [
     // so these read like any other handle's properties: a helper that
     // takes the owner, or the same handle retagged.
     {
-        // The engine handle IS the context handle: the pin's
-        // `audioContext` getter returns the context it was built over,
-        // and every node the scene makes belongs to it.
         owner: "audio-engine",
         property: "audioContext",
         value: "audio-context",
-        retag: true,
+        field: "context",
     },
     {
         owner: "audio-engine",
         property: "currentTime",
         value: "number",
         helper: "bbl::pal::audio_current_time",
+        helperOwnerField: "context",
         // The audio clock advances on the audio thread; two reads are two
         // instants. A scene binding it to a `const` means one.
         impure: true,
@@ -725,6 +726,7 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "state",
         value: "data",
         helper: "bbl::pal::audio_state",
+        helperOwnerField: "context",
         dataType: { kind: "string" },
         impure: true,
     },
@@ -845,6 +847,12 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "camera",
+        property: "wheelPrecision",
+        value: "number",
+        record: ["cameras", "wheel_precision"],
+    },
+    {
+        owner: "camera",
         property: "fov",
         value: "number",
         record: ["cameras", "fov"],
@@ -924,6 +932,17 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "halfHeight",
         value: "number",
         record: ["cameras", "ortho_half_height"],
+    },
+    {
+        owner: "mesh",
+        property: "visible",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "boolean" },
+            undefinedOnly: true,
+        },
+        record: ["meshes", "visible.source_value()"],
     },
     {
         owner: "mesh",
@@ -1333,6 +1352,16 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "mesh:thin-instances-dynamic",
     },
     {
+        owner: "thin-instance-pool",
+        property: "matrices",
+        value: "data",
+        dataType: { kind: "f32array" },
+        helper: "bbl::thin_instance_matrices",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        feature: "mesh:thin-instances",
+    },
+    {
         // `ySort.enabled` — sprite-2d-y-sort.ts keeps the flag on the state it
         // returns, and `disableSprite2DYSort` is the only thing that clears it,
         // in the same call that detaches the state from its layer. So the live
@@ -1690,13 +1719,16 @@ export function readProperty(
         );
     }
     if (rule.helper) {
+        const receiver = rule.helperOwnerField
+            ? `(${owner.cpp}).${rule.helperOwnerField}`
+            : owner.cpp;
         const engine = rule.helperTakesEngine
             ? `${context.requireEngine(owner, expression)}, `
             : "";
         return read(
             rule.helperArgument
-                ? `${rule.helper}(${engine}${owner.cpp}, ${rule.helperArgument})`
-                : `${rule.helper}(${engine}${owner.cpp})`,
+                ? `${rule.helper}(${engine}${receiver}, ${rule.helperArgument})`
+                : `${rule.helper}(${engine}${receiver})`,
         );
     }
     if (rule.barrier) {
@@ -1841,9 +1873,13 @@ export class PropertyAccessLowerer {
         const dataset = this.context.ui.primaryCanvasDataset(expression);
         if (dataset)
             return {
-                kind: "string",
-                cpp: `bbl::canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(dataset)})`,
-                dataType: { kind: "string" },
+                kind: "data",
+                cpp: `bbl::canvas_dataset_value(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(dataset)})`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "string" },
+                    undefinedOnly: true,
+                },
             };
         const canvas = compileCanvasValue(this.context, expression);
         if (canvas) return canvas;
@@ -2124,6 +2160,9 @@ export class PropertyAccessLowerer {
         if (owner.kind === "ui-element" && property === "dataset") {
             return { ...owner, uiDataset: true };
         }
+        if (owner.kind === "ui-element" && property === "style") {
+            return { ...owner, uiStyle: true };
+        }
         if (owner.kind === "ui-element" && !owner.uiDataset) {
             if (property === "checked") {
                 if (owner.uiTag && owner.uiTag !== "input")
@@ -2247,11 +2286,15 @@ export class PropertyAccessLowerer {
             );
             const engine = this.context.requireEngine(owner, expression);
             return {
-                kind: "string",
+                kind: "data",
                 cpp:
-                    `bbl::ui_get_attribute(${engine}, ${owner.cpp}, ` +
+                    `bbl::ui_dataset_value(${engine}, ${owner.cpp}, ` +
                     `${this.context.cppString(`data-${dataName}`)})`,
-                dataType: { kind: "string" },
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "string" },
+                    undefinedOnly: true,
+                },
                 engineCpp: engine,
             };
         }
@@ -2323,8 +2366,24 @@ export class PropertyAccessLowerer {
         }
         if (
             owner.kind === "platform-mouse-event" ||
-            owner.kind === "platform-keyboard-event"
+            owner.kind === "platform-keyboard-event" ||
+            owner.kind === "custom-event"
         ) {
+            if (
+                property === "detail" &&
+                (owner.kind === "custom-event" || owner.platformEventBase)
+            ) {
+                this.context.reachFeature("input:dom", expression);
+                this.context.reachFeature("data:json", expression);
+                const event = owner.platformEventBase
+                    ? `${owner.cpp}.as<bbl::PlatformCustomEvent>()`
+                    : owner.cpp;
+                return {
+                    kind: "data",
+                    dataType: { kind: "json" },
+                    cpp: `${event}.detail()`,
+                };
+            }
             if (
                 property === "target" ||
                 property === "currentTarget" ||
@@ -2341,6 +2400,11 @@ export class PropertyAccessLowerer {
                     );
                 this.context.reachFeature("input:dom", expression);
                 this.context.reachJsData();
+                if (owner.kind === "custom-event")
+                    return this.context.dataLowerer.leafValue(
+                        `bbl::custom_event_target(${owner.cpp}, ${property === "currentTarget" ? "true" : "false"})`,
+                        { kind: "optional", inner: { kind: "event-target" } },
+                    );
                 const field =
                     property === "target"
                         ? "exposed_target()"
@@ -2358,7 +2422,7 @@ export class PropertyAccessLowerer {
             if (property === "defaultPrevented")
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.${owner.platformEventBase ? "is_default_prevented()" : "default_prevented"}`,
+                    cpp: `${owner.cpp}.${owner.platformEventBase || owner.kind === "custom-event" ? "is_default_prevented()" : "default_prevented"}`,
                 };
             const declared = readProperty(
                 this.context,
@@ -2521,10 +2585,24 @@ export class PropertyAccessLowerer {
                 }
             }
             if (size === undefined) {
-                if (owner.textureStorage === "file") {
+                if (
+                    owner.textureStorage === "file" ||
+                    owner.textureStorage === "pixels"
+                ) {
                     return {
                         kind: "number",
                         cpp: `static_cast<double>(${owner.cpp}.${property})`,
+                        dataType: { kind: "number" },
+                    };
+                }
+                if (
+                    owner.textureStorage === "stored" ||
+                    (owner.dataType?.kind === "handle" &&
+                        owner.dataType.handle === "texture")
+                ) {
+                    return {
+                        kind: "number",
+                        cpp: `std::visit([](const auto& texture) { return static_cast<double>(texture.${property}); }, ${owner.cpp})`,
                         dataType: { kind: "number" },
                     };
                 }
@@ -2693,7 +2771,10 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const value = this.readOwnerProperty(owner, expression);
+        const read = this.readOwnerProperty(owner, expression);
+        const value = read && owner.nativeCaptures
+            ? { ...read, nativeCaptures: [...new Set([...(read.nativeCaptures ?? []), ...owner.nativeCaptures])] }
+            : read;
         return value && ts.isOptionalChain(expression)
             ? this.propertyWithOwnerPresence(owner, value, expression)
             : value;
@@ -2817,21 +2898,13 @@ export class PropertyAccessLowerer {
             expression.name.text,
         );
         if (character) return character;
-        if (owner.kind === "physics-body" && expression.name.text === "node") {
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: {
-                    name: {
-                        kind: "string",
-                        cpp: `bbl::upstream::physics_body_node_name(${owner.cpp})`,
-                        dataType: { kind: "string" },
-                    },
-                },
-            };
-        }
+        const physics = readPhysicsProperty(this.context, owner, expression);
+        if (physics) return physics;
         const staticProperty = owner.recordProperties?.[expression.name.text];
-        if (staticProperty) {
+        if (
+            staticProperty &&
+            !(owner.kind === "data" && owner.dataType?.kind === "struct")
+        ) {
             // A materialized record can still carry an exact value for a
             // property produced during static iteration. Prefer that fact
             // over reconstructing the field from its wider declared type
@@ -3162,6 +3235,46 @@ export class PropertyAccessLowerer {
         const sceneNodeTransform = sceneNodeTransformDescriptor(
             expression.name.text,
         );
+        if (["scene-node", "transform-node", "asset-root"].includes(owner.kind)) {
+            const property = expression.name.text;
+            if (property === "visible" || property === "thinInstances") {
+                this.context.reachFeature("scene:node-transforms", expression);
+                const engineCpp = this.context.requireEngine(owner, expression);
+                if (property === "visible") return {
+                    kind: "data",
+                    cpp: `bbl::scene_node_visibility(${engineCpp}, ${owner.cpp}).source_value()`,
+                    dataType: {kind: "optional", inner: {kind: "boolean"}, undefinedOnly: true},
+                    engineCpp,
+                };
+                this.context.reachFeature("mesh:thin-instances", expression);
+                return {kind: "data", engineCpp,
+                    cpp: `bbl::scene_node_thin_instance_pool(${engineCpp}, ${owner.cpp})`,
+                    dataType: {kind: "optional", inner: {kind: "handle", handle: "thin-instance-pool"}, undefinedOnly: true}};
+            }
+        }
+        if (
+            expression.name.text === "children" &&
+            ["mesh", "transform-node", "scene-node", "asset-root"].includes(
+                owner.kind,
+            )
+        ) {
+            this.context.reachFeature("scene:node-transforms", expression);
+            const engineCpp = this.context.requireEngine(owner, expression);
+            const containerCpp = `bbl::scene_node_children(${engineCpp}, ${owner.cpp})`;
+            return {
+                kind: "handle-collection",
+                cpp: containerCpp,
+                engineCpp,
+                handleCollection: {
+                    property: "children",
+                    temporaryLabel: "scene_node_child",
+                    containerCpp,
+                    elementKind: "scene-node",
+                    elementCppType: handleCppType("scene-node"),
+                    engineCpp,
+                },
+            };
+        }
         if (
             (owner.kind === "mesh" ||
                 owner.kind === "transform-node" ||

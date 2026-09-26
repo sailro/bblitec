@@ -939,6 +939,7 @@ export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> =
         "createMeshFromData",
         "cloneTransformNode",
         "createStandardMaterial",
+        "createPbrMaterial",
         "createShaderMaterial",
         "parseNodeMaterialFromSnippet",
     ]);

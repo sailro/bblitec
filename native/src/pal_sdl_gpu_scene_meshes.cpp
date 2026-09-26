@@ -11,7 +11,7 @@
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
-#include <bblite/features/mesh_position_update.hpp>
+#include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
@@ -411,9 +411,7 @@ void prune_shared_shader_material_textures(GpuState& state) {
 
 void prune_shared_composed_material_textures(GpuState& state) {
     prune_unused_shared(state.shared_composed_material_textures,
-                        [&](SharedComposedMaterialTextures& textures) {
-                            release_sprite_fragment_textures(state.device, textures.bindings);
-                        });
+                        [](SharedComposedMaterialTextures& textures) { textures.clear(); });
 }
 #endif
 
@@ -446,7 +444,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
     };
     GpuMesh gpu_mesh{&state};
     if (shader_material) {
-#if BBLITE_MESH_POSITION_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE
         // A procedural position stream is mutable and therefore
         // cannot borrow the immutable shader-geometry cache.
         gpu_mesh.vertices = upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_VERTEX, vertices.data(),
@@ -549,7 +547,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
     }
 #endif
     gpu_mesh.index_count = static_cast<std::uint32_t>(geometry.indices.size());
-    gpu_mesh.position_version = geometry.position_version;
+    gpu_mesh.attribute_version = geometry.attribute_version;
     const bool standard_material = item.material_kind == upstream::RenderMaterialKind::standard;
     const MaterialRecord* material = nullptr;
     if (item.material.value < engine.materials.size()) {
@@ -589,11 +587,15 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
                     material ? material_slot_texture(*material, slot_row.source, standard_material)
                              : nullptr;
                 const TextureData empty{};
-                auto& binding = created->bindings.emplace_back();
-                binding.texture = upload_texture(
-                    state.device, data ? *data : empty,
-                    material_slot_srgb(slot_row.srgb, material, standard_material),
-                    material_slot_fallback(slot_row.fallback, material, standard_material));
+                const auto& image_data = data ? *data : empty;
+                const bool srgb = material_slot_srgb(slot_row.srgb, material, standard_material);
+                const auto fallback =
+                    material_slot_fallback(slot_row.fallback, material, standard_material);
+                auto image = state.shared_material_images.acquire(image_data, srgb, fallback, [&] {
+                    return OwnedSdlTexture{upload_texture(state.device, image_data, srgb, fallback),
+                                           {state.device}};
+                });
+                auto& binding = created->append_shared_texture(std::move(image));
                 binding.sampler = create_texture_sampler(
                     state.device, data ? data->sampler : TextureSamplerState{});
 #if BBLITE_DEVICE_RECOVERY

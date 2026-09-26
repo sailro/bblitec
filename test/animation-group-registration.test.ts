@@ -25,6 +25,7 @@ function contexts(): LoweringContext[] {
             "if (owner === manager)",
             "if (owner !== manager)",
         ),
+        doctoredContext(module, "> order)", "< order)"),
         doctoredContext(
             module,
             "ThrowLiteError(0, group.name)",
@@ -34,7 +35,7 @@ function contexts(): LoweringContext[] {
 }
 function sourceResult(context: LoweringContext): unknown {
     type Group = { name: string; _animationManager?: Manager };
-    type Manager = { _animationGroups: Group[] };
+    type Manager = { _animationGroups: Group[]; animations: object[] };
     const body = ["getMutableAnimationGroups", "addAnimationGroup"]
         .map((name) =>
             context.functionDeclaration(module, name).declaration.getText(),
@@ -50,7 +51,7 @@ function sourceResult(context: LoweringContext): unknown {
     )(
         {},
         () => ({}),
-        () => {},
+        (manager: Manager, task: object) => manager.animations.push(task),
         "animation-group",
         createJavaScriptFunction(
             "exports",
@@ -61,8 +62,8 @@ function sourceResult(context: LoweringContext): unknown {
         )({}),
     ) as (manager: Manager, group: Group) => void;
     const managers: Manager[] = [
-        { _animationGroups: [] },
-        { _animationGroups: [] },
+        { _animationGroups: [], animations: [] },
+        { _animationGroups: [], animations: [] },
     ];
     const groups: Group[] = [
         "property A",
@@ -82,6 +83,19 @@ function sourceResult(context: LoweringContext): unknown {
     ]) {
         try {
             add(managers[manager!]!, groups[group!]!);
+        } catch (error) {
+            errors.push((error as Error).message);
+        }
+    }
+    for (const index of [0, 1]) {
+        managers[0]!._animationGroups = managers[0]!._animationGroups.filter(
+            (group) => group !== groups[index],
+        );
+        delete groups[index]!._animationManager;
+    }
+    for (const index of [1, 0]) {
+        try {
+            add(managers[0]!, groups[index]!);
         } catch (error) {
             errors.push((error as Error).message);
         }
@@ -113,8 +127,8 @@ test("source animation registration preserves interleaving, duplicate no-op and 
             lowerAnimationGroupRegistration(
                 doctoredContext(
                     module,
-                    "getMutableAnimationGroups(manager).push(group)",
-                    "getMutableAnimationGroups(owner).push(group)",
+                    "groups.splice(groupIndex, 0, group)",
+                    "groups.splice(0, 0, group)",
                 ),
             ),
         /publication|changed/,
@@ -145,20 +159,31 @@ test("native group registration follows source registry order and ownership muta
 #include <string>
 #include <vector>
 using Json = nlohmann::json;
-struct PropertyAnimationManagerRecord {std::vector<std::string> groups;};
+struct PropertyAnimationManagerRecord {std::vector<std::string> groups;std::vector<double> ordered_groups;double next_group_order=0;};
 using PropertyAnimationManager=std::shared_ptr<PropertyAnimationManagerRecord>;
-struct Group {std::string name; std::weak_ptr<PropertyAnimationManagerRecord> owner;};
+struct AnimationGroupOrder {std::weak_ptr<PropertyAnimationManagerRecord> manager;double order=0;};
+struct Group {std::string name; std::weak_ptr<PropertyAnimationManagerRecord> owner;AnimationGroupOrder order;};
 ${variants
     .map(
         (context, index) => `namespace variant_${index} {
 ${lowerAnimationGroupRegistration(context)}
 Json run() {
     const std::vector<PropertyAnimationManager> managers{std::make_shared<PropertyAnimationManagerRecord>(),std::make_shared<PropertyAnimationManagerRecord>()};
-    std::vector<Group> groups{{"property A",{}},{"glTF B",{}},{"property C",{}},{"glTF D",{}}};
+    std::vector<Group> groups{{"property A",{},{}},{"glTF B",{},{}},{"property C",{},{}},{"glTF D",{},{}}};
     Json errors=Json::array();
     for(const auto& pair:std::vector<std::pair<int,int>>{{0,0},{0,1},{0,2},{0,1},{1,1},{0,3},{1,3}}) {
         const auto& manager=managers.at(pair.first); auto& group=groups.at(pair.second);
-        try {register_animation_group(manager,group.owner,group.name,[&]{manager->groups.push_back(group.name);});}
+        try {register_animation_group(manager,group.owner,group.order,group.name,[&](double index){return manager->ordered_groups.at(static_cast<std::size_t>(index));},[&](std::size_t index){manager->ordered_groups.insert(manager->ordered_groups.begin()+static_cast<std::ptrdiff_t>(index),group.order.order);manager->groups.insert(manager->groups.begin()+static_cast<std::ptrdiff_t>(index),group.name);});}
+        catch(const std::runtime_error& error){errors.push_back(error.what());}
+    }
+    for(int index:{0,1}) {
+        auto& manager=*managers.at(0);const auto& name=groups.at(index).name;
+        for(std::size_t position=manager.groups.size();position>0;--position)if(manager.groups.at(position-1)==name){manager.groups.erase(manager.groups.begin()+static_cast<std::ptrdiff_t>(position-1));manager.ordered_groups.erase(manager.ordered_groups.begin()+static_cast<std::ptrdiff_t>(position-1));}
+        groups.at(index).owner.reset();
+    }
+    for(int index:{1,0}) {
+        const auto& manager=managers.at(0);auto& group=groups.at(index);
+        try { register_animation_group(manager,group.owner,group.order,group.name,[&](double position){return manager->ordered_groups.at(static_cast<std::size_t>(position));},[&](std::size_t position){manager->ordered_groups.insert(manager->ordered_groups.begin()+static_cast<std::ptrdiff_t>(position),group.order.order);manager->groups.insert(manager->groups.begin()+static_cast<std::ptrdiff_t>(position),group.name);}); }
         catch(const std::runtime_error& error){errors.push_back(error.what());}
     }
     Json owners=Json::array(); for(const auto& group:groups){int owner=-1; for(int index=0;index<2;++index) if(group.owner.lock()==managers.at(index))owner=index; owners.push_back(owner);}

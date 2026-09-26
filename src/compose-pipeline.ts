@@ -51,6 +51,7 @@ import {
     pinnedVatMeshFeatures,
     pinnedInstanceColorBit,
     pinnedSceneMeshFeatures,
+    pinnedSceneMeshFeatureSets,
     pinnedReceiveShadowsBit,
     pinnedThinInstancesBit,
 } from "./pinned-mesh-features.js";
@@ -160,6 +161,8 @@ interface ComposedScenePipeline {
     toneMappingStates: boolean[];
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
+    /** Composition-table row for each source PBR creation profile. */
+    scenePbrMaterialIndices: number[];
     /**
      * How many caster material views `registerSceneWithShadowSupport` will
      * append past the scene's own materials. The runtime's material-handle
@@ -573,11 +576,18 @@ export async function composeScenePipeline({
                   ]),
               ].sort((left, right) => left - right)
             : features;
+    const sceneMeshFeatureSets = await Promise.all(
+        result.manifest.sceneMeshes.map(async (mesh, index) =>
+            (await pinnedSceneMeshFeatureSets(mesh)).map(
+                (features) =>
+                    features |
+                    (renderableMeshFeatures[sceneMeshRows[index]!] ?? 0),
+            ),
+        ),
+    );
     const assetMaterialMeshFeatures = runtimePbrAssetFeatureSets(
         result.manifest.sceneMeshes.flatMap((mesh, index) =>
-            mesh.assetPbrMaterial
-                ? [renderableMeshFeatures[sceneMeshRows[index]!] ?? 0]
-                : [],
+            mesh.assetPbrMaterial ? sceneMeshFeatureSets[index]! : [],
         ),
         runtimePbrMeshBits,
         dynamicReceiverBits,
@@ -599,8 +609,14 @@ export async function composeScenePipeline({
         );
     }
     const dynamicCasterSceneMeshFeatures =
-        sceneMeshAttributeValues.size > 0
-            ? [...sceneMeshAttributeValues]
+        sceneMeshFeatureSets.length > 0
+            ? [
+                  ...new Set(
+                      sceneMeshFeatureSets
+                          .flat()
+                          .map((features) => features & ~receiveShadowsBit),
+                  ),
+              ]
             : [await proceduralRenderableFeatures()];
     const gltfMaterialCounts = await Promise.all(
         gltfAssets.map(async (asset) => {
@@ -1142,18 +1158,19 @@ export async function composeScenePipeline({
         const castsEsmShadow = result.manifest.shadowGenerators.some(
             (generator) =>
                 pinnedShadowFilter(generator.kind) === "esm" &&
-                generator.casters.some(
+                (generator.dynamicCasters || generator.casters.some(
                     (caster) => caster.nodeMaterial === index,
-                ),
+                )),
         );
         const castsPcfShadow = result.manifest.shadowGenerators.some(
             (generator) =>
                 pinnedShadowFilter(generator.kind) === "pcf" &&
-                generator.casters.some(
+                (generator.dynamicCasters || generator.casters.some(
                     (caster) => caster.nodeMaterial === index,
-                ),
+                )),
         );
         const composed = await composeNodeMaterial(graph, label, {
+            hasInstances: material.hasInstances,
             shadowLights: graphShadowLights,
             castsEsmShadow,
             blockEmitters: material.blockEmitters,
@@ -1168,17 +1185,6 @@ export async function composeScenePipeline({
         // Slot initialization may follow construction. The native builder
         // observes missing textures at the pin's binding point, in source
         // deferred-builder order, rather than while composing its shader.
-        if (result.manifest.features.includes("material:node-inputs")) {
-            const unsupported = composed.inputs.find(
-                (input) => input.type !== "texture2d",
-            );
-            if (unsupported)
-                refuseGeneration(
-                    "material:node-inputs",
-                    `Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.`,
-                    result.manifest.featureSites,
-                );
-        }
         // Extra keys are inert upstream: parseNodeMaterialFromSnippet walks
         // the COMPILED texture bindings and looks each one up in
         // options.textures; it never walks the options record itself. Scene
@@ -1201,6 +1207,9 @@ export async function composeScenePipeline({
         toneMappingStates,
         gltfAssets,
         materialIndexBase: totalAssetMaterials,
+        scenePbrMaterialIndices: absoluteScenePbrMaterials.map(
+            (material) => material.materialsBefore,
+        ),
         casterViewCount,
         renderableMeshFeatures,
         meshProfiles:

@@ -203,9 +203,30 @@ export class AsyncActivations {
 
     /** Immediately awaited helpers preserve their new engine's resource order. */
     public withAsyncInvocation<T>(node: ts.Node, body: () => T): T {
+        let consumer = node;
+        while (
+            consumer.parent &&
+            (ts.isParenthesizedExpression(consumer.parent) ||
+                ts.isAsExpression(consumer.parent) ||
+                ts.isNonNullExpression(consumer.parent))
+        )
+            consumer = consumer.parent;
+        if (consumer.parent && ts.isArrayLiteralExpression(consumer.parent)) {
+            const array = consumer.parent;
+            const all = array.parent;
+            if (
+                ts.isCallExpression(all) &&
+                all.arguments[0] === array &&
+                ts.isPropertyAccessExpression(all.expression) &&
+                all.expression.name.text === "all" &&
+                this.context.libraryGlobal(all.expression.expression) ===
+                    "Promise"
+            )
+                consumer = all;
+        }
         const ordered =
             this.context.engineCreationExecution !== undefined &&
-            ts.isAwaitExpression(node.parent) &&
+            ts.isAwaitExpression(consumer.parent) &&
             !this.context.isRuntimeResourceConstruction();
         if (ordered) this.awaitedSetupDepth++;
         try {

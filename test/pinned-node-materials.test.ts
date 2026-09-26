@@ -17,6 +17,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { isRecord } from "../src/json-fields.js";
 import {
     composeNodeMaterial,
     type ComposedNodeMaterial,
@@ -81,6 +82,32 @@ test("carries the vertex inputs the graph declares, in the pin's order", async (
     for (const [index, attribute] of composed.attributes.entries()) {
         assert.equal(attribute.location, index);
     }
+});
+
+test("node instance graphs retain the pin's matrix columns and mesh world transform", async () => {
+    const graph: unknown = JSON.parse(
+        readFileSync(
+            "corpus/babylon-lite/lab/public/playroom/shaders/domino.json",
+            "utf8",
+        ),
+    );
+    assert(isRecord(graph));
+    const [plain, instanced] = await Promise.all([
+        composeNodeMaterial(graph, "plain-domino"),
+        composeNodeMaterial(graph, "instanced-domino", { hasInstances: true }),
+    ]);
+    assert(!plain.attributes.some(({ name }) => name.startsWith("world")));
+    assert.deepEqual(
+        instanced.attributes
+            .filter(({ name }) => name.startsWith("world"))
+            .map(({ name }) => name),
+        ["world0", "world1", "world2", "world3"],
+    );
+    assert(instanced.usesInstanceIndex);
+    assert.match(
+        instanced.wgsl.replace(/\s/g, ""),
+        /meshU.world\*mat4x4<f32>\(in.world0,in.world1,in.world2,in.world3\)/,
+    );
 });
 
 test("transcribes MorphTargetsBlock storage bindings structurally", async () => {

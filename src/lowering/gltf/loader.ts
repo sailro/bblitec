@@ -116,6 +116,8 @@ export interface GltfLoaderOptions {
     selectedMaterialVariant?: string;
     /** The scene reached `enableGltfCameras` (the `_camera` feature). */
     gltfCameras?: boolean;
+    /** Retain authored tangent streams through the opt-in source loader feature. */
+    cpuTangents?: boolean;
     /**
      * The scene reached `enableBoneControl`, so the loader builds the
      * skeletons the pin's own opt-in chunk builds and carries its eager
@@ -282,6 +284,54 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         }
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
+        if (options.cpuTangents) {
+            const tangentModule =
+                "src/loader-gltf/gltf-feature-cpu-tangents.ts";
+            const enable = this.context.functionDeclaration(
+                tangentModule,
+                "enableGltfCpuTangents",
+            );
+            this.context.assertFunctionBodyShape(
+                enable.declaration,
+                `{
+                if (!enabled) {
+                    enabled = true;
+                    _registerEnabledGltfFeature((json) => json.meshes?.some((mesh: any) => mesh.primitives?.some((primitive: any) => primitive.attributes?.TANGENT !== undefined)), feature);
+                }
+            }`,
+                "CPU tangent feature registration and authored-attribute predicate",
+            );
+            const feature = this.context.sourceFile(tangentModule);
+            const apply = this.context.findNodes(
+                feature,
+                (node): node is ts.MethodDeclaration =>
+                    ts.isMethodDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "applyMesh",
+            )[0];
+            if (!apply)
+                this.context.contractError(
+                    feature,
+                    "Expected CPU tangent feature mesh hook.",
+                );
+            const applyFunction = ts.factory.createFunctionDeclaration(
+                undefined,
+                undefined,
+                "applyMesh",
+                undefined,
+                apply.parameters,
+                apply.type,
+                apply.body,
+            );
+            this.context.assertFunctionBodyShape(
+                applyFunction,
+                `{
+                mesh._cpuTangents = meshData._tangents;
+                return Promise.resolve();
+            }`,
+                "CPU tangent feature retained stream",
+            );
+        }
         const { declaration } = this.context.functionDeclaration(
             modulePath,
             symbolName,

@@ -64,6 +64,8 @@ public:
                    std::optional<std::string_view>{test.value};
         case UiSelectorTestKind::Empty:
             return tree.empty(element);
+        case UiSelectorTestKind::Root:
+            return tree.root(element);
         case UiSelectorTestKind::NthChild:
         case UiSelectorTestKind::NthLastChild:
         case UiSelectorTestKind::NthOfType:

@@ -50,6 +50,7 @@ test(
             JSON.parse(
                 execFileSync(executable, {
                     encoding: "utf8",
+                    timeout: 30000,
                     env: {
                         ...tools!.environment,
                         PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools!.environment.PATH ?? ""}`,
@@ -62,6 +63,8 @@ test(
             impulses: jsonArray(captured.impulses).map(jsonNumbers),
             damped: jsonNumbers(captured.damped),
             convex: jsonArray(captured.convex).map(jsonNumbers),
+            boxes: jsonArray(captured.boxes).map(jsonNumbers),
+            hullBounds: jsonArray(captured.hullBounds).map(jsonNumbers),
         };
         const require = createRequire(import.meta.url);
         const hp = await HavokPhysics({
@@ -71,6 +74,65 @@ test(
                 ),
             ).buffer,
         });
+        const boxes = [
+            [0.02, 0.04, 0.06],
+            [0.04, 0.06, 0.08],
+            [0.001, 1, 1],
+        ] satisfies Vector3[];
+        for (const [index, extents] of boxes.entries()) {
+            const box = hp.HP_Shape_CreateBox(
+                [0.25, -0.5, 0.75],
+                [0, 0, 0, 1],
+                extents,
+            )[1];
+            try {
+                const properties = hp.HP_Shape_BuildMassProperties(box)[1];
+                const expected = [
+                    properties[1],
+                    ...properties[0],
+                    ...properties[2],
+                ];
+                assert.equal(actual.boxes[index]!.length, expected.length);
+                for (const [lane, value] of expected.entries())
+                    assert.ok(
+                        Math.abs(actual.boxes[index]![lane]! - value) < 1e-6,
+                        `small box ${index}, lane ${lane}: ${actual.boxes[index]![lane]} vs ${value}`,
+                    );
+            } finally {
+                hp.HP_Shape_Release(box);
+            }
+        }
+        for (const [index, half] of [0.05, 0.5, 5].entries()) {
+            const vertices: number[] = [];
+            for (const x of [-half, half])
+                for (const y of [-half, half])
+                    for (const z of [-half, half]) vertices.push(x, y, z);
+            const pointer = hp._malloc(vertices.length * 4);
+            hp.HEAPF32.set(vertices, pointer / 4);
+            const hull = hp.HP_Shape_CreateConvexHull(
+                pointer,
+                vertices.length / 3,
+            )[1];
+            hp._free(pointer);
+            try {
+                const bounds = hp.HP_Shape_GetBoundingBox(hull, [
+                    [0, 0, 0],
+                    [0, 0, 0, 1],
+                ])[1];
+                const expected = [0, 1, 2].flatMap((axis) => [
+                    bounds[0][axis]!,
+                    bounds[1][axis]!,
+                ]);
+                for (const [lane, value] of expected.entries())
+                    assert.ok(
+                        Math.abs(actual.hullBounds[index]![lane]! - value) <
+                            1e-6,
+                        `hull boundary ${index}, lane ${lane}: ${actual.hullBounds[index]![lane]} vs ${value}`,
+                    );
+            } finally {
+                hp.HP_Shape_Release(hull);
+            }
+        }
         const world = hp.HP_World_Create()[1],
             migrated = hp.HP_World_Create()[1];
         hp.HP_World_SetGravity(world, [0, 0, 0]);

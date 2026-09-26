@@ -8,6 +8,7 @@
 #endif
 
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
 
 namespace bbl::pal {
@@ -15,16 +16,22 @@ namespace bbl::pal {
 // corrected in the vendored overlay port (`native/vcpkg-overlay-ports/
 // sdl3-image`, png-grey-ramp-last-index.patch), not here: the dependency
 // decodes right rather than the PAL rebuilding its palette afterwards.
-DecodedImage decode_image(const js::ArrayBuffer& buffer) {
+DecodedImage decode_image(std::span<const std::uint8_t> bytes) {
 #if BBLITE_HAS_IMAGE_DECODER
-    SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
+    SDL_IOStream* stream = SDL_IOFromConstMem(bytes.data(), bytes.size());
     if (!stream)
         throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
-    SDL_Surface* source = IMG_Load_IO(stream, true);
+    using Surface = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>;
+    Surface source{nullptr, SDL_DestroySurface};
+    {
+        // SDL_image's codec initializers mutate process-wide library state.
+        std::lock_guard lock(image_decoder_mutex());
+        source.reset(IMG_Load_IO(stream, true));
+    }
     if (!source)
         throw std::runtime_error(std::string("Unable to decode image: ") + SDL_GetError());
-    SDL_Surface* converted = SDL_ConvertSurface(source, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(source);
+    Surface converted{SDL_ConvertSurface(source.get(), SDL_PIXELFORMAT_RGBA32), SDL_DestroySurface};
+    source.reset();
     if (!converted)
         throw std::runtime_error(std::string("Unable to convert image: ") + SDL_GetError());
 
@@ -38,10 +45,9 @@ DecodedImage decode_image(const js::ArrayBuffer& buffer) {
         std::copy_n(source_row, static_cast<std::size_t>(result.width) * 4,
                     result.rgba.data() + static_cast<std::size_t>(y) * result.width * 4);
     }
-    SDL_DestroySurface(converted);
     return result;
 #else
-    (void)buffer;
+    (void)bytes;
     throw std::runtime_error("This scene was built without image decoding.");
 #endif
 }

@@ -10,6 +10,7 @@
 #include <bblite/pal_gpu_timestamp.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -125,6 +126,7 @@ struct OffscreenFrame {
     std::uint32_t height = 0;
     std::uint64_t sequence = 0;
     std::shared_ptr<OffscreenImage> image;
+    bool capture_ready = true;
 };
 
 /**
@@ -142,9 +144,10 @@ public:
 
     OffscreenSurface(std::uint32_t width, std::uint32_t height,
                      std::shared_ptr<AnimationFrameSource> animation_frames = {},
-                     std::uint64_t capture_frame_count = 0)
+                     std::uint64_t capture_frame_count = 0,
+                     std::shared_ptr<const std::atomic<bool>> capture_ready = {})
         : extent_(checked_extent(width, height)), animation_frames_(std::move(animation_frames)),
-          capture_frame_count_(capture_frame_count) {}
+          capture_frame_count_(capture_frame_count), capture_ready_(std::move(capture_ready)) {}
 
     void resize(std::uint32_t width, std::uint32_t height) {
         const auto next = checked_extent(width, height);
@@ -184,20 +187,23 @@ private:
         return {width, height};
     }
 
-    void publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image) {
+    bool publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image) {
         checked_extent(width, height);
         if (!image)
             throw std::runtime_error("Offscreen frame has no GPU image.");
         std::optional<OffscreenFrame> next(std::in_place,
                                            OffscreenFrame{width, height, 0, std::move(image)});
+        const bool ready = !capture_ready_ || capture_ready_->load();
+        next->capture_ready = ready;
         {
             std::lock_guard lock(mutex_);
             if (closed_)
-                return;
+                return false;
             next->sequence = ++sequence_;
             frame_.swap(next);
         }
         // Release a superseded frame outside the mailbox lock.
+        return ready;
     }
 
     mutable std::mutex mutex_;
@@ -208,6 +214,7 @@ private:
     bool producer_active_ = false;
     const std::shared_ptr<AnimationFrameSource> animation_frames_;
     const std::uint64_t capture_frame_count_;
+    const std::shared_ptr<const std::atomic<bool>> capture_ready_;
 };
 
 /**
@@ -265,6 +272,7 @@ public:
     void set_animation_frame_timestamp(double timestamp) { animation_frame_timestamp_ = timestamp; }
     std::optional<double> animation_frame_timestamp() const { return animation_frame_timestamp_; }
     std::uint64_t capture_frame_count() const { return surface_.capture_frame_count_; }
+    bool last_frame_capture_ready() const { return last_frame_capture_ready_; }
 
     class Binding {
     public:
@@ -281,12 +289,13 @@ public:
 
     void publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image) {
         require_live_device();
-        surface_.publish(width, height, std::move(image));
+        last_frame_capture_ready_ = surface_.publish(width, height, std::move(image));
     }
 
     void discard_pending() { surface_.take_frame(); }
 
 private:
+    bool last_frame_capture_ready_ = false;
     void require_live_device() const {
         if (device_disposed_)
             throw std::runtime_error("The engine GPU device has been disposed.");

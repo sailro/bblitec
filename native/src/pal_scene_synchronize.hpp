@@ -7,15 +7,20 @@
 #pragma once
 
 #include <bblite/features/has_text.hpp>
-#include <bblite/features/mesh_position_update.hpp>
+#include <bblite/features/mesh_attribute_update.hpp>
+#include <bblite/features/has_material_plugin_textures.hpp>
 
 #include <bblite/runtime.hpp>
+#include <bblite/pal_iteration.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
+#include <functional>
 #include <iterator>
 #include <stdexcept>
 #include <utility>
@@ -24,6 +29,8 @@
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_texture_upload_cache.hpp"
 #include "pal_gpu_pipeline.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_runtime_trace.hpp"
@@ -33,6 +40,126 @@
 #endif
 
 namespace bbl::pal {
+
+#if BBLITE_WORKERS
+/** Jobs contain native GPU data only; their owner outlives this preparation. */
+inline Iteration<bool> run_native_preparation(std::vector<std::function<void()>> jobs) {
+    if (jobs.empty())
+        co_return true;
+    auto pending = std::async(std::launch::async, [jobs = std::move(jobs)] {
+        for (const auto& create : jobs)
+            create();
+    });
+    while (pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        co_yield false;
+    pending.get();
+    co_return true;
+}
+#endif
+
+template <typename Resource, typename Prepare, typename Upload>
+Iteration<bool> upload_prepared_scene_mesh(const Engine& engine, const upstream::RenderItem& item,
+                                           TextureUploadCache<Resource>& cache, Prepare prepare,
+                                           Upload upload, bool asynchronous = true) {
+#if BBLITE_WORKERS
+    struct Request {
+        TextureData data;
+        bool srgb{};
+        std::array<std::uint8_t, 4> fallback{};
+    };
+    std::vector<Request> sources;
+    const auto add = [&](const TextureData& data, bool srgb, std::array<std::uint8_t, 4> fallback) {
+        if (!asynchronous || !data.has_image() || data.gpu_source || data.render_source ||
+            cache.find(data, srgb, fallback))
+            return;
+        if (std::none_of(sources.begin(), sources.end(), [&](const auto& other) {
+                return other.srgb == srgb && other.fallback == fallback &&
+                       same_texture_image(data, other.data);
+            }))
+            sources.push_back({data, srgb, fallback});
+    };
+    if (const auto* material = handle_find(engine.materials, item.material)) {
+        const bool standard = item.material_kind == upstream::RenderMaterialKind::standard;
+        if (standard || item.material_kind == upstream::RenderMaterialKind::pbr)
+            for (const auto& slot : upstream::material_texture_slots)
+                if (slot.slot != upstream::material_texture_no_slot)
+                    if (const auto* data = material_slot_texture(*material, slot.source, standard))
+                        add(*data, material_slot_srgb(slot.srgb, material, standard),
+                            material_slot_fallback(slot.fallback, material, standard));
+        if (material->shader_material || material->node_material)
+            for (const auto& texture : material->shader_textures)
+                add(texture.data, texture.srgb, {255, 255, 255, 255});
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+        for (const auto& texture : material->plugin_textures)
+            add(texture.data, texture.srgb, {255, 255, 255, 255});
+#endif
+    }
+    if (!sources.empty()) {
+        // Only native snapshots and GPU handles cross the thread boundary.
+        auto pending = std::async(std::launch::async, [sources = std::move(sources), &cache,
+                                                       prepare = std::move(prepare)] {
+            std::vector<std::shared_ptr<Resource>> images;
+            images.reserve(sources.size());
+            for (const auto& source : sources)
+                images.push_back(cache.acquire(source.data, source.srgb, source.fallback, [&] {
+                    return prepare(source.data, source.srgb, source.fallback);
+                }));
+            return images;
+        });
+        while (pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            co_yield false;
+        const auto images = pending.get();
+        upload();
+        co_return true;
+    }
+#else
+    static_cast<void>(engine);
+    static_cast<void>(item);
+    static_cast<void>(cache);
+    static_cast<void>(prepare);
+    static_cast<void>(asynchronous);
+#endif
+    upload();
+    co_return true;
+}
+
+/** Prepare only the plans' reached draws, before frame callbacks or publication. */
+template <typename TaskLists, typename Prepare>
+Iteration<bool> prepare_scene_pipeline_draws(Engine& engine, const Scene& scene,
+                                             const upstream::RenderPlan& plan, TaskLists task_lists,
+                                             Prepare prepare) {
+    StartupWorkBudget budget;
+    auto tasks = scene.tasks;
+    if (tasks.empty())
+        tasks.push_back({});
+    for (const TaskHandle handle : tasks) {
+        const FrameTaskRecord* task =
+            handle.value == invalid_handle ? nullptr : &handle_at(engine.frame_tasks, handle);
+        if (task && (task->execution_enabled == false || (task->kind != FrameTaskKind::render &&
+                                                          task->kind != FrameTaskKind::geometry)))
+            continue;
+        if (task && task->kind == FrameTaskKind::geometry &&
+            upstream::geometry_task_skips(geometry_pass_camera(engine, scene)))
+            continue;
+        // Ordinary depth-only tasks already use the eager generic pipelines.
+        if (task && task->kind == FrameTaskKind::render &&
+            task->render.shadow_generator.value == invalid_handle &&
+            !handle_at(engine.render_targets, task->render.target).has_color)
+            continue;
+        const auto& lists = task ? task_lists(handle) : plan.draw_lists;
+        for (const auto* list : {&lists.opaque, &lists.transparent})
+            for (const auto& draw : list->commands) {
+                if (!upstream::render_item_draws_now(draw.item, engine))
+                    continue;
+                prepare(draw, task);
+                if (budget.exhausted()) {
+                    co_yield false;
+                    budget.resume();
+                }
+            }
+    }
+    co_return true;
+}
 
 /**
  * Reconcile one backend's uploaded mesh rows with a rebuilt render plan.
@@ -119,7 +246,7 @@ inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::R
  * One plan's per-frame row refresh over the meshes uploaded for it: the
  * thin-instance pool's re-upload (recreated when the pool grew past what was
  * allocated, which is also a full upload), the backend's per-mesh blocks, the
- * position-version gated vertex upload, and the morph weights. The vertex
+ * attribute-version gated vertex upload, and the morph weights. The vertex
  * buffers hold the geometry's local lanes, so a transform uploads nothing
  * here; it reaches the draw through the mesh block.
  *
@@ -154,11 +281,11 @@ void sync_plan_mesh_rows(const Scene& scene, Engine& engine, const upstream::Ren
         }
 #endif
         rows.write_mesh_blocks(scene, item, mesh, gpu);
-#if BBLITE_MESH_POSITION_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE
         const ModelGeometry& geometry = engine.geometries[item.geometry];
-        if (gpu.position_version != geometry.position_version) {
+        if (gpu.attribute_version != geometry.attribute_version) {
             rows.upload_vertices(gpu, mesh_gpu_vertices(geometry, mesh));
-            gpu.position_version = geometry.position_version;
+            gpu.attribute_version = geometry.attribute_version;
         }
 #endif
 #if BBLITE_GPU_MORPH_STORAGE

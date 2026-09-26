@@ -482,7 +482,7 @@ export function pinnedNodeVariantsHeader(
     const inputRows: string[] = variants.flatMap((variant) =>
         variant.composed.inputs.map(
             (input) =>
-                `    {${variant.index}, ${stringLiteral(input.name)}, ${stringLiteral(input.type)}},`,
+                `    {${variant.index}, ${stringLiteral(input.name)}, ${stringLiteral(input.type)}, ${input.offset ?? 0}u, ${input.count ?? 0}u},`,
         ),
     );
     const shadowRows: string[] = [];
@@ -545,7 +545,7 @@ export function pinnedNodeVariantsHeader(
                 `${morphRow}, ` +
                 `${firstShadow}, ` +
                 `${variantShadowRows.length}, ` +
-                `${casterRow(variant)}},`,
+                `${casterRow(variant)}, ${variant.composed.usesInstanceIndex}},`,
         );
         collectEnvResources(variant.composed, envResources);
     }
@@ -590,7 +590,7 @@ export function pinnedNodeVariantsHeader(
                 `{false, 0, 0}, ` +
                 `${shadowRows.length}, ` +
                 `0, ` +
-                `{false, false, "", "", 0}},`,
+                `{false, false, "", "", 0}, ${variant.composed.usesInstanceIndex}},`,
         );
         return (
             `    {${variant.variantIndex}, ` +
@@ -651,6 +651,8 @@ struct NodeVariantInput {
     std::uint32_t variant;
     std::string_view name;
     std::string_view type;
+    std::size_t first_float;
+    std::size_t float_count;
 };
 
 ${cpp.table("NodeVariantInput", "node_variant_inputs", inputRows.length, `${inputRows.join("\n")}`)}
@@ -762,6 +764,8 @@ struct NodeVariantEntry {
     std::size_t shadow_binding_count;
     /** The ESM caster module this graph also composed, when it casts. */
     NodeVariantCaster caster;
+    /** The vertex entry point reads the instance-index builtin. */
+    bool uses_instance_index;
 };
 
 ${cpp.table("NodeVariantEntry", "node_variants", entries.length, `${entries.join("\n")}`)}
@@ -791,9 +795,7 @@ ${geometryTable(
     geometryTaskCount(geometryVariants),
     graphCount,
 )}
-/** Every graph's node UBO, as the floats the pin's own writer places.
- *  The graph's named inputs decide these and no reached scene changes one,
- *  so the block is a constant rather than a per-frame write. */
+/** Initial graph uniform values, copied into each material owner's storage. */
 ${cpp.table("float", "node_variant_uniform_floats", uniformFloats.length, `${uniformFloats.map((value) => `    ${floatLiteral(value)},`).join("\n")}`)}
 
 ${mirroredStructFromWgsl(

@@ -14,6 +14,7 @@ Engine& window_document_engine() {
     static Engine document;
     return document;
 }
+void update_window_document() {}
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;
@@ -31,4 +32,9 @@ int main() {
     assert(bbl::handle_at(engine.ui_elements, log).text == "complete");
     const auto note = bbl::ui_get_element_by_id(engine, "void-note");
     assert(bbl::handle_at(engine.ui_elements, note).text == "label-2");
+    const auto first = bbl::ui_get_element_by_id(engine, "first-target");
+    const auto second = bbl::ui_get_element_by_id(engine, "second-target");
+    assert(bbl::handle_at(engine.ui_elements, first).text != "assigned");
+    assert(bbl::handle_at(engine.ui_elements, second).text == "assigned");
+    assert(bbl::ui_get_style_property(engine, second, "opacity") == "0.5");
 }

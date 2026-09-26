@@ -1,6 +1,7 @@
 import { inlineCpp } from "./generated-cpp.js";
 import assert from "node:assert/strict";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { jsonValue, isRecord } from "../src/json-fields.js";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -134,7 +135,7 @@ test("actual pinned node builders retain private slots and start the complete fa
         buildScene(this: void, scene: unknown): Promise<void>;
     }>("scene/scene-core.js");
     const bindings: Array<{ entries: Array<{ resource: unknown }> }> = [];
-    const record = (descriptor: unknown) => ({ descriptor });
+    const record = (descriptor: unknown) => ({ descriptor, destroy() {} });
     const engine = {
         format: "bgra8unorm",
         msaaSamples: 4,
@@ -199,7 +200,7 @@ test("actual pinned node builders retain private slots and start the complete fa
     const failing = scene();
     core.addToScene(failing, mesh(missing));
     core.addToScene(failing, mesh(valid));
-    await assert.rejects(core.buildScene(failing), /#275/);
+    await assert.rejects(core.buildScene(failing), /#331/);
     assert.equal(
         bindings.length,
         3,
@@ -255,12 +256,32 @@ test(
         const composed = await composeNodeMaterial(graph, "input lifecycle", {
             pinnedBlockLoader: "geometry",
         });
+        const numeric = await composeNodeMaterial(
+            jsonValue(
+                JSON.parse(
+                    readFileSync(
+                        "corpus/babylon-lite/lab/public/playroom/shaders/rugShader.json",
+                        "utf8",
+                    ),
+                ),
+                isRecord,
+                "rug graph",
+            ),
+            "numeric input lifecycle",
+        );
         writeFileSync(
             join(includes, "node_variants.hpp"),
             inlineCpp(
                 pinnedNodeVariantsHeader(
                     "input lifecycle",
-                    [{ index: 0, ...nodeVariantStageStems(0), composed }],
+                    [
+                        { index: 0, ...nodeVariantStageStems(0), composed },
+                        {
+                            index: 1,
+                            ...nodeVariantStageStems(1),
+                            composed: numeric,
+                        },
+                    ],
                     [],
                 ),
             ),
@@ -350,9 +371,17 @@ test(
     },
 );
 
-test("node input state refuses numeric, reflective and late binding mutation at its source", () => {
+test("node input state accepts scalar writes and refuses reflective and late binding mutation at its source", () => {
+    for (const statement of [
+        "material.inputs.scalar!.value = 2;",
+        "await registerScene(scene); material.inputs.scalar!.value = 2;",
+        "onBeforeRender(scene, () => { material.inputs.scalar!.value = 2; });",
+    ])
+        assert.match(
+            compileSource(prefix + statement).cpp,
+            /set_node_input_scalar/,
+        );
     for (const [body, expected] of [
-        ["material.inputs.albedo!.value = 2;", /numeric uniforms/],
         [
             "const slot = material.inputs.albedo!; slot['texture'] = texture;",
             /computed mutation/,

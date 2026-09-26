@@ -75,7 +75,7 @@ int main() {
     }
     bbl::dispose_storage_buffer(*engine,plain);bbl::dispose_storage_buffer(*engine,plain);
     assert(first->destroys==1&&engine->resource_epoch==1&&engine->storage_buffers[plain.value].bytes.empty());
-    bool failed=false;try{bbl::update_storage_buffer(*engine,plain,replacement,0);}catch(const std::exception& error){failed=std::string(error.what())=="#527";}assert(failed);
+    bool failed=false;try{bbl::update_storage_buffer(*engine,plain,replacement,0);}catch(const std::exception& error){failed=std::string(error.what())=="#587";}assert(failed);
     engine->dispose_storage_buffers(*engine);
     assert(second->destroys==1&&engine->resource_epoch==2&&!engine->dispose_storage_buffers);
 }

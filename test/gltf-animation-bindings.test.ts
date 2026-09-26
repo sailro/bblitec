@@ -215,6 +215,39 @@ test("source replay ordinals resolve runtime identities independently of their o
         );
 });
 
+test("static skeletons retain source bindings and live node hierarchies only when reached", async () => {
+    const input = fixture();
+    input.document.animations = [];
+    for (const mesh of asRecords(input.document.meshes))
+        for (const primitive of asRecords(mesh.primitives))
+            delete primitive.targets;
+    const ordinary = await gltfMeshPlan(input.document, input.bin);
+    assert.equal(ordinary.animationBindings, null);
+    const controlled = await gltfMeshPlan(input.document, input.bin, undefined, {
+        boneControl: true,
+        nodeTransforms: true,
+    });
+    assert.equal(controlled.animation, null);
+    assert(controlled.hierarchy);
+    assert.deepEqual(
+        controlled.animationBindings?.skeletons.map(({ meshes, joints }) => ({ meshes, joints })),
+        [{ meshes: [0], joints: [2] }],
+    );
+    assert.equal(controlled.hierarchy.nodes[1]?.parent, 0);
+    assert.deepEqual(controlled.hierarchy.root.scaling, [-1, 1, 1]);
+    const morphed = fixture();
+    morphed.document.animations = [];
+    await assert.rejects(
+        gltfMeshPlan(morphed.document, morphed.bin, undefined, { nodeTransforms: true, boneControl: true }),
+        /morphed primitives/,
+    );
+    const animated = fixture();
+    await assert.rejects(
+        gltfMeshPlan(animated.document, animated.bin, undefined, { nodeTransforms: true, boneControl: true }),
+        /animations/,
+    );
+});
+
 test("packaged binding matrices preserve source Float32 products and refuse invalid receipt references", async () => {
     const input = fixture(true, true);
     const bytes = await packageGltfMeshPlan(input.document, input.bin);
@@ -278,24 +311,27 @@ test("native binding transport keeps source targets, exclusions and matrix bits"
     const native = optionalNativeFixtureTools();
     if (!native) return t.skip("Native fixture tools unavailable");
     const cases = [];
-    for (const context of [
-        new LoweringContext(),
-        doctoredContext(
+    for (const { context, staticSkin } of [
+        { context: new LoweringContext(), staticSkin: false },
+        { context: doctoredContext(
             module,
             "const mesh = meshes[mi];",
             "const mesh = meshes[meshes.length - 1 - mi];",
-        ),
-        doctoredContext(
+        ), staticSkin: false },
+        { context: doctoredContext(
             module,
             "const skeleton = mesh?.skeleton;",
             "const skeleton = undefined;",
-        ),
+        ), staticSkin: false },
+        { context: new LoweringContext(), staticSkin: true },
     ]) {
-        const input = fixture(true, true),
-            bytes = await packageGltfMeshPlan(
+        const input = fixture(true, true);
+        if (staticSkin) input.document.animations = [];
+        const bytes = await packageGltfMeshPlan(
                 input.document,
                 input.bin,
                 context,
+                { boneControl: staticSkin },
             );
         const meshPlan = packagedGltfMeshPlan(input.document),
             plan = meshPlan.animationBindings!;
@@ -334,7 +370,7 @@ test("native binding transport keeps source targets, exclusions and matrix bits"
     const consume = cppSection(
         loader,
         "        for(std::size_t index=0;index<animation_bindings.skeletons.size();",
-        '        for(const auto& value:required(source_animation.as_object(),"nodeNames")',
+        "        if (animated) {",
     );
     writeFileSync(
         file,

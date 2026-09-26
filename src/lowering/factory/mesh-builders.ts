@@ -1,5 +1,7 @@
 import ts from "typescript";
 import { lowerMeshGeometryResize } from "../mesh-geometry-resize.js";
+import { lowerMeshAttributeUpdates } from "../mesh-attribute-updates.js";
+import { lowerMeshCpuStreamRetainers } from "../mesh-cpu-streams.js";
 import { cppIdentifierPattern } from "../../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "../context.js";
 import {
@@ -495,6 +497,7 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
             )}
 ${usesJsData ? "#include <bblite/js_data.hpp>\n" : ""}\
 #include <bblite/runtime.hpp>
+#include <bblite/pal_mesh_attributes.hpp>
 ${
     heightMapGround
         ? `\
@@ -2423,6 +2426,9 @@ ${computeAabb}
     }
     geometry.indices = indices;
     geometry.has_tangents = !tangents.empty();
+    geometry.cpu_uv2s = !uvs2.empty();
+    geometry.cpu_tangents = !tangents.empty();
+    geometry.cpu_colors = !colors.empty();
     // The optional streams the call left out, as the node family's
     // writeAttributeFlags reads them: an omitted one is an absent
     // attribute, not a zero-filled one.
@@ -2461,71 +2467,8 @@ MeshHandle create_mesh_from_data(Engine& engine, const std::string& name,
     return store_mesh_record(engine, std::move(mesh));
 }
 
-// src/mesh/mesh-factories.ts updateMeshPositions/writeVertexAttributeRange:
-// validate the tightly-packed source/destination vertex ranges before
-// publishing one new geometry version. The PAL keeps the existing GPU buffer
-// and consumes this version in its ordinary pre-draw upload pass.
-void update_mesh_positions(
-    Engine& engine,
-    MeshHandle mesh,
-    const std::vector<float>& positions,
-    double vertex_offset_value,
-    double vertex_count_value,
-    double source_vertex_offset_value) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh handle.");
-    }
-    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
-    if (record.geometry >= engine.geometries.size()) {
-        throw std::runtime_error(
-            "mesh attribute updates require procedural geometry");
-    }
-    if (engine.geometries[record.geometry].owners > 1) {
-        throw std::runtime_error(
-            "mesh attribute updates require unshared geometry: " +
-            record.name);
-    }
-    const double source_vertex_count_value =
-        static_cast<double>(positions.size()) / 3.0;
-    const double count_value = std::isnan(vertex_count_value)
-        ? source_vertex_count_value - source_vertex_offset_value
-        : vertex_count_value;
-    const auto valid_index = [](double value) {
-        return std::isfinite(value) && value >= 0.0 &&
-            std::trunc(value) == value;
-    };
-    if (
-        positions.size() % 3 != 0 ||
-        !valid_index(vertex_offset_value) ||
-        !valid_index(source_vertex_offset_value) ||
-        !valid_index(count_value) ||
-        source_vertex_offset_value + count_value >
-            source_vertex_count_value) {
-        throw std::runtime_error(
-            "mesh attribute update requires a valid tightly-packed vertex range");
-    }
-    ModelGeometry& geometry = engine.geometries[record.geometry];
-    const std::size_t vertex_offset =
-        static_cast<std::size_t>(vertex_offset_value);
-    const std::size_t source_vertex_offset =
-        static_cast<std::size_t>(source_vertex_offset_value);
-    const std::size_t count = static_cast<std::size_t>(count_value);
-    if (vertex_offset + count > geometry.vertices.size()) {
-        throw std::runtime_error(
-            "mesh attribute update requires a valid destination vertex range");
-    }
-    if (count == 0) return;
-    for (std::size_t index = 0; index < count; ++index) {
-        const std::size_t source = (source_vertex_offset + index) * 3;
-        ModelVertex& vertex = geometry.vertices[vertex_offset + index];
-        vertex.position = Vec3{
-            positions[source],
-            positions[source + 1],
-            positions[source + 2]};
-    }
-    ++geometry.position_version;
-    ++record.transform_version;
-}
+${lowerMeshAttributeUpdates(this.context)}
+${lowerMeshCpuStreamRetainers(this.context)}
 
 `;
     }
@@ -2720,11 +2663,24 @@ ${this.thinRuntimeBuilderAssignment("setThinInstances")}
     record.instance_count =
         static_cast<std::uint32_t>(capacity);
     record.instance_source = &matrices;
+    record.owned_instance_source.reset();
     record.instance_version += 1;
     update_thin_instance_draw_membership(
         engine,
         record,
         previous_count);
+}
+
+void set_thin_instances(Engine& engine, MeshHandle mesh, js::F32Array& matrices, double count) {
+    set_thin_instances(engine, mesh, static_cast<std::vector<float>&>(matrices), count);
+    ${recordAt("engine.meshes", "mesh")}.owned_instance_source = matrices.storage();
+}
+
+js::F32Array thin_instance_matrices(Engine& engine, MeshHandle mesh) {
+    const auto& record = ${recordAt("engine.meshes", "mesh")};
+    if (!record.thin_instanced || !record.owned_instance_source)
+        throw std::runtime_error("Thin-instance matrix storage is absent.");
+    return js::F32Array{record.owned_instance_source};
 }
 
 ${instanceColorSetter}${this.thinInstanceCullBoundsPad()}// src/mesh/thin-instance.ts setThinInstanceCount: update only the active

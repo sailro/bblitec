@@ -20,6 +20,7 @@ import {
 } from "./data-types.js";
 import { errorValue } from "./error-values.js";
 import { isPromiseResultUsed } from "./promises.js";
+import { isHandleKind } from "./data-types/handles.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -447,7 +448,9 @@ export class AsyncLowerer {
 
     private pinArgument(value: Value, label = "async_argument"): Value {
         const context = this.context;
-        if (!value.cpp || value.kind === "engine") return value;
+        if (!value.cpp) return value;
+        if (value.kind === "engine")
+            return context.bindings.pinValueToTemporary(value, label);
         const temporary = context.allocateTemporaryCppName(label);
         const type = value.dataType
             ? context.dataTypes.cppType(value.dataType)
@@ -1277,7 +1280,8 @@ export class AsyncLowerer {
         );
     }
     private cppType(value: Value, node: ts.Node): string {
-        if (value.kind === "void") return "bbl::js::PromiseVoid";
+        if (value.kind === "void" || value.kind === "physics-engine-module")
+            return "bbl::js::PromiseVoid";
         if (value.kind === "tuple")
             return `std::tuple<${(value.tupleElements ?? []).map((element) => this.cppType(element, node)).join(", ")}>`;
         if (value.dataType)
@@ -1332,6 +1336,12 @@ export class AsyncLowerer {
                     : {}),
                 ...(value.staticNumber !== undefined
                     ? { staticNumber: value.staticNumber }
+                    : {}),
+                ...(value.staticBoolean !== undefined
+                    ? { staticBoolean: value.staticBoolean }
+                    : {}),
+                ...(value.packagedBodySource
+                    ? { packagedBodySource: value.packagedBodySource }
                     : {}),
             };
         return { ...value, cpp, nativeCaptures: [] };
@@ -1408,6 +1418,18 @@ export class AsyncLowerer {
                 textureStorage: "stored",
             };
         }
+        if (isHandleKind(value.kind) && value.kind !== "engine") {
+            const type = { kind: "handle", handle: value.kind } as const;
+            return {
+                ...value,
+                cpp: this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    node,
+                ),
+                dataType: type,
+            };
+        }
         if (value.kind !== "record") return value;
         this.refuseThenable(value, node);
         const declared = this.context.dataLowerer.dataTypeAt(node);
@@ -1443,8 +1465,14 @@ export class AsyncLowerer {
             if (fields.length)
                 result = this.context.dataTypes.ownedRecordType(fields);
         }
-        if (result?.kind !== "struct") return value;
-        const owned = this.context.dataTypes.markStoredObjectReferences(result);
+        if (
+            result?.kind !== "struct" &&
+            !(result?.kind === "map" && result.dictionary)
+        )
+            return value;
+        const owned = this.context.dataTypes.markStoredObjectReferences(
+            this.context.dataLowerer.retainedResultType(value, result, node),
+        );
         return this.context.dataLowerer.leafValue(
             this.context.dataLowerer.compileKnownValueForSink(
                 value,
@@ -1475,6 +1503,8 @@ export class AsyncLowerer {
             );
     }
     private resultCpp(value: Value, node: ts.Node): string {
+        if (value.kind === "physics-engine-module")
+            return "bbl::js::PromiseVoid{}";
         if (
             value.kind === "string" &&
             (!value.dataType || value.dataType.kind === "string")

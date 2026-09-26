@@ -204,7 +204,7 @@ namespace bbl {
 using Json = nlohmann::json;
 namespace pal {
 std::vector<std::uint8_t> read_binary_file(const std::string&) { throw std::runtime_error("unexpected texture read"); }
-DecodedImage decode_image(const js::ArrayBuffer&) { throw std::runtime_error("unexpected texture decode"); }
+DecodedImage decode_image(std::span<const std::uint8_t>) { throw std::runtime_error("unexpected texture decode"); }
 std::string join_path(const std::string& a,const std::string& b) { return a+"/"+b; }
 }
 ${fileTexture}

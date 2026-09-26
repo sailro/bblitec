@@ -27,6 +27,7 @@
 #include "bblite/pal_physics.hpp"
 #include "pal_handle_identity.hpp"
 #include "pal_physics_profile.hpp"
+#include "pal_physics_scheduler.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -41,6 +42,9 @@
 #include <type_traits>
 
 #include <btBulletDynamicsCommon.h>
+#include <BulletCollision/CollisionDispatch/btCollisionDispatcherMt.h>
+#include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolverMt.h>
+#include <BulletDynamics/Dynamics/btDiscreteDynamicsWorldMt.h>
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
@@ -143,10 +147,10 @@ constexpr double contact_rest_seconds = 0.25;
 
 /** The friction and restitution a shape carries until a material is set. */
 struct ShapeMaterial {
-    btScalar friction = 0;
+    btScalar friction = btScalar(0.5);
     btScalar restitution = 0;
-    PhysicsMaterialCombine friction_combine = PhysicsMaterialCombine::minimum;
-    PhysicsMaterialCombine restitution_combine = PhysicsMaterialCombine::maximum;
+    PhysicsMaterialCombine friction_combine = PhysicsMaterialCombine::geometric_mean;
+    PhysicsMaterialCombine restitution_combine = PhysicsMaterialCombine::geometric_mean;
 };
 
 } // namespace
@@ -159,6 +163,7 @@ struct PhysicsShapeState {
     std::vector<PhysicsBodyState*> users;
     std::vector<std::shared_ptr<PhysicsShapeState>> children;
     std::size_t container_parents = 0;
+    bool released = false;
     /**
      * The triangle soup a `btBvhTriangleMeshShape` indexes: the pin's own
      * vertex list and index triples, held once and addressed in place
@@ -204,10 +209,24 @@ struct PhysicsShapeState {
      */
     bool is_trigger = false;
 #endif
-    ~PhysicsShapeState() {
-        for (const auto& child : children)
+    void clear_storage() {
+        moving_mesh.reset();
+        shape.reset();
+        child_instances.clear();
+        for (const auto& child : children) {
             --child->container_parents;
+            child->release_if_unused();
+        }
+        children.clear();
+        triangle_mesh.reset();
+        triangle_vertices.clear();
+        triangle_indices.clear();
     }
+    void release_if_unused() {
+        if (released && users.empty() && container_parents == 0)
+            clear_storage();
+    }
+    ~PhysicsShapeState() { clear_storage(); }
 };
 
 namespace {
@@ -277,8 +296,11 @@ struct PhysicsBodyState {
     BodyVelocity substep_start{};
     ~PhysicsBodyState() {
         body.reset();
-        if (shape)
+        mass_frame_shape.reset();
+        if (shape) {
             std::erase(shape->users, this);
+            shape->release_if_unused();
+        }
     }
 };
 
@@ -306,17 +328,26 @@ btScalar speculative_breaking_threshold(const btCollisionObject* a, const btColl
  * The dispatcher that hands every new manifold its speculative threshold;
  * the manifolds already alive are refreshed before each sub-step.
  */
-class SpeculativeDispatcher final : public btCollisionDispatcher {
+class SpeculativeDispatcher final : public btCollisionDispatcherMt {
 public:
-    using btCollisionDispatcher::btCollisionDispatcher;
+    using btCollisionDispatcherMt::btCollisionDispatcherMt;
     btScalar substep_seconds = static_cast<btScalar>(havok_substep_seconds);
+    std::unique_ptr<CollisionPairProfile> pair_profile;
 
     btPersistentManifold* getNewManifold(const btCollisionObject* a,
                                          const btCollisionObject* b) override {
-        btPersistentManifold* manifold = btCollisionDispatcher::getNewManifold(a, b);
+        btPersistentManifold* manifold = btCollisionDispatcherMt::getNewManifold(a, b);
         manifold->setContactBreakingThreshold(
             speculative_breaking_threshold(a, b, substep_seconds));
         return manifold;
+    }
+
+    void dispatchAllCollisionPairs(btOverlappingPairCache* pairs, const btDispatcherInfo& info,
+                                   btDispatcher* dispatcher) override {
+        if (physics_scheduler().thread_count() == 1)
+            btCollisionDispatcher::dispatchAllCollisionPairs(pairs, info, dispatcher);
+        else
+            btCollisionDispatcherMt::dispatchAllCollisionPairs(pairs, info, dispatcher);
     }
 };
 
@@ -337,7 +368,10 @@ struct PhysicsWorldState {
     std::unique_ptr<SpeculativeDispatcher> dispatcher;
     std::unique_ptr<btBroadphaseInterface> broadphase;
     std::unique_ptr<btSequentialImpulseConstraintSolver> solver;
+    std::unique_ptr<btConstraintSolverPoolMt> solver_pool;
     std::unique_ptr<btDiscreteDynamicsWorld> world;
+    PhysicsWorldPhaseTimes* profile_times = nullptr;
+    std::vector<std::shared_ptr<PhysicsSolverPhaseTimes>> solver_profiles;
     // Includes pending additions. Sorted handle order preserves the solver's
     // insertion order when bodies migrate between floating-origin regions.
     std::vector<std::shared_ptr<PhysicsBodyState>> members;
@@ -354,12 +388,14 @@ struct PhysicsWorldState {
         bool attached = false;
         enum class Kind { hinge, six_dof, radial };
         Kind kind = Kind::hinge;
+        std::uint32_t identity = 0;
     };
     std::vector<Hinge> hinges;
 #endif
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
     std::unordered_map<std::uint64_t, bool> recovering_overlaps;
+    std::mutex recovery_mutex;
     std::vector<PhysicsCollisionEvent> collision_events;
 #if BBLITE_HAS_PHYSICS_TRIGGER
     std::size_t trigger_body_count = 0;
@@ -418,6 +454,8 @@ struct PhysicsWorldState {
         }
         std::vector<std::shared_ptr<PhysicsBodyState>>().swap(members);
         world.reset();
+        profile_times = nullptr;
+        solver_pool.reset();
         solver.reset();
         broadphase.reset();
         dispatcher.reset();
@@ -448,6 +486,10 @@ void sync_constraint_membership(PhysicsWorldState& owner) {
         return true;
     });
     for (auto& hinge : owner.hinges) {
+        // Immovable pairs have no simulation island. Keep their ownership and
+        // collision filter, but submit rows only after a side becomes dynamic.
+        hinge.joint->setEnabled(!hinge.parent->body->isStaticOrKinematicObject() ||
+                                 !hinge.child->body->isStaticOrKinematicObject());
         const auto changed = [](const btTransform& before, const btTransform& after) {
             return before.getOrigin() != after.getOrigin() || before.getBasis() != after.getBasis();
         };
@@ -494,9 +536,13 @@ const PhysicsShapeState* shape_entry_of(const btCollisionObject* object) {
     return entry ? entry->shape.get() : nullptr;
 }
 
+const ShapeMaterial& leaf_material(const PhysicsShapeState& shape) {
+    return shape.children.empty() ? shape.material : leaf_material(*shape.children.front());
+}
+
 const ShapeMaterial* material_of(const btCollisionObject* object) {
     const auto* shape = shape_entry_of(object);
-    return shape ? &shape->material : nullptr;
+    return shape ? &leaf_material(*shape) : nullptr;
 }
 
 /** The one spelling of a pair's key, shared by every per-pair table. */
@@ -607,7 +653,8 @@ PhysicsBodyState& body_at(const PhysicsBodyHandle& handle) {
 }
 
 PhysicsShapeState& shape_at(const PhysicsShapeHandle& handle) {
-    if (!handle.ownership || handle.value != handle.ownership->identity)
+    if (!handle.ownership || handle.value != handle.ownership->identity ||
+        handle.ownership->released || !handle.ownership->shape)
         throw std::runtime_error("Physics shape handle is not live.");
     return *handle.ownership;
 }
@@ -1008,6 +1055,8 @@ PhysicsTransform read_node_transform(const PhysicsBodyState& entry) {
 
 btScalar combine(PhysicsMaterialCombine mode, btScalar left, btScalar right) {
     switch (mode) {
+    case PhysicsMaterialCombine::geometric_mean:
+        return std::sqrt(left * right);
     case PhysicsMaterialCombine::minimum:
         return std::min(left, right);
     case PhysicsMaterialCombine::maximum:
@@ -1026,7 +1075,8 @@ btScalar combined_restitution(const btCollisionObject* a, const btCollisionObjec
     const auto* right = material_of(b);
     if (left == nullptr || right == nullptr)
         return 0;
-    return combine(left->restitution_combine, left->restitution, right->restitution);
+    return combine(std::max(left->restitution_combine, right->restitution_combine),
+                   left->restitution, right->restitution);
 }
 
 /**
@@ -1055,6 +1105,7 @@ bool combine_material_contact(btManifoldPoint& point, const btCollisionObjectWra
             const auto pair = pair_key(a->getCollisionObject(), b->getCollisionObject());
             const bool initial_overlap = point.getDistance() < btScalar(-0.015) &&
                                          -point.getDistance() > 2 * approach * delta;
+            std::lock_guard lock(owner->recovery_mutex);
             if (initial_overlap || owner->recovering_overlaps.contains(pair)) {
                 owner->recovering_overlaps.try_emplace(pair, true);
                 point.m_contactPointFlags |= BT_CONTACT_FLAG_HAS_CONTACT_ERP;
@@ -1065,7 +1116,9 @@ bool combine_material_contact(btManifoldPoint& point, const btCollisionObjectWra
     const auto* left = material_of(a->getCollisionObject());
     const auto* right = material_of(b->getCollisionObject());
     if (left != nullptr && right != nullptr) {
-        point.m_combinedFriction = combine(left->friction_combine, left->friction, right->friction);
+        point.m_combinedFriction =
+            combine(std::max(left->friction_combine, right->friction_combine), left->friction,
+                    right->friction);
         // A speculative point carries no restitution: Bullet's own
         // `restitution - rel_vel - distance / dt` would spend the rebound on
         // closing the gap. Nor does the landed point that follows it while
@@ -1331,48 +1384,250 @@ MotionTypeOverlapFilter& motion_type_overlap_filter() {
     return filter;
 }
 
-class OverlapRecoverySolver final : public btSequentialImpulseConstraintSolver {
+template <typename Solver> class OverlapRecoverySolver final : public Solver {
+    std::vector<const btManifoldPoint*> recovery_contacts_;
+    std::shared_ptr<PhysicsSolverPhaseTimes> profile_;
+
+    static bool needs_recovery(const btPersistentManifold& manifold) {
+        for (int index = 0; index < manifold.getNumContacts(); ++index)
+            if ((manifold.getContactPoint(index).m_contactPointFlags &
+                 BT_CONTACT_FLAG_HAS_CONTACT_ERP) != 0)
+                return true;
+        return false;
+    }
+
     void convertContacts(btPersistentManifold** manifolds, int count,
                          const btContactSolverInfo& settings) override {
-        for (int i = 0; i < count; ++i) {
-            auto contact_settings = settings;
-            for (int p = 0; p < manifolds[i]->getNumContacts(); ++p) {
-                if ((manifolds[i]->getContactPoint(p).m_contactPointFlags &
-                     BT_CONTACT_FLAG_HAS_CONTACT_ERP) != 0) {
-                    contact_settings.m_splitImpulsePenetrationThreshold = 0;
-                    break;
+        const PhysicsPhaseTimer timer(profile_ ? &profile_->contacts : nullptr);
+        auto recovery_settings = settings;
+        recovery_settings.m_splitImpulsePenetrationThreshold = 0;
+        if constexpr (std::is_same_v<Solver, btSequentialImpulseConstraintSolverMt>) {
+            if (this->m_useBatching && count > 0) {
+                if (this->m_fixedBodyId < 0) {
+                    this->m_fixedBodyId = this->m_tmpSolverBodyPool.size();
+                    this->initSolverBody(&this->m_tmpSolverBodyPool.expand(), nullptr,
+                                         settings.m_timeStep);
                 }
+                recovery_contacts_.clear();
+                for (int index = 0; index < count; ++index) {
+                    const auto& manifold = *manifolds[index];
+                    if (needs_recovery(manifold))
+                        for (int point = 0; point < manifold.getNumContacts(); ++point)
+                            recovery_contacts_.push_back(&manifold.getContactPoint(point));
+                }
+                const auto order = std::less<const btManifoldPoint*>{};
+                std::sort(recovery_contacts_.begin(), recovery_contacts_.end(), order);
+                this->allocAllContactConstraints(manifolds, count, settings);
+                this->setupBatchedContactConstraints();
+                struct SetupWork final : btIParallelForBody {
+                    OverlapRecoverySolver& solver;
+                    const btContactSolverInfo& ordinary;
+                    const btContactSolverInfo& recovery;
+                    SetupWork(OverlapRecoverySolver& owner, const btContactSolverInfo& settings,
+                              const btContactSolverInfo& recovery_settings)
+                        : solver(owner), ordinary(settings), recovery(recovery_settings) {}
+                    void forLoop(int begin, int end) const override {
+                        const auto& batches = solver.m_batchedContactConstraints;
+                        for (int batch_index = begin; batch_index < end; ++batch_index) {
+                            const auto& batch = batches.m_batches[batch_index];
+                            for (int row = batch.begin; row < batch.end; ++row) {
+                                const int index = batches.m_constraintIndices[row];
+                                const auto* point = static_cast<const btManifoldPoint*>(
+                                    solver.m_tmpSolverContactConstraintPool[index]
+                                        .m_originalContactPoint);
+                                const bool recovering =
+                                    std::binary_search(solver.recovery_contacts_.begin(),
+                                                       solver.recovery_contacts_.end(), point,
+                                                       std::less<const btManifoldPoint*>{});
+                                solver.internalSetupContactConstraints(
+                                    index, recovering ? recovery : ordinary);
+                            }
+                        }
+                    }
+                } work(*this, settings, recovery_settings);
+                // Warm-start impulses write solver bodies: only Bullet's disjoint
+                // batches may initialize contacts concurrently.
+                const auto& batches = this->m_batchedContactConstraints;
+                if (profile_) {
+                    profile_->rows +=
+                        static_cast<std::size_t>(this->m_tmpSolverContactConstraintPool.size());
+                    profile_->batches += static_cast<std::size_t>(batches.m_batches.size());
+                    profile_->phases += static_cast<std::size_t>(batches.m_phases.size());
+                }
+                for (int index = 0; index < batches.m_phases.size(); ++index) {
+                    const auto& phase = batches.m_phases[batches.m_phaseOrder[index]];
+                    btParallelFor(phase.begin, phase.end, 1, work);
+                }
+                return;
             }
-            btSequentialImpulseConstraintSolver::convertContacts(manifolds + i, 1,
-                                                                 contact_settings);
         }
+        for (int index = 0; index < count; ++index)
+            btSequentialImpulseConstraintSolver::convertContacts(
+                manifolds + index, 1,
+                needs_recovery(*manifolds[index]) ? recovery_settings : settings);
     }
+
+    void solveGroupCacheFriendlySplitImpulseIterations(
+        btCollisionObject** bodies, int body_count, btPersistentManifold** manifolds,
+        int manifold_count, btTypedConstraint** constraints, int constraint_count,
+        const btContactSolverInfo& settings, btIDebugDraw* debug) override {
+        const PhysicsPhaseTimer timer(profile_ ? &profile_->split : nullptr);
+        if constexpr (std::is_same_v<Solver, btSequentialImpulseConstraintSolverMt>) {
+            if (this->m_useBatching) {
+                if (!settings.m_splitImpulse)
+                    return;
+                struct SplitWork final : btIParallelSumBody {
+                    OverlapRecoverySolver& solver;
+                    const btBatchedConstraints& batches;
+                    SplitWork(OverlapRecoverySolver& owner, const btBatchedConstraints& source)
+                        : solver(owner), batches(source) {}
+                    btScalar sumLoop(int begin, int end) const override {
+                        btScalar residual = 0;
+                        for (int index = begin; index < end; ++index) {
+                            const auto& batch = batches.m_batches[index];
+                            residual +=
+                                solver.resolveMultipleContactSplitPenetrationImpulseConstraints(
+                                    batches.m_constraintIndices, batch.begin, batch.end);
+                        }
+                        return residual;
+                    }
+                } work(*this, this->m_batchedContactConstraints);
+                // Use Bullet's batches without 3.25's shadowed residual, which
+                // prematurely ends its split-impulse loop after one iteration.
+                for (int iteration = 0; iteration < settings.m_numIterations; ++iteration) {
+                    btScalar residual = 0;
+                    const auto& batches = this->m_batchedContactConstraints;
+                    for (int index = 0; index < batches.m_phases.size(); ++index) {
+                        const int phase_index = batches.m_phaseOrder[index];
+                        const auto& phase = batches.m_phases[phase_index];
+                        residual += btParallelSum(phase.begin, phase.end,
+                                                  batches.m_phaseGrainSize[phase_index], work);
+                    }
+                    if (residual <= settings.m_leastSquaresResidualThreshold)
+                        break;
+                }
+                return;
+            }
+        }
+        btSequentialImpulseConstraintSolver::solveGroupCacheFriendlySplitImpulseIterations(
+            bodies, body_count, manifolds, manifold_count, constraints, constraint_count, settings,
+            debug);
+    }
+
+    btScalar solveGroupCacheFriendlySetup(btCollisionObject** bodies, int body_count,
+                                          btPersistentManifold** manifolds, int manifold_count,
+                                          btTypedConstraint** constraints, int constraint_count,
+                                          const btContactSolverInfo& settings,
+                                          btIDebugDraw* debug) override {
+        const PhysicsPhaseTimer timer(profile_ ? &profile_->setup : nullptr);
+        if (profile_)
+            ++profile_->calls;
+        return Solver::solveGroupCacheFriendlySetup(bodies, body_count, manifolds, manifold_count,
+                                                    constraints, constraint_count, settings, debug);
+    }
+    btScalar solveGroupCacheFriendlyIterations(btCollisionObject** bodies, int body_count,
+                                               btPersistentManifold** manifolds, int manifold_count,
+                                               btTypedConstraint** constraints,
+                                               int constraint_count,
+                                               const btContactSolverInfo& settings,
+                                               btIDebugDraw* debug) override {
+        const PhysicsPhaseTimer timer(profile_ ? &profile_->iterations : nullptr);
+        return Solver::solveGroupCacheFriendlyIterations(bodies, body_count, manifolds,
+                                                         manifold_count, constraints,
+                                                         constraint_count, settings, debug);
+    }
+    btScalar solveGroupCacheFriendlyFinish(btCollisionObject** bodies, int count,
+                                           const btContactSolverInfo& settings) override {
+        const PhysicsPhaseTimer timer(profile_ ? &profile_->finish : nullptr);
+        return Solver::solveGroupCacheFriendlyFinish(bodies, count, settings);
+    }
+
+public:
+    explicit OverlapRecoverySolver(std::shared_ptr<PhysicsSolverPhaseTimes> profile = {})
+        : profile_(std::move(profile)) {}
 };
 
 PhysicsWorldHandle physics_world_create() {
     // `gContactAddedCallback` is one process-global function pointer and the
     // assignment is idempotent.
-    gContactAddedCallback = combine_material_contact;
+    return physics_scheduler().run([] {
+        gContactAddedCallback = combine_material_contact;
 
-    auto owned = std::make_shared<PhysicsWorldState>();
-    PhysicsWorldState& entry = *owned;
-    entry.configuration = std::make_unique<btDefaultCollisionConfiguration>();
-    entry.dispatcher = std::make_unique<SpeculativeDispatcher>(entry.configuration.get());
-    btGImpactCollisionAlgorithm::registerAlgorithm(entry.dispatcher.get());
-    entry.broadphase = std::make_unique<btDbvtBroadphase>();
-    entry.solver = std::make_unique<OverlapRecoverySolver>();
-    const char* profile = std::getenv("BBLITE_CPU_PROFILE");
-    if (profile && profile[0] == '1' && profile[1] == '\0') {
-        entry.world =
-            std::make_unique<ProfiledDynamicsWorld>(entry.dispatcher.get(), entry.broadphase.get(),
-                                                    entry.solver.get(), entry.configuration.get());
-    } else {
-        entry.world = std::make_unique<btDiscreteDynamicsWorld>(
-            entry.dispatcher.get(), entry.broadphase.get(), entry.solver.get(),
-            entry.configuration.get());
-    }
-    entry.world->getPairCache()->setOverlapFilterCallback(&motion_type_overlap_filter());
-    return PhysicsWorldHandle{owned->identity, std::move(owned)};
+        auto owned = std::make_shared<PhysicsWorldState>();
+        PhysicsWorldState& entry = *owned;
+        const auto solver_profile = [&]() -> std::shared_ptr<PhysicsSolverPhaseTimes> {
+            if (!physics_cpu_profile_enabled())
+                return {};
+            return entry.solver_profiles.emplace_back(std::make_shared<PhysicsSolverPhaseTimes>());
+        };
+        entry.configuration = std::make_unique<btDefaultCollisionConfiguration>();
+        entry.dispatcher = std::make_unique<SpeculativeDispatcher>(entry.configuration.get());
+        btGImpactCollisionAlgorithm::registerAlgorithm(entry.dispatcher.get());
+        entry.broadphase = std::make_unique<btDbvtBroadphase>();
+        if (physics_scheduler().thread_count() == 1)
+            entry.solver =
+                std::make_unique<OverlapRecoverySolver<btSequentialImpulseConstraintSolver>>(
+                    solver_profile());
+        else {
+            entry.solver =
+                std::make_unique<OverlapRecoverySolver<btSequentialImpulseConstraintSolverMt>>(
+                    solver_profile());
+            std::vector<std::unique_ptr<btConstraintSolver>> solvers;
+            std::vector<btConstraintSolver*> pointers;
+            for (int i = 0; i < physics_scheduler().thread_count(); ++i) {
+                solvers.push_back(
+                    std::make_unique<OverlapRecoverySolver<btSequentialImpulseConstraintSolver>>(
+                        solver_profile()));
+                pointers.push_back(solvers.back().get());
+            }
+            entry.solver_pool = std::make_unique<btConstraintSolverPoolMt>(
+                pointers.data(), static_cast<int>(pointers.size()));
+            for (auto& solver : solvers)
+                static_cast<void>(solver.release());
+        }
+        const char* profile = std::getenv("BBLITE_CPU_PROFILE");
+        if (profile && profile[0] == '1' && profile[1] == '\0') {
+            std::fprintf(stderr, "[cpu][physics-scheduler] threads=%d\n",
+                         physics_scheduler().thread_count());
+            if (entry.solver_pool) {
+                auto profiled = std::make_unique<ProfiledDynamicsWorld<btDiscreteDynamicsWorldMt>>(
+                    entry.dispatcher.get(), entry.broadphase.get(), entry.solver_pool.get(),
+                    entry.solver.get(), entry.configuration.get());
+                entry.profile_times = &profiled->times;
+                entry.world = std::move(profiled);
+            } else {
+                auto profiled = std::make_unique<ProfiledDynamicsWorld<btDiscreteDynamicsWorld>>(
+                    entry.dispatcher.get(), entry.broadphase.get(), entry.solver.get(),
+                    entry.configuration.get());
+                entry.profile_times = &profiled->times;
+                entry.world = std::move(profiled);
+            }
+            if (const char* pairs = std::getenv("BBLITE_PHYSICS_PAIR_PROFILE");
+                pairs && pairs[0] == '1' && pairs[1] == '\0') {
+                entry.dispatcher->pair_profile = std::make_unique<CollisionPairProfile>();
+                entry.dispatcher->setNearCallback([](btBroadphasePair& pair,
+                                                     btCollisionDispatcher& dispatcher,
+                                                     const btDispatcherInfo& info) {
+                    static_cast<SpeculativeDispatcher&>(dispatcher)
+                        .pair_profile->process(pair, dispatcher, info);
+                });
+            }
+        } else {
+            if (entry.solver_pool)
+                entry.world = std::make_unique<btDiscreteDynamicsWorldMt>(
+                    entry.dispatcher.get(), entry.broadphase.get(), entry.solver_pool.get(),
+                    entry.solver.get(), entry.configuration.get());
+            else
+                entry.world = std::make_unique<btDiscreteDynamicsWorld>(
+                    entry.dispatcher.get(), entry.broadphase.get(), entry.solver.get(),
+                    entry.configuration.get());
+        }
+        if (entry.solver_pool)
+            entry.world->getSolverInfo().m_solverMode |=
+                SOLVER_INTERLEAVE_CONTACT_AND_FRICTION_CONSTRAINTS;
+        entry.world->getPairCache()->setOverlapFilterCallback(&motion_type_overlap_filter());
+        return PhysicsWorldHandle{owned->identity, std::move(owned)};
+    });
 }
 
 void physics_world_set_gravity(PhysicsWorldHandle world, std::array<double, 3> gravity) {
@@ -1395,10 +1650,10 @@ std::array<btVector3, 3> constraint_anchor_axes(const PhysicsConstraintAnchor& a
 }
 } // namespace
 
-void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent,
-                                PhysicsBodyHandle child,
-                                const PhysicsConstraintAnchor& parent_anchor,
-                                const PhysicsConstraintAnchor& child_anchor, bool collisions) {
+PhysicsConstraintHandle
+physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent,
+                           PhysicsBodyHandle child, const PhysicsConstraintAnchor& parent_anchor,
+                           const PhysicsConstraintAnchor& child_anchor, bool collisions) {
     auto& owner = world_at(world);
     const auto& a = body_at(parent);
     const auto& b = body_at(child);
@@ -1420,14 +1675,15 @@ void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle pare
                                             b.node_from_body.inverse() * anchor_b);
     owner.hinges.push_back({parent.ownership, child.ownership, std::move(hinge), anchor_a, anchor_b,
                             a.node_from_body, b.node_from_body, collisions, false});
+    owner.hinges.back().identity = next_handle_identity<PhysicsConstraintHandle>();
     sync_constraint_membership(owner);
+    return {owner.hinges.back().identity, world.ownership};
 }
 
-void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent,
-                                     PhysicsBodyHandle child,
-                                     const PhysicsConstraintAnchor& parent_anchor,
-                                     const PhysicsConstraintAnchor& child_anchor,
-                                     const PhysicsConstraintAxes& axes, bool collisions) {
+PhysicsConstraintHandle physics_world_create_constraint(
+    PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
+    const PhysicsConstraintAxes& axes, bool collisions) {
     auto& owner = world_at(world);
     const auto& a = body_at(parent);
     const auto& b = body_at(child);
@@ -1482,8 +1738,24 @@ void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle
                             radial.mode == PhysicsConstraintAxisMode::free
                                 ? PhysicsWorldState::Hinge::Kind::six_dof
                                 : PhysicsWorldState::Hinge::Kind::radial});
+    owner.hinges.back().identity = next_handle_identity<PhysicsConstraintHandle>();
     sync_constraint_membership(owner);
+    return {owner.hinges.back().identity, world.ownership};
 }
+void physics_constraint_release(PhysicsConstraintHandle constraint) {
+    const auto owner = constraint.owner.lock();
+    if (!owner)
+        return;
+    const auto found =
+        std::find_if(owner->hinges.begin(), owner->hinges.end(),
+                     [&](const auto& joint) { return joint.identity == constraint.value; });
+    if (found == owner->hinges.end())
+        return;
+    if (found->attached)
+        owner->world->removeConstraint(found->joint.get());
+    owner->hinges.erase(found);
+}
+
 #endif
 
 #if BBLITE_HAS_PHYSICS_FLOATING_ORIGIN
@@ -1561,6 +1833,7 @@ void physics_world_release(PhysicsWorldHandle world) {
 
 namespace {
 void validate_container_children(const PhysicsShapeState& root, const PhysicsShapeState& node) {
+    const auto& material = leaf_material(root);
     for (const auto& child : node.children) {
         if (child->triangle_mesh) {
             throw std::runtime_error(
@@ -1571,10 +1844,11 @@ void validate_container_children(const PhysicsShapeState& root, const PhysicsSha
 #else
         const bool trigger_mismatch = false;
 #endif
-        if (child->material.friction != root.material.friction ||
-            child->material.restitution != root.material.restitution ||
-            child->material.friction_combine != root.material.friction_combine ||
-            child->material.restitution_combine != root.material.restitution_combine ||
+        const auto& child_material = leaf_material(*child);
+        if (child_material.friction != material.friction ||
+            child_material.restitution != material.restitution ||
+            child_material.friction_combine != material.friction_combine ||
+            child_material.restitution_combine != material.restitution_combine ||
             child->membership_mask != root.membership_mask ||
             child->collide_mask != root.collide_mask || trigger_mismatch) {
             throw std::runtime_error(
@@ -1585,225 +1859,268 @@ void validate_container_children(const PhysicsShapeState& root, const PhysicsSha
 }
 } // namespace
 
+bool physics_cpu_profile_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BBLITE_CPU_PROFILE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+
 void physics_world_step(PhysicsWorldHandle world, double seconds) {
 #if BBLITE_PHYSICS_VIEWER
     require_runtime_execution("a physics step");
 #endif
-    PhysicsWorldState& entry = world_at(world);
-    static const bool cpu_profile = [] {
-        const char* value = std::getenv("BBLITE_CPU_PROFILE");
-        return value && value[0] == '1' && value[1] == '\0';
-    }();
-    using ProfileClock = std::chrono::steady_clock;
-    auto* profiled_world =
-        cpu_profile ? dynamic_cast<ProfiledDynamicsWorld*>(entry.world.get()) : nullptr;
-    if (profiled_world)
-        profiled_world->times = {};
-    const auto profile_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-    int pending_readds = 0;
-    if (cpu_profile) {
-        for (const auto& member : entry.members) {
-            if (member->needs_readd) {
-                ++pending_readds;
-            }
-        }
-    }
-    for (const auto& member : entry.members) {
-        if (member->shape && !member->shape->children.empty()) {
-            validate_container_children(*member->shape, *member->shape);
-        }
-    }
-    flush_pending_readds(entry);
-#if BBLITE_HAS_PHYSICS_CONSTRAINTS
-    sync_constraint_membership(entry);
-#endif
-    // An impulse is clamped at its write below. This pass also covers any
-    // velocity written by another reached body operation before this step.
-    clamp_world_velocities(entry);
-    const auto flush_end = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-
-    // The pin runs ONE `HP_World_Step` per frame and says so: "The clamp is
-    // intentionally *not* a substepping loop: Lite runs a single fixed step
-    // per frame." What Havok does inside that call is Havok's, and it is
-    // measured above: fixed 1/240 s sub-steps, as many as the step holds.
-    // Bullet takes the same sub-steps here, each an ordinary full step of
-    // its own (`maxSubSteps` 0 disables its accumulator and interpolation),
-    // so the two integrators walk the same grid.
-    const int substeps =
-        std::max(1, static_cast<int>(std::lround(seconds / havok_substep_seconds)));
-    const btScalar substep_seconds = static_cast<btScalar>(seconds / substeps);
-#if BBLITE_HAS_PHYSICS_CONSTRAINTS
-    const btScalar step_ratio =
-        btMin(btScalar(1), substep_seconds / static_cast<btScalar>(havok_substep_seconds));
-    for (auto& joint : entry.hinges) {
-        if (joint.attached && joint.kind == PhysicsWorldState::Hinge::Kind::radial)
-            static_cast<RadialDistanceConstraint&>(*joint.joint)
-                .begin_frame(step_ratio * step_ratio);
-    }
-#endif
-    cache_velocities(entry, &PhysicsBodyState::step_start);
-    // The landings of the previous step rebound during this one; the active
-    // list is emptied below once they have, so the swap leaves the schedule
-    // empty for this step's landings.
-    entry.active_bounces.swap(entry.scheduled_bounces);
-    entry.scheduled_bounce_bodies.clear();
-    double prepare_ms = 0, bullet_ms = 0, bounce_ms = 0;
-    for (int i = 0; i < substeps; ++i) {
-        const auto prepare_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-        refresh_speculative_thresholds(entry, substep_seconds);
-        apply_active_bounces(entry, substep_seconds);
-        cache_velocities(entry, &PhysicsBodyState::substep_start);
-        const auto bullet_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-        entry.world->stepSimulation(substep_seconds, 0, substep_seconds);
-        const auto bounce_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-        schedule_landing_bounces(entry, substep_seconds, seconds);
+    physics_scheduler().run([&] {
+        PhysicsWorldState& entry = world_at(world);
+        const bool cpu_profile = physics_cpu_profile_enabled();
+        using ProfileClock = std::chrono::steady_clock;
+        if (entry.profile_times)
+            *entry.profile_times = {};
+        for (auto& profile : entry.solver_profiles)
+            *profile = {};
+        if (entry.dispatcher->pair_profile)
+            entry.dispatcher->pair_profile->reset();
+        const auto profile_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+        int pending_readds = 0;
         if (cpu_profile) {
-            prepare_ms +=
-                std::chrono::duration<double, std::milli>(bullet_start - prepare_start).count();
-            bullet_ms +=
-                std::chrono::duration<double, std::milli>(bounce_start - bullet_start).count();
-            bounce_ms +=
-                std::chrono::duration<double, std::milli>(ProfileClock::now() - bounce_start)
-                    .count();
-        }
-    }
-    const auto post_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-    for (const auto& bounce : entry.active_bounces) {
-        entry.pending_bounce_pairs.erase(pair_key(bounce.body_a, bounce.body_b));
-    }
-    entry.active_bounces.clear();
-    if (!entry.recovering_overlaps.empty()) {
-        for (auto& [pair, present] : entry.recovering_overlaps) {
-            static_cast<void>(pair);
-            present = false;
-        }
-        for (int i = 0; i < entry.dispatcher->getNumManifolds(); ++i) {
-            auto* manifold = entry.dispatcher->getManifoldByIndexInternal(i);
-            const auto found = entry.recovering_overlaps.find(
-                pair_key(static_cast<const btCollisionObject*>(manifold->getBody0()),
-                         static_cast<const btCollisionObject*>(manifold->getBody1())));
-            if (found == entry.recovering_overlaps.end())
-                continue;
-            for (int p = 0; p < manifold->getNumContacts(); ++p) {
-                if (manifold->getContactPoint(p).getDistance() < 0) {
-                    found->second = true;
-                    break;
+            for (const auto& member : entry.members) {
+                if (member->needs_readd) {
+                    ++pending_readds;
                 }
             }
-            if (!found->second) {
-                for (int p = 0; p < manifold->getNumContacts(); ++p)
-                    manifold->getContactPoint(p).m_contactPointFlags &=
-                        ~BT_CONTACT_FLAG_HAS_CONTACT_ERP;
+        }
+        for (const auto& member : entry.members) {
+            if (member->shape && !member->shape->children.empty()) {
+                validate_container_children(*member->shape, *member->shape);
             }
         }
-        std::erase_if(entry.recovering_overlaps, [](const auto& pair) { return !pair.second; });
-    }
-    // Contacts can add velocity inside Bullet's solver. Havok's body limits
-    // remain invariant after a step, so make that invariant observable here
-    // too before transforms and counters are read.
-    clamp_world_velocities(entry);
-    collect_collision_events(entry);
-#if BBLITE_HAS_PHYSICS_TRIGGER
-    collect_trigger_events(entry);
+        flush_pending_readds(entry);
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
+        sync_constraint_membership(entry);
 #endif
-    const auto stabilize_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
-    const int stabilized_bodies = stabilize_contacting_bodies(entry, seconds);
-    entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
-    const auto solver_end = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+        // An impulse is clamped at its write below. This pass also covers any
+        // velocity written by another reached body operation before this step.
+        clamp_world_velocities(entry);
+        const auto flush_end = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
 
-    if (cpu_profile) {
-        static std::uint64_t profile_step = 0;
-        if (profile_step % 30 == 0 || pending_readds > 0) {
-            int dynamic_bodies = 0;
-            int active_dynamic_bodies = 0;
-            int moving_bodies = 0;
-            double maximum_linear_speed = 0.0;
-            double maximum_angular_speed = 0.0;
-            double squared_speed_sum = 0.0;
-            const btDiscreteDynamicsWorld& stepped = *entry.world;
-            for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
-                const btCollisionObject* object = stepped.getCollisionObjectArray()[i];
-                if (!object->isStaticOrKinematicObject()) {
-                    ++dynamic_bodies;
-                    if (object->isActive()) {
-                        ++active_dynamic_bodies;
+        // The pin runs ONE `HP_World_Step` per frame and says so: "The clamp is
+        // intentionally *not* a substepping loop: Lite runs a single fixed step
+        // per frame." What Havok does inside that call is Havok's, and it is
+        // measured above: fixed 1/240 s sub-steps, as many as the step holds.
+        // Bullet takes the same sub-steps here, each an ordinary full step of
+        // its own (`maxSubSteps` 0 disables its accumulator and interpolation),
+        // so the two integrators walk the same grid.
+        const int substeps =
+            std::max(1, static_cast<int>(std::lround(seconds / havok_substep_seconds)));
+        const btScalar substep_seconds = static_cast<btScalar>(seconds / substeps);
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
+        const btScalar step_ratio =
+            btMin(btScalar(1), substep_seconds / static_cast<btScalar>(havok_substep_seconds));
+        for (auto& joint : entry.hinges) {
+            if (joint.attached && joint.kind == PhysicsWorldState::Hinge::Kind::radial)
+                static_cast<RadialDistanceConstraint&>(*joint.joint)
+                    .begin_frame(step_ratio * step_ratio);
+        }
+#endif
+        cache_velocities(entry, &PhysicsBodyState::step_start);
+        // The landings of the previous step rebound during this one; the active
+        // list is emptied below once they have, so the swap leaves the schedule
+        // empty for this step's landings.
+        entry.active_bounces.swap(entry.scheduled_bounces);
+        entry.scheduled_bounce_bodies.clear();
+        double prepare_ms = 0, bullet_ms = 0, bounce_ms = 0;
+        for (int i = 0; i < substeps; ++i) {
+            const auto prepare_start =
+                cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+            refresh_speculative_thresholds(entry, substep_seconds);
+            apply_active_bounces(entry, substep_seconds);
+            cache_velocities(entry, &PhysicsBodyState::substep_start);
+            const auto bullet_start =
+                cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+            entry.world->stepSimulation(substep_seconds, 0, substep_seconds);
+            const auto bounce_start =
+                cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+            schedule_landing_bounces(entry, substep_seconds, seconds);
+            if (cpu_profile) {
+                prepare_ms +=
+                    std::chrono::duration<double, std::milli>(bullet_start - prepare_start).count();
+                bullet_ms +=
+                    std::chrono::duration<double, std::milli>(bounce_start - bullet_start).count();
+                bounce_ms +=
+                    std::chrono::duration<double, std::milli>(ProfileClock::now() - bounce_start)
+                        .count();
+            }
+        }
+        const auto post_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+        for (const auto& bounce : entry.active_bounces) {
+            entry.pending_bounce_pairs.erase(pair_key(bounce.body_a, bounce.body_b));
+        }
+        entry.active_bounces.clear();
+        if (!entry.recovering_overlaps.empty()) {
+            for (auto& [pair, present] : entry.recovering_overlaps) {
+                static_cast<void>(pair);
+                present = false;
+            }
+            for (int i = 0; i < entry.dispatcher->getNumManifolds(); ++i) {
+                auto* manifold = entry.dispatcher->getManifoldByIndexInternal(i);
+                const auto found = entry.recovering_overlaps.find(
+                    pair_key(static_cast<const btCollisionObject*>(manifold->getBody0()),
+                             static_cast<const btCollisionObject*>(manifold->getBody1())));
+                if (found == entry.recovering_overlaps.end())
+                    continue;
+                for (int p = 0; p < manifold->getNumContacts(); ++p) {
+                    if (manifold->getContactPoint(p).getDistance() < 0) {
+                        found->second = true;
+                        break;
                     }
-                    const auto* rigid_body = btRigidBody::upcast(object);
-                    if (rigid_body != nullptr) {
-                        const double linear_speed =
-                            static_cast<double>(rigid_body->getLinearVelocity().length());
-                        const double angular_speed =
-                            static_cast<double>(rigid_body->getAngularVelocity().length());
-                        maximum_linear_speed = std::max(maximum_linear_speed, linear_speed);
-                        maximum_angular_speed = std::max(maximum_angular_speed, angular_speed);
-                        squared_speed_sum += linear_speed * linear_speed;
-                        if (linear_speed > 0.01 || angular_speed > 0.01) {
-                            ++moving_bodies;
+                }
+                if (!found->second) {
+                    for (int p = 0; p < manifold->getNumContacts(); ++p)
+                        manifold->getContactPoint(p).m_contactPointFlags &=
+                            ~BT_CONTACT_FLAG_HAS_CONTACT_ERP;
+                }
+            }
+            std::erase_if(entry.recovering_overlaps, [](const auto& pair) { return !pair.second; });
+        }
+        // Contacts can add velocity inside Bullet's solver. Havok's body limits
+        // remain invariant after a step, so make that invariant observable here
+        // too before transforms and counters are read.
+        clamp_world_velocities(entry);
+        collect_collision_events(entry);
+#if BBLITE_HAS_PHYSICS_TRIGGER
+        collect_trigger_events(entry);
+#endif
+        const auto stabilize_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+        const int stabilized_bodies = stabilize_contacting_bodies(entry, seconds);
+        entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
+        const auto solver_end = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+
+        if (cpu_profile) {
+            static std::uint64_t profile_step = 0;
+            if (profile_step % 30 == 0 || pending_readds > 0) {
+                int dynamic_bodies = 0;
+                int active_dynamic_bodies = 0;
+                int moving_bodies = 0;
+                double maximum_linear_speed = 0.0;
+                double maximum_angular_speed = 0.0;
+                double squared_speed_sum = 0.0;
+                const btDiscreteDynamicsWorld& stepped = *entry.world;
+                for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
+                    const btCollisionObject* object = stepped.getCollisionObjectArray()[i];
+                    if (!object->isStaticOrKinematicObject()) {
+                        ++dynamic_bodies;
+                        if (object->isActive()) {
+                            ++active_dynamic_bodies;
+                        }
+                        const auto* rigid_body = btRigidBody::upcast(object);
+                        if (rigid_body != nullptr) {
+                            const double linear_speed =
+                                static_cast<double>(rigid_body->getLinearVelocity().length());
+                            const double angular_speed =
+                                static_cast<double>(rigid_body->getAngularVelocity().length());
+                            maximum_linear_speed = std::max(maximum_linear_speed, linear_speed);
+                            maximum_angular_speed = std::max(maximum_angular_speed, angular_speed);
+                            squared_speed_sum += linear_speed * linear_speed;
+                            if (linear_speed > 0.01 || angular_speed > 0.01) {
+                                ++moving_bodies;
+                            }
                         }
                     }
                 }
-            }
-            const double flush_ms =
-                std::chrono::duration<double, std::milli>(flush_end - profile_start).count();
-            const double solver_ms =
-                std::chrono::duration<double, std::milli>(solver_end - flush_end).count();
-            std::fprintf(
-                stderr,
-                "[cpu][physics] step=%llu bodies=%d dynamic=%d "
-                "active_dynamic=%d "
-                "moving=%d max_linear=%.3f max_angular=%.3f rms_linear=%.3f "
-                "manifolds=%d stabilized_total=%llu pending_readds=%d "
-                "flush_ms=%.3f solver_ms=%.3f prepare_ms=%.3f bullet_ms=%.3f bounce_ms=%.3f post_ms=%.3f stabilize_ms=%.3f\n",
-                static_cast<unsigned long long>(profile_step), stepped.getNumCollisionObjects(),
-                dynamic_bodies, active_dynamic_bodies, moving_bodies, maximum_linear_speed,
-                maximum_angular_speed,
-                dynamic_bodies > 0
-                    ? std::sqrt(squared_speed_sum / static_cast<double>(dynamic_bodies))
-                    : 0.0,
-                entry.dispatcher->getNumManifolds(),
-                static_cast<unsigned long long>(entry.stabilized_total), pending_readds, flush_ms,
-                solver_ms, prepare_ms, bullet_ms, bounce_ms,
-                std::chrono::duration<double, std::milli>(stabilize_start - post_start).count(),
-                std::chrono::duration<double, std::milli>(solver_end - stabilize_start).count());
-            if (profiled_world) {
-                const auto& t = profiled_world->times;
+                const double flush_ms =
+                    std::chrono::duration<double, std::milli>(flush_end - profile_start).count();
+                const double solver_ms =
+                    std::chrono::duration<double, std::milli>(solver_end - flush_end).count();
                 std::fprintf(
                     stderr,
-                    "[cpu][bullet] step=%llu collision_ms=%.3f aabbs_ms=%.3f broadphase_ms=%.3f constraints_ms=%.3f islands_ms=%.3f predict_ms=%.3f integrate_ms=%.3f activate_ms=%.3f synchronize_ms=%.3f\n",
-                    static_cast<unsigned long long>(profile_step), t.collision, t.aabbs,
-                    t.broadphase, t.constraints, t.islands, t.predict, t.integrate, t.activate,
-                    t.synchronize);
+                    "[cpu][physics] step=%llu bodies=%d dynamic=%d "
+                    "active_dynamic=%d "
+                    "moving=%d max_linear=%.3f max_angular=%.3f rms_linear=%.3f "
+                    "manifolds=%d stabilized_total=%llu pending_readds=%d "
+                    "flush_ms=%.3f solver_ms=%.3f prepare_ms=%.3f bullet_ms=%.3f bounce_ms=%.3f post_ms=%.3f stabilize_ms=%.3f\n",
+                    static_cast<unsigned long long>(profile_step), stepped.getNumCollisionObjects(),
+                    dynamic_bodies, active_dynamic_bodies, moving_bodies, maximum_linear_speed,
+                    maximum_angular_speed,
+                    dynamic_bodies > 0
+                        ? std::sqrt(squared_speed_sum / static_cast<double>(dynamic_bodies))
+                        : 0.0,
+                    entry.dispatcher->getNumManifolds(),
+                    static_cast<unsigned long long>(entry.stabilized_total), pending_readds,
+                    flush_ms, solver_ms, prepare_ms, bullet_ms, bounce_ms,
+                    std::chrono::duration<double, std::milli>(stabilize_start - post_start).count(),
+                    std::chrono::duration<double, std::milli>(solver_end - stabilize_start)
+                        .count());
+                if (entry.profile_times) {
+                    const auto& t = *entry.profile_times;
+                    std::fprintf(
+                        stderr,
+                        "[cpu][bullet] step=%llu collision_ms=%.3f aabbs_ms=%.3f broadphase_ms=%.3f constraints_ms=%.3f islands_ms=%.3f predict_ms=%.3f integrate_ms=%.3f activate_ms=%.3f synchronize_ms=%.3f\n",
+                        static_cast<unsigned long long>(profile_step), t.collision, t.aabbs,
+                        t.broadphase, t.constraints, t.islands, t.predict, t.integrate, t.activate,
+                        t.synchronize);
+                }
+                if (!entry.solver_profiles.empty()) {
+                    PhysicsSolverPhaseTimes total;
+                    for (const auto& sample : entry.solver_profiles) {
+                        total.setup += sample->setup;
+                        total.contacts += sample->contacts;
+                        total.iterations += sample->iterations;
+                        total.split += sample->split;
+                        total.finish += sample->finish;
+                        total.calls += sample->calls;
+                        total.rows += sample->rows;
+                        total.batches += sample->batches;
+                        total.phases += sample->phases;
+                    }
+                    std::fprintf(
+                        stderr,
+                        "[cpu][solver] step=%llu setup_ms=%.3f contacts_ms=%.3f split_ms=%.3f iterations_ms=%.3f finish_ms=%.3f calls=%zu rows=%zu batches=%zu phases=%zu\n",
+                        static_cast<unsigned long long>(profile_step), total.setup, total.contacts,
+                        total.split, total.iterations, total.finish, total.calls, total.rows,
+                        total.batches, total.phases);
+                }
+                if (entry.dispatcher->pair_profile)
+                    entry.dispatcher->pair_profile->write(
+                        static_cast<unsigned long long>(profile_step));
             }
+            ++profile_step;
         }
-        ++profile_step;
-    }
 
-    // The trajectory instrument. A substituted solver cannot be gated by
-    // MAD against a Havok golden at a moving pose, so what grades it is the
-    // pose it produces per step. Read once: this is a per-frame path, and
-    // `getenv` takes a lock and scans the environment block.
-    static const bool trace = std::getenv("BBLITE_PHYSICS_TRACE") != nullptr;
-    if (trace) {
-        static int step_index = 0;
+        // The trajectory instrument. A substituted solver cannot be gated by
+        // MAD against a Havok golden at a moving pose, so what grades it is the
+        // pose it produces per step. Read once: this is a per-frame path, and
+        // `getenv` takes a lock and scans the environment block.
+        static const bool trace = std::getenv("BBLITE_PHYSICS_TRACE") != nullptr;
+        if (trace) {
+            static int step_index = 0;
 #if BBLITE_HAS_PHYSICS_TRIGGER
-        // A trigger event carries no pixels — the pin's own handler for it
-        // writes a dataset flag, which erases — so the trace is the only
-        // place its two edges are observable at all.
-        for (const PhysicsTriggerEvent& event : entry.trigger_events) {
-            std::fprintf(stderr, "[physics] step %d trigger %s\n", step_index,
-                         event.type == PhysicsTriggerEventType::entered ? "ENTERED" : "EXITED");
-        }
+            // A trigger event carries no pixels — the pin's own handler for it
+            // writes a dataset flag, which erases — so the trace is the only
+            // place its two edges are observable at all.
+            for (const PhysicsTriggerEvent& event : entry.trigger_events) {
+                std::fprintf(stderr, "[physics] step %d trigger %s\n", step_index,
+                             event.type == PhysicsTriggerEventType::entered ? "ENTERED" : "EXITED");
+            }
 #endif
-        const btDiscreteDynamicsWorld& stepped = *entry.world;
-        for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
-            const btVector3 origin =
-                stepped.getCollisionObjectArray()[i]->getWorldTransform().getOrigin();
-            std::fprintf(stderr, "[physics] step %d dt %.9f body %d pos %.9f %.9f %.9f\n",
-                         step_index, seconds, i, static_cast<double>(origin.x()),
-                         static_cast<double>(origin.y()), static_cast<double>(origin.z()));
+            const btDiscreteDynamicsWorld& stepped = *entry.world;
+            for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
+                const btVector3 origin =
+                    stepped.getCollisionObjectArray()[i]->getWorldTransform().getOrigin();
+                std::fprintf(stderr, "[physics] step %d dt %.9f body %d pos %.9f %.9f %.9f\n",
+                             step_index, seconds, i, static_cast<double>(origin.x()),
+                             static_cast<double>(origin.y()), static_cast<double>(origin.z()));
+                const auto rotation =
+                    stepped.getCollisionObjectArray()[i]->getWorldTransform().getRotation();
+                std::fprintf(stderr,
+                             "[physics-rotation] step %d body %d quat %.9f %.9f %.9f %.9f\n",
+                             step_index, i, static_cast<double>(rotation.x()),
+                             static_cast<double>(rotation.y()), static_cast<double>(rotation.z()),
+                             static_cast<double>(rotation.w()));
+            }
+            ++step_index;
         }
-        ++step_index;
-    }
+    });
 }
 
 const std::vector<PhysicsCollisionEvent>&
@@ -2352,6 +2669,11 @@ PhysicsShapeHandle physics_shape_create_sphere(std::array<double, 3> center, dou
 PhysicsShapeHandle physics_shape_create_box(std::array<double, 3> center,
                                             std::array<double, 4> rotation,
                                             std::array<double, 3> extents) {
+    if (std::any_of(extents.begin(), extents.end(), [](double value) {
+            return value < 0 || !std::isfinite(value) ||
+                   !std::isfinite(static_cast<btScalar>(value));
+        }))
+        throw std::invalid_argument("Physics box extents must be finite and nonnegative.");
     if (std::abs(rotation[0]) > 1e-9 || std::abs(rotation[1]) > 1e-9 ||
         std::abs(rotation[2]) > 1e-9 || std::abs(std::abs(rotation[3]) - 1.0) > 1e-9) {
         throw std::runtime_error("A rotated box physics shape is not lowered by this "
@@ -2373,9 +2695,10 @@ PhysicsShapeHandle physics_shape_create_box(std::array<double, 3> center,
                    static_cast<btScalar>(extents[2] * 0.5));
     btVector3 offset = to_bt(center);
     for (int axis = 0; axis < 3; ++axis) {
-        const btScalar grown = std::max(half[axis], convex_margin);
-        offset[axis] -= grown - half[axis];
-        half[axis] = grown;
+        if (half[axis] == 0) {
+            offset[axis] -= convex_margin;
+            half[axis] = convex_margin;
+        }
     }
     const auto handle = record_debug_inputs(
         push_shape(std::make_unique<btBoxShape>(half), translated_frame(offset)), "BOX", center,
@@ -2411,6 +2734,9 @@ PhysicsShapeHandle physics_shape_create_cylinder(std::array<double, 3> point_a,
 PhysicsShapeHandle
 physics_shape_create_convex_hull(const std::vector<std::array<double, 3>>& positions) {
     auto source_hull = std::make_unique<btConvexHullShape>();
+    // Havok's hull stays within its input support planes. Bullet adds its
+    // default margin outside those vertices unless it is explicitly removed.
+    source_hull->setMargin(0);
     for (const std::array<double, 3>& position : positions) {
         source_hull->addPoint(to_bt(position), false);
     }
@@ -2459,6 +2785,7 @@ physics_shape_create_convex_hull(const std::vector<std::array<double, 3>>& posit
     }
 
     auto hull = std::make_unique<btConvexHullShape>();
+    hull->setMargin(0);
     const btTransform body_from_node = principal.inverse();
     btConvexHullComputer cooked;
     cooked.compute(&source_hull->getUnscaledPoints()[0].getX(), sizeof(btVector3),
@@ -2538,6 +2865,11 @@ PhysicsShapeHandle physics_shape_create_mesh(const std::vector<std::array<double
     return handle;
 }
 
+void physics_shape_release(PhysicsShapeHandle shape) {
+    auto& entry = shape_at(shape);
+    entry.released = true;
+    entry.release_if_unused();
+}
 PhysicsShapeHandle physics_shape_create_container() {
     return record_debug_inputs(
         push_shape(std::make_unique<btCompoundShape>(), btTransform::getIdentity()), "CONTAINER");
@@ -2685,6 +3017,10 @@ PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle handle) {
 
 void physics_shape_set_material(PhysicsShapeHandle shape, const PhysicsShapeMaterial& material) {
     PhysicsShapeState& entry = shape_at(shape);
+    // Havok returns RESULT_NOTIMPLEMENTED for a container material write.
+    // The source ignores that result; the children keep their own materials.
+    if (entry.shape->isCompound())
+        return;
     // Bullet carries one friction per body, where the pin's material array
     // separates static from dynamic. No reached call passes a differing
     // pair -- `setPhysicsShapeMaterial` writes the same value into both --
@@ -2839,6 +3175,8 @@ void physics_body_release(PhysicsBodyHandle body) {
     entry.motion_state.reset();
     if (entry.shape)
         std::erase(entry.shape->users, &entry);
+    if (entry.shape)
+        entry.shape->release_if_unused();
     entry.shape.reset();
 }
 
@@ -2876,6 +3214,7 @@ void physics_body_set_shape(PhysicsBodyHandle body, PhysicsShapeHandle shape) {
         throw std::runtime_error("Physics heightfields require a static body.");
 #endif
     const bool shape_changed = entry.shape != shape.ownership;
+    const auto previous_shape = entry.shape;
     if (shape_changed) {
         shape_entry.users.push_back(&entry);
 #if BBLITE_HAS_PHYSICS_TRIGGER
@@ -2905,8 +3244,23 @@ void physics_body_set_shape(PhysicsBodyHandle body, PhysicsShapeHandle shape) {
     // own centre offset was not known then. Re-apply it now.
     write_world_transform(entry, entry.requested);
     mark_body_dirty(entry);
+    if (shape_changed && previous_shape)
+        previous_shape->release_if_unused();
 }
 
+PhysicsShapeHandle physics_body_get_shape(PhysicsBodyHandle body) {
+    const auto& shape = body_at(body).shape;
+    return shape ? PhysicsShapeHandle{shape->identity, shape} : PhysicsShapeHandle{};
+}
+void physics_body_set_active(PhysicsBodyHandle body, bool active) {
+    auto& entry = body_at(body);
+    if (active)
+        entry.body->activate(true);
+    else {
+        entry.body->clearForces();
+        entry.body->forceActivationState(ISLAND_SLEEPING);
+    }
+}
 PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body) {
     return read_node_transform(body_at(body));
 }

@@ -40,6 +40,7 @@ inline std::uint32_t ui_selector_sequence_specificity(const std::vector<UiSelect
 
 struct RmlUiSelectorTree {
     using Node = Rml::Element*;
+    bool root(Node node) const { return node->IsPseudoClassSet("root"); }
     bool valid(Node node) const { return node != nullptr; }
     bool element(Node node) const {
         return node && node->GetPseudoElement() == Rml::Element::PseudoElement::None &&

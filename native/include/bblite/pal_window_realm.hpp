@@ -30,6 +30,8 @@ void window_on_application_error(bool rejection, std::uint64_t identity,
                                  ApplicationErrors::Callback callback, bool once);
 void window_off_application_error(bool rejection, std::uint64_t identity);
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element);
+/** The source's canvas readiness marker gates measured capture, never rendering. */
+void window_defer_capture_until_canvas_ready();
 
 class ResizeObserver {
 public:
@@ -57,6 +59,8 @@ public:
     [[nodiscard]] bool matches() const;
     [[nodiscard]] const std::string& media() const noexcept { return media_; }
     void add_change_listener(js::Callback<void()> callback);
+    void add_change_listener(std::size_t identity, js::Callback<void()> callback);
+    void remove_change_listener(std::size_t identity);
     void deliver();
     /**
      * Whether the document must keep this list alive on the script's
@@ -80,6 +84,22 @@ private:
 };
 
 std::shared_ptr<ResizeObserver> create_resize_observer(ResizeObserver::Callback callback);
+class MutationObserver {
+public:
+    using Callback = js::Callback<void()>;
+    explicit MutationObserver(Callback callback) : callback_(std::move(callback)) {}
+    void observe(UiElementHandle element, std::optional<std::vector<std::string>> filter);
+    void disconnect();
+    void notify(UiElementHandle element, const std::string& attribute);
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback_); }
+private:
+    friend std::shared_ptr<MutationObserver> create_mutation_observer(Callback callback);
+    std::weak_ptr<MutationObserver> self_;
+    Callback callback_;
+    std::unordered_map<std::uint32_t, std::optional<std::vector<std::string>>> observed_;
+    bool pending_ = false;
+};
+std::shared_ptr<MutationObserver> create_mutation_observer(MutationObserver::Callback callback);
 std::shared_ptr<MediaQueryList> create_media_query(std::string query);
 int run_window_application(WorkerEntry initialize, EngineOptions options);
 

@@ -32,12 +32,12 @@ const source = `${imports}
     }
 `;
 
-test("shared PBR and glTF calls replay material order, load counts and producer-specific mutations", () => {
+test("PBR and glTF calls retain composition profiles, material order and producer-specific mutations", () => {
     const result = compileSource(source);
-    assert.equal(result.cpp.match(/bbl::create_pbr_material\(/g)?.length, 1);
+    assert.equal(result.cpp.match(/bbl::create_pbr_material\(/g)?.length, 4);
     assert.equal(
         result.cpp.match(/bbl::create_standard_material\(/g)?.length,
-        1,
+        4,
     );
     assert.equal(result.cpp.match(/bbl::load_gltf\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMaterialCount, 8);
@@ -71,7 +71,7 @@ test("shared PBR and glTF calls replay material order, load counts and producer-
     );
 });
 
-test("void, inferred and annotated resource helpers share bodies with fresh call metadata", () => {
+test("void, inferred and annotated resource helpers preserve distinct composition profiles", () => {
     for (const declaration of [
         "function make(): void { createPbrMaterial({}); }",
         "class Factory { make(): void { createPbrMaterial({}); } } const factory = new Factory(); function make() { factory.make(); }",
@@ -84,7 +84,7 @@ test("void, inferred and annotated resource helpers share bodies with fresh call
         );
         assert.equal(
             result.cpp.match(/bbl::create_pbr_material\(/g)?.length,
-            1,
+            2,
             declaration,
         );
         assert.deepEqual(
@@ -118,7 +118,7 @@ test("a declined shared resource return rolls back speculative construction effe
     );
 });
 
-test("per-call numeric material facts remain distinct while the emitted scalar parameters are shared", () => {
+test("uniform-only PBR factors remain runtime parameters of distinct composition profiles", () => {
     const result =
         compileSource(`${imports} async function main(){ const engine=await createEngine({});
         function make(factor:number) { return createPbrMaterial({metallicFactor:factor, roughnessFactor:factor}); }
@@ -130,11 +130,17 @@ test("per-call numeric material facts remain distinct while the emitted scalar p
             material.roughnessFactor,
         ]),
         [
-            [0.25, 0.25],
-            [0.75, 0.75],
+            [undefined, undefined],
+            [undefined, undefined],
         ],
     );
-    assert.equal(result.cpp.match(/bbl::create_pbr_material\(/g)?.length, 1);
+    assert.equal(result.cpp.match(/bbl::create_pbr_material\(/g)?.length, 2);
+    assert.deepEqual(
+        [...result.cpp.matchAll(/\.composition_profile = (\d+)u/g)].map(
+            (match) => Number(match[1]),
+        ),
+        [0, 1],
+    );
 });
 
 test("shared material helpers retain tuple and conditional scalar facts", () => {

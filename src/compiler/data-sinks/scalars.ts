@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { nullability } from "../type-facts.js";
 
 import { type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
@@ -78,6 +79,21 @@ function valueJson(
     if (isJsonValue(value)) {
         lowerer.markEscaped(value);
         return value.cpp;
+    }
+    if (value.dataType?.kind === "optional" && !value.dataType.undefinedOnly) {
+        const absent = nullability(
+            lowerer.context.checker.getTypeAtLocation(node),
+        );
+        if (
+            absent.null &&
+            !absent.undefined &&
+            lowerer.context.dataTypes.jsonValueCpp(
+                value.dataType.inner,
+                "value",
+                node,
+            ) !== undefined
+        )
+            return `bbl::js::json_value_or_null(${value.cpp})`;
     }
     if (value.kind === "json-null")
         return value.cpp === "std::nullopt"
@@ -183,7 +199,8 @@ function valueBorrowedPlatformEvent(
                   (dataType.event === "error" ? "error" : "unhandledrejection")
             : dataType.event === "event"
               ? value.kind === "platform-keyboard-event" ||
-                value.kind === "platform-mouse-event"
+                value.kind === "platform-mouse-event" ||
+                value.kind === "custom-event"
               : value.kind === `platform-${dataType.event}-event`;
     if (!compatible) return undefined;
     return dataType.event === "event"

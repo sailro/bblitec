@@ -438,7 +438,7 @@ export function lowerCharacterControllerKernel(
                 recordScalars.void,
             ],
             [
-                "src/physics/havok.ts",
+                "src/physics/havok-body-mass-properties.ts",
                 "setPhysicsBodyMassProperties",
                 "_set_body_mass_properties",
                 [

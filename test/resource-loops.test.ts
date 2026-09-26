@@ -28,7 +28,7 @@ function scene(body: string, helpers = ""): string {
     return `
         import {
             createEngine, createSceneContext, createBox, createPlane,
-            createSphere, createStandardMaterial, createPbrMaterial,
+            createSphere, createStandardMaterial, createPbrMaterial, loadGltf,
             addToScene, onBeforeRender,
         } from "@babylonjs/lite";
         import type { EngineContext, SceneContext, Mesh, Material } from "@babylonjs/lite";
@@ -565,7 +565,7 @@ test("mutable class method counts do not become fixed construction ordinals", ()
             burst(count: number): void {
                 for (let i = 0; i < count; i++) {
                     count--;
-                    createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+                    loadGltf(engine, "https://example.invalid/model.glb");
                 }
             }
         }
@@ -801,7 +801,7 @@ test("known collection sizes feed subsequent counted resource loops", () => {
     assert.equal(result.manifest.scenePbrMaterials[0]?.materialsBefore, 300);
 });
 
-test("known runtime members still permit bounded per-material specialization", () => {
+test("known runtime members reuse one PBR composition profile", () => {
     const result = compileSource(
         scene(`
         const meshes: Mesh[] = [];
@@ -812,9 +812,9 @@ test("known runtime members still permit bounded per-material specialization", (
         createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
     `),
     );
-    assert.equal(result.manifest.sceneMaterialCount, 101);
-    assert.equal(result.manifest.scenePbrMaterials.length, 101);
-    assert.equal(result.manifest.scenePbrMaterials[100]?.materialsBefore, 100);
+    assert.equal(result.manifest.sceneMaterialCount, 2);
+    assert.equal(result.manifest.scenePbrMaterials.length, 2);
+    assert.equal(result.manifest.scenePbrMaterials[1]?.materialsBefore, 1);
 });
 
 test("keyed collection cardinality counts distinct keys rather than updates", () => {
@@ -850,37 +850,30 @@ test("keyed collection cardinality counts distinct keys rather than updates", ()
     assert.equal(result.manifest.scenePbrMaterials[0]?.materialsBefore, 3);
 });
 
-test("unknown-cardinality material construction cannot guess a later PBR physical slot", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                scene(`
-        const meshes: Mesh[] = [];
-        if (Math.random() > 0.5) meshes.push(createBox(engine));
-        for (const mesh of meshes) mesh.material = createStandardMaterial();
-        createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
-    `),
-            ),
-        /generation-known physical material slot/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                scene(`
-        for (let i = 0; i < Math.random() * 20; i++) createStandardMaterial();
-        createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
-    `),
-            ),
-        /generation-known physical material slot/,
-    );
+test("unknown-cardinality material construction uses PBR profiles", () => {
+    for (const body of [
+        `const meshes: Mesh[] = [];
+         if (Math.random() > 0.5) meshes.push(createBox(engine));
+         for (const mesh of meshes) mesh.material = createStandardMaterial();
+         createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });`,
+        `for (let i = 0; i < Math.random() * 20; i++) createStandardMaterial();
+         createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });`,
+        `for (let i = 0; i < Math.random() * 20; i++) createPbrMaterial({ metallicFactor: i, roughnessFactor: i % 2 ? 0.3 : 1 });`,
+    ]) {
+        const result = compileSource(scene(body));
+        assert.equal(result.manifest.scenePbrMaterials.length, 1);
+        assert.match(result.cpp, /\.composition_profile = 0u/);
+        assert.ok(result.manifest.runtimeMaterialProfiles?.length);
+    }
     assert.throws(
         () =>
             compileSource(
                 scene(`
         for (let i = 0; i < Math.random() * 20; i++) createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+        loadGltf(engine, "https://example.invalid/model.glb");
     `),
             ),
-        /Runtime resource construction requires a generation-known iteration count/,
+        /generation-known physical material slot for a later glTF load/,
     );
 });
 
@@ -1249,7 +1242,7 @@ test("runtime-dependent exits cannot silently corrupt resource composition count
                     scene(`
             for (let i = 0; i < 300; i++) {
                 if (Math.random() < 0.5) ${control};
-                createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+                loadGltf(engine, "https://example.invalid/model.glb");
             }
         `),
                 ),
@@ -1265,7 +1258,7 @@ test("returns and labeled exits retain an explicit resource specialization bound
                 scene(`
         for (let i = 0; i < 300; i++) {
             if (i === 3) return;
-            createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+            loadGltf(engine, "https://example.invalid/model.glb");
         }
     `),
             ),
@@ -1278,7 +1271,7 @@ test("returns and labeled exits retain an explicit resource specialization bound
         outer: for (let i = 0; i < 300; i++) {
             for (let j = 0; j < 2; j++) {
                 if (j === 1) break outer;
-                createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+                loadGltf(engine, "https://example.invalid/model.glb");
             }
         }
     `),
@@ -1298,7 +1291,7 @@ test("runtime-dependent helper exits cannot disguise variable construction count
                     `
         function maybeSpawn(engine: EngineContext): void {
             if (Math.random() < 0.5) return;
-            createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+            loadGltf(engine, "https://example.invalid/model.glb");
         }
     `,
                 ),
@@ -1383,7 +1376,7 @@ test("a helper exit still refuses construction hidden in a nested call", () => {
         for (let i = 0; i < 4; i++) maybeSpawn(engine);
     `,
                     `
-        function spawn(engine: EngineContext): void { createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 }); }
+        function spawn(engine: EngineContext): void { loadGltf(engine, "https://example.invalid/model.glb"); }
         function maybeSpawn(engine: EngineContext): void {
             if (Math.random() < 0.5) return;
             spawn(engine);
@@ -1565,7 +1558,7 @@ test("mutable helper parameter bounds cannot be mistaken for fixed resource coun
         function build(engine: EngineContext, count: number): void {
             for (let i = 0; i < count; i++) {
                 count--;
-                createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
+                loadGltf(engine, "https://example.invalid/model.glb");
             }
         }
     `,

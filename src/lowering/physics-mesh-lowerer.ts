@@ -246,24 +246,35 @@ void append_physics_mesh_geometry(
         const auto& record = *found;
         if (record.geometry < engine.geometries.size()) {
             const auto& geometry = engine.geometries.at(record.geometry);
-            if (!geometry.vertices.empty()) {
+            const auto* retained = record.cpu_streams.get();
+            const auto vertex_count = retained
+                ? (retained->positions ? retained->positions->size() / 3 : 0)
+                : geometry.vertices.size();
+            if (vertex_count != 0) {
                 const auto mesh_to_body = physics_matrix_product(root_to_body, physics_node_world(engine, node));
                 const std::uint32_t index_offset = static_cast<std::uint32_t>(positions.size());
-                positions.reserve(positions.size() + geometry.vertices.size());
-                for (const auto& vertex : geometry.vertices) {
-                    const double x = vertex.position.x, y = vertex.position.y, z = vertex.position.z;
+                positions.reserve(positions.size() + vertex_count);
+                for (std::size_t index = 0; index < vertex_count; ++index) {
+                    const double x = retained ? (*retained->positions)[index * 3] : geometry.vertices[index].position.x;
+                    const double y = retained ? (*retained->positions)[index * 3 + 1] : geometry.vertices[index].position.y;
+                    const double z = retained ? (*retained->positions)[index * 3 + 2] : geometry.vertices[index].position.z;
                     // getVertices writes through Float32Array before the PAL consumes its span.
                     positions.push_back({${lanes.join(", ")}});
                 }
-                if (collect_indices && !geometry.indices.empty()) {
-                    if (geometry.topology != MeshTopology::triangles || geometry.indices.size() % 3) {
+                const std::vector<std::uint32_t> absent_indices;
+                const auto& source_indices = retained
+                    ? (retained->indices ? static_cast<const std::vector<std::uint32_t>&>(*retained->indices) : absent_indices)
+                    : geometry.indices;
+                const bool reversed = !retained && geometry.source_indices_reversed;
+                if (collect_indices && !source_indices.empty()) {
+                    if (geometry.topology != MeshTopology::triangles || source_indices.size() % 3) {
                         throw std::runtime_error("Physics mesh shape requires complete triangle indices.");
                     }
-                    indices.reserve(indices.size() + geometry.indices.size());
-                    for (std::size_t i = 0; i < geometry.indices.size(); i += 3) {
-                        const auto a = geometry.indices[i] + index_offset;
-                        const auto b = geometry.indices[i + (geometry.source_indices_reversed ? 2 : 1)] + index_offset;
-                        const auto c = geometry.indices[i + (geometry.source_indices_reversed ? 1 : 2)] + index_offset;
+                    indices.reserve(indices.size() + source_indices.size());
+                    for (std::size_t i = 0; i < source_indices.size(); i += 3) {
+                        const auto a = source_indices[i] + index_offset;
+                        const auto b = source_indices[i + (reversed ? 2 : 1)] + index_offset;
+                        const auto c = source_indices[i + (reversed ? 1 : 2)] + index_offset;
                         indices.push_back(c); indices.push_back(b); indices.push_back(a);
                     }
                 }

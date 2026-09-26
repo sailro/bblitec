@@ -10,6 +10,7 @@ import { readProperty, type PropertyContext } from "./properties.js";
 import type { Feature, Value } from "./types.js";
 import { domAudioHandleKind } from "./data-types.js";
 import { listenerOptions } from "./dom-listeners.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -36,7 +37,12 @@ interface AudioWriteContext
         AudioReceiverContext,
         Pick<
             LoweringServices,
-            "compileNumber" | "compileBoolean" | "reachFeature" | "emit"
+            | "compileNumber"
+            | "compileBoolean"
+            | "reachFeature"
+            | "emit"
+            | "options"
+            | "callbacks"
         > {}
 
 /** What a method call needs. The expression compiler satisfies it. */
@@ -60,6 +66,7 @@ interface AudioCallContext
             | "callbacks"
             | "bindings"
             | "emitDiscardedValue"
+            | "captureEmittedLines"
         > {}
 
 const AUDIO_KINDS = new EmissionSet<string>([
@@ -304,6 +311,48 @@ export function compileAudioMethodCall(
     call: ts.CallExpression,
     callee: ts.PropertyAccessExpression,
 ): Value | undefined {
+    if (callee.questionDotToken) {
+        const kind = domAudioHandleKind(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(callee.expression),
+            ),
+        );
+        if (!kind || !AUDIO_KINDS.has(kind)) return undefined;
+        const value = context.compileValue(callee.expression);
+        if (value.kind === "json-null") return value;
+        if (value.dataType?.kind === "optional") {
+            const owner = context.bindings.pinValueToTemporary(
+                value,
+                "optional_audio_receiver",
+                callee.expression,
+            );
+            const receiver = context.dataLowerer.narrowOptional(
+                owner,
+                callee.expression,
+                true,
+            );
+            let result: Value | undefined;
+            const lines = context.captureEmittedLines(() => {
+                result = compileAudioReceiverMethod(
+                    context,
+                    call,
+                    callee,
+                    receiver,
+                );
+            });
+            if (!result) return undefined;
+            if (result.kind !== "void")
+                context.fail(
+                    call,
+                    "Optional audio calls currently require a void result.",
+                );
+            return {
+                kind: "void",
+                cpp: `([&]() { if ((${owner.cpp}).has_value()) { ${lines.join("\n")} ${result.cpp}; } }())`,
+            };
+        }
+        return compileAudioReceiverMethod(context, call, callee, value);
+    }
     const receiverExpression = context.unwrap(callee.expression);
     const chainedConnect =
         ts.isCallExpression(receiverExpression) &&
@@ -318,6 +367,15 @@ export function compileAudioMethodCall(
     if (!receiver) {
         return undefined;
     }
+    return compileAudioReceiverMethod(context, call, callee, receiver);
+}
+
+function compileAudioReceiverMethod(
+    context: AudioCallContext,
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    receiver: Value,
+): Value | undefined {
     const method = callee.name.text;
     if (
         receiver.kind === "audio-context" &&
@@ -778,42 +836,38 @@ export function emitAudioPropertyAssignment(
     }
 
     if (property === "onended") {
-        const callback = context.unwrap(right);
-        const statements =
-            (ts.isArrowFunction(callback) ||
-                ts.isFunctionExpression(callback)) &&
-            ts.isBlock(callback.body)
-                ? callback.body.statements
-                : undefined;
-        const cleanupOnly =
-            statements &&
-            statements.every((statement) => {
-                if (!ts.isExpressionStatement(statement)) return false;
-                const call = context.unwrap(statement.expression);
-                if (
-                    !ts.isCallExpression(call) ||
-                    call.arguments.length !== 0 ||
-                    !ts.isPropertyAccessExpression(call.expression) ||
-                    call.expression.name.text !== "disconnect"
-                ) {
-                    return false;
-                }
-                return (
-                    resolveAudioReceiver(context, call.expression.expression)
-                        ?.kind === "audio-node"
-                );
-            });
-        if (cleanupOnly) {
-            // LabSound releases a finished source independently. Dropping an
-            // onended handler whose only observable work disconnects that
-            // finished source and its private one-shot gain preserves audio;
-            // no later source retains either node.
-            return true;
-        }
-        context.fail(
-            right,
-            "onended is an escaping callback, which is not lowered.",
+        if (!context.options.workers) throw new ApplicationRealmRequired();
+        const selected = { ...owner };
+        delete selected.nativeBinding;
+        const target = context.bindings.pinValueToTemporary(
+            selected,
+            "audio_event_target",
+            left.expression,
         );
+        const callbackType = context.checker.getTypeAtLocation(right);
+        const absent =
+            (callbackType.flags &
+                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+            0;
+        if (
+            callbackType
+                .getCallSignatures()
+                .some((signature) => signature.parameters.length > 0)
+        )
+            context.fail(
+                right,
+                "Audio ended event payloads are not represented yet.",
+            );
+        context.callbacks.hoistForwardCallbackBindings(right, expression.pos);
+        const callback = absent
+            ? "{}"
+            : context.callbacks.compilePlatformCallback(right, undefined, [])
+                  .cpp;
+        context.emit({
+            kind: "expression",
+            code: `bbl::pal::audio_set_ended_handler(${target.cpp}, ${callback});`,
+        });
+        return true;
     }
     if (property !== "type") {
         return false;

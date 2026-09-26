@@ -145,7 +145,7 @@ struct WindowServices final : CanvasProvider {
             std::make_shared<OffscreenSurface>(
                 static_cast<std::uint32_t>(std::max<std::uint64_t>(1, width)),
                 static_cast<std::uint32_t>(std::max<std::uint64_t>(1, height)), animation_frames,
-                capture_frame_count),
+                capture_frame_count, capture_ready),
             graphics);
         std::lock_guard lock(mutex);
         if (stopping)
@@ -174,10 +174,12 @@ struct WindowServices final : CanvasProvider {
     }
     std::shared_ptr<OffscreenDevice> graphics;
     const std::uint64_t capture_frame_count;
+    std::shared_ptr<std::atomic<bool>> capture_ready = std::make_shared<std::atomic<bool>>(true);
     std::shared_ptr<AnimationFrameSource> animation_frames =
         std::make_shared<AnimationFrameSource>();
     std::shared_ptr<EventLoop::Inbox> inbox = std::make_shared<EventLoop::Inbox>();
     std::mutex mutex;
+    std::string capture_failure;
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
     std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
@@ -200,6 +202,10 @@ struct WindowDocument {
     explicit WindowDocument(std::shared_ptr<WindowServices> host, EngineOptions options)
         : host(std::move(host)) {
         engine.options = std::move(options);
+        engine.ui_attribute_changed = [this](UiElementHandle element, const std::string& attribute) {
+            for (const auto& observer : mutation_observers) observer->notify(element, attribute);
+            if (attribute == "data-ready" || attribute == "data-error") update_capture_ready();
+        };
         engine.ui_measure_element = [](Engine& owner, UiElementHandle element) {
             if (&owner != &window_document_engine())
                 throw std::logic_error("A Window layout read requires its owning realm.");
@@ -208,6 +214,24 @@ struct WindowDocument {
         static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
     }
     std::shared_ptr<WindowServices> host;
+    bool wait_for_canvas_ready = false;
+    void update_capture_ready() {
+        if (!wait_for_canvas_ready) return;
+        host->capture_ready->store(std::any_of(canvases.begin(), canvases.end(), [this](const auto& entry) {
+            return ui_get_attribute(engine, UiElementHandle{entry.first}, "data-ready") == "true";
+        }));
+        std::string failure;
+        for (const auto& [index, canvas] : canvases) {
+            static_cast<void>(canvas);
+            const auto error = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
+            if (!error.empty()) {
+                failure = error;
+                break;
+            }
+        }
+        std::lock_guard lock(host->mutex);
+        host->capture_failure = std::move(failure);
+    }
     Engine engine;
     std::uint64_t published_revision = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t published_text_revision = 0;
@@ -223,6 +247,7 @@ struct WindowDocument {
     };
     std::unordered_map<std::uint32_t, InputTarget> input_targets;
     std::vector<std::shared_ptr<ResizeObserver>> observers;
+    std::vector<std::shared_ptr<MutationObserver>> mutation_observers;
     std::vector<std::shared_ptr<MediaQueryList>> media;
     ApplicationErrors* errors = nullptr;
     const bool screen_identity = true;
@@ -613,6 +638,7 @@ std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {
     auto endpoint = doc.host->create_endpoint(300, 150);
     auto canvas = js::make_gc_shared<CanvasElement>(endpoint);
     doc.canvases.emplace(element.value, canvas);
+    doc.update_capture_ready();
     handle_at(doc.engine.ui_elements, element).external_gpu_canvas = true;
     ++doc.engine.ui_revision;
     {
@@ -620,6 +646,11 @@ std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {
         doc.host->canvases.emplace(element.value, std::move(endpoint));
     }
     return canvas;
+}
+void window_defer_capture_until_canvas_ready() {
+    auto& doc = current_document();
+    doc.wait_for_canvas_ready = true;
+    doc.update_capture_ready();
 }
 
 void ResizeObserver::observe(UiElementHandle element) {
@@ -653,6 +684,35 @@ void ResizeObserver::deliver() {
 }
 std::shared_ptr<ResizeObserver> create_resize_observer(ResizeObserver::Callback callback) {
     auto observer = js::make_gc_shared<ResizeObserver>(std::move(callback));
+    observer->self_ = observer;
+    return observer;
+}
+void MutationObserver::observe(UiElementHandle element, std::optional<std::vector<std::string>> filter) {
+    if (observed_.empty()) {
+        auto owner = self_.lock();
+        if (!owner) throw std::logic_error("MutationObserver requires its Window realm factory.");
+        current_document().mutation_observers.push_back(std::move(owner));
+    }
+    observed_.insert_or_assign(element.value, std::move(filter));
+}
+void MutationObserver::disconnect() {
+    observed_.clear();
+    pending_ = false;
+    std::erase_if(current_document().mutation_observers, [this](const auto& observer) { return observer.get() == this; });
+}
+void MutationObserver::notify(UiElementHandle element, const std::string& attribute) {
+    const auto entry = observed_.find(element.value);
+    if (entry == observed_.end() || (entry->second && std::find(entry->second->begin(), entry->second->end(), attribute) == entry->second->end()) || pending_) return;
+    pending_ = true;
+    EventLoop::current().queue_microtask([weak = self_] {
+        if (auto owner = weak.lock(); owner && owner->pending_) {
+            owner->pending_ = false;
+            EventLoop::current().dispatch_callback(owner->callback_);
+        }
+    });
+}
+std::shared_ptr<MutationObserver> create_mutation_observer(MutationObserver::Callback callback) {
+    auto observer = js::make_gc_shared<MutationObserver>(std::move(callback));
     observer->self_ = observer;
     return observer;
 }
@@ -927,6 +987,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 }
             };
             long presented = 0;
+            bool final_screenshot_saved = false;
             const bool trace_window =
                 runtime_trace_enabled() || environment_variable("BBLITE_WINDOW_TRACE") == "1";
             std::optional<EventLoop::Clock::time_point> next_repaint;
@@ -1100,6 +1161,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 bool canvases_ready = false;
                 {
                     std::lock_guard lock(services->mutex);
+                    if ((frame_options.max_frames > 0 || !frame_options.screenshot_path.empty()) &&
+                        !services->capture_failure.empty())
+                        throw std::runtime_error("Source canvas initialization failed: " +
+                                                 services->capture_failure);
                     for (const auto& [index, canvas] : services->canvases) {
                         if (auto frame = canvas->surface->take_frame())
                             latest.insert_or_assign(index, std::move(*frame));
@@ -1112,18 +1177,22 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         services->completed > 0 && frames.size() == services->canvases.size();
                 }
                 services->wake.notify_all();
-                const bool capture_ready =
+                const bool source_ready = services->capture_ready->load() &&
+                    std::all_of(frames.begin(), frames.end(), [](const auto& canvas) {
+                        return canvas.frame.capture_ready;
+                    });
+                const bool capture_ready = !final_screenshot_saved && (
                     capture_frame_count && !frames.empty()
                         ? std::all_of(frames.begin(), frames.end(),
                                       [&](const auto& canvas) {
-                                          return canvas.frame.sequence == capture_frame_count;
+                                          return canvas.frame.sequence >= capture_frame_count;
                                       })
-                        : presented == std::max(0L, frame_options.screenshot_frame);
+                        : presented >= std::max(0L, frame_options.screenshot_frame));
                 const auto checkpoint = std::find_if(
                     screenshot_checkpoints.begin(), screenshot_checkpoints.end(),
                     [presented](const auto& value) { return value.frame == presented; });
                 const bool checkpoint_ready = checkpoint != screenshot_checkpoints.end();
-                const bool capture = canvases_ready && !frame_options.screenshot_path.empty() &&
+                const bool capture = canvases_ready && source_ready && !frame_options.screenshot_path.empty() &&
                                      (capture_ready || checkpoint_ready);
                 bool did_present = false;
                 double record_ms = 0, present_ms = 0;
@@ -1165,6 +1234,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             detail::utf8_file_path(checkpoint->path + ".build-stamp"), stamp,
                             stamp.size(), "Screenshot checkpoint build stamp");
                     }
+                    if (did_present && capture && !checkpoint_ready)
+                        final_screenshot_saved = true;
                 }
                 if (did_present) {
                     if (compositor_clock.available()) {
@@ -1199,7 +1270,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     }
                     ++presented;
                     if (capture_frame_count ? capture
-                                            : frame_options.frame_budget() > 0 &&
+                                            : source_ready && frame_options.frame_budget() > 0 &&
                                                   presented >= frame_options.frame_budget())
                         running = false;
                 }

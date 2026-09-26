@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { lowerFramePostSubmit } from "./frame-post-submit-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import {
     type LoweringContext,
@@ -32,7 +33,7 @@ const stateSchema = pinnedRecordSchema("ComputeOneShotState", {
     engine: "engine",
     shots: "shots",
     recordedByEncoder: "recorded",
-    removeFramePostSubmit: "remove_frame_post_submit",
+    removePostSubmit: "remove_post_submit",
 });
 const completionSchema = pinnedRecordSchema("ComputeOneShotCompletion", {
     resolve: "resolve",
@@ -112,16 +113,11 @@ function bodyScope(
         ],
         ["state.engine", "state->engine.lock()", "opaque"],
         [
-            "state.removeFramePostSubmit",
-            "state->remove_frame_post_submit",
+            "state.removePostSubmit",
+            "state->remove_post_submit",
             "opaque",
         ],
         ["engine._currentEncoder", "engine->current_compute_encoder", "opaque"],
-        [
-            "engine._computeOneShotSubmitted",
-            "engine->compute_one_shot_submitted",
-            "opaque",
-        ],
         [
             "completions.length",
             "static_cast<double>(completions.size())",
@@ -154,8 +150,8 @@ function bodyScope(
         (args) => `state->shots.add(${args.join(", ")})`,
     );
     calls.set(
-        "state.removeFramePostSubmit",
-        () => "state->remove_frame_post_submit()",
+        "state.removePostSubmit",
+        () => "state->remove_post_submit()",
     );
     calls.set(
         "Promise.reject",
@@ -299,7 +295,7 @@ function bodyScope(
                 if (name === "_engineStates?.delete")
                     return `js::realm_scratch<ComputeOneShotRegistry>().values.erase(${lowerer.expression(node.arguments[0]!)})`;
                 if (name === "addFramePostSubmitHook")
-                    return `install_one_shot_frame_hook(${node.arguments.map((arg) => lowerer.expression(arg)).join(",")})`;
+                    return `add_frame_post_submit_hook(${node.arguments.map((arg) => lowerer.expression(arg)).join(",")})`;
                 if (name === "oneShot.completion.catch") {
                     context.assertExpressionShape(
                         node.arguments[0]!,
@@ -460,7 +456,7 @@ export function lowerComputeOneShot(context: LoweringContext): LoweredSource {
         modulePath: path,
         symbolName: "createComputeOneShot",
         header: "",
-        source: `#include <bblite/pal_compute_one_shot.hpp>\nnamespace bbl {\n${Object.values(
+        source: `#include <bblite/pal_compute_one_shot.hpp>\nnamespace bbl {\n${lowerFramePostSubmit(context)}\n${Object.values(
             signatures,
         )
             .map((signature) => signature + ";")

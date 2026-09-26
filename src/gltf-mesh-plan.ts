@@ -65,6 +65,7 @@ import {
     packSourceAnimationBindings,
     readAnimationBindings,
     type GltfAnimationBindings,
+    type SourceAnimationBindings,
 } from "./gltf-animation-bindings.js";
 import {
     gltfControllerBindingsSourceUrl,
@@ -176,6 +177,7 @@ export type GltfConstructedMaterialPlan = Pick<
 >;
 export interface GltfLoadFeatures {
     cameras?: boolean;
+    boneControl?: boolean;
     /**
      * Scene code writes SceneNode transforms, so the asset carries the
      * pin's node hierarchy for the loader to build.
@@ -241,7 +243,7 @@ interface MeshFeature {
     ): Promise<object>;
 }
 interface SourceLoader {
-    __animationBindingsSource: SourceParse;
+    __animationBindingsSource: SourceParse & SourceAnimationBindings;
     __animationPointerBridge: PointerBridge;
     __animationControllerSource: SourceController;
     __prepareAnimationPointers(
@@ -1201,6 +1203,25 @@ export async function recordMeshPlan(
                   )
                 : null;
         }
+        if (
+            !animationBindings &&
+            options.boneControl &&
+            plannedMeshes.some((mesh) => mesh.skin !== undefined)
+        ) {
+            animationBindings = packSourceAnimationBindings(
+                loader.__animationBindingsSource.__animationBindings(
+                    document,
+                    bin,
+                    meshes,
+                    parentMap,
+                    worldMatrixCache,
+                    nodeMap,
+                ),
+                meshes,
+                nodeMap,
+                packer,
+            );
+        }
         // A scene that writes SceneNode transforms moves the pin's nodes
         // and everything beneath them, so the loader builds the pin's own
         // hierarchy. What the native runtime poses or places from its own
@@ -1217,13 +1238,8 @@ export async function recordMeshPlan(
                 );
             if (features.includes(loader.__animationFeature))
                 refuse("animations");
-            if (
-                plannedMeshes.some(
-                    (mesh) =>
-                        mesh.skin !== undefined || mesh.morph !== undefined,
-                )
-            )
-                refuse("skinned or morphed primitives");
+            if (plannedMeshes.some((mesh) => mesh.morph !== undefined))
+                refuse("morphed primitives");
             if (sourceLights.length > 0) refuse("punctual lights");
             if (sourceCameras.length > 0) refuse("cameras");
             hierarchy = packageNodeHierarchy(root, nodeMap, packer);

@@ -3,8 +3,8 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.31.0",
-    "sourceVersion": "3ce8ae6d34945f4c32c73e357714ffa43be41584"
+    "version": "1.31.1",
+    "sourceVersion": "7d66215c1c897734a3c2f25bdd15d0e7062ed8f4"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
@@ -22,10 +22,10 @@
   "readiness": {
     "loadingSize": "Estimated demo assets: 6.1 MB",
     "progress": "100",
-    "fixedAnimationFrame": "153",
+    "fixedAnimationFrame": "130",
     "fixedCaptureFrame": "30",
     "fixedAnimationCallbacks": "1",
-    "engine": "Babylon Lite v1.31.0",
+    "engine": "Babylon Lite v1.31.1",
     "loadingDetail": "Preparing scene…",
     "animationFrozen": "true",
     "seekWarmupFrames": "6",
@@ -67,7 +67,7 @@
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-      "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+      "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
@@ -147,7 +147,7 @@
     "ignoredDefaultArguments": [
       "--hide-scrollbars"
     ],
-    "version": "153.0.8010.53",
+    "version": "154.0.8037.57",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu"
@@ -177,10 +177,10 @@
         "texture-compression-unaligned",
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
-        "timestamp-query",
-        "clip-distances",
-        "texture-formats-tier2",
         "shader-f16",
+        "clip-distances",
+        "timestamp-query",
+        "texture-formats-tier2",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
@@ -195,5 +195,6 @@
       "parity": "No screenshot masking, browser capability override or threshold changes applied. Canvas image is stable; full-page timing text is nondeterministic."
     }
   ],
-  "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582"
+  "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
+  "capturedAt": "2026-09-26T07:10:42.756Z"
 }

@@ -72,7 +72,7 @@
     "physics": {
       "description": "Bullet rigid-body solver for scenes reaching physics:world. Zlib-licensed, and linked only where the scene's own source creates a physics world.",
       "dependencies": [
-        "bullet3"
+        { "name": "bullet3", "features": ["multithreading"] }
       ]
     },
     "ui": {

@@ -127,11 +127,15 @@ export function compileHttpResponseMethod(
 ): Value | undefined {
     if (owner.dataType?.kind !== "http-response") return undefined;
     lowerer.context.expectArgumentCount(call, 0, 0);
-    if (method === "text")
-        return lowerer.leafValue(`bbl::pal::http_response_text(${owner.cpp})`, {
+    if (method === "text") {
+        const result = lowerer.leafValue(`bbl::pal::http_response_text(${owner.cpp})`, {
             kind: "promise",
             result: { kind: "string" },
         });
+        return owner.packagedBodySource && result.kind === "promise" && result.promiseResult
+            ? {...result, promiseResult: {...result.promiseResult, packagedBodySource: owner.packagedBodySource}}
+            : result;
+    }
     if (method === "arrayBuffer")
         return lowerer.leafValue(
             `bbl::pal::http_response_buffer(${owner.cpp})`,

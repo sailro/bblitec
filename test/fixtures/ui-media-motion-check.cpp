@@ -67,6 +67,28 @@ int main() {
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(runtime.projected_elements.at(panel.value).crosshair_color.empty());
     }
+    {
+        Engine engine;
+        const auto html = ui_document_root(engine, UiDocumentPart::Html);
+        const auto body = ui_document_root(engine, UiDocumentPart::Body);
+        ui_set_style_property(engine, html, "font-size", "20px");
+        const auto panel = ui_create_element(engine, "div");
+        ui_set_style_property(engine, panel, "width", "min(12rem, 90vw)");
+        ui_set_style_property(engine, panel, "height", "10px");
+        ui_append_child(engine, body, panel);
+        pal::UiRmlRuntime runtime(engine, window, 640, 480, read_motion_preference);
+        const auto check = [&](std::uint32_t width, float expected) {
+            pal::update_ui_rml_runtime(runtime, width, 480);
+            auto* element = runtime.projected_elements.at(panel.value).element;
+            assert(std::abs(element->GetBox().GetSize(Rml::BoxArea::Border).x - expected) < .01f);
+        };
+        check(640, 240);
+        ui_set_style_property(engine, html, "font-size", "30px");
+        check(640, 360);
+        check(320, 288);
+        ui_set_style_property(engine, html, "font-size", "10px");
+        check(320, 120);
+    }
     SDL_DestroyWindow(window);
     SDL_Quit();
 }

@@ -10,7 +10,7 @@
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
-#include <bblite/features/mesh_position_update.hpp>
+#include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -46,6 +46,7 @@ void release_dawn_composed_material_textures(DawnSharedComposedMaterialTextures&
             textures.samplers[slot].reset();
         }
     }
+    textures.image_leases.clear();
 }
 
 void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
@@ -391,7 +392,7 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
     const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh_record);
     DawnMesh mesh(state);
     if (shader_material) {
-#if BBLITE_MESH_POSITION_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE
         // Mutable procedural geometry must own its upload instead of
         // borrowing the immutable shader-geometry cache.
         mesh.vertices = create_buffer(state, WGPUBufferUsage_Vertex, vertices.data(),
@@ -522,7 +523,7 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             state, WGPUBufferUsage_Uniform, nullptr,
             std::max<std::uint64_t>(mesh_shader_info->vertex.float_size * 4ull, 16ull));
     }
-    mesh.position_version = geometry.position_version;
+    mesh.attribute_version = geometry.attribute_version;
 
     // Per-slot texture selection reads the generated
     // `material_texture_slots` table -- the same rows the SDL_GPU
@@ -566,11 +567,16 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
                              : nullptr;
                 const TextureData empty{};
                 const TextureData& data = slot_data ? *slot_data : empty;
-                std::uint32_t mip_count = 1;
-                mesh.shared_composed_textures->textures[slot_row.slot] = upload_material_texture(
-                    state, data, material_slot_srgb(slot_row.srgb, material, standard_material),
-                    material_slot_fallback(slot_row.fallback, material, standard_material),
-                    mip_count);
+                const bool srgb = material_slot_srgb(slot_row.srgb, material, standard_material);
+                const auto fallback =
+                    material_slot_fallback(slot_row.fallback, material, standard_material);
+                auto image = state.shared_material_images.acquire(data, srgb, fallback, [&] {
+                    std::uint32_t mip_count = 1;
+                    return DawnTexture{
+                        upload_material_texture(state, data, srgb, fallback, mip_count)};
+                });
+                mesh.shared_composed_textures->image_leases.push_back(image);
+                mesh.shared_composed_textures->textures[slot_row.slot] = image->retain();
                 mesh.shared_composed_textures->views[slot_row.slot] = create_dawn_texture_view(
                     mesh.shared_composed_textures->textures[slot_row.slot], nullptr);
                 mesh.shared_composed_textures->samplers[slot_row.slot] = create_texture_sampler(

@@ -6,6 +6,7 @@ import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
+import { lowerMeshAttributeFeatures } from "../src/lowering/mesh-attribute-features.js";
 import {
     cppFunction,
     cppRecord,
@@ -46,12 +47,14 @@ test(
 #include <cassert>
 namespace bbl::upstream {
 ${materialShadowReceiverCpp(new LoweringContext())}
+${lowerMeshAttributeFeatures(new LoweringContext())}
 enum class RenderMaterialKind { pbr, standard };
 struct RenderDrawCommand { struct Item {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     MaterialHandle material{0}; MeshHandle mesh{0}; std::uint32_t geometry = invalid_handle;
 } item; };
 constexpr unsigned pbr_variant_material_count = 1;
+constexpr std::array<std::uint32_t, 1> pbr_scene_material_indices{0};
 constexpr std::size_t pinned_msh_receive_shadows = ${bits.MSH_RECEIVE_SHADOWS};
 constexpr std::size_t pinned_msh_has_skeleton = ${bits.MSH_HAS_SKELETON};
 constexpr std::size_t pinned_msh_vat = ${bits.MSH_VAT};
@@ -126,6 +129,22 @@ int main() {
     assert(pal::pinned_variant_key(scene, engine, draw).mesh_features == (upstream::base | (1u << 21)));
     draw.item.material_kind = upstream::RenderMaterialKind::standard;
     assert(pal::standard_variant_key(scene, engine, draw).mesh_features == (upstream::base | (1u << 21)));
+    // A runtime material's physical handle can exceed every composed row.
+    engine.materials.resize(6);
+    engine.materials[4].pbr_composition_profile = 0;
+    engine.materials[5].source_material = {4};
+    engine.materials[5].no_color = true;
+    draw.item.material_kind = upstream::RenderMaterialKind::pbr;
+    for (unsigned physical : {4u, 5u}) {
+        draw.item.material = {physical};
+        const auto key = pal::pinned_variant_key(scene, engine, draw);
+        assert(key.resolved && key.material_index == 0);
+        assert(key.material_view == (physical == 5u ? 1u : 0u));
+    }
+    engine.materials[4].pbr_composition_profile = 2;
+    assert(!pal::pinned_variant_key(scene, engine, draw).resolved);
+    engine.materials[5].source_material = {7};
+    assert(!pal::pinned_variant_key(scene, engine, draw).resolved);
 }
 `,
         );

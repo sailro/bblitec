@@ -733,7 +733,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
      * of this port's readback reconstructions are it: `pickedPoint` at the
      * sampled depth, and the pick ray's near and far ends.
      */
-    private lowerUnprojectPoint(): string {
+    private lowerUnprojectPoint(inline = false): string {
         return lowerPinnedFunction(
             this.context,
             rayModule,
@@ -746,6 +746,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
             ],
             {
                 cppName: "unproject_point",
+                inline,
                 returns: {
                     type: "std::array<double, 3>",
                     value: (lowerer, expression) =>
@@ -1192,14 +1193,14 @@ js::Nullable<js::Tuple<3>> picked_normal(
      * is near, 0 is far), and the singular-matrix and degenerate-length
      * arms answer `null`, which is the empty optional the info carries.
      */
-    private lowerPickRay(): string {
+    private lowerRayFunction(inline = false): string {
         const calls = new Map<string, PinnedCallSpelling>();
         calls.set("invertMat4", (args) => `mat4_invert(${args.join(", ")})`);
         calls.set(
             "unprojectPoint",
             (args) => `unproject_point(${args.join(", ")})`,
         );
-        const ray = lowerPinnedFunction(
+        return lowerPinnedFunction(
             this.context,
             rayModule,
             "createPickingRay",
@@ -1216,6 +1217,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
             ],
             {
                 cppName: "create_picking_ray",
+                inline,
                 calls,
                 nullableMatrixCalls: new Set(["invertMat4"]),
                 fixedTupleCalls: new Map([["unprojectPoint", 3]]),
@@ -1259,9 +1261,39 @@ js::Nullable<js::Tuple<3>> picked_normal(
                 },
             },
         );
+    }
+
+    /** Public CPU ray math shares the source bodies used by GPU readback. */
+    public rayHeader(): string {
+        return pinnedHeader(
+            [
+                "<bblite/runtime.hpp>",
+                "<bblite/js_data.hpp>",
+                "<cmath>",
+                "<limits>",
+            ],
+            `${lowerMat4InvertCpp(this.context, { inline: true })}
+
+${this.lowerUnprojectPoint(true)}
+
+${this.lowerRayFunction(true)}
+
+inline std::optional<PickRay> create_picking_ray_array(
+    double x, double y, const js::F32Array& matrix, double width, double height) {
+    std::array<float, 16> lanes{};
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        lanes[i] = i < matrix.size() ? matrix[i] : std::numeric_limits<float>::quiet_NaN();
+    }
+    return create_picking_ray(x, y, lanes, width, height);
+}`,
+            { namespace: "bbl::upstream::picking_ray" },
+        );
+    }
+
+    private lowerPickRay(): string {
         return `namespace {
 
-${ray}
+${this.lowerRayFunction()}
 
 } // namespace
 

@@ -45,12 +45,15 @@ test("glTF group initialization follows actual factory values and source mutatio
     }
     const variants = contexts();
     const clips = [undefined, 0, 24, NaN, -12].flatMap((frameRate) =>
-        ["", "walk"].map((name) => ({
-            name,
-            frameRate,
-            duration: 2.5,
-            channels: [],
-        })),
+        ["", "walk"].flatMap((name) =>
+            [undefined, 0, 2.25].map((startTime) => ({
+                name,
+                frameRate,
+                duration: 2.5,
+                _startTime: startTime,
+                channels: [],
+            })),
+        ),
     );
     const cases = variants.map((context) => {
         const body = context
@@ -87,6 +90,7 @@ test("glTF group initialization follows actual factory values and source mutatio
                 duration: clips[index]!.duration,
                 frame_rate: clips[index]!.frameRate ?? null,
                 index,
+                start_time: clips[index]!._startTime ?? 0,
             },
             expected: {
                 name: group.name,
@@ -98,6 +102,7 @@ test("glTF group initialization follows actual factory values and source mutatio
                 loop: group.loopAnimation,
                 weight: group.weight,
                 stopped: group._stopped,
+                start_time: group._startTime ?? 0,
             },
         }));
     });
@@ -113,14 +118,14 @@ test("glTF group initialization follows actual factory values and source mutatio
 #include <nlohmann/json.hpp>
 #include <fstream>
 using Json = nlohmann::json;
-struct Group { std::string name; double duration=0,frame_rate=0,time=0,speed_ratio=0,weight=0; bool playing=false,loop=false,stopped=false; };
+struct Group { std::string name; double duration=0,frame_rate=0,start_time=0,time=0,speed_ratio=0,weight=0; bool playing=false,loop=false,stopped=false; };
 ${variants.map((context, index) => `namespace variant_${index} { ${lowerGltfAnimationGroupFactory(context)} }`).join("\n")}
 template<class Initialize> void check(const Json& row, Initialize initialize) {
     const auto& input = row.at("input"); Group group;
     initialize(group, input.at("name").get<std::string>(), input.at("duration").get<double>(),
-        input.at("frame_rate").is_null() ? std::numeric_limits<double>::quiet_NaN() : input.at("frame_rate").get<double>(), input.at("index").get<double>());
+        input.at("frame_rate").is_null() ? std::numeric_limits<double>::quiet_NaN() : input.at("frame_rate").get<double>(), input.at("index").get<double>(),input.at("start_time").get<double>());
     const Json actual = {{"name",group.name},{"duration",group.duration},{"frame_rate",group.frame_rate},
-        {"time",group.time},{"playing",group.playing},{"loop",group.loop},{"stopped",group.stopped},
+        {"time",group.time},{"start_time",group.start_time},{"playing",group.playing},{"loop",group.loop},{"stopped",group.stopped},
         {"speed_ratio",group.speed_ratio},{"weight",group.weight}};
     if (actual != row.at("expected")) throw std::runtime_error(actual.dump());
 }

@@ -9,7 +9,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { compileBakedMesh } from "../baked-mesh.js";
 
-import { isStringValue, optionalPresentCpp, type Value } from "../types.js";
+import { isStringValue, type Value } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -50,6 +50,7 @@ import {
     type Csg2SolidPlan,
 } from "../../pinned-csg2.js";
 import { recordAt } from "../record-access.js";
+import { compileNullableHitRecord } from "./hit-record.js";
 
 /**
  * Native math and instance-buffer work: these may record reached stream facts,
@@ -81,6 +82,8 @@ export interface MeshIntrinsicContext
         Pick<
             LoweringServices,
             | "dataTypes"
+            | "dataLowerer"
+            | "checker"
             | "sceneManifest"
             | "intrinsicOptions"
             | "assetRegistry"
@@ -524,33 +527,6 @@ export function compileMeshIntrinsic(
         );
     }
     return meshIntrinsicHandlers.get(importedName)?.(context, call);
-}
-
-/**
- * Whether `new Float32Array([...])` names only compile-time constants.
- *
- * The question a static binding turns on: a pool of literals is the same
- * bytes on every evaluation, so binding it once is the whole of its
- * meaning; a pool built from run-time values is not.
- */
-function staticFloatArrayArgument(
-    context: MeshIntrinsicContext,
-    argument: ts.Expression,
-): boolean {
-    const literal =
-        ts.isNewExpression(argument) && argument.arguments?.length === 1
-            ? context.resolveStaticExpression(argumentAt(argument, 0))
-            : context.resolveStaticExpression(argument);
-    if (!ts.isArrayLiteralExpression(literal)) return false;
-    return literal.elements.every((element) => {
-        const resolved = context.resolveStaticExpression(element);
-        return (
-            ts.isNumericLiteral(resolved) ||
-            (ts.isPrefixUnaryExpression(resolved) &&
-                resolved.operator === ts.SyntaxKind.MinusToken &&
-                ts.isNumericLiteral(resolved.operand))
-        );
-    });
 }
 
 function compileInitializeCsg2Async(
@@ -1244,6 +1220,16 @@ function compileCloneTransformNode(
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const source = context.compileValue(argumentAt(call, 0));
+    if (source.kind === "scene-node") {
+        context.reachFeature("mesh:clone", call);
+        context.reachFeature("scene:node-transforms", call);
+        const engine = context.requireEngine(source, call);
+        return {
+            kind: "scene-node",
+            cpp: `bbl::clone_scene_node(${engine}, ${source.cpp})`,
+            engineCpp: engine,
+        };
+    }
     if (source.kind === "mesh") {
         context.reachFeature("mesh:clone", call);
         // The pin's own `"_gpu" in src` arm: a mesh routes to
@@ -1277,63 +1263,25 @@ function compileCloneTransformNode(
     };
 }
 
-function compileMeshOptionalStreams(
-    context: MeshIntrinsicContext,
-    call: ts.CallExpression,
-) {
-    // The demo modules skip optional slots with literal `undefined`.
-    const isUndefinedArgument = (
-        argument: ts.Expression | undefined,
-    ): boolean => !argument || context.symbols.isGlobalUndefined(argument);
-    // The pin's four optional streams, in its own argument order:
-    // uvs, uv2s, tangents, colors. A call that omits one, or hands
-    // it a literal `undefined`, settles here. One that hands it a
-    // value the data model holds as `Float32Array | undefined`
-    // settles at RUN time — scene 86's shared mesh table is three
-    // entries of one record type differing in exactly which
-    // attributes they carry — and `create_mesh_from_data` reads an
-    // empty array as the absent stream either way, which is the
-    // same absence the folded `{}` writes.
+function captureMeshArgument(context: MeshIntrinsicContext, cpp: string, type: string, label: string): string {
+    const name = context.allocateTemporaryCppName(label);
+    context.emit({kind: "declaration", type, name, initializer: cpp});
+    return name;
+}
+
+function compileMeshOptionalStreams(context: MeshIntrinsicContext, call: ts.CallExpression) {
     return [5, 6, 7, 8].map((index) => {
         const argument = call.arguments[index];
-        if (isUndefinedArgument(argument)) {
-            return { cpp: "{}", present: false };
-        }
-        const unwrapped = context.unwrap(argument!);
-        const value = context.compileValue(argument!);
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            value.dataType.inner.kind === "f32array"
-        ) {
-            // The select reads the operand twice, so only a path
-            // is taken: an identifier or a member chain evaluates
-            // to the same storage both times. Anything else --
-            // a call, an indexed read whose subscript is itself an
-            // expression -- refuses here rather than running twice.
-            if (
-                !ts.isIdentifier(unwrapped) &&
-                !ts.isPropertyAccessExpression(unwrapped)
-            ) {
-                context.fail(
-                    argument!,
-                    "An optional vertex stream must be a local or a " +
-                        "member of one: the absent case is selected " +
-                        "at run time, which reads the operand twice.",
-                );
-            }
-            context.reachJsData();
-            return {
-                cpp:
-                    `(${optionalPresentCpp(value.cpp)} ? ${value.cpp}.value()` +
-                    ` : bbl::js::F32Array{})`,
-                present: undefined,
-            };
-        }
-        return {
-            cpp: context.compileTypedArrayArgument(argument!, "f32array"),
-            present: true,
-        };
+        if (!argument || context.symbols.isGlobalUndefined(argument))
+            return {cpp: "std::nullopt", present: false};
+        const value = context.compileValue(argument);
+        const optional = value.dataType?.kind === "optional";
+        const cpp = context.dataLowerer.compileKnownValueForSink(value, {
+            kind: "optional", inner: {kind: "f32array"}, undefinedOnly: true,
+        }, argument);
+        const captured = captureMeshArgument(context, cpp,
+            "const bbl::js::Nullable<bbl::js::F32Array>", "mesh_optional_stream");
+        return {cpp: captured + ".to_optional()", present: optional ? undefined : true};
     });
 }
 
@@ -1344,6 +1292,7 @@ function compileCreateMeshFromData(
     context.expectArgumentCount(call, 5, 9);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
+    const engineCpp = captureMeshArgument(context, engine.cpp, "auto&", "mesh_factory_engine");
     // The record carries the pinned Mesh name; scene code finds
     // meshes by it.
     const name = context.compileValue(argumentAt(call, 1));
@@ -1353,48 +1302,84 @@ function compileCreateMeshFromData(
             `Mesh names must be strings, received ${name.kind}.`,
         );
     }
-    const positions = context.compileTypedArrayArgument(
-        argumentAt(call, 2),
-        "f32array",
-    );
-    const normals = context.compileTypedArrayArgument(
-        argumentAt(call, 3),
-        "f32array",
-    );
-    const indices = context.compileTypedArrayArgument(
-        argumentAt(call, 4),
-        "u32array",
-    );
+    const nameCpp = captureMeshArgument(context, name.cpp, "const std::string", "mesh_name");
+    const positions = captureMeshArgument(context, context.compileTypedArrayArgument(
+        argumentAt(call, 2), "f32array"), "const bbl::js::F32Array", "mesh_positions");
+    const normals = captureMeshArgument(context, context.compileTypedArrayArgument(
+        argumentAt(call, 3), "f32array"), "const bbl::js::F32Array", "mesh_normals");
+    const indices = captureMeshArgument(context, context.compileTypedArrayArgument(
+        argumentAt(call, 4), "u32array"), "const bbl::js::U32Array", "mesh_indices");
     const streams = compileMeshOptionalStreams(context, call);
     const optional = streams.map((stream) => stream.cpp);
     // The streams decide the mesh half of the variant key. A
-    // run-time one leaves its entry unrecorded: generation cannot
-    // answer what the composed Standard or PBR variant would need,
-    // so the pairing refuses where it is known — at the material
-    // assignment — rather than composing against a guess.
+    // Runtime streams select a bounded attribute product for loaded PBR
+    // materials and per-mesh uniform flags for node materials.
+    const runtimeStreams = streams.some(
+        (stream) => stream.present === undefined,
+    );
     const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: streams[1]!.present === true,
         hasTangents: streams[2]!.present === true,
         hasColors: streams[3]!.present === true,
-        ...(streams.some((stream) => stream.present === undefined)
-            ? { runtimeStreams: true as const }
-            : {}),
+        ...(runtimeStreams ? { runtimeStreams: true as const } : {}),
     });
     context.reachFeature("mesh:from-data", call);
+    const factory = `bbl::create_retained_mesh_from_data(${engineCpp}, ${nameCpp}, ${positions}, ${normals}, ${indices}, ${optional.join(", ")})`;
     return {
         kind: "mesh",
         sceneMeshIndex,
-        cpp:
-            `bbl::create_mesh_from_data(${engine.cpp}, ` +
-            `${name.cpp}, ` +
-            `${positions}, ${normals}, ${indices}, ` +
-            `${optional.join(", ")})`,
+        cpp: runtimeStreams
+            ? `([&] { auto mesh = ${factory}; ${recordAt(`${engine.cpp}.meshes`, "mesh")}.runtime_attribute_features = true; return mesh; }())`
+            : factory,
         engineCpp: engine.engineCpp ?? engine.cpp,
         directMorphCompatible: true,
-        ...(streams.some((stream) => stream.present === undefined)
-            ? { runtimeMeshStreams: true as const }
-            : {}),
+        ...(runtimeStreams ? { runtimeMeshStreams: true as const } : {}),
     };
+}
+
+function compileGetMeshGeometry(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+    triangles: boolean,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    context.reachFeature("mesh:geometry-access", call);
+    context.reachJsData();
+    const fields = Object.fromEntries(
+        (triangles
+            ? ["positions", "indices"]
+            : [
+                  "positions",
+                  "normals",
+                  "indices",
+                  "uvs",
+                  "uvs2",
+                  "tangents",
+                  "colors",
+              ]
+        ).map((field) => [
+            field,
+            {
+                cpp: `geometry->${field}`,
+                accepts: (type: import("../data-types.js").DataType) =>
+                    field === "indices"
+                        ? type.kind === "u32array"
+                        : ["positions", "normals"].includes(field)
+                          ? type.kind === "f32array"
+                          : type.kind === "optional" &&
+                            type.inner.kind === "f32array",
+            },
+        ]),
+    );
+    return compileNullableHitRecord(context, call, {
+        intrinsic: triangles ? "getMeshTriangles" : "getMeshGeometry",
+        resultType: context.dataLowerer.dataTypeAt(call),
+        fields,
+        probe: `const auto geometry = bbl::${triangles ? "get_mesh_triangles" : "get_mesh_geometry"}(${context.requireEngine(mesh, call)}, ${mesh.cpp});`,
+        miss: "!geometry",
+    });
 }
 
 function compileResizeMeshGeometry(
@@ -1405,6 +1390,7 @@ function compileResizeMeshGeometry(
     context.expectArgumentCount(call, 5, 9);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
+    const engineCpp = captureMeshArgument(context, engine.cpp, "auto&", "resize_engine");
     let meshCpp: string;
     if (shared) {
         const entries = context.handleCollections.staticHandleList(
@@ -1438,18 +1424,13 @@ function compileResizeMeshGeometry(
         context.expectSameEngine(engine, mesh, call);
         meshCpp = mesh.cpp;
     }
-    const positions = context.compileTypedArrayArgument(
-        argumentAt(call, 2),
-        "f32array",
-    );
-    const normals = context.compileTypedArrayArgument(
-        argumentAt(call, 3),
-        "f32array",
-    );
-    const indices = context.compileTypedArrayArgument(
-        argumentAt(call, 4),
-        "u32array",
-    );
+    meshCpp = captureMeshArgument(context, meshCpp, "const auto", "resize_meshes");
+    const positions = captureMeshArgument(context, context.compileTypedArrayArgument(
+        argumentAt(call, 2), "f32array"), "const bbl::js::F32Array", "mesh_positions");
+    const normals = captureMeshArgument(context, context.compileTypedArrayArgument(
+        argumentAt(call, 3), "f32array"), "const bbl::js::F32Array", "mesh_normals");
+    const indices = captureMeshArgument(context, context.compileTypedArrayArgument(
+        argumentAt(call, 4), "u32array"), "const bbl::js::U32Array", "mesh_indices");
     const optional = compileMeshOptionalStreams(context, call).map(
         (stream) => stream.cpp,
     );
@@ -1457,41 +1438,39 @@ function compileResizeMeshGeometry(
     context.reachFeature("renderer:scene", call);
     return {
         kind: "void",
-        cpp: `bbl::${shared ? "resize_shared_mesh_geometry" : "resize_mesh_geometry"}(${engine.cpp},${meshCpp},${positions},${normals},${indices},${optional.join(",")})`,
+        cpp: `bbl::${shared ? "resize_shared_retained_mesh_geometry" : "resize_retained_mesh_geometry"}(${engineCpp},${meshCpp},${positions},${normals},${indices},${optional.join(",")})`,
     };
 }
 
-function compileUpdateMeshPositions(
+function compileUpdateMeshAttribute(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
-): Value | undefined {
+    attribute: "positions" | "uvs",
+): Value {
     context.expectArgumentCount(call, 3, 6);
     const engine = context.compileValue(argumentAt(call, 0));
-    const mesh = context.compileValue(argumentAt(call, 1));
     context.expectKind(engine, "engine", argumentAt(call, 0));
+    const engineCpp = captureMeshArgument(context, engine.cpp, "auto&", "attribute_engine");
+    const mesh = context.compileValue(argumentAt(call, 1));
     context.expectKind(mesh, "mesh", argumentAt(call, 1));
     context.expectSameEngine(engine, mesh, call);
-    const positions = context.compileTypedArrayArgument(
-        argumentAt(call, 2),
-        "f32array",
-    );
-    const vertexOffset = call.arguments[3]
-        ? context.compileNumber(call.arguments[3], "double")
-        : "0.0";
-    const vertexCount = call.arguments[4]
-        ? context.compileNumber(call.arguments[4], "double")
-        : "std::numeric_limits<double>::quiet_NaN()";
-    const sourceVertexOffset = call.arguments[5]
-        ? context.compileNumber(call.arguments[5], "double")
-        : "0.0";
-    context.reachFeature("mesh:update-positions", call);
-    return {
-        kind: "void",
-        cpp:
-            `bbl::update_mesh_positions(${engine.cpp}, ${mesh.cpp}, ` +
-            `${positions}, ${vertexOffset}, ${vertexCount}, ` +
-            `${sourceVertexOffset})`,
-    };
+    const meshCpp = captureMeshArgument(context, mesh.cpp, "const auto", "attribute_mesh");
+    const values = captureMeshArgument(context,
+        context.compileTypedArrayArgument(argumentAt(call, 2), "f32array"),
+        "const bbl::js::F32Array", "attribute_values");
+    const range = [3, 4, 5].map((index) => {
+        const argument = call.arguments[index];
+        if (!argument) return index === 4 ? "std::nullopt" : "0.0";
+        const value = context.dataLowerer.compileForSink(argument, {
+            kind: "optional", inner: {kind: "number"}, undefinedOnly: true,
+        });
+        const captured = captureMeshArgument(context, value,
+            "const bbl::js::Nullable<double>", "attribute_range");
+        return captured + (index === 4 ? ".to_optional()" : ".value_or(0.0)");
+    });
+    context.reachFeature("mesh:update-attributes", call);
+    return {kind: "void", cpp: "bbl::update_mesh_" + attribute + "(" +
+        [engineCpp, meshCpp, values, ...range].join(", ") + ")"};
 }
 
 function compileMarkMeshRenderableDirty(
@@ -1608,18 +1587,8 @@ function compileSetThinInstances(
     context.expectArgumentCount(call, 3, 3);
     const mesh = context.compileValue(argumentAt(call, 0));
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
-    // The pinned setThinInstances adopts the caller's array by
-    // reference so setThinInstanceCount/flushThinInstances can
-    // re-read it later, and the native record keeps the same
-    // alias. Upstream an inline argument survives because the
-    // mesh holds the reference; here the array needs a name whose
-    // lifetime is the frame loop, so one that arrives as a
-    // temporary is bound to a local first. A block-scoped local
-    // does not outlive its block, so it refuses -- unless its
-    // initializer is a compile-time constant, which the arm below
-    // promotes to a static pool instead. Scene 219 sets its thin
-    // instances from a literal identity matrix inside the setup
-    // block, and that pool is what gives it a frame-loop lifetime.
+    // The F32Array overload retains the shared buffer owner, preserving
+    // the source array identity after a local or argument leaves scope.
     const matricesArgument = context.unwrap(argumentAt(call, 1));
     const matricesExpression = context.compileTypedArrayArgument(
         argumentAt(call, 1),
@@ -1627,28 +1596,10 @@ function compileSetThinInstances(
     );
     let matrices = matricesExpression;
     if (!ts.isIdentifier(matricesArgument)) {
-        // A block-scoped local would not outlive its block, so a
-        // nested call site needs storage whose lifetime is at
-        // least the frame loop's. A pool of COMPILE-TIME
-        // constants can have it: bound as a static local it is
-        // initialized once, lives for the program, and its
-        // address never moves -- which is exactly the alias
-        // `setThinInstances` adopts. Anything else still refuses,
-        // because a static initializer would freeze the first
-        // evaluation of a run-time expression.
-        const constantPool =
-            !context.isEntryBodyScope() &&
-            staticFloatArrayArgument(context, matricesArgument);
-        if (!context.isEntryBodyScope() && !constantPool) {
-            context.fail(
-                argumentAt(call, 1),
-                "setThinInstances takes a named Float32Array binding, or a constant one, inside a block; the mesh keeps referencing it for the whole frame loop.",
-            );
-        }
         matrices = context.allocateTemporaryCppName("thin_instances");
         context.emit({
             kind: "declaration",
-            type: `${constantPool ? "static " : ""}bbl::js::F32Array`,
+            type: "bbl::js::F32Array",
             name: matrices,
             initializer: matricesExpression,
         });
@@ -1731,7 +1682,15 @@ function compileSetThinInstanceCount(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
-    const mesh = context.compileValue(argumentAt(call, 0));
+    const source = context.compileValue(argumentAt(call, 0));
+    const mesh: Value =
+        source.kind === "scene-node"
+            ? {
+                  ...source,
+                  kind: "mesh",
+                  cpp: `std::get<bbl::MeshHandle>(${source.cpp})`,
+              }
+            : source;
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
     const count = context.compileNumber(argumentAt(call, 1));
     context.reachFeature("mesh:thin-instances", call);
@@ -2957,6 +2916,14 @@ const meshIntrinsicHandlers = new EmissionMap<
         call: ts.CallExpression,
     ) => Value | undefined
 >([
+    [
+        "getMeshGeometry",
+        (context, call) => compileGetMeshGeometry(context, call, false),
+    ],
+    [
+        "getMeshTriangles",
+        (context, call) => compileGetMeshGeometry(context, call, true),
+    ],
     ["initializeCsg2Async", compileInitializeCsg2Async],
     ["isCsg2Ready", compileIsCsg2Ready],
     ["createCsg2FromMesh", compileCreateCsg2FromMesh],
@@ -3031,7 +2998,15 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["setParent", compileSetParent],
     ["cloneTransformNode", compileCloneTransformNode],
     ["createMeshFromData", compileCreateMeshFromData],
-    ["updateMeshPositions", compileUpdateMeshPositions],
+    [
+        "updateMeshPositions",
+        (context, call) =>
+            compileUpdateMeshAttribute(context, call, "positions"),
+    ],
+    [
+        "updateMeshUvs",
+        (context, call) => compileUpdateMeshAttribute(context, call, "uvs"),
+    ],
     [
         "resizeMeshGeometry",
         (context, call) => compileResizeMeshGeometry(context, call, false),

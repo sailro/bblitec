@@ -37,6 +37,9 @@ int main() {
     assert(!retained.expired());
     const auto body = pal::physics_body_create();
     pal::physics_body_set_shape(body, container.handle);
+    pal::physics_shape_set_material(container.handle, {.8, .8, .6});
+    assert(pal::leaf_material(*container.handle.ownership).friction == btScalar(.5));
+    assert(pal::leaf_material(*container.handle.ownership).restitution == 0);
     const auto solver_world = physics_world_record(world).handle;
     pal::physics_world_add_body(solver_world, body, false);
     pal::physics_world_step(solver_world, 1.0 / 60);
@@ -73,14 +76,37 @@ int main() {
                                                        0xffffffffu, 0xffffffffu, false);
     assert(shared_hit.has_hit && std::abs(shared_hit.point[2] - 19.5) < 0.001);
     auto empty = create_physics_container_shape(world);
+    auto direct = create_physics_container_shape(world);
+    add_physics_shape_child(world, direct, offset_sphere);
+    add_physics_shape_child(world, direct, offset_sphere, Vec3d{5,0,0}, {}, Vec3d{2,2,2});
+    const auto direct_body = pal::physics_body_create();
+    pal::physics_body_set_shape(direct_body, direct.handle);
+    pal::physics_body_set_transform(direct_body, {{0,0,30},{0,0,0,1}});
+    pal::physics_world_add_body(solver_world,direct_body,false);
+    pal::physics_world_step(solver_world,1.0/60);
+    const auto direct_default_hit = pal::physics_world_raycast(solver_world,{1,0,28},{1,0,32},0xffffffffu,0xffffffffu,false);
+    const auto direct_scaled_hit = pal::physics_world_raycast(solver_world,{7,0,28},{7,0,32},0xffffffffu,0xffffffffu,false);
+    assert(direct_default_hit.has_hit && std::abs(direct_default_hit.point[2]-29.5)<0.001);
+    assert(direct_scaled_hit.has_hit && std::abs(direct_scaled_hit.point[2]-29)<0.001);
     fixture_worlds[0].fill(0);
     bool singular = false;
     try {
         add_physics_shape_child_from_parent(world, empty, physics_node(TransformNodeHandle{0}),
                                             container, physics_node(TransformNodeHandle{1}));
     } catch (const std::runtime_error& error) {
-        singular = std::string(error.what()) == "#498";
+        singular = std::string(error.what()) == "#560";
     }
     assert(singular && empty.handle.ownership->children.empty());
+    const auto retained_container = pal::physics_shape_create_container();
+    const auto retained_child = pal::physics_shape_create_sphere({0,0,0}, .5);
+    pal::physics_shape_add_child(retained_container, retained_child, {{0,0,0},{0,0,0,1}}, {1,1,1});
+    const auto retained_body = pal::physics_body_create();
+    pal::physics_body_set_shape(retained_body, retained_container);
+    pal::physics_shape_release(retained_child);
+    pal::physics_shape_release(retained_container);
+    assert(retained_child.ownership->shape && retained_container.ownership->shape);
+    pal::physics_body_release(retained_body);
+    assert(!retained_child.ownership->shape && !retained_container.ownership->shape);
+    assert(pal::combine(pal::PhysicsMaterialCombine::geometric_mean, btScalar(.2), btScalar(.8)) == btScalar(.4));
     std::cout << "physics-container-check: ok\n";
 }

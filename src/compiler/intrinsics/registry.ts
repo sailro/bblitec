@@ -196,10 +196,12 @@ export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...nativeDataIterationIntrinsics,
     "createTexture2DFromPixels",
     "getViewProjectionMatrix",
+    "createPickingRay",
     "markMaterialUboDirty",
     "unlockAudioEngineAsync",
     "updateAnimationManager",
     "updateMeshPositions",
+    "updateMeshUvs",
 ]);
 
 type IntrinsicCompiler = (
