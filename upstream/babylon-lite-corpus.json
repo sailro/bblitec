@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.31.0",
+  "version": "1.31.1",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "3ce8ae6d34945f4c32c73e357714ffa43be41584",
+  "sourceVersion": "7d66215c1c897734a3c2f25bdd15d0e7062ed8f4",
   "scenes": [
     {
       "id": "scene1",
@@ -422,7 +422,7 @@
       "id": "scene173",
       "upstreamPath": "lab/lite/src/lite/scene173.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene173.ts",
-      "sha256": "052dc12236710f6bc109fd2430c61d472e74a549d2716902b1c097f37df63e11"
+      "sha256": "e668f49d17102d7fe7197a054f307cb8b6d3f96fd86a243bc3c13a361a84e54b"
     },
     {
       "id": "scene174",
@@ -1863,7 +1863,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/tetris/chamfered-box.ts",
@@ -2126,7 +2126,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         }
       ]
     },
@@ -2705,7 +2705,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         }
       ]
     },
@@ -2730,7 +2730,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/atlas.ts",
@@ -2925,7 +2925,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/brdf-lut.png",
@@ -3166,7 +3166,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/assets.ts",
@@ -3315,13 +3315,17 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
       "reference": {
         "source": "reference/littlest-tokyo/babylon-lite-golden.png",
-        "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33"
+        "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33",
+        "provenance": {
+          "source": "reference/littlest-tokyo/provenance.json",
+          "sha256": "f54307094eb8e557c198fe5c784df360d95e8cde3a4fd5b745bf5b2089de871a"
+        }
       },
       "files": [
         {
           "upstreamPath": "lab/lite/src/demos/littlest-tokyo.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
-          "sha256": "09100017c9b6f5ede345f18606ae3508e2c25f6f8353142e7db73f312fa96da3"
+          "sha256": "77c8407c2b121e8c46765dd13e2e6b410028bdc0446c7458872d41241e1e7519"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
@@ -3331,7 +3335,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/brdf-lut.png",
@@ -3371,7 +3375,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/bath_day.glb",
@@ -3416,7 +3420,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/freeciv/amplio2/animals.png",
@@ -3656,7 +3660,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "3d3408ce72fba2eb66c5985c2f925ccd880aee42c1ff022c9ffe018fbdd668a6"
+          "sha256": "0923a28e46471e0093b243e09d17ad825db0a33bb779c8224361286111b72dbb"
         }
       },
       "files": [
@@ -3678,7 +3682,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/ocean.ts",
@@ -3988,7 +3992,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/atlas.ts",
@@ -4397,7 +4401,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/screen-space-effects/cornellBox.glb",
@@ -4447,7 +4451,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/brdf-lut.png",
@@ -4477,7 +4481,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         },
         {
           "upstreamPath": "lab/public/models/Calculator.glb",
@@ -4535,7 +4539,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
-          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+          "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
         }
       ]
     }
