@@ -163,8 +163,8 @@ js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine) {
 
     js::Array<js::Nullable<GamepadHandle>> result(state.slots.size());
     for (std::size_t index = 0; index < state.slots.size(); ++index) {
-        if (state.slots[index])
-            result[index] = state.slots[index]->handle;
+        if (const auto& slot = state.slots[index])
+            result[index] = slot->handle;
     }
     return result;
 }

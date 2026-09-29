@@ -431,6 +431,30 @@ The desktop packager runs the staged executable for five frames with GPU validat
 only after success. CMake presets provide Windows developer-prompt recipes. Linker size attribution:
 `node tools/map-size-report.mjs <executable.map>`.
 
+## C++ library
+
+`lite/library.json` lists the runtime features and image codecs the C++ library bundles.
+`src/library-manifest.ts` turns it into the manifest generation writes a tree from, through the same
+writer as a scene; its header states which compositions are answered for every client.
+
+```powershell
+npm run scene -- process lite/library.json
+```
+
+A tree without a program builds as the static `babylon_lite` library, with `lite/sample/main.cpp` linked
+against it. Under `BBLITE_MINSIZE` the library is compiled without whole-program optimization, so any
+client linker takes its objects and `/OPT:REF` still drops what a client never references. The library
+is built and run on Windows only. Commands that run a program (`run`, `diff`, `capture`) do not apply to
+a library tree.
+
+The list leaves out program modes (floating origin, high-precision matrices, workers and the window
+realm, transmission, the standalone text renderer) and features whose code is composed from a program's
+own content (node materials and particles, effect wrappers, the frame-graph renderer, material plugins,
+splat containers, bake and harmonics, the physics viewer, screen-space passes). Features whose content
+comes from call sites or assets compile without anything to draw: PBR materials, shadows, post-process
+and geometry-output tasks, flow graphs. Assets are packaged at generation, so a client supplies its own
+geometry and textures.
+
 ## Updating Babylon Lite
 
 Update pin, package lock, corpus catalog and reference provenance together. Run test:upstream,

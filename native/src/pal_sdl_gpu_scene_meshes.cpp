@@ -15,6 +15,9 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#if BBLITE_COMPUTE_BUFFERS
+#include "pal_sdl_gpu_storage_buffer.hpp"
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
 #endif

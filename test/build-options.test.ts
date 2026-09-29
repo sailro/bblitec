@@ -267,7 +267,13 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     const block = cmake.slice(cmake.indexOf("if(BBLITE_MINSIZE)"));
     assert.match(block, /CMAKE_CXX_COMPILER_ID MATCHES "Clang"/);
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
-    assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
+    assert.match(block, /\/O1 \/Ob1 \/Gw/);
+    // Whole-program code generation only where the tree links its own
+    // program: a library archive holds machine code any client links.
+    assert.match(
+        block,
+        /if\(BBLITE_APPLICATION_SOURCES\)\s+target_compile_options\(bblite_core INTERFACE \/GL\)\s+target_link_options\(\$\{BBLITE_EXECUTABLE\} PRIVATE \/LTCG\)/,
+    );
     assert.match(block, /\/STACK:8388608/);
     // Generated units are warning-clean under MSVC too: the lowering emits
     // no unreachable fallthrough for LTCG to report as C4702.

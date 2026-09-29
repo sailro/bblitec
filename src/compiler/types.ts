@@ -188,6 +188,8 @@ export interface CompileManifest {
     sceneMaterialGltfAssetsBefore?: number[];
     /** These material rows are native call-site profiles, not physical counts. */
     runtimeMaterialProfiles?: number[];
+    /** Image codecs reached without a packaged asset: a library's clients decode their own images. */
+    imageCodecs?: string[];
     sceneMeshes: SceneMeshManifest[];
     /** Scene-code lights added outside a repeating/deferred callback, in
      *  scene order. When `dynamicSceneLights` is false this is the complete

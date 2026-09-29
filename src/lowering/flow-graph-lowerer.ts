@@ -2561,6 +2561,7 @@ struct FlowGraphRuntime {
 #include <bblite/js_data.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -2604,11 +2605,12 @@ struct FlowGraphAssetGraphs {
 };
 
 // The graphs generation parsed, by the packaged asset the loader reads,
-// built on first use: the factory lists allocate.
+// built on first use: the factory lists allocate. A std::array, so a build
+// that parsed no graph is an empty table rather than a zero-length array.
 const auto& flow_graph_assets() {
-    static const FlowGraphAssetGraphs graphs[] = {
+    static const std::array<FlowGraphAssetGraphs, ${table.length}> graphs{{
 ${table.join("\n")}
-    };
+    }};
     return graphs;
 }
 

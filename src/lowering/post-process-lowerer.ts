@@ -530,12 +530,7 @@ void write_post_process_uniforms(
     (void)source_width;
     (void)source_height;
     (void)data;
-    switch (task.shader_index) {
-${this.uniformCases()}
-        default:
-            throw std::runtime_error(
-                "Post-process pass has no generated uniform writer.");
-    }
+${this.uniformDispatch()}
 }
 
 } // namespace bbl::upstream
@@ -875,6 +870,25 @@ ${body}
         }`,
         );
         return [...declared, ...external].join("\n");
+    }
+
+    /**
+     * The uniform writer's dispatch on the pass's shader. A build that reached
+     * no pass has no case to switch on, and a `switch` holding only `default`
+     * is a warning under MSVC, so that dispatch is the refusal alone.
+     */
+    private uniformDispatch(): string {
+        const cases = this.uniformCases();
+        const refusal = `throw std::runtime_error(
+                "Post-process pass has no generated uniform writer.");`;
+        return cases === ""
+            ? `    (void)task;
+    ${refusal}`
+            : `    switch (task.shader_index) {
+${cases}
+        default:
+            ${refusal}
+    }`;
     }
 
     /**
