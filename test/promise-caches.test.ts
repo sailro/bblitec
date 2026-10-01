@@ -72,6 +72,11 @@ test("promise caches retain identity and async reactions own registration snapsh
             if(await selected!==8)throw new Error("nullable local");
             selected=undefined;
             if(selected!==undefined)throw new Error("clear local");
+            let nullablePromise:Promise<number>|null=null;
+            nullablePromise=Promise.resolve(10);
+            if(await nullablePromise!==10)throw new Error("null promise local");
+            nullablePromise=null;
+            if(nullablePromise!==null)throw new Error("clear null promise local");
             globalThis.close();
         })();
     `,

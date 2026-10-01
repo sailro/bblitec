@@ -597,6 +597,7 @@ test("an HTML page is a scene source hosting the entry it names", () => {
     );
     assert.deepEqual(sceneReferencePage(registered), {
         hostPage: registered.page?.path,
+        documentMarkers: true,
     });
     assert.deepEqual(
         sceneReferencePage({
@@ -609,6 +610,7 @@ test("an HTML page is a scene source hosting the entry it names", () => {
         {
             hostPage: registered.page?.path,
             siteRoot: resolve("examples/regression-host-page"),
+            documentMarkers: true,
         },
     );
     const page = ".cache/adhoc-page.html";

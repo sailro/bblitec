@@ -212,6 +212,10 @@ export function compileWorkerApplication(
     const sourceProfileScopes = new EmissionSet(
         results.flatMap((result) => result.sourceProfileScopes ?? []),
     );
+    // Capture readiness belongs to the Window, even when a worker owns
+    // the rendering tables selected for the combined program.
+    const { canvasReadyGate, ...renderingManifest } = rendering.manifest;
+    void canvasReadyGate;
     return {
         cpp: results.map((result) => result.cpp).join("\n"),
         cppFiles,
@@ -226,7 +230,10 @@ export function compileWorkerApplication(
             ? { sourceProfileScopes: [...sourceProfileScopes] }
             : {}),
         manifest: {
-            ...rendering.manifest,
+            ...renderingManifest,
+            ...(application.manifest.canvasReadyGate
+                ? { canvasReadyGate: true as const }
+                : {}),
             source: application.manifest.source,
             assets: [...assets.values()],
             adaptations: results.flatMap(
@@ -258,6 +265,7 @@ function renderingProduct(manifest: CompileManifest): string {
         assets,
         adaptations,
         assetDecoders,
+        canvasReadyGate,
         ...products
     } = manifest;
     void source;
@@ -270,5 +278,6 @@ function renderingProduct(manifest: CompileManifest): string {
     void assets;
     void adaptations;
     void assetDecoders;
+    void canvasReadyGate;
     return JSON.stringify(products);
 }

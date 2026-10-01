@@ -765,6 +765,7 @@ namespace bbl::upstream {
 double scene_camera_change_key(const CameraRecord&) { return 0; }
 }
 namespace bbl::pal {
+${cppFunction(textScene, "inline bool text_in_default_scene_pass(")}
 ${cppFunction(textScene, "inline void validate_text_scene(")}
 ${cppRecord(textScene, "struct TextScenePass {")}
 }

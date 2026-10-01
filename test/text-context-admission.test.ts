@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
+import { registrySceneCompileOptions } from "../src/native-host-ui.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+import { getScene } from "../src/scene-registry.js";
 
 const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
@@ -67,11 +68,11 @@ test("standalone text admission retains both pinned text scene paths", () => {
         [180, true],
         [181, false],
     ] as const) {
-        const fileName = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
-        const result = compileSource(readFileSync(fileName, "utf8"), {
+        const scene = getScene(`scene${id}`);
+        assert.ok(scene.page);
+        const result = compileSource(readFileSync(scene.source, "utf8"), {
             ...labDeployment,
-            fileName,
-            nativeHostUi: readNativeHostUi(`ui/scene${id}-host.json`),
+            ...registrySceneCompileOptions(scene),
         });
         assert.equal(
             result.manifest.features.includes("renderer:text"),

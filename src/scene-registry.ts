@@ -111,6 +111,7 @@ export function sceneReferencePage(scene: SceneDefinition): {
     hostPage?: string;
     siteRoot?: string;
     publicDir?: string;
+    documentMarkers?: true;
 } {
     const page = scene.page?.path ?? scene.parity?.referenceHostPage;
     const sourcePath = relative(resolve("."), resolve(scene.source));
@@ -124,6 +125,7 @@ export function sceneReferencePage(scene: SceneDefinition): {
             : undefined);
     return {
         ...(page === undefined ? {} : { hostPage: page }),
+        ...(scene.page ? { documentMarkers: true as const } : {}),
         ...(siteRoot === undefined ? {} : { siteRoot }),
         ...(scene.publicDir !== undefined
             ? { publicDir: scene.publicDir }

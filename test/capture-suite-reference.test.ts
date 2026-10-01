@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
     bundledDemoAssetPath,
     captureUiEnabled,
@@ -10,6 +11,7 @@ import {
     flattenedBundledDemoAssetPath,
     fixedAnimationFrameScript,
     pinnedLabPublicAssetPath,
+    suiteBrowserModule,
 } from "../src/capture-suite-reference.js";
 import { gotoScenePage } from "../src/browser-harness.js";
 import {
@@ -467,6 +469,112 @@ test("builds a registration-ordered fixed browser RAF clock", () => {
         () => fixedAnimationFrameScript(1.5),
         /Invalid fixed animation frame/,
     );
+});
+
+test("fixed captures preserve legacy module markers and explicitly select document markers for HTML entries", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "bblite-clock-markers-"));
+    const entry = resolve(root, "entry.ts");
+    writeFileSync(entry, 'import "./helper.js"; await startEngine(engine);');
+    writeFileSync(resolve(root, "helper.ts"), "await startEngine(engine);");
+    try {
+        for (const documentMarkers of [false, true]) {
+            const moduleSource = suiteBrowserModule(
+                entry,
+                undefined,
+                undefined,
+                undefined,
+                2,
+                undefined,
+                undefined,
+                false,
+                documentMarkers,
+            );
+            const expected = documentMarkers
+                ? 'document.documentElement.setAttribute("data-fixed-engine-starting", "true");'
+                : 'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");';
+            assert.ok(moduleSource.includes(expected));
+            const server = createSuiteSceneServer(moduleSource, {
+                sourcePath: entry,
+                siteRoot: root,
+                fixedAnimationFrame: 2,
+                documentMarkers,
+            });
+            try {
+                await new Promise<void>((done) =>
+                    server.listen(0, "127.0.0.1", done),
+                );
+                const address = server.address();
+                assert.ok(address && typeof address !== "string");
+                const origin = `http://127.0.0.1:${address.port}`;
+                assert.equal(
+                    await (await fetch(`${origin}/entry.js`)).text(),
+                    moduleSource,
+                );
+                assert.ok(
+                    (
+                        await (await fetch(`${origin}/helper.js`)).text()
+                    ).includes(expected),
+                );
+            } finally {
+                await new Promise<void>((done) => server.close(() => done()));
+            }
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("the fixed clock starts and freezes for legacy canvases, HTML canvases and entry readiness", () => {
+    for (const convention of ["legacy", "html", "entry"] as const) {
+        const frames: Array<() => void> = [];
+        const microtasks: Array<() => void> = [];
+        const marks: { dataset: Record<string, string> } = { dataset: {} };
+        const canvas: { dataset: Record<string, string> } = {
+            dataset: { ready: "true" },
+        };
+        if (convention === "legacy")
+            canvas.dataset.fixedEngineStarting = "true";
+        else marks.dataset.fixedEngineStarting = "true";
+        if (convention === "entry") marks.dataset.captureReady = "true";
+        const performance = { now: () => 999 };
+        const window = {
+            performance,
+            requestAnimationFrame: (
+                callback: (time: number) => void,
+            ): number => {
+                frames.push(() => callback(999));
+                return frames.length;
+            },
+            cancelAnimationFrame: (_id: number) => {},
+            setTimeout: (_callback: () => void, _delay?: number): number => 0,
+            clearTimeout: (_id: number) => {},
+            setInterval: (_callback: () => void, _delay?: number): number => 0,
+            clearInterval: (_id: number) => {},
+        };
+        runInNewContext(fixedAnimationFrameScript(2), {
+            window,
+            performance,
+            document: {
+                documentElement: marks,
+                getElementById: () => (convention === "legacy" ? canvas : null),
+                querySelector: () => (convention === "entry" ? null : canvas),
+            },
+            queueMicrotask: (callback: () => void) => microtasks.push(callback),
+        });
+        const times: number[] = [];
+        const animate = (time: number): void => {
+            times.push(time);
+            window.requestAnimationFrame(animate);
+        };
+        window.requestAnimationFrame(animate);
+        for (let turn = 0; frames.length > 0 && turn < 10; turn++) {
+            frames.shift()!();
+            while (microtasks.length > 0) microtasks.shift()!();
+        }
+        assert.deepEqual(times, [0, 1000 / 60, 2 * (1000 / 60)], convention);
+        assert.equal(marks.dataset.fixedCaptureFrame, "2", convention);
+        assert.equal(frames.length, 0, convention);
+    }
 });
 
 test("serves entry modules from their source-relative URL", async () => {
