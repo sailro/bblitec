@@ -391,7 +391,10 @@ test("runtime text values and updates retain live fonts and unchanged textarea c
     });
     assert(result.manifest.features.includes("text:layout"));
     assert(result.manifest.features.includes("ui:rml"));
-    assert.match(result.cpp, /ui_on_event[\s\S]*"input"/);
+    assert.match(
+        result.cpp,
+        /on_dom_pointer\([^;]+DomEventTarget::node\(v_textarea\.value\), "input", \d+u, bbl::js::make_closure\(/,
+    );
     assert.match(result.cpp, /ui_get_form_value/);
     assert.match(result.cpp, /attach_control/);
 });

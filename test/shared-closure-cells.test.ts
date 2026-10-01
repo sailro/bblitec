@@ -10,6 +10,10 @@ import { compileSource } from "../src/compiler.js";
 import { collectReboundSymbols } from "../src/compiler/module-initializers.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 
 const sharedCell = (name: string, type: string, initial: string): RegExp =>
     new RegExp(
@@ -109,7 +113,7 @@ test("a let flipped from an inline interval callback shares one cell", () => {
     assert.match(result.cpp, /\(\*v_paused\) = true;/);
 });
 
-test("a named local function handed to a listener-installing helper shares the cell it writes", () => {
+test("a named local function handed to a listener-installing helper shares the cell it writes", (t) => {
     const result = compileSource(`
         import { createEngine, createSceneContext, onBeforeRender } from "@babylonjs/lite";
 
@@ -127,6 +131,7 @@ test("a named local function handed to a listener-installing helper shares the c
             const scene = createSceneContext(engine);
             let destination: number | null = null;
             let travelled = 0;
+            let frames = 0;
             const onMapClick = (x: number): void => {
                 destination = x;
             };
@@ -134,14 +139,19 @@ test("a named local function handed to a listener-installing helper shares the c
             onBeforeRender(scene, () => {
                 if (destination !== null) {
                     travelled += 1;
+                    if (destination !== travelled * 21)
+                        throw new Error("listener and frame callbacks must share the destination");
+                } else if (travelled !== 0 || frames !== 0) {
+                    throw new Error("initial destination must remain null");
                 }
+                frames++;
             });
         }
         main();
     `);
     assert.match(
         result.cpp,
-        /auto v_destination = bbl::js::make_gc_shared<bbl::js::Nullable<double>>\(std::nullopt\);/,
+        /auto v_destination = bbl::js::make_gc_shared<bbl::js::Nullable<double>>\(bbl::js::Nullable<double>\{std::nullopt\}\);/,
     );
     assert.match(
         result.cpp,
@@ -150,6 +160,36 @@ test("a named local function handed to a listener-installing helper shares the c
     assert.match(
         result.cpp,
         /\(\*v_destination\) = bbl::js::Nullable<double>\{v_\w+_x\};/,
+    );
+    const native = optionalNativeFixtureTools();
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        native,
+        "shared-listener-cells",
+        `
+#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+Scene create_scene_context(Engine& engine) {
+    Scene scene;
+    scene.engine = &engine;
+    return scene;
+}
+void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
+    callback(0);
+    for (double x : {21.0, 42.0}) {
+        const auto event = dom_event(PlatformMouseEvent{.client_x=x}, "pointerup",
+            {DomEventTarget::canvas()});
+        dom_input(*scene.engine).pointer.dispatch(event);
+        callback(0);
+    }
+}
+}
+int main() { assert(generated_main() == 0); }
+`,
     );
 });
 

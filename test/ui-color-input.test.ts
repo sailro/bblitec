@@ -15,8 +15,13 @@ test("color input values and edit events use the retained form control", () => {
         document.body.append(input, output);`);
     assert.match(result.cpp, /ui_set_attribute\([^;]+"type", "color"\)/);
     assert.match(result.cpp, /ui_get_form_value\(/);
-    assert.match(result.cpp, /ui_on_event\([^;]+"input"/);
-    assert.match(result.cpp, /ui_on_event\([^;]+"change"/);
+    for (const event of ["input", "change"])
+        assert.match(
+            result.cpp,
+            new RegExp(
+                `on_dom_pointer\\([^;]+DomEventTarget::node\\(v_input\\.value\\), "${event}", \\d+u, bbl::js::make_closure\\(`,
+            ),
+        );
     assert.doesNotMatch(result.cpp, /ui_set_file_input/);
 });
 

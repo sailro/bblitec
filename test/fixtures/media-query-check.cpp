@@ -14,6 +14,10 @@ std::vector<std::shared_ptr<bbl::pal::MediaQueryList>> queries;
 } // namespace
 
 namespace bbl::pal {
+Engine& window_document_engine() {
+    static Engine document;
+    return document;
+}
 std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
     auto media =
         js::make_gc_shared<MediaQueryList>(std::move(query), read_ratio, read_motion, read_input);

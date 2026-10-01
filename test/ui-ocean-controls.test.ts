@@ -26,7 +26,10 @@ test("details, select options and output values retain their source properties",
     assert.match(result.cpp, /ui_set_selected\(/);
     assert.match(result.cpp, /ui_get_selected\(/);
     assert.match(result.cpp, /ui_get_form_value\(/);
-    assert.match(result.cpp, /ui_on_event\([^;]+"change"/);
+    assert.match(
+        result.cpp,
+        /on_dom_pointer\([^;]+DomEventTarget::node\(v_select\.value\), "change", \d+u, bbl::js::make_closure\(/,
+    );
 });
 
 test("native Ocean controls preserve selection, output, disclosure and authored identity", (t) => {
