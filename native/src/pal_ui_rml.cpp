@@ -6210,6 +6210,12 @@ struct UiRmlRuntime {
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
 // intrinsic size and ratio wherever CSS leaves a dimension auto.
 bool UiCanvasElement::GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) {
+    // Definite CSS sizes need no intrinsic fallback. Keep their ordinary
+    // layout path so shrink-to-fit parents include the authored width.
+    const auto& style = GetComputedValues();
+    if (style.width().type == Rml::Style::Width::Length &&
+        style.height().type == Rml::Style::Height::Length)
+        return false;
     if (!runtime_ || handle_.value >= runtime_->engine.ui_elements.size())
         return false;
     const auto& canvas = runtime_->engine.ui_elements[handle_.value].canvas;

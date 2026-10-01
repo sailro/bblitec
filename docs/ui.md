@@ -248,7 +248,7 @@ Canvas-only capture excludes UI filters.
   when the PAL checks that property and is otherwise stored as written, where CSSOM ignores it. A box-shadow
   naming an unknown color keyword passes the check and refuses.
 - A layer composite copies its source region before filtering, including composites without filters.
-- A canvas's backing size is its intrinsic size; a flex item or shrink-to-fit box does not count a canvas child's width.
+- A canvas's backing size is its intrinsic size; intrinsic canvas width does not enlarge a flex item or shrink-to-fit box.
 - A scene's canvas hides the page paint beneath it even where the scene clears to a translucent color.
 - A text or sprite renderer presents an authored engine canvas only while it fills the window.
 - An image regenerates its quad when its absolute offset's sub-pixel fraction changes.
