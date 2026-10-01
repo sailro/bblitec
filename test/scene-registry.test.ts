@@ -74,6 +74,7 @@ test("registers unique generated scene targets", () => {
             "regression-sprite-layer-arms",
             "regression-host-page",
             "regression-page-canvas",
+            "regression-page-scene-canvas",
             "regression-instanced-ground",
             "regression-morph-ground",
             "regression-light-setters",
