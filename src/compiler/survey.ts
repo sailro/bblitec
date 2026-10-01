@@ -187,19 +187,27 @@ export class SurveyCollector {
         }
     }
 
-    /** A refusal raised at a name that a refused statement would have declared. */
+    /**
+     * A refusal raised at a name that a refused statement would have
+     * declared, or at a member, element or call reached through that name
+     * (`splash.setProgress` once `splash` is gone).
+     */
     private cascadeOf(
         attempt: Attempt,
         checker: ts.TypeChecker,
         error: CompileError,
     ): SurveySite | undefined {
-        const subject = error.subject;
-        if (
-            !subject ||
-            !ts.isIdentifier(subject) ||
-            attempt.declarations.size === 0
+        let subject = error.subject;
+        if (!subject || attempt.declarations.size === 0) return undefined;
+        while (
+            ts.isPropertyAccessExpression(subject) ||
+            ts.isElementAccessExpression(subject) ||
+            ts.isCallExpression(subject) ||
+            ts.isNonNullExpression(subject) ||
+            ts.isParenthesizedExpression(subject)
         )
-            return undefined;
+            subject = subject.expression;
+        if (!ts.isIdentifier(subject)) return undefined;
         const symbol = declaredSymbol(checker, subject);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
