@@ -483,8 +483,9 @@ Closed-context graph operations, master ramps and nullable buffers remain limite
 ## Shadows
 
 PCF spot/directional, ESM directional and CSM support reached receivers/casters, layers, blur and morph
-bounds. receiveShadows needs a known supported value. Broader options and thin-instance contracts refuse.
-PCF normalBias/spot refresh and CSM stabilization/bias remain limited.
+bounds. receiveShadows needs a known supported value. PCF `mapSize` may be a run-time integer; `normalBias`
+is evaluated and unused, as in the pin. Broader options and thin-instance contracts refuse.
+PCF spot refresh and CSM stabilization/bias remain limited.
 Generator enable changes retain resources and update receiver darkness; CSM callbacks retain source order.
 
 ## Navigation

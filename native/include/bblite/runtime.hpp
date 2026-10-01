@@ -6099,9 +6099,8 @@ void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 /**
  * `PcfSpotlightShadowGeneratorConfig`, as the reached slice resolves it.
  *
- * `mapSize` sizes a GPU texture, so it is decided at generation; the rest
- * are the pinned `??` defaults or what the scene passed, at the JavaScript
- * width the pin holds them (a spot's projection near/far reach the
+ * Every field is the pinned `??` default or what the scene passed, at the
+ * JavaScript width the pin holds it (a spot's projection near/far reach the
  * perspective volume before any float store).
  */
 struct PcfSpotShadowOptions {
@@ -6154,9 +6153,9 @@ struct EsmDirectionalShadowOptions {
  * The spot generator's own three, plus the ortho volume the caster fit
  * projects into — a directional light has no position to project from, so
  * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
- * takes. `normalBias` is unreached on the two PCF factories and refuses by
- * name — generation anchors each factory's `?? false` default, so a pin that
- * changes what those factories carry refuses here rather than drifting
+ * takes. Neither PCF factory reads `normalBias`, so it has no field.
+ * Generation anchors each factory's `?? false` default, so a pin that
+ * changes what those factories carry refuses rather than drifting
  * silently. `forceRefreshEveryFrame` rides into the record, where it
  * disables the pinned render gate: the ESM and CSM factories already carry
  * it (break-meshes reaches those), and the PCF DIRECTIONAL factory carries
@@ -6199,6 +6198,18 @@ struct CsmDirectionalShadowOptions {
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
     bool force_refresh_every_frame{};
 };
+
+/**
+ * A PCF `mapSize` computed at run time: the shadow target's extent and the
+ * pinned `1 / mapSize` lane agree only on a positive integer, so anything
+ * else throws.
+ */
+inline std::uint32_t shadow_map_extent(double value) {
+    if (!(value >= 1.0) || value > std::numeric_limits<std::uint32_t>::max() ||
+        std::trunc(value) != value)
+        throw std::runtime_error("Shadow generator mapSize must be a positive integer.");
+    return static_cast<std::uint32_t>(value);
+}
 
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(Engine& engine, LightHandle light,
                                                             PcfSpotShadowOptions options);
