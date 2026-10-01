@@ -151,11 +151,22 @@ int main(int argc, char** argv) {
     input.file_accept = "application/json,.json";
     for (const auto& type : bbl::js::detail::file_types) {
         const auto filter = bbl::js::detail::open_options(std::string(type.mime));
-        const std::string pattern = "*." + std::string(type.extension);
+        // A MIME type filters every extension the table gives it.
+        std::string pattern;
+        for (const auto& named : bbl::js::detail::file_types) {
+            if (named.mime == type.mime)
+                pattern += (pattern.empty() ? "*." : ";*.") + std::string(named.extension);
+        }
         require(filter.filter_pattern == pattern &&
                     filter.filter_name == std::string(type.label) + " (" + pattern + ")",
-                "each supported MIME type maps to its dialog extension and label");
+                "each supported MIME type maps to its dialog extensions and label");
     }
+    const auto images = bbl::js::detail::open_options("image/*,.tga");
+    require(images.filter_pattern == "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.tga" &&
+                images.filter_name == "Image files (" + images.filter_pattern + ")",
+            "a type wildcard filters every extension of its top-level type");
+    require_throws([]() { static_cast<void>(bbl::js::detail::open_options("*/*")); },
+                   "a wildcard over every type is rejected defensively");
     require_throws(
         []() { static_cast<void>(bbl::js::detail::open_options("application/x-unknown,.json")); },
         "mixed unmappable MIME filter is rejected defensively");
