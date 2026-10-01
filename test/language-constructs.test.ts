@@ -1036,6 +1036,31 @@ check(
 );
 
 check(
+    "open-records-asserted-as-closed-records",
+    `
+    type Drop = "seat-changed" | "gesture-end";
+    const DROPS: readonly Drop[] = Object.freeze(["seat-changed", "gesture-end"] as const);
+    const DROP_INDEX: Readonly<Record<Drop, number>> = Object.freeze(
+        Object.fromEntries(DROPS.map((code, index) => [code, index])),
+    ) as Readonly<Record<Drop, number>>;
+    const tally = [0, 0];
+    function drop(code: Drop): void { tally[DROP_INDEX[code]]!++; }
+    drop("gesture-end"); drop("gesture-end"); drop("seat-changed");
+    if (tally.join(",") !== "1,2") throw new Error("asserted closed record");
+    type Action = "jump" | "run";
+    const DEFINITIONS: readonly { action: Action; key: string }[] = [{ action: "jump", key: "Space" }, { action: "run", key: "Shift" }];
+    function profileFromDefaults(): Record<Action, string> {
+        return Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.key])) as Record<Action, string>;
+    }
+    const profile = profileFromDefaults();
+    if (profile.jump !== "Space" || profile.run !== "Shift") throw new Error("asserted closed record return");
+    type Profile = Record<Action, string>;
+    const named = Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.key + "!"])) as Profile;
+    if (named.jump !== "Space!" || named.run !== "Shift!") throw new Error("asserted named closed record");
+`,
+);
+
+check(
     "rebound-nullable-records-select-objects",
     `
     interface Indicator { show: (enabled: boolean) => void; hide: () => void; }

@@ -151,6 +151,13 @@ function expressionEnummap(
     if (ts.isObjectLiteralExpression(unwrapped)) {
         return lowerer.enumMapLiteral(unwrapped, dataType);
     }
+    // An open string record the program asserts closed (`as Record<Union, V>`).
+    if (lowerer.dataTypeAt(unwrapped)?.kind === "map")
+        return lowerer.compileKnownValueForSink(
+            lowerer.context.compileValue(unwrapped),
+            dataType,
+            unwrapped,
+        );
     const value = lowerer.requireDataValue(unwrapped, dataType);
     lowerer.markEscaped(value);
     return value.cpp;
@@ -401,16 +408,22 @@ function valueStruct(
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                const key = lowerer.context.cppString(field.sourceName);
                 if (
-                    field.type.kind !== "optional" ||
-                    !dataTypesEqual(sourceMap.value, field.type.inner)
-                ) {
-                    lowerer.context.fail(
-                        node,
-                        `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must be compatible optionals.`,
-                    );
-                }
-                return `${value.cpp}.get(${lowerer.context.cppString(field.sourceName)})`;
+                    field.type.kind === "optional" &&
+                    dataTypesEqual(sourceMap.value, field.type.inner)
+                )
+                    return `${value.cpp}.get(${key})`;
+                // A required field is the program's assertion that the
+                // key is present (`as Record<Closed, V>`); an absent key
+                // refuses at run time, as an asserted `pop()!` of an
+                // empty array does.
+                if (dataTypesEqual(sourceMap.value, field.type))
+                    return `${value.cpp}.at(${key})`;
+                return lowerer.context.fail(
+                    node,
+                    `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must have the record's value type.`,
+                );
             })
             .join(", ")}}`;
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
@@ -528,6 +541,23 @@ function valueEnummap(
     }
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
+    }
+    // An open string record asserted as the closed record (`as Record<Union,
+    // V>`): every member is a key it must hold, as for a struct projection.
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "map" &&
+        value.dataType.key.kind === "string" &&
+        dataTypesEqual(value.dataType.value, dataType.element)
+    ) {
+        lowerer.context.reachJsData();
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${lowerer.context.dataTypes
+            .enumMembers(dataType.enumName)
+            .map(
+                (member) =>
+                    `${value.cpp}.at(${lowerer.context.cppString(member)})`,
+            )
+            .join(", ")}}`;
     }
     return undefined;
 }
