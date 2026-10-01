@@ -63,6 +63,11 @@ test("async record results retain object identity and independent method capture
         if (entries !== entriesAlias || entries.first !== 4 || entries.second !== 6)
             throw new Error("dictionary results");
         if (events.join(",") !== "2,3,4,6") throw new Error("parallel map activations");
+        if (Object.keys(await dictionary()).join(",") !== "first,second" ||
+            Object.values(await dictionary()).join(",") !== "4,6")
+            throw new Error("awaited projection arguments");
+        if (events.join(",") !== "2,3,4,6,2,3,4,6,2,3,4,6")
+            throw new Error("awaited projection activation count");
         const pending=make(2);
         const first=await pending;
         const alias=await pending;

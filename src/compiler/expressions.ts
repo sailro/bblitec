@@ -70,6 +70,7 @@ import {
     isUpdateExpression,
     expressionMayRunCode,
     regularExpressionParts,
+    unwrapExpression,
 } from "./syntax.js";
 import { compileErrorConstruction, errorConstructor } from "./error-values.js";
 import {
@@ -434,6 +435,13 @@ export class ExpressionLowerer {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
+        if (
+            this.context.options.workers &&
+            ts.isAwaitExpression(unwrapExpression(expression))
+        ) {
+            const awaited = this.context.compileWorkerValue(expression);
+            if (awaited) return awaited;
+        }
         let assertedValue: Value | undefined;
         if (
             (ts.isAsExpression(expression) ||
