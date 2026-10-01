@@ -542,7 +542,12 @@ export class PlatformCalls {
             ) {
                 functionNode = initializer;
             }
-        } else if (declaration && ts.isFunctionDeclaration(declaration)) {
+        } else if (
+            declaration &&
+            (ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration))
+        ) {
+            // A function declaration, or a named function expression's own name.
             functionNode = declaration;
         }
         if (!functionNode?.body) return false;

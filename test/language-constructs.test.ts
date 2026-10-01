@@ -4017,6 +4017,78 @@ test("dense arrays refuse sparse length growth", { skip: !native }, () => {
     );
 });
 
+check(
+    "a generic call binds its type parameter through a discriminated union alias",
+    `
+    interface Save { size: number; seed: number }
+    type Plan<S> = { kind: "fresh" } | { kind: "restore"; save: S };
+    function plan<S>(save: S | null): Plan<S> {
+        return save === null ? { kind: "fresh" } : { kind: "restore", save };
+    }
+    function buildsFresh<S>(p: Plan<S>): p is { kind: "fresh" } {
+        return p.kind === "fresh";
+    }
+    function restoreSize<S extends Save>(p: Plan<S>): number {
+        return p.kind === "restore" ? p.save.size : 0;
+    }
+    function main(): void {
+        const loaded: Save | null = { size: 3, seed: 7 };
+        const initial = plan(loaded);
+        let restored = 0;
+        if (!buildsFresh(initial)) restored = initial.save.seed;
+        if (restored !== 7) throw new Error("narrowed by a generic predicate");
+        if (restoreSize(initial) !== 3) throw new Error("bound through the restore member");
+        if (!buildsFresh(plan<Save>(null))) throw new Error("fresh member");
+    }
+    main();
+`,
+);
+
+check(
+    "a named function expression calls itself by its own name",
+    `
+    function countdown(n: number): number[] {
+        const out: number[] = [];
+        const run = function step(k: number): void {
+            out.push(k);
+            if (k > 0) step(k - 1);
+        };
+        run(n);
+        return out;
+    }
+    function main(): void {
+        if (countdown(3).join() !== "3,2,1,0") throw new Error("statement recursion");
+        const factorial = function f(n: number): number {
+            return n <= 1 ? 1 : n * f(n - 1);
+        };
+        if (factorial(5) !== 120) throw new Error("value recursion");
+    }
+    main();
+`,
+);
+
+check(
+    "Array.sort takes a class field comparator",
+    `
+    class Store {
+        private readonly depth: number[] = [3, 1, 2, 1];
+        private readonly topoLess = (a: number, b: number): number =>
+            this.depth[a]! - this.depth[b]! || a - b;
+        order(slots: number[]): number[] {
+            const dirty = slots.slice();
+            dirty.sort(this.topoLess);
+            return dirty;
+        }
+    }
+    function main(): void {
+        const store = new Store();
+        if (store.order([0, 1, 2, 3]).join() !== "1,3,2,0") throw new Error("field comparator");
+        if (store.order([2, 0]).join() !== "2,0") throw new Error("second sort");
+    }
+    main();
+`,
+);
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).

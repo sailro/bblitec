@@ -212,28 +212,80 @@ class TypeUnifier {
     /**
      * `T | undefined` against `number | undefined`: the members the pattern
      * spells concretely are matched away, and one remaining type parameter
-     * binds to what is left.
+     * binds to what is left. An object member that mentions a type parameter
+     * (`{ kind: "restore"; save: S }`) unifies with the one actual member
+     * whose other properties it matches.
      */
     private unifyUnion(pattern: ts.UnionType, actual: ts.Type): void {
         const actualMembers = actual.isUnion() ? [...actual.types] : [actual];
         const parameters: ts.Type[] = [];
+        const generic: ts.Type[] = [];
         for (const member of pattern.types) {
             if ((member.flags & ts.TypeFlags.TypeParameter) !== 0) {
                 parameters.push(member);
                 continue;
             }
-            const matched = actualMembers.findIndex(
-                (candidate) =>
-                    candidate === member ||
-                    (this.checker.isTypeAssignableTo(candidate, member) &&
-                        this.checker.isTypeAssignableTo(member, candidate)),
+            const matched = actualMembers.findIndex((candidate) =>
+                this.sameType(candidate, member),
             );
             if (matched >= 0) {
                 actualMembers.splice(matched, 1);
+            } else if (
+                (member.flags & ts.TypeFlags.Object) !== 0 &&
+                (mentionsTypeParameter(this.checker, member) ||
+                    this.checker
+                        .getPropertiesOfType(member)
+                        .some((property) =>
+                            mentionsTypeParameter(
+                                this.checker,
+                                this.checker.getTypeOfSymbol(property),
+                            ),
+                        ))
+            ) {
+                generic.push(member);
             }
+        }
+        for (const member of generic) {
+            const fixed = this.checker
+                .getPropertiesOfType(member)
+                .filter(
+                    (property) =>
+                        !mentionsTypeParameter(
+                            this.checker,
+                            this.checker.getTypeOfSymbol(property),
+                        ),
+                );
+            const candidates = actualMembers.filter(
+                (candidate) =>
+                    (candidate.flags & ts.TypeFlags.Object) !== 0 &&
+                    fixed.every((property) => {
+                        const counterpart = this.checker.getPropertyOfType(
+                            candidate,
+                            property.name,
+                        );
+                        return (
+                            counterpart !== undefined &&
+                            this.sameType(
+                                this.checker.getTypeOfSymbol(counterpart),
+                                this.checker.getTypeOfSymbol(property),
+                            )
+                        );
+                    }),
+            );
+            if (candidates.length !== 1) continue;
+            actualMembers.splice(actualMembers.indexOf(candidates[0]!), 1);
+            this.unify(member, candidates[0]!);
         }
         if (parameters.length === 1 && actualMembers.length === 1) {
             this.unify(parameters[0]!, actualMembers[0]!);
         }
+    }
+
+    private sameType(left: ts.Type, right: ts.Type): boolean {
+        return (
+            left === right ||
+            (this.checker.isTypeAssignableTo(left, right) &&
+                this.checker.isTypeAssignableTo(right, left))
+        );
     }
 }
