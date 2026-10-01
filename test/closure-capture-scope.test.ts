@@ -118,7 +118,8 @@ test(
             result.cpp,
             new RegExp(`auto& ${storage} = \\w+\\.capture\\d+`),
         );
-        for (const field of ["left", "top", "width", "height"])
+        // A bounding rectangle's extent is the border box.
+        for (const field of ["left", "top", "offset_width", "offset_height"])
             assert.match(result.cpp, new RegExp(`= ${rect}\\.${field};`));
         const output = resolve("artifacts/platform-local-capture-check");
         mkdirSync(output, { recursive: true });

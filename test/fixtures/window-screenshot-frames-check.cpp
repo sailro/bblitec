@@ -77,6 +77,7 @@ std::string environment_variable(const char* name) {
 double performance_milliseconds() { return 0; }
 double monotonic_milliseconds() { return 0; }
 const char* bblite_build_stamp() { return "fixture-build-stamp"; }
+void report_build_stamp() {}
 
 struct ScreenshotPresenter final : WindowPresenter {
     OffscreenDevice graphics;

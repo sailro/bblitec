@@ -279,7 +279,7 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record.
 `docs/reviews/` holds the record of the most recent reviewed change. Status verification checks
 published measurements, registry names and canvas gates; measured repeatability exceptions live in the
-neutrality allowlist.
+neutrality allowlist, and a scene with partitioned live text keeps its published values unchecked.
 
 Documentation-only changes require link and affected metadata checks. Rendering checks are required
 when executable inputs or measurement contracts change. `lint:exports` reports unused TypeScript exports

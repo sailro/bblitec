@@ -63,6 +63,7 @@ double monotonic_milliseconds() {
         .count();
 }
 const char* bblite_build_stamp() { return "fixture-build-stamp"; }
+void report_build_stamp() {}
 
 struct InputOrderPresenter final : WindowPresenter {
     OffscreenDevice graphics;

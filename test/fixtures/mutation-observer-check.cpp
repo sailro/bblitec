@@ -20,6 +20,7 @@ std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
 double monotonic_milliseconds() { return 0; }
 const char* bblite_build_stamp() { return "fixture"; }
+void report_build_stamp() {}
 std::shared_ptr<WindowPresenter> create_window_sdl_gpu_presenter(SDL_Window*) {
     throw std::logic_error("Unexpected fixture presenter");
 }

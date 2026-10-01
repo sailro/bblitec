@@ -3748,8 +3748,17 @@ class Compiler implements LoweringServices {
      * builder call returns when run there (`runGenerationBuilder`).
      */
     private generationText(expression: ts.Expression): string | undefined {
+        // A committed probe keeps its statements, and a required-text
+        // position may ask about the same expression more than once before
+        // lowering it: an impure expression folds only when its lowering
+        // emits nothing (a declined probe rolls its statements back).
+        const pure = this.evaluationOrder.isPureExpression(expression);
         const carried = this.probeEmission(() => {
-            const value = this.compileValue(expression);
+            let value: Value | undefined;
+            const effects = this.captureEmittedStatements(() => {
+                value = this.compileValue(expression);
+            });
+            if (!value || (!pure && effects.length > 0)) return undefined;
             return (
                 value.staticString ??
                 (value.staticNumber === undefined

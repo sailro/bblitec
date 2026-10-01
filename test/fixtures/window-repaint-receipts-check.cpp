@@ -121,6 +121,7 @@ double monotonic_milliseconds() {
         .count();
 }
 const char* bblite_build_stamp() { return "fixture-build-stamp"; }
+void report_build_stamp() {}
 
 struct ReceiptPresenter final : WindowPresenter {
     OffscreenDevice graphics;
