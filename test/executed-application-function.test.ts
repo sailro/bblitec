@@ -93,7 +93,7 @@ test("refuses a shader builder that reaches the host", () => {
             `,
             "test/executed-builder-host-entry.ts",
         ),
-        /Shader builder 'hostSource' reads 'performance'/,
+        /Builder 'hostSource' reads 'performance'/,
     );
 });
 

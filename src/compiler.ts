@@ -3705,12 +3705,14 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The text a call to a source function returns when generation runs it:
-     * every argument, or the default an omitted one takes, folds to a
-     * generation-known scalar (a wrapper parameter every call omits folds to
-     * its default); an omitted function-valued default runs where it is
-     * declared. Undefined for any other call; a function that runs and
-     * returns anything but text refuses.
+     * The text a call to a source `function` declaration returns when
+     * generation runs it: every argument, or the default an omitted one
+     * takes, folds to a generation-known scalar (a wrapper parameter every
+     * call omits folds to its default); an omitted function-valued default
+     * runs where it is declared. Undefined for any other call, an arrow
+     * builder included, which keeps the template path that lifts a run-time
+     * number into a uniform; a function that runs and returns anything but
+     * text refuses.
      */
     private runGenerationBuilder(call: ts.CallExpression): string | undefined {
         const callee = this.unwrap(call.expression);
@@ -3721,7 +3723,9 @@ class Compiler implements LoweringServices {
             (node, message) => this.fail(node, message),
         );
         if (
-            !declaration?.body ||
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !declaration.body ||
             declaration.getSourceFile().isDeclarationFile ||
             call.arguments.length > declaration.parameters.length ||
             declaration.parameters.some(
