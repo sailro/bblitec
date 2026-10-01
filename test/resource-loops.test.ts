@@ -1728,3 +1728,17 @@ test("cached reached walks preserve pruning and validate rebound callees after r
     }, Boolean);
     assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
 });
+
+test("a structural pick of a DOM type is a plain record in a native data loop", () => {
+    const { cpp } = compileSource(`
+        const ACTIONS = ["alpha", "beta", "gamma"] as const;
+        function positionOf(event: Pick<KeyboardEvent, "code">): string {
+            return event.code === "KeyA" ? "a" : event.code;
+        }
+        const seen: string[] = [];
+        for (const action of ACTIONS) seen.push(positionOf({ code: action }));
+        console.log(seen.join());
+    `);
+    assert.match(cpp, /for \(auto [^\n]*ACTIONS\(\)/);
+    assert.doesNotMatch(cpp, /push_back\("alpha"\)/);
+});
