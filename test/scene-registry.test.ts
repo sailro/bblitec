@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
+import {
+    getScene,
+    resolveScene,
+    sceneReferencePage,
+    scenes,
+} from "../src/scene-registry.js";
 import { registrySceneCompileOptions } from "../src/native-host-ui.js";
 import { validateReferenceCapture } from "../src/parity-scene.js";
 
@@ -566,6 +571,18 @@ test("resolves a registered scene by source path", () => {
         "corpus/babylon-lite/lab/lite/src/lite/scene10.ts",
     );
     assert.equal(scene.id, "scene10");
+});
+
+test("an HTML page is an ad-hoc source hosting the entry it names", () => {
+    const scene = resolveScene("test/fixtures/host-page/page.html");
+    assert.equal(scene.id, "page");
+    assert.equal(scene.source, "test/fixtures/host-page/src/main.ts");
+    assert.deepEqual(scene.page, { path: "test/fixtures/host-page/page.html" });
+    assert.equal(
+        registrySceneCompileOptions(scene).nativeHostUi?.sourcePath,
+        scene.page?.path,
+    );
+    assert.deepEqual(sceneReferencePage(scene), { hostPage: scene.page?.path });
 });
 
 test("rejects ad-hoc sources that collide with registered scene ids", () => {

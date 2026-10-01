@@ -284,7 +284,12 @@ async function runBuffered(
 function compilerArguments(scene: SceneDefinition): string[] {
     const arguments_ = [
         resolve("dist/src/cli.js"),
-        scene.source,
+        ...(scene.page
+            ? [
+                  scene.page.path,
+                  ...(scene.page.root ? ["--site-root", scene.page.root] : []),
+              ]
+            : [scene.source]),
         "--out",
         scene.output,
         "--title",

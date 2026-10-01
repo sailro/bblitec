@@ -181,8 +181,8 @@ Never rebuild/delete dist during its runs. Finish generation before native build
 edits before concurrent builds. Logs belong in ignored `artifacts/`.
 
 `npm run sweep` is `validate all`; tests are separate. Ad-hoc sources use generated/build/reference
-folders by stem and have diagnostic-only comparisons without configured thresholds. An HTML page is an ad-hoc
-source for `compile`, `build` and `process`; browser references are captured from TypeScript sources only.
+folders by stem and have diagnostic-only comparisons without configured thresholds. An HTML page is a source
+too: generation reads its markup and the browser reference is captured from the page itself.
 
 ## Integrating a curated parity scene
 

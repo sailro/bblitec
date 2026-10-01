@@ -26,7 +26,7 @@ import {
 import { readNativeHostUi } from "../native-host-ui.js";
 import { usesSeededRandom } from "../parity-scene.js";
 import { compareImages } from "../parity.js";
-import type { SceneDefinition } from "../scene-registry.js";
+import { sceneReferencePage, type SceneDefinition } from "../scene-registry.js";
 import { defaultCheckDirectory } from "./artifacts.js";
 import type { ObserveAction, ObserveSpec } from "./check-spec.js";
 import { writeReport } from "./reports.js";
@@ -192,7 +192,9 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
     writeFileSync(resolve(outputDirectory, "module.js"), module);
     const goldenPath = scene.parity?.reference.path;
     const hostPage =
-        spec.hostPage === false ? undefined : scene.parity?.referenceHostPage;
+        spec.hostPage === false
+            ? undefined
+            : sceneReferencePage(scene).hostPage;
     const server = createSuiteSceneServer(module, {
         sourcePath: scene.source,
         seededRandom: usesSeededRandom(scene),

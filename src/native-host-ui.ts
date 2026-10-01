@@ -15,6 +15,7 @@ import type {
 } from "./compiler/types.js";
 import type { SceneDefinition } from "./scene-registry.js";
 import { isUiGeneratedPart } from "./ui-generated-content.js";
+import { hostPageCompileOptions, readHostPage } from "./host-page.js";
 import {
     isUiStyleSelectorKind,
     isUiScrollbarPart,
@@ -107,7 +108,13 @@ function nativeHostUiElement(
 export function registrySceneCompileOptions(
     scene: SceneDefinition,
 ): CompileOptions {
+    const page = scene.page && readHostPage(scene.page);
+    if (page && page.entry !== resolve(scene.source))
+        throw new Error(
+            `Scene '${scene.id}' page '${scene.page?.path}' loads '${page.entry}', not its source.`,
+        );
     return {
+        ...(page ? hostPageCompileOptions(page) : {}),
         fileName: resolve(scene.source),
         title: scene.title,
         search: scene.parity?.referenceSearch ?? "",

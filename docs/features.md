@@ -16,7 +16,7 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 | Reached APIs/properties/globals | Generated code, PAL units, native dependencies |
 | Call options and asset loader predicates | Runtime features joined from assets, subfeatures, codecs, material variants |
 | Pinned composition | Shader arms, layouts and binding requirements |
-| Registry | Source, title, host UI, reference query and attribution |
+| Registry | Source, title, host UI (companion or page), reference query and attribution |
 | Build options | Backend, capture, size and PCH configuration |
 
 `generated/<id>/upstream/feature-activation.json` records repository-relative reach sites, asset joins,

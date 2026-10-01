@@ -74,7 +74,20 @@ export interface SceneDefinition {
     buildDirectory: string;
     /** Audited host-page UI that exists outside the immutable scene module. */
     nativeHostUi?: string;
+    /**
+     * The HTML page hosting `source`: its markup is the native host and the
+     * browser reference is captured from it.
+     */
+    page?: HostPageProgram;
     parity?: SceneParityDefinition;
+}
+
+/** The browser page a scene's reference is captured from, when it has one. */
+export function sceneReferencePage(scene: SceneDefinition): {
+    hostPage?: string;
+} {
+    const page = scene.page?.path ?? scene.parity?.referenceHostPage;
+    return page === undefined ? {} : { hostPage: page };
 }
 
 /**
@@ -5154,7 +5167,9 @@ export function resolveScene(idOrSource: string): SceneDefinition {
 
     const absoluteSource = resolve(idOrSource);
     const registeredSource = scenes.find(
-        ({ source }) => resolve(source) === absoluteSource,
+        ({ source, page }) =>
+            resolve(source) === absoluteSource ||
+            (page !== undefined && resolve(page.path) === absoluteSource),
     );
     if (registeredSource) return registeredSource;
     // An HTML page is a source too: it names its entry and hosts it.
@@ -5179,7 +5194,15 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     ) {
         throw new Error("Ad-hoc scene sources must be inside the repository.");
     }
-    const source = relativeSource.replace(/\\/g, "/");
+    const repositoryPath = (path: string): string =>
+        relative(resolve("."), path).replace(/\\/g, "/");
+    // A page's source is the entry its module script names.
+    const page = isHostPagePath(absoluteSource)
+        ? { path: repositoryPath(absoluteSource) }
+        : undefined;
+    const source = page
+        ? repositoryPath(readHostPageEntry(page))
+        : relativeSource.replace(/\\/g, "/");
     const id = basename(absoluteSource, extname(absoluteSource))
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
@@ -5196,6 +5219,7 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         id,
         name,
         source,
+        ...(page ? { page } : {}),
         output: `generated/${id}`,
         title: `Babylon Lite Native - ${name}`,
         buildDirectory: `native/build-${id}-release`,
@@ -5215,7 +5239,8 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     };
 }
 import { existsSync, statSync } from "node:fs";
-import { isHostPagePath } from "./host-page.js";
+import type { HostPageProgram } from "./compiler/types.js";
+import { isHostPagePath, readHostPageEntry } from "./host-page.js";
 import {
     adHocCaptureEnvironment,
     fixedCaptureEnvironment,
