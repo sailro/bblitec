@@ -42,6 +42,8 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
         async function load(name:string):Promise<Response>{return fetch("/files/"+name);}
         function retain(response:Response):Response{return response;}
         let calls=0;
+        let cacheReads=0;
+        function cacheMode(): "no-store" { cacheReads++; return "no-store"; }
         function select():string{calls++;return calls===1?"bytes.bin":"text.txt";}
         function unknownName():string{return calls===2?"unknown.bin":"bytes.bin";}
         void(async()=>{
@@ -60,6 +62,8 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             if(text!=="a���") throw new Error("UTF-8 replacement and BOM");
             const document=await fetch("/files/document.json").then(value=>value.json());
             if(document.answer!==42) throw new Error("owned JSON response");
+            const uncached=await fetch("/files/document.json",{cache:cacheMode()}).then(value=>value.json());
+            if(uncached.answer!==42 || cacheReads!==1) throw new Error("cache mode on a packaged response");
             const responses:Response[]=[await load("bytes.bin"),await load("text.txt")];
             const stored=responses[0];
             const storedBytes=await stored.arrayBuffer();

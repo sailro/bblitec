@@ -141,6 +141,31 @@ function nativePlatformRead(
     );
 }
 
+/**
+ * A value read of a DOM-declared property through a receiver whose type no
+ * DOM declaration owns: a structural record such as `Pick<KeyboardEvent,
+ * "code">` or `{ code: string }` built from one. It holds no retained DOM
+ * facts for a static expansion to keep.
+ */
+function structuralDomRead(
+    context: Pick<ResourceLoopContext, "checker">,
+    node: ts.Node,
+): boolean {
+    if (
+        !ts.isPropertyAccessExpression(node) ||
+        (ts.isCallExpression(node.parent) && node.parent.expression === node)
+    )
+        return false;
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(node.expression),
+    );
+    return (type.isUnion() ? type.types : [type]).every(
+        (member) =>
+            (member.flags & ts.TypeFlags.Object) !== 0 &&
+            !declaredInDomLibrary(member.aliasSymbol ?? member.getSymbol()),
+    );
+}
+
 function nativeSceneMembershipChange(
     context: Pick<ResourceLoopContext, "checker">,
     imported: string,
@@ -559,7 +584,8 @@ function reachesSpecializingEffect(
                 ts.isPropertyAccessExpression(node) &&
                 context.canvasSizeProperty(node)
             ) &&
-            !nativePlatformRead(context, node)
+            !nativePlatformRead(context, node) &&
+            !structuralDomRead(context, node)
         ) {
             required = true;
             return false;

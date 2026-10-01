@@ -1594,6 +1594,26 @@ function compileMarkMeshRenderableDirty(
     };
 }
 
+/**
+ * The pinned `invalidateRenderBundles`: the visibility epoch and every
+ * registered scene's renderable version move, so native draw lists and
+ * bundles rebuild on the next frame.
+ */
+function compileInvalidateRenderBundles(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    context.reachFeature("mesh:render-bundle-invalidation", call);
+    context.reachFeature("renderer:scene", call);
+    return {
+        kind: "void",
+        cpp: `bbl::invalidate_render_bundles(${engine.cpp})`,
+    };
+}
+
 function compileCreateHierarchyInstancePool(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
@@ -3122,6 +3142,7 @@ const meshIntrinsicHandlers = new EmissionMap<
         (context, call) => compileResizeMeshGeometry(context, call, true),
     ],
     ["markMeshRenderableDirty", compileMarkMeshRenderableDirty],
+    ["invalidateRenderBundles", compileInvalidateRenderBundles],
     ["createHierarchyInstancePool", compileCreateHierarchyInstancePool],
     [
         "addHierarchyInstance",

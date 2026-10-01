@@ -1,34 +1,25 @@
 import type { LoweringServices } from "./lowering-services.js";
 // Shared JSON-to-`Value` conversion for generation-time JSON inputs.
 //
-// Two lowerers turn a parsed JSON document into the compiler's
-// tuple/record values: the compressed-NME decoder and the static fetch
-// response. Their recursions are the same walk, but their outputs differ
+// The compressed-NME decoder, the static fetch response and executed
+// module constants turn a JSON value into the compiler's tuple/record
+// values. Their recursions are the same walk, but their outputs differ
 // deliberately — numeric width and how much static metadata each value
-// carries — so the shared converter takes those two policies as explicit
-// inputs. A drift in either output is then a visible policy edit here,
-// not an accident of two copies aging apart.
-// Shared JSON-to-`Value` conversion for generation-time JSON inputs.
-//
-// Two lowerers turn a parsed JSON document into the compiler's
-// tuple/record values: the compressed-NME decoder and the static fetch
-// response. Their recursions are the same walk, but their outputs differ
-// deliberately — numeric width and how much static metadata each value
-// carries — so the shared converter takes those two policies as explicit
-// inputs. A drift in either output is then a visible policy edit here,
-// not an accident of two copies aging apart.
+// carries — so the shared converter takes each policy as an explicit
+// input. A drift in one output is then a visible policy edit, not an
+// accident of copies aging apart.
 import ts from "typescript";
 
 import type { Value } from "./types.js";
 
-/** The two members both converter owners already expose. */
+/** The two members every converter owner already exposes. */
 interface JsonValueContext extends Pick<
     LoweringServices,
     "cppString" | "fail"
 > {}
 
 /**
- * What deliberately differs between the two converters. Every member is
+ * What deliberately differs between the converters. Every member is
  * explicit so the owning module states its whole policy in one literal
  * beside the call, and a new consumer cannot inherit a default it did
  * not choose.

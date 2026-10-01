@@ -49,6 +49,10 @@ test("every native file type is accepted and canonicalized by the compiler", () 
             `${type.mime},.${type.extension}`,
         );
     }
+    assert.equal(
+        validateFileAccept(context, "Image/*, .TGA", node),
+        "image/*,.tga",
+    );
 });
 
 test("lowers Blob string and byte parts with static MIME options", () => {
@@ -452,9 +456,17 @@ test("refuses multiple, directories, and unsupported accept syntax", () => {
         `
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = "image/*";
+        input.accept = "*/*";
         `,
-        /accept entry 'image\/\*' is not supported/,
+        /accept entry '\*\/\*' is not supported/,
+    );
+    refusal(
+        `
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "video/*";
+        `,
+        /accept entry 'video\/\*' cannot be mapped/,
     );
     refusal(
         `

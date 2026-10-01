@@ -4,6 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // responses in asynchronous realms. Other asset consumers retain native paths.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { cacheOnlyRequestOptions } from "./http.js";
 import { readdirSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
@@ -29,6 +30,7 @@ export interface StaticFetchContext extends Pick<
     | "reachFeature"
     | "dataLowerer"
     | "probeEmission"
+    | "propertyName"
     | "fail"
 > {}
 
@@ -40,10 +42,16 @@ export function compileStaticFetch(
     if (context.libraryGlobal(callee) !== "fetch") {
         return undefined;
     }
-    if (call.arguments.length !== 1) {
+    if (
+        call.arguments.length !== 1 &&
+        !(
+            call.arguments.length === 2 &&
+            cacheOnlyRequestOptions(context, call.arguments[1])
+        )
+    ) {
         context.fail(
             call,
-            "Generation-time fetch requires exactly one static URL argument.",
+            "Generation-time fetch requires one static URL argument and at most a cache mode.",
         );
     }
     const url = argumentAt(call, 0);

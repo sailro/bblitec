@@ -77,6 +77,7 @@ test("registers unique generated scene targets", () => {
             "regression-opacity-alpha-write",
             "regression-blend-alpha-write",
             "regression-runtime-options",
+            "regression-engine-calls",
             "regression-no-camera-floating-origin",
             "regression-compiler-state",
             "scene168",

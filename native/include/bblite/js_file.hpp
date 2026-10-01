@@ -311,15 +311,31 @@ inline void append_extension(std::vector<std::string>& extensions, std::string e
     }
 }
 
+/** A `top/*` accept entry: every type under one top-level media type. */
+[[nodiscard]] inline bool mime_wildcard(std::string_view mime) {
+    return mime.size() > 2u && mime.ends_with("/*") && mime.find('*') == mime.size() - 1u;
+}
+
+/** The extensions of every file type an exact or wildcard MIME entry names. */
 inline bool append_mime_extensions(std::vector<std::string>& extensions, std::string_view mime) {
-    const std::string extension = mime_extension(mime);
-    if (extension.empty())
-        return false;
-    append_extension(extensions, extension);
-    return true;
+    bool mapped = false;
+    const bool wildcard = mime_wildcard(mime);
+    for (const FileTypeDescriptor& type : file_types) {
+        if (wildcard ? type.mime.starts_with(mime.substr(0, mime.size() - 1u))
+                     : type.mime == mime) {
+            append_extension(extensions, std::string(type.extension));
+            mapped = true;
+        }
+    }
+    return mapped;
 }
 
 [[nodiscard]] inline std::string mime_label(std::string_view mime, std::string_view extension) {
+    if (mime_wildcard(mime)) {
+        std::string label(mime.substr(0, mime.find('/')));
+        label.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(label.front())));
+        return label + " files";
+    }
     for (const FileTypeDescriptor& type : file_types) {
         if (mime == type.mime && extension == type.extension)
             return std::string(type.label);
@@ -398,9 +414,10 @@ inline bool append_mime_extensions(std::vector<std::string>& extensions, std::st
             append_extension(extensions, extension);
         } else if (!token.empty()) {
             const std::string mime = string_lower(std::move(token));
-            if (mime.find('*') != std::string::npos || mime.find(';') != std::string::npos ||
-                mime.find('/') == std::string::npos) {
-                throw std::runtime_error("Native file input accept requires exact MIME types.");
+            if ((mime.find('*') != std::string::npos && !mime_wildcard(mime)) ||
+                mime.find(';') != std::string::npos || mime.find('/') == std::string::npos) {
+                throw std::runtime_error(
+                    "Native file input accept requires exact MIME types or a type/* wildcard.");
             }
             if (first_mime.empty())
                 first_mime = mime;

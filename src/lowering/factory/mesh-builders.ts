@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { lowerMeshGeometryResize } from "../mesh-geometry-resize.js";
+import {
+    lowerMeshGeometryResize,
+    lowerRenderBundleInvalidation,
+} from "../mesh-geometry-resize.js";
 import { lowerMeshAttributeUpdates } from "../mesh-attribute-updates.js";
 import { lowerMeshCpuStreamRetainers } from "../mesh-cpu-streams.js";
 import { cppIdentifierPattern } from "../../cpp-literals.js";
@@ -422,6 +425,9 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
         const modulePath = this.validateMeshFactory(instanceColors);
         const dynamicPool = features.includes("mesh:thin-instances-dynamic");
         const gpuCulling = features.includes("mesh:thin-instance-gpu-culling");
+        const invalidation = features.includes(
+            "mesh:render-bundle-invalidation",
+        );
         const poolHelpers = dynamicPool ? this.thinInstancePoolHelpers() : "";
         const cullingHelper = gpuCulling
             ? this.thinInstanceCullingHelper()
@@ -518,7 +524,7 @@ ${
 
 namespace bbl {
 
-${this.boxFactorySource(boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeData, sphereBuilderBody)}${this.morphAndBuilderSource(morphBounds, reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${features.includes("mesh:resize-geometry") ? lowerMeshGeometryResize(this.context) : ""}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
+${this.boxFactorySource(boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeData, sphereBuilderBody)}${this.morphAndBuilderSource(morphBounds, reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${invalidation ? lowerRenderBundleInvalidation(this.context) : ""}${features.includes("mesh:resize-geometry") ? lowerMeshGeometryResize(this.context, invalidation) : ""}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
 `,
         };
     }

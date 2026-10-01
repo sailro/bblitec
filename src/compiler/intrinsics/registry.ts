@@ -200,6 +200,7 @@ export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     "markMaterialUboDirty",
     "unlockAudioEngineAsync",
     "updateAnimationManager",
+    "invalidateRenderBundles",
     "updateMeshPositions",
     "updateMeshUvs",
 ]);

@@ -498,8 +498,9 @@ export function compileBrowserFileProperty(
 
 /**
  * Validate and canonicalize the static `<input accept>` list. Exact MIME
- * tokens and safe extensions are supported; wildcards, parameters, empty
- * entries, and every unmappable MIME token refuse by name.
+ * tokens, `type/*` wildcards and safe extensions are supported; other
+ * wildcards, parameters, empty entries, and every unmappable MIME token
+ * refuse by name.
  */
 export function validateFileAccept(
     context: Pick<BrowserFileContext, "fail">,
@@ -520,21 +521,28 @@ export function validateFileAccept(
             canonical.push(extension);
             continue;
         }
-        if (!/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(token)) {
+        if (
+            !/^[A-Za-z0-9!#$&^_.+-]+\/([A-Za-z0-9!#$&^_.+-]+|\*)$/.test(token)
+        ) {
             context.fail(
                 node,
-                `File input accept entry '${token}' is not supported; use an exact MIME type or a safe extension such as '.json'.`,
+                `File input accept entry '${token}' is not supported; use an exact MIME type, a type/* wildcard or a safe extension such as '.json'.`,
             );
         }
         const mime = token.toLowerCase();
-        const inferred = fileTypes.find((type) => type.mime === mime);
-        if (!inferred) {
+        // `image/*` names every file type under its top-level type.
+        const inferred = fileTypes.filter((type) =>
+            mime.endsWith("/*")
+                ? type.mime.startsWith(mime.slice(0, -1))
+                : type.mime === mime,
+        );
+        if (inferred.length === 0) {
             context.fail(
                 node,
                 `File input accept entry '${token}' cannot be mapped to a safe extension.`,
             );
         }
-        extensions.add(inferred.extension);
+        for (const type of inferred) extensions.add(type.extension);
         canonical.push(mime);
     }
     if (extensions.size === 0) {
