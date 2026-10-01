@@ -166,7 +166,7 @@ Unsupported dynamic URLs and percent-encoded asset bodies refuse.
 ### Runtime HTTP
 
 Async `fetch(url, options)` uses absolute HTTP(S) URLs with specialized method, string headers, body and
-a static cache mode (no HTTP cache; only-if-cached refuses). Known asset fetches without options or with
+a static cache mode (only-if-cached refuses). Known asset fetches without options or with
 only a cache mode use packaged responses. Responses expose ok/status/url/bodyUsed and
 text/json/arrayBuffer reads; bodies consume once. HTTP errors fulfill; transport/missing-file errors reject.
 Request objects, streaming and wider options/methods refuse. Transport limits are in [fidelity](fidelity.md).

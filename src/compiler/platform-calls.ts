@@ -166,7 +166,11 @@ export class PlatformCalls {
             );
         return {
             spread: this.context.bindings.pinValueToTemporary(
-                list,
+                {
+                    kind: "data",
+                    dataType: type,
+                    cpp: `bbl::js::array_slice(${list.cpp}, 0.0, std::numeric_limits<double>::infinity())`,
+                },
                 "append_spread",
                 argument.expression,
             ).cpp,
@@ -206,7 +210,14 @@ export class PlatformCalls {
                     "focus options represent preventScroll and focusVisible only.",
                 );
             if (name === "focusVisible")
-                visible = this.context.conditions.compileCondition(value);
+                visible = this.context.bindings.pinValueToTemporary(
+                    {
+                        kind: "boolean",
+                        cpp: this.context.conditions.compileCondition(value),
+                    },
+                    "focus_visible",
+                    value,
+                ).cpp;
             else
                 this.context.emitDiscardedValue(
                     this.context.compileValue(value),

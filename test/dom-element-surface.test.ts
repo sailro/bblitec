@@ -201,6 +201,13 @@ test("replaceChildren and append insert nodes, text and spread element lists in 
         icon.id = "icon";
         list.replaceChildren(icon);
         record(!list.contains(first) && list.contains(icon) ? "1" : "0");
+        const changing: HTMLElement[] = items.slice();
+        function mutateItems(): string {
+            changing.pop();
+            return "tail";
+        }
+        list.replaceChildren(...changing, mutateItems());
+        record(list.contains(rest[1]!) ? "S" : "s");
         list.replaceChildren(...items, icon);
         record(list.contains(first) && list.contains(icon) ? "4" : "0");
         const input = document.createElement("input");
@@ -210,12 +217,14 @@ test("replaceChildren and append insert nodes, text and spread element lists in 
         record(document.activeElement === input ? "F" : "f");
         input.blur();
         input.focus({ focusVisible: false });
+        let visible = input.isConnected;
+        function clearVisible(): boolean { visible = false; return true; }
+        input.focus({ focusVisible: visible, preventScroll: clearVisible() });
         globalThis.close();
     `,
         { fileName: join(output, "entry.ts") },
     );
     writeFileSync(join(output, "program.hpp"), cpp);
-    assert.match(cpp, /bbl::ui_focus\([^;]+, false\)/);
     runRmlUiFixture(t, "dom-child-replacement", {
         macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
     });

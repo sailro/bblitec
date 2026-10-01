@@ -35,9 +35,9 @@ int main() {
     assert(order == "a;b;c;icon;");
     const auto input = ui_get_element_by_id(engine, "input");
     assert(ui_active_element(engine) == input);
-    // focus({ focusVisible: false }) passed its flag.
-    assert(!engine.ui_focus_visible);
+    // The later option write cannot change the earlier focusVisible value.
+    assert(engine.ui_focus_visible);
     // Each step's child count and text, as the program recorded them.
-    assert(ui_element(engine, ui_get_element_by_id(engine, "log")).text == "3|1x3|1|4|F");
+    assert(ui_element(engine, ui_get_element_by_id(engine, "log")).text == "3|1x3|1|S|4|F");
     return 0;
 }

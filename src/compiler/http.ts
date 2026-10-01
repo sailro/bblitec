@@ -85,7 +85,10 @@ export function compileHttpCall(
         global &&
         (call.arguments.length === 1 ||
             (call.arguments.length === 2 &&
-                cacheOnlyRequestOptions(context, call.arguments[1])))
+                context.probeEmission(
+                    () => cacheOnlyRequestOptions(context, call.arguments[1]),
+                    () => false,
+                )))
     )
         return undefined;
     if (!context.options.workers)

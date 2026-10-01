@@ -319,9 +319,10 @@ inline void append_extension(std::vector<std::string>& extensions, std::string e
 /** The extensions of every file type an exact or wildcard MIME entry names. */
 inline bool append_mime_extensions(std::vector<std::string>& extensions, std::string_view mime) {
     bool mapped = false;
+    const bool wildcard = mime_wildcard(mime);
     for (const FileTypeDescriptor& type : file_types) {
-        if (mime_wildcard(mime) ? type.mime.starts_with(mime.substr(0, mime.size() - 1u))
-                                : type.mime == mime) {
+        if (wildcard ? type.mime.starts_with(mime.substr(0, mime.size() - 1u))
+                     : type.mime == mime) {
             append_extension(extensions, std::string(type.extension));
             mapped = true;
         }
