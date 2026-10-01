@@ -1,0 +1,13 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "Declining every required-text fold whose lowering emits statements lost pure helpers that pin a shared result; the fold declines only an impure expression (`EvaluationOrder.isPureExpression`) that emits statements, and the comment states the real hazard (a committed probe keeps its statements and the position may ask again).",
+            "applied": true
+        },
+        {
+            "summary": "The setter-only comment described history; it states the fact, and a test pins that such a property maps as data and refuses where its record is stored.",
+            "applied": true
+        }
+    ]
+}
