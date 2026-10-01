@@ -790,7 +790,13 @@ export class DataLowerer {
         dataType: DataType,
         destination: string,
     ): string {
-        if (!this.context.dataTypes.carriesBorrowedPlatformEvent(dataType)) {
+        if (
+            !this.context.dataTypes.carriesBorrowedPlatformEvent(dataType) &&
+            !(
+                dataType.kind === "handle" &&
+                dataType.handle === "dom-event-identity"
+            )
+        ) {
             return this.compileForSink(expression, dataType);
         }
         const value = this.context.compileValue(expression);
@@ -6438,7 +6444,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
-            )
+            ) ||
+            (dataType.element.kind === "handle" &&
+                dataType.element.handle === "dom-event-identity")
         ) {
             this.context.refuseBorrowedPlatformEventEscape(
                 source,

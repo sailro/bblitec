@@ -7,6 +7,7 @@ import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
@@ -77,7 +78,7 @@ const platformPreamble = `
     await createEngine(canvas);
 `;
 
-test("shares a borrowed mouse payload across synchronous registry callbacks", () => {
+test("shares a borrowed mouse payload across synchronous registry callbacks", (t) => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -118,6 +119,8 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", ()
                         if (payload.consumed) break;
                     }
                 }
+                if (event.clientX >= 0 && !payload.consumed)
+                    throw new Error("registry handlers must share their payload");
             }
         }
 
@@ -156,7 +159,10 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", ()
         result.cpp,
         /bbl::js::Callback<void\(bblscene::MousePayload\)>/,
     );
-    assert.match(result.cpp, /->domEvent\.get\(\)\.client_x/);
+    assert.match(
+        result.cpp,
+        /->domEvent\.get\(\)\.mouse_payload\(\)\.client_x/,
+    );
     assert.match(result.cpp, /->domEvent\.get\(\)\.prevent_default\(\)/);
     assert.match(result.cpp, /->consumed = true/);
     assert.match(result.cpp, /if \(v_[^)]+->consumed\)/);
@@ -171,6 +177,37 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", ()
     // every materialization keeps the function's one identity.
     assert.ok(identities.length >= 2);
     assert.equal(new Set(identities).size, 1);
+
+    if (!nativeTools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        nativeTools,
+        "borrowed-mouse-registry",
+        `
+#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+namespace { std::shared_ptr<bbl::DomInput> registry_input; }
+namespace bbl {
+Engine create_engine(EngineOptions) {
+    Engine engine;
+    engine.dom_input = std::make_shared<DomInput>();
+    registry_input = engine.dom_input;
+    return engine;
+}
+}
+int main() {
+    assert(generated_main() == 0);
+    for (double x : {12.0, -1.0, 34.0}) {
+        auto event = bbl::dom_event(bbl::PlatformMouseEvent{.client_x=x}, "mousedown",
+            {bbl::DomEventTarget::canvas()});
+        registry_input->pointer.dispatch(event);
+        assert(event.is_default_prevented() == (x >= 0));
+    }
+    registry_input.reset();
+}
+`,
+    );
 });
 
 test("lowers Map.get optional Set.delete for found and missing entries", () => {
@@ -669,6 +706,18 @@ test("refuses every store of a borrowed event at the store", () => {
             body: "saved.add(event);",
             read: "if (saved) reads += 1;",
             pattern: /through Set\.add/,
+        },
+        {
+            name: "weakset-constructor",
+            declarations: [],
+            body: "const saved = new WeakSet<Event>([event]);",
+            pattern: /through Set constructor/,
+        },
+        {
+            name: "weakset-tuple-constructor",
+            declarations: [],
+            body: "const events = [event] as const; const saved = new WeakSet<Event>(events);",
+            pattern: /through Array literal/,
         },
         {
             name: "weakmap-key",

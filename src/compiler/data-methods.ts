@@ -3022,7 +3022,9 @@ function compileSetDataMethod(
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
-            )
+            ) ||
+            (dataType.element.kind === "handle" &&
+                dataType.element.handle === "dom-event-identity")
         ) {
             lowerer.context.refuseBorrowedPlatformEventEscape(
                 member,
