@@ -6134,13 +6134,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // Resolve that value before selecting the overload. A non-buffer
         // probe must discard emissions so length/sequence arguments run once.
         const source = this.context.probeEmission(() => {
-            const value =
+            const read =
                 (ts.isAwaitExpression(unwrapped)
                     ? this.context.compileValue(unwrapped)
                     : this.compileDataPath(unwrapped, "read")) ??
                 (sourceType?.kind === "arraybuffer"
                     ? this.context.compileValue(unwrapped)
                     : undefined);
+            // A buffer-source union the checker narrowed to its ArrayBuffer.
+            const value =
+                read?.dataType?.kind === "union"
+                    ? this.narrowOptional(read, unwrapped)
+                    : read;
             return value?.dataType?.kind === "arraybuffer" ? value : undefined;
         });
         if (source) {

@@ -1930,6 +1930,40 @@ test("typed-array from refuses sources it reads differently from the constructor
 });
 
 check(
+    "buffer-source-unions",
+    `
+    function sourceBytes(source: ArrayBuffer | ArrayBufferView): Uint8Array {
+        return source instanceof ArrayBuffer
+            ? new Uint8Array(source)
+            : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    }
+    function magic(source: ArrayBuffer | ArrayBufferView): number {
+        const bytes = sourceBytes(source);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        return view.getUint32(0, true);
+    }
+    const buffer = new ArrayBuffer(12);
+    new DataView(buffer).setUint32(4, 0x46546c67, true);
+    if (magic(buffer) !== 0 || magic(new Uint8Array(buffer, 4)) !== 0x46546c67) throw new Error("buffer and byte view");
+    if (magic(new DataView(buffer, 4, 8)) !== 0x46546c67 || magic(new Uint32Array(buffer, 4, 1)) !== 0x46546c67) throw new Error("other views");
+    const sources: (ArrayBuffer | Uint8Array)[] = [buffer, new Uint8Array(buffer, 8)];
+    let kinds = "";
+    for (const source of sources) kinds += source instanceof ArrayBuffer ? "b" + source.byteLength : "v" + source.length;
+    if (kinds !== "b12v4") throw new Error("stored sources");
+`,
+);
+
+test("instanceof a view class refuses over an ArrayBufferView member", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(s: ArrayBuffer | ArrayBufferView): boolean { return s instanceof Uint8Array; } const unused = f(new ArrayBuffer(1));",
+            ),
+        /instanceof Uint8Array cannot be decided for an ArrayBufferView/,
+    );
+});
+
+check(
     "buffer-view-storage",
     `
     interface Payload { data: ArrayBufferView; read(): ArrayBufferView | null; }

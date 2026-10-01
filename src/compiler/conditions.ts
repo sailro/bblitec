@@ -284,6 +284,27 @@ export class ConditionLowerer {
                     TYPED_ARRAY_KINDS.get(global);
                 if (expected) {
                     const value = this.context.compileValue(unwrapped.left);
+                    if (value.dataType?.kind === "union") {
+                        // The member a binary union holds answers the test;
+                        // an ArrayBufferView member may be any view class.
+                        const members = value.dataType.members;
+                        if (
+                            expected !== "arraybuffer" &&
+                            members.some(
+                                (member) => member.kind === "bufferview",
+                            )
+                        )
+                            this.context.fail(
+                                unwrapped,
+                                `instanceof ${global} cannot be decided for an ArrayBufferView whose view class is not represented.`,
+                            );
+                        const index = members.findIndex(
+                            (member) => member.kind === expected,
+                        );
+                        return index < 0
+                            ? "false"
+                            : `((${value.cpp}).index() == ${index})`;
+                    }
                     if (value.dataType) {
                         return value.dataType.kind === expected
                             ? "true"

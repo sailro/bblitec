@@ -1,6 +1,9 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
-import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import {
+    isTypedArrayType,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
 import {
     dataTypeCppType,
     dataTypeKey,
@@ -1479,6 +1482,8 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        const bufferSource = this.fromBufferSourceUnion(type, node);
+        if (bufferSource) return bufferSource;
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
@@ -1489,6 +1494,52 @@ export class DataTypeRegistry {
             this.fromCommonObjectUnion(type, node) ??
             this.fromMixedUnion(type, node)
         );
+    }
+
+    /**
+     * An ArrayBuffer or one of its views (`ArrayBuffer | ArrayBufferView`,
+     * the platform's BufferSource) keeps each member's own storage, so
+     * `instanceof ArrayBuffer` and the checker's narrowing select the
+     * member the value holds; a common-field record would drop `buffer`.
+     */
+    private fromBufferSourceUnion(
+        type: ts.UnionType,
+        node: ts.Node,
+    ): DataType | undefined {
+        const binary = (source: ts.Type): boolean =>
+            (source.flags & ts.TypeFlags.Object) !== 0 &&
+            declaredInDefaultLibrary(source.symbol) &&
+            (["ArrayBuffer", "ArrayBufferView", "DataView"].includes(
+                source.symbol.name,
+            ) ||
+                TYPED_ARRAY_KINDS.has(source.symbol.name));
+        // Named first, so a union of other objects registers no record here.
+        if (!type.types.every(binary)) return undefined;
+        const members: DataType[] = [];
+        for (const source of type.types) {
+            const mapped = this.fromTsType(source, node);
+            if (
+                !mapped ||
+                !(
+                    mapped.kind === "arraybuffer" ||
+                    mapped.kind === "dataview" ||
+                    mapped.kind === "bufferview" ||
+                    isTypedArrayType(mapped)
+                )
+            )
+                return undefined;
+            if (!members.some((member) => dataTypesEqual(member, mapped)))
+                members.push(mapped);
+        }
+        if (
+            members.length < 2 ||
+            !members.some((member) => member.kind === "arraybuffer")
+        )
+            return undefined;
+        members.sort((left, right) =>
+            this.typeKey(left).localeCompare(this.typeKey(right)),
+        );
+        return { kind: "union", members };
     }
 
     /** Fixed tuple alternatives share lanes where their stored representations agree. */
