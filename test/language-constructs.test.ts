@@ -4183,6 +4183,21 @@ check(
 );
 
 check(
+    "for-in-retains-owner-after-rebinding",
+    `
+    let dictionary: Record<string, number> = { a: 1, b: 2 };
+    const original = dictionary;
+    const seen: string[] = [];
+    for (const key in dictionary) {
+        seen.push(key);
+        dictionary = { replacement: 3 };
+    }
+    if (seen.join(",") !== "a,b" || original.b !== 2)
+        throw new Error("enumeration changed owner");
+`,
+);
+
+check(
     "static-for-of-object-destructuring",
     `
     const CREDITS = [

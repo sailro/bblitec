@@ -2052,20 +2052,21 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForInStatement,
     ): void {
-        const declaration = ts.isVariableDeclarationList(statement.initializer)
-            ? statement.initializer.declarations[0]
-            : undefined;
         if (
-            !declaration ||
-            (statement.initializer as ts.VariableDeclarationList).declarations
-                .length !== 1 ||
-            !ts.isIdentifier(declaration.name)
+            !ts.isVariableDeclarationList(statement.initializer) ||
+            statement.initializer.declarations.length !== 1
         ) {
             context.fail(
                 statement.initializer,
                 "for...in requires one variable declaration naming its key.",
             );
         }
+        const declaration = statement.initializer.declarations[0]!;
+        if (!ts.isIdentifier(declaration.name))
+            context.fail(
+                declaration.name,
+                "for...in requires one variable declaration naming its key.",
+            );
         const binding = declaration.name;
         const raw = context.compileValue(statement.expression);
         const owner =

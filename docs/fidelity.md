@@ -23,6 +23,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Assets/producers | Generation-time loading, query folding and Chromium bakes |
 | Workers/Window | AOT factories, typed cloning, realm loops, layout snapshots; 16 ms ResizeObserver polling |
 | Data | Typed storage, checked access, bounded sparse/JSON representation |
+| Typed records | An optional property holding undefined is absent; keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections and WeakRef | Keys and targets retained strongly |

@@ -242,10 +242,6 @@ const std::string& json_object_key(std::string&&) = delete;
     return a && (!b || *a < *b);
 }
 
-/** A dictionary key as the property name JavaScript enumerates. */
-[[nodiscard]] inline const std::string& property_name(const std::string& key) { return key; }
-[[nodiscard]] inline std::string property_name(double key) { return number_to_string(key); }
-
 /**
  * A dictionary's own entries in property order: array-index names ascending,
  * then the other names as they were inserted.
@@ -256,7 +252,7 @@ inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
     std::vector<std::pair<std::string, const Entry*>> ordered;
     ordered.reserve(map.size());
     for (const auto& entry : map)
-        ordered.emplace_back(property_name(entry.first), &entry);
+        ordered.emplace_back(json_object_key(entry.first), &entry);
     std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
         return json_property_key_less(left.first, right.first);
     });
