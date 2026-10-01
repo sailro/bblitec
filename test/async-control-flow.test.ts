@@ -67,6 +67,36 @@ test("discarded value-promise recovery preserves reactions and async cleanup", (
     runNative(result, directory, t);
 });
 
+test("a value promise's catch outside a realm compiles in the application realm", (t) => {
+    const directory = resolve("artifacts/async-value-catch-realm");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        interface Info{name:string;count:number}
+        async function readUncached(url:string):Promise<Info>{if(url.length===0)throw new Error('empty');return{name:url,count:1};}
+        const cache=new Map<string,Promise<Info>>();
+        function readInfo(url:string):Promise<Info>{
+            let p=cache.get(url);
+            if(!p){p=readUncached(url);p.catch(()=>{if(cache.get(url)===p)cache.delete(url);});cache.set(url,p);}
+            return p;
+        }
+        let status='';
+        void(async()=>{
+            const info=await readInfo('x').catch((e)=>{status='failed: '+String(e);throw e;});
+            let failed='';
+            try{await readInfo('').catch((e)=>{status='failed: '+String(e);throw e;});}
+            catch(error){failed=(error as Error).message;}
+            if(info.name!=='x'||readInfo('x')!==readInfo('x'))throw new Error('fulfilled memo');
+            if(failed!=='empty'||status!=='failed: Error: empty'||cache.has(''))throw new Error('rejected memo');
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(result.cpp, /catch_error/);
+    runNative(result, directory, t);
+});
+
 test("Promise.allSettled retains ordered values and original rejection identities", (t) => {
     const directory = resolve("artifacts/async-all-settled");
     mkdirSync(directory, { recursive: true });

@@ -2,6 +2,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { caughtErrorValue } from "./error-values.js";
 import { argumentAt } from "./syntax.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext extends Pick<
@@ -284,6 +285,9 @@ function compileImmediateCatch(
     context.increaseIndent();
     const value = context.compileValue(callee.expression);
     if (value.kind !== "void") {
+        // A value promise's rejection reaches its handler as a settled
+        // promise does in the application realm, which lowers it.
+        if (!context.options.workers) throw new ApplicationRealmRequired();
         context.fail(
             callee.expression,
             "Immediate promise catch currently supports Promise<void> work.",
