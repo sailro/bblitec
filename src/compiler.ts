@@ -43,6 +43,7 @@ import { sourceProfileScope } from "./compiler/source-profile.js";
 import ts from "typescript";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
+import { PageLoader } from "./compiler/page-loader.js";
 import { EngineLifecycle } from "./compiler/engine-lifecycle.js";
 import { SharedClosureAnalysis } from "./compiler/shared-closure-analysis.js";
 import { NativeEmissionRegistry } from "./compiler/native-emission-registry.js";
@@ -473,7 +474,7 @@ function compileSourceApplication(
 ): CompileResult {
     const fileName = options.fileName ?? "input.ts";
     const environment = deploymentEnvironment(options);
-    const frontend = createCompilerProgram(source, fileName);
+    const frontend = createCompilerProgram(source, fileName, options.hostPage);
     const survey = activeSurvey();
     const compile = (
         input: typeof frontend,
@@ -499,6 +500,9 @@ function compileSourceApplication(
             ...(workers ? { workers } : {}),
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
+                : {}),
+            ...(options.hostPage?.loader && !workers?.namespace
+                ? { pageLoader: options.hostPage.loader }
                 : {}),
             ...(options.sourceProfile?.length
                 ? { sourceProfile: options.sourceProfile }
@@ -646,6 +650,7 @@ class Compiler implements LoweringServices {
     public readonly asyncActivations: AsyncActivations = new AsyncActivations(
         this,
     );
+    public readonly pageLoader: PageLoader | undefined;
     /** Frame, platform, physics and stored-data callbacks. */
     public readonly callbacks: CallbackLowerer = new CallbackLowerer(this);
     private readonly statements = new StatementLowerer();
@@ -833,6 +838,17 @@ class Compiler implements LoweringServices {
         );
         this.nativeFunctions = new NativeFunctionLowerer(this);
         this.browserErasure = new BrowserErasure(this);
+        const loader = options.pageLoader;
+        const loaderFile =
+            loader && program.getSourceFile(resolve(loader.fileName));
+        if (loader && !loaderFile)
+            throw new Error(
+                `The page's inline module script '${loader.fileName}' is missing from the program.`,
+            );
+        this.pageLoader =
+            loader && loaderFile
+                ? new PageLoader(this, loader, loaderFile)
+                : undefined;
         this.expressions = new ExpressionLowerer(this);
         this.evaluator = new StaticEvaluator(
             this.staticConstants,
@@ -894,6 +910,9 @@ class Compiler implements LoweringServices {
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
+        // The page's script runs up to its import of the entry, which then
+        // evaluates the entry's imports and the entry itself.
+        this.pageLoader?.emit((statement) => this.emitStatement(statement));
         this.emitImportedModuleInitializers();
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
@@ -1007,7 +1026,12 @@ class Compiler implements LoweringServices {
     public readonly pendingHostUiLookups: Value[] = emissionArray([]);
 
     private emitNativeHostUi(): void {
-        const emitted = this.ui.compileHostUi();
+        const host = this.options.nativeHostUi;
+        const emitted = host
+            ? this.attributeRefusalsTo(host.sourcePath, () =>
+                  this.ui.compileHostUi(),
+              )
+            : this.ui.compileHostUi();
         const insertion = this.options.workers
             ? 0
             : (this.engineCreationInsertion ?? this.body.length);
@@ -7575,6 +7599,25 @@ class Compiler implements LoweringServices {
     }
 
     public failAtFile(message: string): never {
-        throw new CompileError(this.options.fileName, 1, 1, message);
+        throw new CompileError(
+            this.failureFile ?? this.options.fileName,
+            1,
+            1,
+            message,
+        );
+    }
+
+    /** The file a refusal without a source site names: the entry otherwise. */
+    @journaled private accessor failureFile: string | undefined;
+
+    /** Run `materialize` with refusals that have no source site naming `file`. */
+    public attributeRefusalsTo<T>(file: string, materialize: () => T): T {
+        const previous = this.failureFile;
+        this.failureFile = file;
+        try {
+            return materialize();
+        } finally {
+            this.failureFile = previous;
+        }
     }
 }

@@ -52,14 +52,23 @@ import type { DeploymentOptions } from "./deployment.js";
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
     tag: string;
+    /** Text before the children. */
     text?: string;
     attributes?: Record<string, string>;
-    children?: NativeHostUiElement[];
+    children?: NativeHostUiNode[];
 }
 
+/** A text node among a host element's children, in document order. */
+export interface NativeHostUiText {
+    tag?: undefined;
+    text: string;
+}
+
+export type NativeHostUiNode = NativeHostUiElement | NativeHostUiText;
+
 /**
- * Browser host-page chrome that is not present in the immutable scene module.
- * This is deliberately a retained-tree companion, not an HTML/CSS parser.
+ * Browser host-page chrome that is not present in the immutable scene module:
+ * a reviewed companion file, or the markup of the HTML page that loads it.
  */
 export interface NativeHostUi extends NativeHostUiStyleSource {
     /**
@@ -68,11 +77,37 @@ export interface NativeHostUi extends NativeHostUiStyleSource {
      * call in its own source, so the attribution must name this file.
      */
     sourcePath: string;
-    elements: NativeHostUiElement[];
+    /** Attributes of the document's `<html>` and `<body>` elements. */
+    htmlAttributes?: Record<string, string>;
+    bodyAttributes?: Record<string, string>;
+    /** Document `<style>` sheets in order, projected into the document head. */
+    styleSheets?: string[];
+    elements: NativeHostUiNode[];
+}
+
+/**
+ * A page's inline module script that dynamically imports the entry: the
+ * statements it runs before that import precede the entry's evaluation.
+ */
+export interface PageLoaderModule {
+    /** A synthesized module path beside the page. */
+    fileName: string;
+    source: string;
+    /** The import specifier naming the entry. */
+    specifier: string;
+}
+
+/** The HTML page that hosts the entry. */
+export interface HostPageProgram {
+    path: string;
+    /** Module specifiers starting with "/" resolve beneath this directory. */
+    moduleRoot: string;
+    loader?: PageLoaderModule;
 }
 
 export interface CompileOptions extends DeploymentOptions {
     fileName?: string;
+    hostPage?: HostPageProgram;
     title?: string;
     width?: number;
     height?: number;
@@ -2982,6 +3017,7 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     /** A reached constructed promise can end a synchronous activation at its await. */
     pendingActivations?: boolean;
     fileName: string;
+    pageLoader?: PageLoaderModule;
     title: string;
     width: number;
     height: number;

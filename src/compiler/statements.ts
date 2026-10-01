@@ -68,6 +68,7 @@ interface StatementLoweringContext extends Pick<
     | "resolveRecordValue"
     | "admissions"
     | "asyncActivations"
+    | "pageLoader"
     | "options"
     | "speculating"
     | "transaction"
@@ -477,6 +478,7 @@ export class StatementLowerer {
             return;
         }
         if (ts.isExpressionStatement(statement)) {
+            if (context.pageLoader?.lowerEntryImport(statement)) return;
             this.loweredTerminators.delete(statement);
             if (
                 context.asyncActivations.emitActivationBoundary(statement, () =>

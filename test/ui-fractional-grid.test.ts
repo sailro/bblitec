@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { compileSource, CompileError } from "../src/compiler.js";
 import { readNativeHostUi } from "../src/native-host-ui.js";
+import type { NativeHostUiNode } from "../src/compiler/types.js";
 
 const source = `import {createEngine,startEngine} from '@babylonjs/lite';
 async function main() {const engine=await createEngine({});await startEngine(engine);}main();`;
@@ -29,7 +30,13 @@ test("fractional host grids admit implicit rows and minimum tracks while refusin
         "rows",
     ]) {
         const ui = host();
-        const row = ui.elements[0]!.children![1]!.children![0]!;
+        const element = (node: NativeHostUiNode | undefined) => {
+            assert.ok(node?.tag !== undefined);
+            return node;
+        };
+        const row = element(
+            element(element(ui.elements[0]).children![1]).children![0],
+        );
         if (mutation === "extra-child")
             row.children!.push({ tag: "span", text: "extra" });
         else if (mutation === "missing-child") row.children!.pop();

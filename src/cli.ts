@@ -37,6 +37,7 @@ import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import { composeComposite, composePostProcess } from "./pinned-post-process.js";
 import { composeScreenSpaceTask } from "./pinned-screen-space.js";
 import { readNativeHostUi } from "./native-host-ui.js";
+import { hostPageCompileOptions, readHostPage } from "./host-page.js";
 import {
     featureActivationPath,
     featureActivationRows,
@@ -166,7 +167,7 @@ function usage(): never {
             ? option.flag
             : `${option.flag} ${option.value}`;
     console.error(
-        `Usage: bblitec <entry.ts> (${TARGET_FLAGS.map(spell).join(" | ")}) ` +
+        `Usage: bblitec <entry.ts | page.html> (${TARGET_FLAGS.map(spell).join(" | ")}) ` +
             OPTION_FLAGS.map((option) => `[${spell(option)}]`).join(" "),
     );
     process.exit(2);
@@ -825,11 +826,20 @@ async function main(): Promise<void> {
     // fan-out's children already run under their parent's lock and take
     // nothing here.
     holdDistLock(`generate ${options.input}`);
-    const inputPath = resolve(options.input);
+    // An HTML page names its entry and is that entry's host UI.
+    const page = /\.html?$/i.test(options.input)
+        ? readHostPage(options.input)
+        : undefined;
+    if (page && options.hostUi)
+        throw new Error(
+            "--host-ui describes a TypeScript entry's host; an HTML page is its own host.",
+        );
+    const inputPath = resolve(page?.entry ?? options.input);
     const source = readFileSync(inputPath, "utf8");
     const compileOptions: CompileOptions = {
         fileName: inputPath,
         environment: options.environment,
+        ...(page ? hostPageCompileOptions(page) : {}),
         ...(options.title ? { title: options.title } : {}),
         ...(options.width ? { width: options.width } : {}),
         ...(options.height ? { height: options.height } : {}),

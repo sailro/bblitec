@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host page fixture</title>
+    <style>
+      :root { --accent: #d7a960; }
+      html, body { margin: 0; background: #23281e; color: #e8e4d8; font: 13px/1.4 sans-serif; }
+      #wrap { padding: 16px; }
+      h1 { font-size: 18px; margin: 0 0 6px; }
+      p.sub { margin: 0; }
+      p.sub b { color: var(--accent); }
+      .row { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+      button { background: #3a4630; color: #e8e4d8; border: 1px solid #55663f; border-radius: 6px; padding: 6px 12px; }
+      button:hover { background: #46552f; }
+      button[aria-pressed="true"] { border-color: var(--accent); }
+      #status { color: #9fb08a; }
+      canvas { display: block; width: 320px; height: 120px; background: #14170f; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <h1>Host page</h1>
+      <p class="sub">The <b>page</b> markup &amp; styles host the program.</p>
+      <div class="row">
+        <button id="pause" type="button">Pause</button>
+        <button type="button" data-preset="slow" aria-pressed="true">Slow</button>
+        <button type="button" data-preset="fast" aria-pressed="false">Fast</button>
+        <span id="status"></span>
+      </div>
+      <canvas id="view" width="320" height="120"></canvas>
+    </div>
+    <script type="module">
+      if (location.protocol === "file:") {
+        document.getElementById("status").textContent = "Serve this page.";
+      } else {
+        await import("/src/main.ts");
+      }
+    </script>
+  </body>
+</html>

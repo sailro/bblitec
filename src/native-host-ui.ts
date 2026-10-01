@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import type {
     CompileOptions,
     NativeHostUi,
-    NativeHostUiElement,
+    NativeHostUiNode,
 } from "./compiler/types.js";
 import type { SceneDefinition } from "./scene-registry.js";
 import { isUiGeneratedPart } from "./ui-generated-content.js";
@@ -33,14 +33,39 @@ function refuseUnknownKeys(
     }
 }
 
-function nativeHostUiElement(
+function stringRecord(
     value: unknown,
     location: string,
-): NativeHostUiElement {
+): Record<string, string> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${location} must be an object.`);
+    }
+    const strings: Record<string, string> = {};
+    for (const [name, entry] of Object.entries(value)) {
+        if (typeof entry !== "string") {
+            throw new Error(`${location}.${name} must be a string.`);
+        }
+        strings[name] = entry;
+    }
+    return strings;
+}
+
+/** An element (`tag`), or a text node: an object carrying `text` alone. */
+function nativeHostUiNode(value: unknown, location: string): NativeHostUiNode {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error(`${location} must be an object.`);
     }
     const record = value as Record<string, unknown>;
+    if (record.text !== undefined && typeof record.text !== "string") {
+        throw new Error(`${location}.text must be a string.`);
+    }
+    if (record.tag === undefined) {
+        refuseUnknownKeys(record, ["text"], location);
+        if (record.text === undefined) {
+            throw new Error(`${location} requires a tag or a text.`);
+        }
+        return { text: record.text };
+    }
     refuseUnknownKeys(
         record,
         ["tag", "text", "attributes", "children"],
@@ -49,42 +74,24 @@ function nativeHostUiElement(
     if (typeof record.tag !== "string") {
         throw new Error(`${location}.tag must be a string.`);
     }
-    if (record.text !== undefined && typeof record.text !== "string") {
-        throw new Error(`${location}.text must be a string.`);
-    }
-    let attributes: Record<string, string> | undefined;
-    if (record.attributes !== undefined) {
-        if (
-            !record.attributes ||
-            typeof record.attributes !== "object" ||
-            Array.isArray(record.attributes)
-        ) {
-            throw new Error(`${location}.attributes must be an object.`);
-        }
-        attributes = {};
-        for (const [name, attribute] of Object.entries(record.attributes)) {
-            if (typeof attribute !== "string") {
-                throw new Error(
-                    `${location}.attributes.${name} must be a string.`,
-                );
-            }
-            attributes[name] = attribute;
-        }
-    }
     if (record.children !== undefined && !Array.isArray(record.children)) {
         throw new Error(`${location}.children must be an array.`);
     }
     return {
         tag: record.tag,
         ...(record.text !== undefined ? { text: record.text } : {}),
-        ...(attributes ? { attributes } : {}),
+        ...(record.attributes !== undefined
+            ? {
+                  attributes: stringRecord(
+                      record.attributes,
+                      `${location}.attributes`,
+                  ),
+              }
+            : {}),
         ...(record.children
             ? {
                   children: record.children.map((child, index) =>
-                      nativeHostUiElement(
-                          child,
-                          `${location}.children[${index}]`,
-                      ),
+                      nativeHostUiNode(child, `${location}.children[${index}]`),
                   ),
               }
             : {}),
@@ -114,11 +121,27 @@ export function readNativeHostUi(path: string): NativeHostUi {
     const record = value as Record<string, unknown>;
     refuseUnknownKeys(
         record,
-        ["elements", "styleRules"],
+        [
+            "elements",
+            "styleRules",
+            "styleSheets",
+            "htmlAttributes",
+            "bodyAttributes",
+        ],
         `Native host UI '${path}'`,
     );
     if (!Array.isArray(record.elements)) {
         throw new Error(`Native host UI '${path}' must contain elements[].`);
+    }
+    const styleSheets = record.styleSheets;
+    if (
+        styleSheets !== undefined &&
+        (!Array.isArray(styleSheets) ||
+            !styleSheets.every((sheet) => typeof sheet === "string"))
+    ) {
+        throw new Error(
+            `Native host UI '${path}' styleSheets must be an array of strings.`,
+        );
     }
     if (record.styleRules !== undefined && !Array.isArray(record.styleRules)) {
         throw new Error(
@@ -266,8 +289,25 @@ export function readNativeHostUi(path: string): NativeHostUi {
         // machine-independent where an absolute resolution would not be.
         sourcePath: path,
         ...(styleRules.length > 0 ? { styleRules } : {}),
+        ...(styleSheets ? { styleSheets } : {}),
+        ...(record.htmlAttributes !== undefined
+            ? {
+                  htmlAttributes: stringRecord(
+                      record.htmlAttributes,
+                      `Native host UI '${path}' htmlAttributes`,
+                  ),
+              }
+            : {}),
+        ...(record.bodyAttributes !== undefined
+            ? {
+                  bodyAttributes: stringRecord(
+                      record.bodyAttributes,
+                      `Native host UI '${path}' bodyAttributes`,
+                  ),
+              }
+            : {}),
         elements: record.elements.map((element, index) =>
-            nativeHostUiElement(
+            nativeHostUiNode(
                 element,
                 `Native host UI '${path}' elements[${index}]`,
             ),

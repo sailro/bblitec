@@ -5157,13 +5157,14 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         ({ source }) => resolve(source) === absoluteSource,
     );
     if (registeredSource) return registeredSource;
+    // An HTML page is a source too: it names its entry and hosts it.
     if (
         !existsSync(absoluteSource) ||
         !statSync(absoluteSource).isFile() ||
-        extname(absoluteSource).toLowerCase() !== ".ts"
+        ![".ts", ".html"].includes(extname(absoluteSource).toLowerCase())
     ) {
         throw new Error(
-            `Unknown scene or TypeScript source '${idOrSource}'. Registered scenes: ` +
+            `Unknown scene, TypeScript source or HTML page '${idOrSource}'. Registered scenes: ` +
                 scenes.map(({ id }) => id).join(", "),
         );
     }

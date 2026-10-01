@@ -208,6 +208,10 @@ export function suiteBrowserModule(
     independentEngines?: number,
     animationPoseProtocol?: SuiteAnimationPoseProtocol,
 ): string {
+    if (/\.html?$/i.test(sourcePath))
+        throw new Error(
+            `'${sourcePath}' is an HTML page: browser references are captured from TypeScript sources only.`,
+        );
     if (animationPoseProtocol !== undefined) {
         if (animationPoseProtocol !== "applied-group-pose-v1")
             throw new Error("Unknown animation capture protocol.");
@@ -452,10 +456,12 @@ export function captureUiEnabled(
 function hostUiBootstrapScript(
     hostUi: NonNullable<SuiteCaptureOptions["hostUi"]>,
 ): string {
-    const payload = JSON.stringify({ elements: hostUi.elements }).replaceAll(
-        "</script",
-        "<\\/script",
-    );
+    const payload = JSON.stringify({
+        elements: hostUi.elements,
+        styleSheets: hostUi.styleSheets ?? [],
+        htmlAttributes: hostUi.htmlAttributes ?? {},
+        bodyAttributes: hostUi.bodyAttributes ?? {},
+    }).replaceAll("</script", "<\\/script");
     const styleSheet = nativeHostUiStyleRules(hostUi)
         .map((rule) => {
             let body = `${uiStyleSelector(rule)}{${rule.style}}`;
@@ -477,12 +483,17 @@ function hostUiBootstrapScript(
     return `<script>(() => {
 const hostUi = ${payload};
 const hostStyleSheet = ${stylePayload};
-if (hostStyleSheet) {
+for (const sheet of [...hostUi.styleSheets, hostStyleSheet].filter(Boolean)) {
     const style = document.createElement("style");
-    style.textContent = hostStyleSheet;
+    style.textContent = sheet;
     document.head.appendChild(style);
 }
+for (const [name, value] of Object.entries(hostUi.htmlAttributes))
+    document.documentElement.setAttribute(name, value);
+for (const [name, value] of Object.entries(hostUi.bodyAttributes))
+    document.body.setAttribute(name, value);
 const create = (record) => {
+    if (record.tag === undefined) return document.createTextNode(record.text);
     const element = document.createElement(record.tag);
     for (const [name, value] of Object.entries(record.attributes ?? {})) {
         element.setAttribute(name, value);
