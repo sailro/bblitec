@@ -1783,8 +1783,6 @@ export function frameCallbackParameterType(
 export interface VariableBinding {
     name: string;
     value: Value;
-    /** The native storage belongs to an application frame callback. */
-    frameLocal?: boolean;
     /**
      * Set where a nested callback pointed this handle at something else.
      *

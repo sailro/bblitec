@@ -1,8 +1,4 @@
-import {
-    emissionArray,
-    EmissionMap,
-    EmissionSet,
-} from "./emission-transaction.js";
+import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { emitReachableStatements } from "./loop-control.js";
 import {
@@ -299,16 +295,6 @@ export class CallbackLowerer {
             ? this.context.allocateTemporaryCppName("frame_delta")
             : undefined;
 
-        // Everything the outermost frame callback pushes lives on its own
-        // stack frame; a deferred body may not reach into it.
-        const previousFrameFloor =
-            this.context.bindings.frameCallbackScopeFloor;
-        if (this.context.frameCallbackDepth === 0) {
-            this.context.bindings.frameCallbackScopeFloor =
-                this.context.bindings.variableScopes.length;
-        }
-        const previousDeferredScopes =
-            this.context.bindings.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
             this.context.bindings.escapingPlatformEventCaptureFloor;
         if (this.context.frameCallbackDepth > 0) {
@@ -316,15 +302,6 @@ export class CallbackLowerer {
                 this.context.bindings.variableScopes.length;
         }
         this.context.bindings.refuseEscapingPlatformEventCapturesIn(unwrapped);
-        this.context.bindings.deferredCaptureScopes =
-            (signature === "void" || signature === "interval") &&
-            this.context.bindings.frameCallbackScopeFloor !== undefined
-                ? new EmissionSet(
-                      this.context.bindings.variableScopes.slice(
-                          this.context.bindings.frameCallbackScopeFloor,
-                      ),
-                  )
-                : undefined;
         this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         // This body is emitted into a real native callback lambda. A source
         // `return` therefore leaves that lambda directly, including when it
@@ -373,11 +350,8 @@ export class CallbackLowerer {
         } finally {
             this.context.endNativeFunctionBody();
             this.context.bindings.popScope();
-            this.context.bindings.deferredCaptureScopes =
-                previousDeferredScopes;
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
-            this.context.bindings.frameCallbackScopeFloor = previousFrameFloor;
         }
         // A source callback may name its delta and then not reach it --
         // most often because a branch the scene's own query folds away was
@@ -491,8 +465,6 @@ export class CallbackLowerer {
             signature === "interval"
                 ? undefined
                 : this.context.allocateTemporaryCppName("frame_callback_value");
-        const previousDeferredScopes =
-            this.context.bindings.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
             this.context.bindings.escapingPlatformEventCaptureFloor;
         if (this.context.frameCallbackDepth > 0) {
@@ -500,16 +472,6 @@ export class CallbackLowerer {
                 this.context.bindings.variableScopes.length;
         }
         this.context.bindings.refuseEscapingPlatformEventCapturesIn(identifier);
-        if (signature === "interval") {
-            this.context.bindings.deferredCaptureScopes =
-                this.context.bindings.frameCallbackScopeFloor === undefined
-                    ? undefined
-                    : new EmissionSet(
-                          this.context.bindings.variableScopes.slice(
-                              this.context.bindings.frameCallbackScopeFloor,
-                          ),
-                      );
-        }
         const captureByValue =
             retainCaptures ||
             !!this.context.options.workers ||
@@ -563,8 +525,6 @@ export class CallbackLowerer {
             );
         } finally {
             this.context.frameCallbackDepth -= 1;
-            this.context.bindings.deferredCaptureScopes =
-                previousDeferredScopes;
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }
@@ -769,14 +729,9 @@ export class CallbackLowerer {
             };
         }
         const previousHidden = this.context.platformDocumentHiddenCpp;
-        const previousFrameFloor =
-            this.context.bindings.frameCallbackScopeFloor;
         const previousPlatformEventCaptureFloor =
             this.context.bindings.escapingPlatformEventCaptureFloor;
-        if (this.context.frameCallbackDepth === 0) {
-            this.context.bindings.frameCallbackScopeFloor =
-                this.context.bindings.variableScopes.length;
-        } else {
+        if (this.context.frameCallbackDepth > 0) {
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 this.context.bindings.variableScopes.length;
         }
@@ -913,7 +868,6 @@ export class CallbackLowerer {
         } finally {
             this.context.frameCallbackDepth -= 1;
             this.context.platformDocumentHiddenCpp = previousHidden;
-            this.context.bindings.frameCallbackScopeFloor = previousFrameFloor;
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }

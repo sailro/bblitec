@@ -123,18 +123,33 @@ test("a non-zero setTimeout delay uses the elapsed-time queue", () => {
     assert.match(main, /bbl::stop_engine\(v_engine\)/);
 });
 
-test("a deferred callback cannot capture the frame that queued it", () => {
-    // Frame-local values remain outside the supported deferred-callback
-    // capture boundary and must produce a source diagnostic.
-    refuses(
+test("a deferred callback owns a copy of the frame local it reads", () => {
+    // The frame that queued the timer has returned when it runs; the
+    // timer's environment holds its own copy of the immutable local.
+    const main = sceneWith(
         `onBeforeRender(scene, (deltaMs) => {
             const scratch = deltaMs * 2;
             window.setTimeout(() => {
                 sphere.position.set(0, scratch, 0);
             }, 0);
         });`,
-        "A deferred callback cannot name 'scratch'",
     );
+    // The timer's environment takes the local by value, not by reference.
+    const timer =
+        /bbl::defer_callback\(v_engine, bbl::js::make_closure\(bblscene::(bbl_environment_\w+)\{([^}]*)\}/.exec(
+            main,
+        );
+    assert.ok(timer);
+    const captures = timer[2]!.split(", ");
+    const index = captures.findIndex((capture) =>
+        /^v_\w*scratch$/.test(capture),
+    );
+    assert.ok(index >= 0);
+    const struct = main.slice(
+        main.indexOf(`struct ${timer[1]} {`),
+        main.indexOf("\n};", main.indexOf(`struct ${timer[1]} {`)),
+    );
+    assert.ok(struct.includes(`std::decay_t<double> capture${index}{};`));
 });
 
 test("an early return preserves its guard before a narrowed optional use", () => {

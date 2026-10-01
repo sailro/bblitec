@@ -70,7 +70,6 @@ interface BindingScopesContext extends Pick<
     | "emit"
     | "fail"
     | "sharedClosures"
-    | "isInFrameCallback"
     | "options"
     | "reachJsData"
     | "registerNativeBindingType"
@@ -121,20 +120,6 @@ export class BindingScopes {
         ReadonlySet<ts.Symbol>
     >();
     private readonly cppNamePrefixes: string[] = emissionArray([""]);
-
-    /**
-     * The scope depth the outermost enclosing frame callback started at.
-     *
-     * Everything at or above it lives on that callback's own stack frame.
-     * A deferred (`setTimeout`) callback runs AFTER that frame has
-     * returned, so naming one of those locals would emit a reference to
-     * dead storage -- which is why `deferredCaptureScopes` refuses it.
-     */
-    @journaled public accessor frameCallbackScopeFloor: number | undefined;
-
-    /** Expired frame scopes, tracked by identity across lexical scope restoration. */
-    @journaled public accessor deferredCaptureScopes:
-        ReadonlySet<Map<ts.Symbol, VariableBinding>> | undefined;
 
     /**
      * Scope depth at which a nested persistent callback begins. Platform event
@@ -250,11 +235,6 @@ export class BindingScopes {
         ) {
             const binding = this.variableScopes[index]!.get(symbol);
             if (binding) {
-                this.refuseDeadDeferredCapture(
-                    identifier,
-                    index,
-                    binding.frameLocal === true,
-                );
                 this.refuseEscapingPlatformEventCapture(
                     identifier,
                     index,
@@ -283,18 +263,6 @@ export class BindingScopes {
         ) {
             const binding = this.variableScopes[index]!.get(symbol);
             if (binding) {
-                // A deferred callback runs after the frame that created
-                // it has returned, so a name bound inside that frame is
-                // dead storage by then. The emitted lambda captures by
-                // reference, so this would compile clean and read freed
-                // memory; it refuses instead. Escaping captures of frame
-                // locals are not supported in general, and this is the
-                // one place the reached slice can walk into them.
-                this.refuseDeadDeferredCapture(
-                    identifier,
-                    index,
-                    binding.frameLocal === true,
-                );
                 this.refuseEscapingPlatformEventCapture(
                     identifier,
                     index,
@@ -330,29 +298,6 @@ export class BindingScopes {
                 "on whether that callback ran. Read it inside the callback, " +
                 "or keep the new handle in its own name.",
         );
-    }
-
-    private refuseDeadDeferredCapture(
-        identifier: ts.MemberName,
-        scopeIndex: number,
-        frameLocal: boolean,
-    ): void {
-        // Worker-enabled callbacks own their captures, including shared cells
-        // for mutable bindings. Borrowed platform-event checks still apply.
-        if (this.context.options.workers) return;
-        if (
-            frameLocal &&
-            this.deferredCaptureScopes?.has(this.variableScopes[scopeIndex]!)
-        ) {
-            this.context.fail(
-                identifier,
-                `A deferred callback cannot name '${identifier.text}': ` +
-                    "it is bound inside the callback that queued the " +
-                    "timer, and that frame has returned by the time " +
-                    "the timer runs. Bind it outside the enclosing " +
-                    "callback.",
-            );
-        }
     }
 
     /**
@@ -959,7 +904,6 @@ export class BindingScopes {
         scope.set(symbol, {
             name: identifier.text,
             value,
-            ...(this.context.isInFrameCallback() ? { frameLocal: true } : {}),
         });
     }
 

@@ -18695,23 +18695,35 @@ test("lets recurring timers read persistent factory closure state", () => {
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
 });
 
-test("refuses recurring timers that capture an outer frame local", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            import { createEngine, startEngine } from "babylon-lite";
-            async function main(): Promise<void> {
-                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-                const engine = await createEngine(canvas);
-                await startEngine(engine);
-                requestAnimationFrame(() => {
-                    let frameLocal = 0;
-                    setInterval(() => { frameLocal += 1; }, 30);
-                });
-            }
-            main();
-        `),
-        /deferred callback cannot name 'frameLocal'/,
+test("a recurring timer owns the frame local it captures", () => {
+    // The frame callback returns before the timer runs: the timer's
+    // environment owns the local's shared cell rather than borrowing it.
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            await startEngine(engine);
+            requestAnimationFrame(() => {
+                let frameLocal = 0;
+                setInterval(() => { frameLocal += 1; }, 30);
+            });
+        }
+        main();
+    `);
+    assert.match(
+        result.cpp,
+        /auto (v_\w*frameLocal) = bbl::js::make_gc_shared<double>\(0\.0\);[\s\S]*bbl::set_interval\(v_engine, bbl::js::make_closure\(bblscene::(bbl_environment_\w+)\{\1/,
+    );
+    const environment =
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(bblscene::(bbl_environment_\w+)\{/.exec(
+            result.cpp,
+        )![1]!;
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `struct ${environment} \\{\\s+std::decay_t<std::shared_ptr<double>> capture0\\{\\};`,
+        ),
     );
 });
 
