@@ -37,6 +37,7 @@ export function dataUnionEquality(
                     "tuple",
                     "product",
                     "iterator",
+                    "json",
                 ].includes(type.kind) ||
                 (type.kind === "struct" &&
                     lowerer.context.dataTypes.isReferenceStruct(type.name)));
@@ -103,6 +104,15 @@ export function dataUnionEquality(
     const a = snapshot(left),
         b = snapshot(right);
     const compare = (a: Operand, b: Operand): string => {
+        if (a.type.kind === "json" || b.type.kind === "json") {
+            const boxed = (value: Operand, node: ts.Expression): string =>
+                lowerer.compileKnownValueForSink(
+                    lowerer.leafValue(value.cpp, value.type),
+                    { kind: "json" },
+                    node,
+                );
+            return `${boxed(a, left)}.strict_equals(${boxed(b, right)})`;
+        }
         if (a.type.kind === "optional" && b.type.kind === "optional") {
             const present = compare(
                 { cpp: optionalValueCpp(a.cpp), type: a.type.inner },

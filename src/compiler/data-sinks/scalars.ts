@@ -192,6 +192,8 @@ function valueBorrowedPlatformEvent(
     value: Value,
     _node: ts.Node,
 ): string | undefined {
+    if (value.kind === "dom-event" && dataType.event === "event")
+        return `${value.cpp}.borrowed_event()`;
     const compatible =
         dataType.event === "error" || dataType.event === "rejection"
             ? value.nativeErrorEvent &&

@@ -719,7 +719,7 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             ? "#include <bblite/js_json.hpp>\n"
             : "") +
         (features.includes("data:json") && features.includes("input:dom")
-            ? "#include <bblite/pal_custom_events.hpp>\n"
+            ? "#include <bblite/pal_custom_events.hpp>\n#include <bblite/pal_synthetic_events.hpp>\n"
             : "") +
         (features.includes("data:locale")
             ? "#include <bblite/pal_locale.hpp>\n"

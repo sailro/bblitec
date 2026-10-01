@@ -169,7 +169,7 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
 
     assert.match(result.cpp, /bbl::ui_set_file_input/);
     assert.match(result.cpp, /bbl::ui_set_file_accept/);
-    assert.match(result.cpp, /bbl::ui_on_event\([^;]+"change"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^;]+"change"/);
     assert.match(result.cpp, /bbl::js::input_files/);
     assert.match(result.cpp, /bbl::js::file_at/);
     assert.match(result.cpp, /static_cast<bool>\(v_[^)]+file[^)]*\)/);
@@ -215,7 +215,7 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
     `);
     assert.match(
         result.cpp,
-        /bbl::ui_set_event_handler\(v_engine, v_input, "change",/,
+        /bbl::set_dom_pointer_handler\(v_engine, bbl::DomEventTarget::node\(v_input.value\), "change",/,
     );
     assert.match(result.cpp, /bbl::js::FileReader\{\}/);
     assert.match(result.cpp, /\.set_onload\(/);
@@ -233,11 +233,10 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
             (error: unknown) =>
                 error instanceof CompileError && pattern.test(error.message),
         );
-    refusal(
-        `const input = document.createElement("input");
-         input.type = "file";
-         input.oninput = () => {};`,
-        /file input dispatches only change/,
+    assert.match(
+        compileFileBody(`const input = document.createElement("input");
+         input.type = "file"; input.oninput = () => {};`).cpp,
+        /bbl::set_dom_pointer_handler\([^;]+"input"/,
     );
     refusal(
         `const reader = new FileReader();
@@ -405,7 +404,7 @@ test("lowers the complete map export/import browser source shape", () => {
         "json_stringify",
         "create_object_url",
         "ui_set_download_url",
-        "ui_on_event",
+        "on_dom_pointer",
         "input_files",
         "file_text",
         "json_parse",

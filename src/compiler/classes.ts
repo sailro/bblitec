@@ -1910,12 +1910,19 @@ export class ClassLowerer {
             ) && this.context.canShareFunctionBody(method.body);
         const mappedReturnType = returnsVoid
             ? undefined
-            : sharedBody
-              ? this.context.dataTypes.fromSharedReturnType(
-                    effectiveReturn,
-                    method,
-                )
-              : this.context.dataTypes.fromTsType(effectiveReturn, method);
+            : this.context.dataTypes.withTypeArguments(
+                  instance.classTypeArguments,
+                  () =>
+                      sharedBody
+                          ? this.context.dataTypes.fromSharedReturnType(
+                                effectiveReturn,
+                                method,
+                            )
+                          : this.context.dataTypes.fromTsType(
+                                effectiveReturn,
+                                method,
+                            ),
+              );
         const returnType =
             mappedReturnType?.kind === "struct"
                 ? this.context.dataTypes.markStoredObjectReferences(

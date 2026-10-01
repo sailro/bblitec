@@ -1,5 +1,6 @@
 import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
+import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import { bakeCanvasReadback } from "./canvas-readback.js";
 import {
@@ -314,7 +315,9 @@ export class PlatformCalls {
             }
         }
         if (ts.isPropertyAccessExpression(callee)) {
-            const dispatched = compileCustomEventDispatch(this.context, call);
+            const dispatched =
+                compileSyntheticEventDispatch(this.context, call) ??
+                compileCustomEventDispatch(this.context, call);
             if (dispatched) return dispatched;
             const value = this.compileUiCall(call, callee);
             if (value) return value;
@@ -434,6 +437,7 @@ export class PlatformCalls {
                 platformEvent?.kind === "platform-keyboard-event" ||
                 platformEvent?.kind === "platform-mouse-event" ||
                 platformEvent?.kind === "custom-event" ||
+                platformEvent?.kind === "dom-event" ||
                 platformEvent?.nativeErrorEvent
             ) {
                 if (call.arguments.length)

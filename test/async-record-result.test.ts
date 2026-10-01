@@ -49,6 +49,26 @@ test("async record results retain object identity and independent method capture
         return Object.fromEntries(pairs);
     }
     async function main() {
+        async function parsed(text:string):Promise<Record<string,{count:number}>> {
+            await Promise.resolve();
+            try {return JSON.parse(text) as Record<string,{count:number}>;}catch{return {};}
+        }
+        async function parsedList(text:string):Promise<{count:number}[]> {
+            await Promise.resolve();
+            try {return JSON.parse(text) as {count:number}[];}catch{return [];}
+        }
+        const parsedPending=parsed('{"x":{"count":2,"extra":4}}');
+        const parsedValue=await parsedPending;
+        const parsedAlias=await parsedPending;
+        const missingParsed=await parsed("{");
+        parsedAlias.x!.count++;
+        if(parsedValue!==parsedAlias||JSON.stringify(parsedValue)!=='{"x":{"count":3,"extra":4}}'||Object.keys(missingParsed).length!==0)
+            throw new Error("async dictionary document");
+        const parsedRows=await parsedList('[{"count":1,"extra":4}]');
+        const missingRows=await parsedList("[");
+        parsedRows[0]!.count=2;
+        if(JSON.stringify(parsedRows)!=='[{"count":2,"extra":4}]'||missingRows.length!==0)
+            throw new Error("async array document");
         interface Document {count: number; nested: {label:string};}
         const document = JSON.parse('{"count":2,"nested":{"label":"first"}}') as Document;
         async function documentResult(): Promise<{document: Document}> {return {document};}
@@ -63,6 +83,11 @@ test("async record results retain object identity and independent method capture
         if (entries !== entriesAlias || entries.first !== 4 || entries.second !== 6)
             throw new Error("dictionary results");
         if (events.join(",") !== "2,3,4,6") throw new Error("parallel map activations");
+        if (Object.keys(await dictionary()).join(",") !== "first,second" ||
+            Object.values(await dictionary()).join(",") !== "4,6")
+            throw new Error("awaited projection arguments");
+        if (events.join(",") !== "2,3,4,6,2,3,4,6,2,3,4,6")
+            throw new Error("awaited projection activation count");
         const pending=make(2);
         const first=await pending;
         const alias=await pending;

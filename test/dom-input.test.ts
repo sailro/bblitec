@@ -132,14 +132,16 @@ test("elements, Window and Document listen through EventTarget-typed names", () 
     `,
         { fileName: join(directory, "entry.ts") },
     );
-    for (const target of ["node(", "window()", "document()"]) {
-        for (const call of ["on", "off"]) {
-            assert.ok(
-                cpp.includes(
-                    `bbl::${call}_dom_pointer(bbl::pal::window_document_engine(), bbl::DomEventTarget::${target}`,
-                ),
-                `${call} ${target}`,
-            );
-        }
-    }
+    for (const target of ["node(", "window()", "document()"])
+        assert.ok(cpp.includes(`bbl::DomEventTarget::${target}`), target);
+    for (const call of ["on", "off"])
+        assert.match(
+            cpp,
+            new RegExp(`bbl::${call}_dom_pointer\\([^;]+"pointerdown"`),
+        );
+    assert.match(
+        cpp,
+        /bbl::dom_target_owner\([^)]*\)/,
+        "stored targets retain their owning document through helper parameters",
+    );
 });

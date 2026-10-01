@@ -470,6 +470,14 @@ export class UiProjection {
                 if (inner?.kind === "event-target")
                     value = this.context.compileValue(owner);
             }
+            // Tree reads can produce a nullable element directly rather than
+            // a stored data path. Its presence and handle share one evaluation.
+            if (value?.dataType?.kind === "optional")
+                value = this.context.bindings.pinValueToTemporary(
+                    value,
+                    "ui_receiver",
+                    owner,
+                );
             return asElement(value);
         }
         if (ts.isElementAccessExpression(owner)) {
@@ -4067,7 +4075,6 @@ export class UiProjection {
      */
     private emitUiEventHandlerProperty(
         element: Value,
-        engine: string,
         property: string,
         receiver: ts.Expression,
         assignment: ts.BinaryExpression,
@@ -4088,23 +4095,8 @@ export class UiProjection {
         const handler = nullish ? undefined : assignment.right;
         if (handler)
             this.context.callbacks.hoistForwardCallbackBindings(handler);
-        if (
-            (type === "change" || type === "input") &&
-            this.isUiFormControl(element, receiver)
-        ) {
-            if (element.uiFileInput && type !== "change")
-                this.context.fail(
-                    assignment.left,
-                    "A native file input dispatches only change.",
-                );
-            if (element.uiFileInput)
-                this.context.reachFeature("browser:file", assignment);
-            this.context.emit({
-                kind: "expression",
-                code: `bbl::ui_set_event_handler(${engine}, ${element.cpp}, ${this.context.cppString(type)}, ${handler ? this.compileUiElementCallback(handler, true) : "{}"});`,
-            });
-            return;
-        }
+        if (element.uiFileInput && (type === "change" || type === "input"))
+            this.context.reachFeature("browser:file", assignment);
         const family = elementDomHandlerFamily(type);
         if (!family)
             this.context.fail(
@@ -4404,7 +4396,6 @@ export class UiProjection {
             if (/^on[a-z]+$/.test(property)) {
                 this.emitUiEventHandlerProperty(
                     directElement,
-                    engine,
                     property,
                     expression.left.expression,
                     expression,

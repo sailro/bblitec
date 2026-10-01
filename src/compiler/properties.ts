@@ -1829,6 +1829,19 @@ const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["composed", "composed"],
     ["isTrusted", "trusted"],
 ]);
+const MOUSE_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
+    ["button", "button"],
+    ["buttons", "buttons"],
+    ["clientX", "client_x"],
+    ["clientY", "client_y"],
+    ["offsetX", "client_x"],
+    ["offsetY", "client_y"],
+    ["movementX", "movement_x"],
+    ["movementY", "movement_y"],
+    ["deltaY", "delta_y"],
+    ["screenX", "screen_x"],
+    ["screenY", "screen_y"],
+]);
 /** Element layout extents and their `bbl::UiClientRect` fields. */
 const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
     ["offsetWidth", "offset_width"],
@@ -2090,6 +2103,11 @@ export class PropertyAccessLowerer {
         owner: Value,
         ownerExpression: ts.Expression,
     ): Value | undefined {
+        if (this.declaredEventInterface(ownerExpression) === "InputEvent")
+            return valueForKind("platform-mouse-event", {
+                cpp: `${owner.cpp}.payload<bbl::PlatformMouseEvent>()`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+            });
         const event = borrowedPlatformEventKind(
             this.context.checker
                 .getNonNullableType(
@@ -2157,45 +2175,53 @@ export class PropertyAccessLowerer {
             );
         }
         if (owner.kind === "platform-mouse-event") {
-            if (property === "pointerType")
-                return { kind: "string", cpp: `${owner.cpp}.pointer_type` };
-            if (property === "isPrimary")
-                return { kind: "boolean", cpp: `${owner.cpp}.is_primary` };
-            const modifier = KEY_EVENT_FIELDS.get(property);
-            if (modifier && property !== "repeat")
-                return { kind: "boolean", cpp: `${owner.cpp}.${modifier}` };
             if (
-                property === "button" ||
-                property === "buttons" ||
-                property === "clientX" ||
-                property === "clientY" ||
-                property === "offsetX" ||
-                property === "offsetY" ||
-                property === "movementX" ||
-                property === "movementY" ||
-                property === "deltaY" ||
-                property === "pointerId"
+                property === "data" ||
+                property === "inputType" ||
+                property === "isComposing"
             ) {
+                this.context.reachFeature("data:json", expression);
+                return this.context.dataLowerer.leafValue(
+                    property === "data"
+                        ? `bbl::input_event_data(${owner.cpp})`
+                        : `${owner.cpp}.input_payload().${property === "inputType" ? "input_type" : "is_composing"}`,
+                    property === "data"
+                        ? { kind: "optional", inner: { kind: "string" } }
+                        : {
+                              kind:
+                                  property === "inputType"
+                                      ? "string"
+                                      : "boolean",
+                          },
+                );
+            }
+            if (property === "pointerType")
+                return {
+                    kind: "string",
+                    cpp: `${owner.cpp}.pointer_payload().pointer_type`,
+                };
+            if (property === "isPrimary")
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.pointer_payload().is_primary`,
+                };
+            if (property === "pointerId" || property === "pressure")
                 return {
                     kind: "number",
-                    cpp:
-                        property === "pointerId"
-                            ? `${owner.cpp}.pointer_id`
-                            : property === "button"
-                              ? `${owner.cpp}.button`
-                              : property === "buttons"
-                                ? `${owner.cpp}.buttons`
-                                : property === "clientX" ||
-                                    property === "offsetX"
-                                  ? `${owner.cpp}.client_x`
-                                  : property === "clientY" ||
-                                      property === "offsetY"
-                                    ? `${owner.cpp}.client_y`
-                                    : property === "movementX"
-                                      ? `${owner.cpp}.movement_x`
-                                      : property === "movementY"
-                                        ? `${owner.cpp}.movement_y`
-                                        : `${owner.cpp}.delta_y`,
+                    cpp: `${owner.cpp}.pointer_payload().${property === "pointerId" ? "pointer_id" : "pressure"}`,
+                    dataType: { kind: "number" },
+                };
+            const modifier = KEY_EVENT_FIELDS.get(property);
+            if (modifier && property !== "repeat")
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.mouse_payload().${modifier}`,
+                };
+            const field = MOUSE_EVENT_NUMBERS.get(property);
+            if (field) {
+                return {
+                    kind: "number",
+                    cpp: `${owner.cpp}.mouse_payload().${field}`,
                     dataType: { kind: "number" },
                 };
             }
@@ -2404,6 +2430,7 @@ export class PropertyAccessLowerer {
             !ts.isElementAccessExpression(ownerExpression) &&
             !ts.isCallExpression(ownerExpression) &&
             !ts.isNewExpression(ownerExpression) &&
+            !ts.isArrayLiteralExpression(ownerExpression) &&
             !ts.isStringLiteralLike(ownerExpression) &&
             !ts.isConditionalExpression(ownerExpression)
         ) {
@@ -2471,6 +2498,30 @@ export class PropertyAccessLowerer {
             };
         }
         const property = expression.name.text;
+        if (owner.kind === "dom-event") {
+            if (property === "target" || property === "currentTarget")
+                return this.context.dataLowerer.leafValue(
+                    `${owner.cpp}.target(${property === "currentTarget"})`,
+                    { kind: "optional", inner: { kind: "event-target" } },
+                );
+            if (property === "defaultPrevented")
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.is_default_prevented()`,
+                };
+            if (property === "type")
+                return { kind: "string", cpp: `${owner.cpp}.dom->type` };
+            if (property === "eventPhase")
+                return { kind: "number", cpp: `${owner.cpp}.dom->phase` };
+            const flag = DOM_EVENT_FLAGS.get(property);
+            if (flag)
+                return { kind: "boolean", cpp: `${owner.cpp}.dom->${flag}` };
+            return this.platformEventProperty(
+                { kind: "platform-mouse-event", cpp: `${owner.cpp}.event()` },
+                property,
+                expression,
+            );
+        }
         if (owner.kind === "ui-element" && owner.uiComputedStyle) {
             const name = UI_COMPUTED_STYLES.get(property);
             if (!name)
@@ -2764,7 +2815,7 @@ export class PropertyAccessLowerer {
             if (property === "defaultPrevented")
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.${owner.platformEventBase || owner.kind === "custom-event" ? "is_default_prevented()" : "default_prevented"}`,
+                    cpp: `${owner.cpp}.${owner.platformEventBase || owner.kind === "custom-event" || owner.kind === "platform-mouse-event" ? "is_default_prevented()" : "default_prevented"}`,
                 };
             const declared = readProperty(
                 this.context,
@@ -2802,7 +2853,10 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "string" },
                     readOnly: true,
                 };
-            const asserted = this.assertedPlatformEvent(owner, ownerExpression);
+            const asserted = this.assertedPlatformEvent(
+                owner,
+                expression.expression,
+            );
             if (!asserted)
                 this.context.fail(
                     expression.name,
@@ -3183,6 +3237,16 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        if (
+            owner.kind === "ui-element" &&
+            UI_TREE_READS.has(expression.name.text)
+        )
+            return this.elementProperty(
+                owner,
+                expression.name.text,
+                expression.expression,
+                expression,
+            );
         const media = readMediaQueryProperty(this.context, owner, expression);
         if (media) return media;
         const character = readCharacterProperty(

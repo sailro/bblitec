@@ -2,6 +2,8 @@ import type { HandleKind } from "./model.js";
 
 const handleCppTypes: Record<HandleKind, string> = {
     "custom-event": "bbl::PlatformCustomEvent",
+    "dom-event": "bbl::OwnedDomEvent",
+    "dom-event-identity": "std::shared_ptr<bbl::DomEventState>",
     engine: "bbl::Engine*",
     asset: "bbl::AssetHandle",
     "gpu-device": "bbl::GpuDeviceIdentity",

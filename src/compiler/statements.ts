@@ -2352,17 +2352,26 @@ export class StatementLowerer {
         ) {
             return;
         }
+        // A module constant the program computes (`ORDER.map(...)`) runs
+        // at generation, which states the elements a literal would.
+        const executed = context.executedModuleConstantElements(
+            statement.expression,
+        );
+        if (
+            executed &&
+            this.emitRuntimeForOf(context, statement, declaration, {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: executed,
+            })
+        )
+            return;
         if (this.bindsEnclosingLoop(statement.statement)) {
             context.fail(
                 statement,
                 "break/continue in for...of requires a runtime data container.",
             );
         }
-        // A module constant the program computes (`ORDER.map(...)`) runs
-        // at generation, which states the elements a literal would.
-        const executed = context.executedModuleConstantElements(
-            statement.expression,
-        );
         if (executed) {
             for (const value of executed)
                 this.emitUnrolledIteration(

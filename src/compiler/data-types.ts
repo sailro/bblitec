@@ -485,6 +485,7 @@ export function platformHandleKind(
     | "gpu-device"
     | "gpu-texture"
     | "custom-event"
+    | "dom-event"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (type.symbol.name === "GPUDevice") return "gpu-device";
@@ -494,6 +495,8 @@ export function platformHandleKind(
     if (type.symbol.name === "Gamepad") return "gamepad";
     if (type.symbol.name === "GamepadButton") return "gamepad-button";
     if (type.symbol.name === "CustomEvent") return "custom-event";
+    if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
+        return "dom-event";
     return undefined;
 }
 
@@ -582,14 +585,7 @@ export function tupleComponents(
     );
 }
 
-/**
- * Marks a stored value's own function type as identity-carrying.
- *
- * A Set member and a Map key are the two positions whose behaviour depends
- * on comparing the value: everything else stores a function without ever
- * asking whether two of them are the same one, and keeps the plain
- * `std::function` it already emitted.
- */
+/** Stored callback fields and collection entries preserve function identity. */
 function markIdentityFunctions(dataType: DataType): DataType {
     switch (dataType.kind) {
         case "product":
@@ -606,7 +602,7 @@ function markIdentityFunctions(dataType: DataType): DataType {
             return { ...dataType, identity: true };
         case "optional":
             return {
-                kind: "optional",
+                ...dataType,
                 inner: markIdentityFunctions(dataType.inner),
             };
         default:
@@ -1196,7 +1192,10 @@ export class DataTypeRegistry {
                 this.checker.getTypeOfSymbolAtLocation(property, node),
                 node,
             );
-            if (!actual || !dataTypesEqual(actual, field.type))
+            if (
+                !actual ||
+                !dataTypesEqual(markIdentityFunctions(actual), field.type)
+            )
                 return undefined;
         }
         return this.markStoredObjectReferences(target);
@@ -1251,7 +1250,13 @@ export class DataTypeRegistry {
     /** The absent spelling of a nullable type: an empty optional, or the null reference of a shared object. */
     public absentValue(type: DataType): string {
         const cpp = this.cppType(type);
-        return type.kind === "optional" ? `${cpp}{std::nullopt}` : `${cpp}{}`;
+        const optional =
+            type.kind === "optional" &&
+            !(
+                type.inner.kind === "struct" &&
+                this.isReferenceStruct(type.inner.name)
+            );
+        return optional ? `${cpp}{std::nullopt}` : `${cpp}{}`;
     }
 
     /** `value` carried as the nullable `type`: wrapped for an optional, as itself for a shared object. */
@@ -1643,6 +1648,17 @@ export class DataTypeRegistry {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
                 const element = this.fromStoredTsType(elementType, node);
+                if (
+                    symbolName === "WeakSet" &&
+                    element?.kind === "borrowed-platform-event"
+                )
+                    return {
+                        kind: "set",
+                        element: {
+                            kind: "handle",
+                            handle: "dom-event-identity",
+                        },
+                    };
                 return element
                     ? {
                           kind: "set",
@@ -2306,10 +2322,32 @@ export class DataTypeRegistry {
             return undefined;
         }
         const complete = mapped as DataType[];
+        // A tuple of records is also an array whose callback element is the
+        // checker's object union. Keep that shared layout in its storage.
+        if (complete.every((element) => element.kind === "struct")) {
+            const indexed = this.checker.getIndexTypeOfType(
+                reference,
+                ts.IndexKind.Number,
+            );
+            const element = indexed && this.fromTsType(indexed, node);
+            if (element?.kind === "struct")
+                return {
+                    kind: "vector",
+                    element: this.markStoredObjectReferences(element),
+                };
+        }
         return this.tupleStorage(complete);
     }
 
     public tupleStorage(elements: DataType[]): DataType {
+        if (
+            elements.length > 0 &&
+            elements.every(
+                (element) =>
+                    element.kind === "string" || element.kind === "enum",
+            )
+        )
+            return { kind: "vector", element: { kind: "string" } };
         if (elements.every((element) => element.kind === "number")) {
             return {
                 kind: "tuple",
@@ -2385,7 +2423,7 @@ export class DataTypeRegistry {
                 type,
                 node,
                 provisionalName,
-                preferredName !== undefined,
+                preferredName !== undefined || this.classDemanded,
             );
             if (mapped?.kind === "struct") {
                 this.structTypesByIdentity.set(identity, mapped);
@@ -2674,7 +2712,9 @@ export class DataTypeRegistry {
             const optional =
                 partial || (property.flags & ts.SymbolFlags.Optional) !== 0;
             const mapped: DataType = this.markStoredObjectReferences(
-                optional ? this.nullableType(mappedValue) : mappedValue,
+                markIdentityFunctions(
+                    optional ? this.nullableType(mappedValue) : mappedValue,
+                ),
             );
             const accessor = this.propertyAccessor(property, view);
             fields.push({

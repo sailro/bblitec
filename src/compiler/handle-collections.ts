@@ -1614,10 +1614,10 @@ export class HandleCollections {
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer
             )
-                throw new DynamicBindingStorageRequired(declaration, {
-                    kind: "vector",
-                    element: { kind: "error" },
-                });
+                throw new DynamicBindingStorageRequired(
+                    declaration,
+                    "error-array",
+                );
             return this.context.fail(
                 owner,
                 "An error list requires owned array storage.",
@@ -1637,7 +1637,7 @@ export class HandleCollections {
                 declaration.initializer &&
                 type?.kind === "vector"
             ) {
-                throw new DynamicBindingStorageRequired(declaration, type);
+                throw new DynamicBindingStorageRequired(declaration, "array");
             }
             return this.context.fail(
                 owner,

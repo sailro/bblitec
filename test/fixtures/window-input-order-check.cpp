@@ -243,6 +243,23 @@ int main() {
     SDL_Quit();
     {
         Engine source, display;
+        const auto input = ui_create_element(source, "input");
+        ui_append_to_root(source, input);
+        on_dom_pointer(source, DomEventTarget::node(input.value), "input", 801,
+                       [](const PlatformMouseEvent&) {});
+        std::unique_ptr<ExternalEvent> packet;
+        apply_document(display, std::move(*snapshot_document(source)),
+                       [&](std::unique_ptr<ExternalEvent> value) { packet = std::move(value); });
+        ui_set_form_value(display, input, "selected");
+        const auto form = dom_event(PlatformMouseEvent{.payload_kind = DomInputEventKind::Event},
+                                    "input", dom_ui_path(display, input), true, false);
+        dispatch_dom_pointer(display, form);
+        const auto* transported = dynamic_cast<WindowEvent*>(packet.get());
+        assert(transported && transported->form_value == "selected" &&
+               transported->mouse.dom == form.dom);
+        ui_set_form_value(display, input, "later");
+        assert(transported->form_value == "selected");
+        off_dom_pointer(source, DomEventTarget::node(input.value), "input", 801);
         const auto label = ui_create_element(source, "span");
         ui_set_text(source, label, "First");
         ui_append_to_root(source, label);

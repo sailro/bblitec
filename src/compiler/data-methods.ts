@@ -465,6 +465,15 @@ export function compileDataMethodCall(
         return compileCollatorMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "weak-ref")
         return compileWeakRefMethod(lowerer, call, dynamicOwner, method);
+    if (
+        dynamicOwner?.kind === "tuple" &&
+        lowerer.prefersRuntimeTupleIteration(ownerExpression, call.arguments[0])
+    ) {
+        dynamicOwner =
+            lowerer.materializeConstantArray(ownerExpression) ??
+            lowerer.materializeKnownTuple(ownerExpression, dynamicOwner) ??
+            dynamicOwner;
+    }
     const tupleOwnerElements: readonly Value[] | undefined =
         dynamicOwner?.kind === "tuple"
             ? (dynamicOwner.tupleElements ?? [])
@@ -1482,7 +1491,7 @@ function compileArrayJoin(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
     if (
-        !["string", "enum", "number", "boolean"].includes(
+        !["string", "enum", "number", "boolean", "json"].includes(
             dataType.element.kind,
         ) ||
         call.arguments.length > 1
@@ -1506,13 +1515,15 @@ function compileArrayJoin(state: ArrayMethodState): Value {
         cpp: `bbl::js::array_join(${narrowed.cpp}, ${
             separator ? separator.cpp : lowerer.context.cppString(",")
         }${
-            dataType.element.kind === "enum"
-                ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(dataType.element, "value", call)}; }`
-                : dataType.element.kind === "number"
-                  ? ", [](double value) { return bbl::js::number_to_string(value); }"
-                  : dataType.element.kind === "boolean"
-                    ? ', [](bool value) { return value ? "true" : "false"; }'
-                    : ""
+            dataType.element.kind === "json"
+                ? ", [](const auto& value) { return value.is_null() || value.is_undefined() ? std::string{} : value.to_string(); }"
+                : dataType.element.kind === "enum"
+                  ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(dataType.element, "value", call)}; }`
+                  : dataType.element.kind === "number"
+                    ? ", [](double value) { return bbl::js::number_to_string(value); }"
+                    : dataType.element.kind === "boolean"
+                      ? ', [](bool value) { return value ? "true" : "false"; }'
+                      : ""
         })`,
         dataType: { kind: "string" },
     };

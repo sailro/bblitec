@@ -680,7 +680,7 @@ public:
               else
                   return static_cast<const T*>(borrowed)->default_prevented;
           }) {
-        dom = value.dom.get();
+        dom = value.dom;
     }
 
     [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
@@ -690,18 +690,33 @@ public:
     void stop_immediate_propagation() const {
         bbl::dom_event_state(*this).stop_immediate_propagation();
     }
-    bbl::DomEventState* dom = nullptr;
+    std::shared_ptr<bbl::DomEventState> dom;
+    [[nodiscard]] BorrowedEvent retaining(std::shared_ptr<const void> owner) const {
+        auto result = *this;
+        result.owner_ = std::move(owner);
+        return result;
+    }
 
-    template <typename T> [[nodiscard]] const T& as() const {
+    template <typename T> [[nodiscard]] const T& payload() const {
         if (type_ != &type_tag<T>) {
             throw std::runtime_error("Borrowed DOM event has the wrong payload type.");
         }
         return *static_cast<const T*>(value_);
     }
 
+    template <typename T> [[nodiscard]] const T& as() const {
+        const auto& value = payload<T>();
+        if constexpr (requires { value.has_mouse_payload(); }) {
+            if (!value.has_mouse_payload())
+                throw std::runtime_error("Borrowed DOM event has no mouse payload.");
+        }
+        return value;
+    }
+
 private:
     template <typename T> static inline const char type_tag = 0;
     const void* value_;
+    std::shared_ptr<const void> owner_;
     const void* type_;
     void (*prevent_default_)(const void*) noexcept;
     bool (*default_prevented_)(const void*) noexcept;

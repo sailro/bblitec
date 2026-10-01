@@ -56,6 +56,9 @@ const pointerNames = new Set([
     "blur",
     "contextmenu",
     "resize",
+    "beforeinput",
+    "input",
+    "change",
 ]);
 
 const serviceNames = new Set([

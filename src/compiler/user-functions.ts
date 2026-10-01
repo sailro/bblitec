@@ -2572,10 +2572,17 @@ export class UserFunctionLowerer {
                 body,
                 (node) => {
                     if (ts.isCallExpression(node)) {
-                        // Passing a named callback can call back into this function
-                        // just as a direct call can (array methods and schedulers).
+                        // Callback arguments can call back into this function,
+                        // including through an anonymous scheduler body.
                         for (const argument of node.arguments) {
                             const value = unwrapExpression(argument);
+                            if (
+                                ts.isArrowFunction(value) ||
+                                ts.isFunctionExpression(value)
+                            ) {
+                                for (const called of this.directCalls(value))
+                                    callees.add(called);
+                            }
                             const callback = ts.isIdentifier(value)
                                 ? tryResolveFunctionDeclaration(
                                       this.checker,
@@ -3012,7 +3019,11 @@ export class UserFunctionLowerer {
                     argument.staticElementsOwner?.staticElements ||
                     argument.staticElements);
             if (
-                ((argument?.kind === "record" ||
+                (((argument?.kind === "record" &&
+                    !(
+                        recursive &&
+                        rootEntry.parameterTypes[index]?.kind === "struct"
+                    )) ||
                     argument?.dataType?.kind === "json") &&
                     rootEntry.parameterTypes[index]?.kind !== "json") ||
                 tupleFacts ||
@@ -4639,7 +4650,7 @@ export class UserFunctionLowerer {
                 const returnType = discardReturn
                     ? undefined
                     : this.valueLambdaReturnType(context, ir, callNode);
-                if (returnType?.kind === "struct") {
+                if (this.documentReturnStorage(returnType)) {
                     try {
                         return context.probeEmission(() =>
                             this.lowerValueLambda(
@@ -4718,7 +4729,7 @@ export class UserFunctionLowerer {
         context.beginNativeFunctionBody(
             returnType,
             discardReturn,
-            returnType?.kind === "struct"
+            this.documentReturnStorage(returnType)
                 ? {
                       compileReturn: (expression, type) =>
                           this.compileNativeReturnValue(
@@ -4768,6 +4779,18 @@ export class UserFunctionLowerer {
         return context.dataLowerer.compileKnownValueForSink(value, type, node);
     }
 
+    private documentReturnStorage(type: DataType | undefined): boolean {
+        const inner = type?.kind === "optional" ? type.inner : type;
+        return (
+            inner?.kind === "struct" ||
+            inner?.kind === "vector" ||
+            inner?.kind === "span" ||
+            inner?.kind === "tuple" ||
+            inner?.kind === "enummap" ||
+            (inner?.kind === "map" && inner.dictionary === true)
+        );
+    }
+
     private lowerCoroutineBody(
         context: UserFunctionContext,
         ir: UserFunctionIr,
@@ -4784,7 +4807,7 @@ export class UserFunctionLowerer {
             );
         context.beginNativeFunctionBody(type.result, false, {
             coroutine: true,
-            ...(type.result?.kind === "struct"
+            ...(this.documentReturnStorage(type.result)
                 ? {
                       compileReturn: (
                           expression: ts.Expression,

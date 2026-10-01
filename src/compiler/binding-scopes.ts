@@ -1450,6 +1450,7 @@ export class BindingScopes {
                     "tuple",
                     "product",
                     "enummap",
+                    "event-target",
                 ].includes(value.dataType.kind));
         if (isJsonValue(value) || snapshotsData) {
             const cpp = this.context.allocateTemporaryCppName(label);
@@ -1786,8 +1787,16 @@ export class BindingScopes {
         )
             return undefined;
         const mutableContainer = this.recordHasMutableContainer(value);
+        const storedCallbacks = Object.values(
+            value.recordProperties ?? {},
+        ).some(
+            (field) =>
+                field.kind === "callback" ||
+                field.dataType?.kind === "function",
+        );
         if (
             !mutableContainer &&
+            !storedCallbacks &&
             !Object.values(value.recordProperties ?? {}).some(
                 (field) =>
                     field.kind === "tuple" && field.tupleElements?.length === 0,
@@ -1800,7 +1809,9 @@ export class BindingScopes {
                 this.context.checker.getTypeAtLocation(node),
         );
         if (!sourceType) return undefined;
-        const stored = this.context.dataTypes.fromTsType(sourceType, node);
+        const stored = storedCallbacks
+            ? this.context.dataTypes.fromStoredTsType(sourceType, node)
+            : this.context.dataTypes.fromTsType(sourceType, node);
         // An empty callback list has no element values from which to infer
         // storage. Its declared element type still requires a shared container
         // when a returned record is captured and populated by another closure.
@@ -1813,14 +1824,16 @@ export class BindingScopes {
                         field.type.kind === "vector" &&
                         field.type.element.kind === "function",
                 );
-        if (!mutableContainer && !callbackContainer) return undefined;
-        if (callbackContainer)
+        if (!mutableContainer && !callbackContainer && !storedCallbacks)
+            return undefined;
+        if ((callbackContainer || storedCallbacks) && stored)
             this.context.dataTypes.markStoredObjectReferences(stored);
         if (
             stored?.kind !== "struct" ||
             !this.context.dataTypes.isReferenceStruct(stored.name) ||
             (this.context.dataTypes.carriesFunction(stored) &&
-                !callbackContainer)
+                !callbackContainer &&
+                !storedCallbacks)
         )
             return undefined;
         const projected = this.context.dataLowerer.leafValue(

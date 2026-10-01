@@ -9,6 +9,7 @@
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_dom_events.hpp>
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
@@ -538,6 +539,15 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
     }
     replace_browser_file(engine, browser_file_ui_element(engine, handle).selected_file,
                          std::move(*selected));
+    if (engine.dom_input) {
+        for (const char* type : {"input", "change"}) {
+            PlatformMouseEvent payload;
+            payload.payload_kind = DomInputEventKind::Event;
+            const auto event = dom_event(payload, type, dom_ui_path(engine, handle), true, false);
+            event.dom->composed = std::string_view(type) == "input";
+            dispatch_dom_pointer(engine, event);
+        }
+    }
     if (listeners)
         listeners->dispatch(PlatformMouseEvent{});
 }
