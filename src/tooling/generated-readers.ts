@@ -36,6 +36,8 @@ function readJsonFile(path: string, what: string, sceneId?: string): unknown {
 export interface CompiledSceneManifest {
     features: readonly string[];
     adaptations: readonly string[];
+    /** The program's own source files, repository-relative. */
+    inputs: readonly string[];
 }
 
 /** The generated tree's manifest; a tree without one refuses. */
@@ -49,17 +51,19 @@ export function readCompiledSceneManifest(
         !isRecord(value) ||
         !Array.isArray(value.features) ||
         !value.features.every(isString) ||
-        !Array.isArray(value.adaptations)
+        !Array.isArray(value.adaptations) ||
+        !Array.isArray(value.inputs) ||
+        !value.inputs.every(isString)
     )
         throw new Error(
-            `${path} lacks its features and adaptations arrays; run 'scene -- compile' again.`,
+            `${path} lacks its features, adaptations and inputs arrays; run 'scene -- compile' again.`,
         );
     const adaptations = value.adaptations.map((entry: unknown) =>
         isRecord(entry) ? entry.id : undefined,
     );
     if (!adaptations.every(isString))
         throw new Error(`${path} holds an adaptation without a string id.`);
-    return { features: value.features, adaptations };
+    return { features: value.features, adaptations, inputs: value.inputs };
 }
 
 /** Where each asset of the generated tree came from (a URL or a corpus path), as packages credit them. */

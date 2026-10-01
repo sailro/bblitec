@@ -153,7 +153,11 @@ export type SuiteSourceTransform = (source: string) => string;
 type SuiteAnimationPoseProtocol = "applied-group-pose-v1";
 
 // The harness keeps its own marks on the document element: a page names its
-// canvases as it likes.
+// canvases as it likes. A program with nothing else to wait for is ready,
+// and its fixed clock starts, once its entry module evaluates.
+const entryReadyMarks =
+    'document.documentElement.setAttribute("data-fixed-engine-starting", "true");' +
+    'document.documentElement.setAttribute("data-capture-ready", "true");';
 const fixedEngineStartMarker =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
 
@@ -211,6 +215,7 @@ export function suiteBrowserModule(
     fixedAnimationFrame?: number,
     independentEngines?: number,
     animationPoseProtocol?: SuiteAnimationPoseProtocol,
+    readyAfterEntry = false,
 ): string {
     if (animationPoseProtocol !== undefined) {
         if (animationPoseProtocol !== "applied-group-pose-v1")
@@ -295,12 +300,14 @@ export function suiteBrowserModule(
         '"/brdf-lut.png"',
         `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${upstreamSource().readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
     );
-    const readySource = source.includes("dataset.ready")
-        ? source
-        : source.replace(
-              "await startEngine(engine);",
-              'await startEngine(engine); canvas.dataset.ready = "true";',
-          );
+    const readySource = readyAfterEntry
+        ? `${source}\n${entryReadyMarks}`
+        : source.includes("dataset.ready")
+          ? source
+          : source.replace(
+                "await startEngine(engine);",
+                'await startEngine(engine); canvas.dataset.ready = "true";',
+            );
     const fixedFrameSource =
         fixedAnimationFrame === undefined || independentEngines !== undefined
             ? readySource
@@ -450,6 +457,11 @@ interface SuiteCaptureOptions {
     siteRoot?: string;
     /** The public directory root-relative asset URLs are served from first. */
     publicDir?: string;
+    /**
+     * The program starts no engine and writes no canvas readiness: it is
+     * ready, and its fixed clock starts, once its entry module evaluates.
+     */
+    readyAfterEntry?: boolean;
 }
 
 /** Full-page capture is the product default; zero requests a canvas-only
@@ -951,7 +963,8 @@ const schedule = () => {
         marks.dataset.fixedCaptureFrame = String(captureFrame);
         marks.dataset.fixedAnimationCallbacks = String(due.length);
         if (
-            document.querySelector('canvas[data-ready="true"]') !== null &&
+            (document.querySelector('canvas[data-ready="true"]') !== null ||
+                marks.dataset.captureReady === "true") &&
             engineStartFrame >= 0 &&
             frame - engineStartFrame >= target
         ) {
@@ -1047,6 +1060,8 @@ export async function captureSuiteReference(
         captureAnimationGroups,
         options.fixedAnimationFrame,
         options.independentEngines,
+        undefined,
+        options.readyAfterEntry,
     );
     const server = createSuiteSceneServer(moduleSource, {
         ...options,

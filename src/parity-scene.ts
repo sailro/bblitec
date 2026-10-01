@@ -83,6 +83,20 @@ function manifestUsesSeededRandom(manifest: CompiledSceneManifest): boolean {
     return manifest.adaptations.includes("deterministic-seeded-random");
 }
 
+/**
+ * Whether the reference capture has nothing to wait for past the entry
+ * module: none of the program's sources starts an engine or writes a
+ * canvas's readiness.
+ */
+function manifestReadyAfterEntry(manifest: CompiledSceneManifest): boolean {
+    return !manifest.inputs.some(
+        (input) =>
+            /\.[cm]?[jt]s$/.test(input) &&
+            existsSync(input) &&
+            /startEngine\(|dataset\.ready/.test(readFileSync(input, "utf8")),
+    );
+}
+
 export function usesSeededRandom(scene: SceneDefinition): boolean {
     return manifestUsesSeededRandom(
         readCompiledSceneManifest(scene.output, scene.id),
@@ -1009,6 +1023,9 @@ async function runSceneParity(
     // toggles) would otherwise throw before the scene starts.
     const sharedCaptureOptions = {
         seededRandom: manifestUsesSeededRandom(compiledManifest),
+        ...(manifestReadyAfterEntry(compiledManifest)
+            ? { readyAfterEntry: true }
+            : {}),
         showScrollbars: config.referenceScrollbars ?? false,
         ...(config.independentEngines === undefined
             ? {}

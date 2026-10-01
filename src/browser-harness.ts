@@ -214,9 +214,12 @@ export async function waitForSceneReady(
     fixedAnimationFrame?: number,
 ): Promise<void> {
     await gotoScenePage(page, origin, search);
-    // Any canvas the page marks ready: a host page names its own canvases.
+    // Any canvas the page marks ready (a host page names its own canvases),
+    // or the harness's mark for a program with nothing else to wait for.
     await page.waitForFunction(
-        () => document.querySelector('canvas[data-ready="true"]') !== null,
+        () =>
+            document.querySelector('canvas[data-ready="true"]') !== null ||
+            document.documentElement.dataset.captureReady === "true",
         undefined,
         { timeout: 120_000 },
     );
