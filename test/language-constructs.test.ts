@@ -1940,6 +1940,34 @@ check(
 `,
 );
 
+check(
+    "typed-array-array-methods",
+    `
+    const bytes = new Uint8Array([32, 32, 0, 7]);
+    const padding = bytes.subarray(0, 2);
+    const floats = new Float32Array([1.5, -2, 3]);
+    const view = new Int16Array(new ArrayBuffer(8), 2, 3);
+    view[0] = -4; view[1] = 9; view[2] = 2;
+    if (padding.some((byte) => byte !== 0x20) || !padding.every((byte) => byte === 0x20)) throw new Error("predicates over a view");
+    if (bytes.find((b) => b < 8) !== 0 || bytes.findIndex((b) => b === 7) !== 3 || bytes.find((b) => b > 99) !== undefined) throw new Error("find");
+    if (floats.indexOf(3) !== 2 || !floats.includes(-2) || floats.lastIndexOf(9) !== -1 || floats.at(-1) !== 3) throw new Error("search");
+    if (floats.join("|") !== "1.5|-2|3" || view.join() !== "-4,9,2") throw new Error("join");
+    if (floats.reduce((sum, value) => sum + value, 0) !== 2.5 || view.reduce((max, value) => Math.max(max, value), -99) !== 9) throw new Error("reduce");
+    const doubled = floats.map((value) => value * 2);
+    const wrapped = bytes.map((value) => value * 10);
+    const kept = view.filter((value) => value > 0);
+    if (!(doubled instanceof Float32Array) || doubled[1] !== -4 || wrapped[0] !== 64 || wrapped[3] !== 70) throw new Error("map keeps the kind");
+    if (!(kept instanceof Int16Array) || kept.length !== 2 || kept[1] !== 2) throw new Error("filter keeps the kind");
+    let order = "";
+    floats.forEach((value, index) => { order += index + ":" + value + ";"; if (index === 0) floats[2] = 8; });
+    if (order !== "0:1.5;1:-2;2:8;") throw new Error("forEach reads live elements");
+    const sorted = new Float64Array([3, NaN, -0, 0, -1]);
+    if (sorted.sort() !== sorted || sorted.join() !== "-1,0,0,3,NaN" || !Object.is(sorted[1], -0)) throw new Error("numeric sort");
+    view.sort((a, b) => b - a);
+    if (view.join() !== "9,2,-4" || new Uint8Array(view.buffer)[2] !== 9) throw new Error("comparator sort writes the view");
+`,
+);
+
 test("typed-array from refuses sources it reads differently from the constructor", () => {
     for (const [source, message] of [
         [
@@ -1953,6 +1981,10 @@ test("typed-array from refuses sources it reads differently from the constructor
         [
             "const xs = [1, 2]; const t = Int32Array.of(...xs); const unused = t.length;",
             /Int32Array\.of takes its elements as separate arguments/,
+        ],
+        [
+            "const f = new Float32Array(2); f.forEach((v, i, a) => { a[i] = v + 1; });",
+            /typed array's forEach callback takes no array parameter/,
         ],
     ] as const)
         assert.throws(() => compileSource(source), message);

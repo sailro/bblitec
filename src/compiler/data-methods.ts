@@ -42,8 +42,10 @@ import {
     pinnedHandleKind,
     platformHandleKind,
     isTypedArrayType,
+    typedArrayStem,
     typedArrayStoreExpression,
     type DataType,
+    type TypedArrayKind,
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -1164,6 +1166,16 @@ function compileKnownDataMethod(
             );
         }
     }
+    if (isTypedArrayType(dataType)) {
+        return compileTypedArrayArrayMethod(
+            lowerer,
+            call,
+            method,
+            narrowed,
+            dataType,
+            dynamicOwner,
+        );
+    }
     if (dataType?.kind !== "vector" && dataType?.kind !== "span") {
         return undefined;
     }
@@ -1205,6 +1217,148 @@ interface ArrayMethodState {
     dataType: DataType & { kind: "vector" | "span" };
     dynamicOwner: Value | undefined;
     expectedResult: DataType<"vector"> | undefined;
+}
+
+/** The array methods a typed array shares, read through `TypedArrayNumbers`. */
+const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
+    "at",
+    "every",
+    "filter",
+    "find",
+    "findIndex",
+    "forEach",
+    "includes",
+    "indexOf",
+    "join",
+    "lastIndexOf",
+    "map",
+    "reduce",
+    "some",
+]);
+
+/**
+ * A typed array's array methods are the array lowering over its elements
+ * read as numbers (`bbl::js::TypedArrayNumbers`): each read is the element
+ * at that moment, through a view's bytes as through owned storage. `map`
+ * and `filter` build the receiver's own kind, converting each kept number
+ * as a store does; `sort` orders numerically or sorts the list of its
+ * elements with the comparator and writes it back, as the spec does.
+ */
+function compileTypedArrayArrayMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    method: string,
+    narrowed: Value,
+    dataType: DataType<TypedArrayKind>,
+    dynamicOwner: Value | undefined,
+): Value | undefined {
+    const numbers: DataType<"span"> = {
+        kind: "span",
+        element: { kind: "number" },
+    };
+    if (method === "sort")
+        return compileTypedArraySort(lowerer, call, narrowed, dataType);
+    if (!typedArrayReadMethods.has(method)) return undefined;
+    const callback = call.arguments[0];
+    const arrayParameter = method === "reduce" ? 3 : 2;
+    if (
+        callback &&
+        lowerer.context.checker
+            .getTypeAtLocation(callback)
+            .getCallSignatures()
+            .some((signature) => signature.parameters.length > arrayParameter)
+    )
+        lowerer.context.fail(
+            callback,
+            `A typed array's ${method} callback takes no array parameter here.`,
+        );
+    lowerer.context.reachJsData();
+    const cppType = lowerer.context.dataTypes.cppType(dataType);
+    const reader: Value = {
+        kind: "data",
+        cpp: `bbl::js::typed_array_numbers(${narrowed.cpp})`,
+        dataType: numbers,
+        nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${cppType}>`,
+    };
+    const valueMethod = compileArrayValueMethod(
+        lowerer,
+        call,
+        method,
+        reader,
+        numbers,
+    );
+    if (valueMethod) return valueMethod;
+    if (method === "indexOf" || method === "includes")
+        return lowerer.compileArraySearch(
+            call,
+            reader,
+            numbers.element,
+            method,
+        );
+    const handler = arrayMethodHandlers.get(method);
+    if (!handler) return undefined;
+    const result = handler({
+        lowerer,
+        call,
+        narrowed: reader,
+        dataType: numbers,
+        dynamicOwner,
+        expectedResult:
+            method === "map"
+                ? { kind: "vector", element: { kind: "number" } }
+                : undefined,
+    });
+    return method === "map" || method === "filter"
+        ? {
+              kind: "data",
+              cpp: `bbl::js::${typedArrayStem(dataType.kind)}_array_from(${result.cpp})`,
+              dataType,
+          }
+        : result;
+}
+
+function compileTypedArraySort(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    narrowed: Value,
+    dataType: DataType<TypedArrayKind>,
+): Value {
+    lowerer.context.reachJsData();
+    if (call.arguments.length === 0)
+        return {
+            kind: "data",
+            cpp: `bbl::js::typed_array_sort(${narrowed.cpp})`,
+            dataType,
+        };
+    const receiver = lowerer.context.bindings.pinValueToTemporary(
+        narrowed,
+        "sort_receiver",
+    );
+    const list = lowerer.context.allocateTemporaryCppName("sort_numbers");
+    const numbers: DataType<"vector"> = {
+        kind: "vector",
+        element: { kind: "number" },
+    };
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "auto",
+        name: list,
+        initializer: `bbl::js::typed_array_number_list(${receiver.cpp})`,
+    });
+    lowerer.registerLocal(list, "owned");
+    const sorted = compileArraySort({
+        lowerer,
+        call,
+        narrowed: { kind: "data", cpp: list, dataType: numbers },
+        dataType: numbers,
+        dynamicOwner: undefined,
+        expectedResult: undefined,
+    });
+    lowerer.context.emit({
+        kind: "expression",
+        code: `bbl::js::typed_array_store_numbers(${receiver.cpp}, ${sorted.cpp});`,
+    });
+    return receiver;
 }
 
 function compileArrayFlat({

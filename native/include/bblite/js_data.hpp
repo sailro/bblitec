@@ -4496,6 +4496,101 @@ template <typename Values> [[nodiscard]] inline I32Array i32_array_from(const Va
 }
 
 /**
+ * A typed array as the array methods read it: `size()` is its length and
+ * `operator[]` the number an element holds at the time of the read, through
+ * a view's bytes as through owned storage, so a callback's writes reach
+ * later reads.
+ */
+template <typename Values> class TypedArrayNumbers {
+public:
+    using value_type = double;
+    class const_iterator {
+    public:
+        using value_type = double;
+        using difference_type = std::ptrdiff_t;
+        const_iterator() = default;
+        const_iterator(const Values* values, std::size_t index) : values_(values), index_(index) {}
+        [[nodiscard]] double operator*() const {
+            return static_cast<double>(typed_array_load(*values_, index_));
+        }
+        const_iterator& operator++() {
+            ++index_;
+            return *this;
+        }
+        const_iterator operator++(int) {
+            auto previous = *this;
+            ++index_;
+            return previous;
+        }
+        [[nodiscard]] bool operator==(const const_iterator& other) const {
+            return index_ == other.index_;
+        }
+
+    private:
+        const Values* values_ = nullptr;
+        std::size_t index_ = 0;
+    };
+    explicit TypedArrayNumbers(Values values) : values_(std::move(values)) {}
+    [[nodiscard]] std::size_t size() const { return values_.size(); }
+    [[nodiscard]] bool empty() const { return values_.size() == 0; }
+    [[nodiscard]] double operator[](std::size_t index) const {
+        return static_cast<double>(typed_array_load(values_, index));
+    }
+    [[nodiscard]] const_iterator begin() const { return {&values_, 0}; }
+    [[nodiscard]] const_iterator end() const { return {&values_, size()}; }
+
+private:
+    Values values_;
+};
+
+template <typename Values>
+[[nodiscard]] inline TypedArrayNumbers<Values> typed_array_numbers(const Values& values) {
+    return TypedArrayNumbers<Values>(values);
+}
+
+template <typename Values>
+[[nodiscard]] inline double array_index_of(const TypedArrayNumbers<Values>& values, double value) {
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (values[index] == value)
+            return static_cast<double>(index);
+    }
+    return -1.0;
+}
+
+/** The elements as an owned list of numbers: the list a comparator sort orders. */
+template <typename Values>
+[[nodiscard]] inline Array<double> typed_array_number_list(const Values& values) {
+    Array<double> result;
+    result.reserve(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index)
+        result.push_back(static_cast<double>(typed_array_load(values, index)));
+    return result;
+}
+
+/** Writes back a list read from the same array, so every number converts exactly. */
+template <typename Values, typename Numbers>
+inline void typed_array_store_numbers(Values values, const Numbers& numbers) {
+    for (std::size_t index = 0; index < numbers.size() && index < values.size(); ++index)
+        values.store(index, static_cast<typename Values::value_type>(numbers[index]));
+}
+
+/** `%TypedArray%.prototype.sort()`: stable numeric order, -0 before +0, NaN last. */
+template <typename Values> inline Values typed_array_sort(Values values) {
+    auto numbers = typed_array_number_list(values);
+    std::stable_sort(numbers.begin(), numbers.end(), [](double left, double right) {
+        if (std::isnan(left))
+            return false;
+        if (std::isnan(right))
+            return true;
+        if (left != right)
+            return left < right;
+        return std::signbit(left) && !std::signbit(right);
+    });
+    typed_array_store_numbers(values, numbers);
+    return values;
+}
+
+/**
  * `%TypedArray%.prototype.set(source, offset)` for two arrays of one kind.
  *
  * The spec copies `source` whole into `target` starting at `offset` and
