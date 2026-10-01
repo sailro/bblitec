@@ -242,6 +242,33 @@ const std::string& json_object_key(std::string&&) = delete;
     return a && (!b || *a < *b);
 }
 
+/**
+ * A dictionary's own entries in property order: array-index names ascending,
+ * then the other names as they were inserted.
+ */
+template <typename Map, typename Visitor>
+inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
+    using Entry = std::remove_cvref_t<decltype(*map.begin())>;
+    std::vector<std::pair<std::string, const Entry*>> ordered;
+    ordered.reserve(map.size());
+    for (const auto& entry : map)
+        ordered.emplace_back(json_object_key(entry.first), &entry);
+    std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+        return json_property_key_less(left.first, right.first);
+    });
+    for (const auto& [name, entry] : ordered)
+        visitor(name, entry->second);
+}
+
+/** A dictionary's own property names, in property order. */
+template <typename Map>
+[[nodiscard]] inline bbl::js::Array<std::string> property_names(const Map& map) {
+    bbl::js::Array<std::string> names;
+    for_each_property_entry(map,
+                            [&](const std::string& name, const auto&) { names.push_back(name); });
+    return names;
+}
+
 /** Sort references, avoiding repeated linear lookups in parsed object storage. */
 template <typename Entries, typename Visitor>
 inline void json_for_each_object_entry(const Entries& entries, Visitor&& visitor) {

@@ -92,7 +92,7 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { ownObjectEntries } from "./object-statics.js";
+import { structOwnEntries } from "./object-statics.js";
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
@@ -7193,6 +7193,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (this.spanCompatible(value.dataType, dataType)) {
             return value.cpp;
         }
+        if (dataType.kind === "tuple" && value.dataType.kind === "vector")
+            return this.compileKnownValueForSink(value, dataType, expression);
         if (
             dataType.kind === "span" &&
             (value.dataType.kind === "vector" ||
@@ -7419,7 +7421,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 name: snapshot,
                                 initializer: source.cpp,
                             });
-                            const entries = ownObjectEntries(
+                            const entries = structOwnEntries(
                                 {
                                     dataTypes: this.context.dataTypes,
                                     dataLowerer: this,
@@ -7427,18 +7429,34 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                         this.context.fail(node, message),
                                 },
                                 { ...source, cpp: snapshot },
+                                source.dataType,
                                 property,
-                            )!;
-                            for (const [key, value] of entries) {
+                            );
+                            // A `?` field is copied while it is own.
+                            for (const { key, value, presentCpp } of entries) {
                                 const cpp = this.compileKnownValueForSink(
                                     value,
                                     dataType.value,
                                     property,
                                 );
+                                if (presentCpp) {
+                                    this.context.emit({
+                                        kind: "open",
+                                        code: `if (${presentCpp}) {`,
+                                    });
+                                    this.context.increaseIndent();
+                                }
                                 this.context.emit({
                                     kind: "expression",
                                     code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
                                 });
+                                if (presentCpp) {
+                                    this.context.decreaseIndent();
+                                    this.context.emit({
+                                        kind: "close",
+                                        code: "}",
+                                    });
+                                }
                             }
                             continue;
                         }
@@ -8148,8 +8166,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * Whether `owner` carries `key`, as a condition. A compile-time record
      * answers from its properties and a dictionary from its native
      * membership. `in` also asks a struct, which answers from its type: a
-     * required field is always present and an optional one is present when
-     * it holds a value. `Object.hasOwn` declines a struct, whose fields are
+     * required field is always present and a `?` one is present when it
+     * holds a value. `Object.hasOwn` declines a struct, whose fields are
      * its type's rather than the object's own.
      */
     public membershipCpp(
@@ -8259,15 +8277,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (!field) {
                 return "false";
             }
-            if (field.type.kind !== "optional") {
-                return "true";
-            }
             const access = this.context.dataTypes.isReferenceStruct(
                 dataType.name,
             )
                 ? "->"
                 : ".";
-            return optionalPresentCpp(`${narrowed.cpp}${access}${field.name}`);
+            const slot = `${narrowed.cpp}${access}${field.name}`;
+            // A union arm's field is narrowed by its tag, not its storage.
+            if (field.presentForTags)
+                return field.type.kind === "optional"
+                    ? optionalPresentCpp(slot)
+                    : "true";
+            const present = this.context.dataTypes.ownPropertyPresentCpp(
+                dataType.name,
+                field,
+                slot,
+                ownerNode,
+            );
+            if (present === undefined) return "true";
+            this.context.reachJsData();
+            return present;
         }
         return this.context.fail(
             ownerNode,
@@ -8813,6 +8842,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
                 const key = this.context.compileValue(left.argumentExpression);
                 if (key.staticString === undefined) {
+                    // A key known only at run time needs the binding's
+                    // keyed storage: the declaration is lowered again with
+                    // it.
+                    const declaration = resolvedSymbol(
+                        this.context.checker,
+                        left.expression,
+                    )?.valueDeclaration;
+                    const storage =
+                        declaration &&
+                        ts.isVariableDeclaration(declaration) &&
+                        declaration.initializer
+                            ? this.dataTypeAt(left.expression)
+                            : undefined;
+                    if (
+                        declaration &&
+                        ts.isVariableDeclaration(declaration) &&
+                        (storage?.kind === "map" || storage?.kind === "enummap")
+                    )
+                        throw new DynamicBindingStorageRequired(
+                            declaration,
+                            storage,
+                        );
                     this.context.fail(
                         left.argumentExpression,
                         "A compile-time record assignment requires a static string key.",
@@ -10905,6 +10956,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   this.callSpanValue(expression) ??
                   this.selectedIterationValue(expression) ??
                   this.runtimeArrayLiteral(expression) ??
+                  this.nullishArrayValue(expression) ??
                   (knownTuple
                       ? this.materializeKnownTuple(expression, knownTuple)
                       : undefined) ??
@@ -11061,8 +11113,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       }
                     : range;
             }
+            // A parsed document's elements view indexes like an array.
+            const documentElements =
+                kind === undefined && range.element.kind === "json";
             if (
-                (kind !== "vector" && kind !== "span") ||
+                (kind !== "vector" && kind !== "span" && !documentElements) ||
                 this.pairedElement(range.element)
             ) {
                 return undefined;
@@ -11082,6 +11137,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   }
                 : { container, element: { kind: "array-index", indexCpp } };
         });
+    }
+
+    /** `array ?? []`: the selected array, read as the vector its type names. */
+    private nullishArrayValue(expression: ts.Expression): Value | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            !ts.isBinaryExpression(unwrapped) ||
+            unwrapped.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+        )
+            return undefined;
+        const value = this.context.probeEmission(() => {
+            const selected = this.context.compileValue(unwrapped);
+            return selected.kind === "data" &&
+                (selected.dataType?.kind === "vector" || isJsonValue(selected))
+                ? selected
+                : undefined;
+        });
+        if (value) return value;
+        const dataType = this.dataTypeAt(unwrapped);
+        if (dataType?.kind !== "vector") return undefined;
+        this.context.reachJsData();
+        return this.leafValue(
+            this.compileForSink(unwrapped, dataType),
+            dataType,
+        );
     }
 
     private runtimeArrayLiteral(expression: ts.Expression): Value | undefined {
@@ -11468,31 +11548,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             for (const binding of name.elements) {
+                const property = binding.propertyName
+                    ? this.context.propertyName(binding.propertyName)
+                    : ts.isIdentifier(binding.name)
+                      ? binding.name.text
+                      : undefined;
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||
                     binding.dotDotDotToken ||
-                    binding.propertyName
+                    property === undefined
                 ) {
                     this.context.fail(
                         binding,
-                        "Struct destructuring supports plain identifiers.",
+                        "Struct destructuring supports plain and renamed identifiers.",
                     );
                 }
                 const field = this.context.dataTypes.structField(
                     element.name,
-                    binding.name.text,
+                    property,
                     binding,
                 );
-                const value = this.leafValue(
-                    `${itemCpp}${
-                        this.context.dataTypes.isReferenceStruct(element.name)
-                            ? "->"
-                            : "."
-                    }${field.name}`,
-                    field.type,
+                const value = this.context.bindings.pinValueToTemporary(
+                    this.leafValue(
+                        `${itemCpp}${
+                            this.context.dataTypes.isReferenceStruct(
+                                element.name,
+                            )
+                                ? "->"
+                                : "."
+                        }${field.name}`,
+                        field.type,
+                    ),
+                    "iteration_field",
+                    binding.name,
                 );
-                defineItem(binding.name, value);
+                define(binding.name, value);
                 if (value.kind === "data") {
                     this.registerLocal(this.rootName(value.cpp), "copy");
                 }
@@ -11813,22 +11904,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         iterable.dataType?.kind === "span"
                             ? iterable.dataType.element
                             : undefined;
+                    // Lanes of another scalar spelling, or records seen
+                    // through the target's record type (projected as a
+                    // readonly view's elements are), convert one by one.
                     if (
                         iterable.kind === "data" &&
                         sourceElement &&
                         !dataTypesEqual(sourceElement, dataType.element) &&
-                        ["string", "enum"].includes(sourceElement.kind) &&
-                        ["string", "enum"].includes(dataType.element.kind)
+                        ((["string", "enum"].includes(sourceElement.kind) &&
+                            ["string", "enum"].includes(
+                                dataType.element.kind,
+                            )) ||
+                            (sourceElement.kind === "struct" &&
+                                dataType.element.kind === "struct"))
                     ) {
                         const item =
                             this.context.allocateTemporaryCppName(
                                 "spread_item",
                             );
-                        const converted = this.compileKnownValueForSink(
-                            this.leafValue(item, sourceElement),
-                            dataType.element,
-                            spread,
+                        let converted = "";
+                        const prepared = this.context.captureEmittedLines(
+                            () => {
+                                converted = this.compileKnownValueForSink(
+                                    this.leafValue(item, sourceElement),
+                                    dataType.element,
+                                    spread,
+                                );
+                            },
                         );
+                        if (prepared.length > 0)
+                            this.context.fail(
+                                spread,
+                                "Array spread converts each element in place; this element conversion needs statements.",
+                            );
                         return {
                             ...this.leafValue(
                                 `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +

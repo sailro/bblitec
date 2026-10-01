@@ -49,7 +49,12 @@ import {
     thrownMessage,
 } from "./error-values.js";
 import { emitStringAppend } from "./expressions.js";
-import { commonResourceValue, isStringValue } from "./types.js";
+import {
+    commonResourceValue,
+    isStringValue,
+    staticStringValue,
+} from "./types.js";
+import { isJsonValue } from "./json-bridge.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -83,6 +88,8 @@ interface StatementLoweringContext extends Pick<
     | "reachThrow"
     | "reachFeature"
     | "reachJsData"
+    | "reachJson"
+    | "propertyName"
     | "cppString"
     | "dataLowerer"
     | "emitOptionalResourceAssignment"
@@ -519,6 +526,10 @@ export class StatementLowerer {
         }
         if (ts.isForOfStatement(statement)) {
             this.emitForOf(context, statement);
+            return;
+        }
+        if (ts.isForInStatement(statement)) {
+            this.emitForIn(context, statement);
             return;
         }
         if (ts.isSwitchStatement(statement)) {
@@ -2031,6 +2042,193 @@ export class StatementLowerer {
         return `([&]() -> bool { ${lines.join(" ")} return ${condition}; }())`;
     }
 
+    /**
+     * `for (const key in object)`: the object's own enumerable keys, the
+     * ones `Object.keys` lists, read once before the first iteration. A key
+     * deleted before its turn is skipped. A compile-time record's keys are
+     * known, so its loop is unrolled.
+     */
+    private emitForIn(
+        context: StatementLoweringContext,
+        statement: ts.ForInStatement,
+    ): void {
+        if (
+            !ts.isVariableDeclarationList(statement.initializer) ||
+            statement.initializer.declarations.length !== 1
+        ) {
+            context.fail(
+                statement.initializer,
+                "for...in requires one variable declaration naming its key.",
+            );
+        }
+        const declaration = statement.initializer.declarations[0]!;
+        if (!ts.isIdentifier(declaration.name))
+            context.fail(
+                declaration.name,
+                "for...in requires one variable declaration naming its key.",
+            );
+        const binding = declaration.name;
+        const raw = context.compileValue(statement.expression);
+        const owner =
+            raw.kind === "data"
+                ? context.dataLowerer.narrowOptional(raw, statement.expression)
+                : raw;
+        if (owner.kind === "record") {
+            for (const key of Object.keys(owner.recordProperties ?? {})) {
+                const completed = this.emitUnrolledIteration(
+                    context,
+                    statement,
+                    statement.statement,
+                    () =>
+                        this.bindStaticIterationValue(
+                            context,
+                            binding,
+                            staticStringValue(key, (text) =>
+                                context.cppString(text),
+                            ),
+                        ),
+                );
+                if (completed === "break") break;
+            }
+            return;
+        }
+        const ownKeys = this.forInOwnKeys(context, owner, statement.expression);
+        context.reachJsData();
+        const keys = context.allocateTemporaryCppName("own_keys");
+        context.emit({
+            kind: "declaration",
+            type: "const bbl::js::Array<std::string>",
+            name: keys,
+            initializer: ownKeys.keysCpp,
+        });
+        const item = context.allocateTemporaryCppName("key");
+        const lines = context.captureEmittedStatements(() => {
+            context.bindings.pushScope(context.allocateBlockPrefix());
+            try {
+                context.bindDataIterationVariable(binding, item, {
+                    kind: "string",
+                });
+                this.inRuntimeIteration(
+                    context,
+                    () =>
+                        this.inRuntimeControlFlow(context, () => {
+                            for (const nested of bodyStatements(statement))
+                                this.emit(context, nested);
+                        }),
+                    statement,
+                );
+            } finally {
+                context.bindings.popScope();
+            }
+        });
+        context.emit({
+            kind: "open",
+            code: `for (const std::string& ${item} : ${keys}) {`,
+            iteration: true,
+        });
+        context.increaseIndent();
+        const present = ownKeys.presentCpp?.(item);
+        if (present) {
+            context.emit({ kind: "open", code: `if (!(${present})) {` });
+            context.increaseIndent();
+            context.emit({
+                kind: "control",
+                code: "continue;",
+                transfer: "continue",
+            });
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        }
+        context.emitCapturedStatements(lines);
+        context.decreaseIndent();
+        context.emit({ kind: "close", code: "}" });
+    }
+
+    /** The own keys a run-time `for...in` walks, and whether a key is still own. */
+    private forInOwnKeys(
+        context: StatementLoweringContext,
+        owner: Value,
+        node: ts.Expression,
+    ): { keysCpp: string; presentCpp?: (key: string) => string } {
+        if (isJsonValue(owner)) {
+            const object = context.allocateTemporaryCppName("object");
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::js::JsonValue",
+                name: object,
+                initializer: owner.cpp,
+            });
+            return {
+                keysCpp: `${object}.own_keys()`,
+                presentCpp: (key) => `${object}.has_own(${key})`,
+            };
+        }
+        const dataType = owner.kind === "data" ? owner.dataType : undefined;
+        if (
+            dataType?.kind === "map" &&
+            dataType.dictionary &&
+            dataType.key.kind === "string"
+        ) {
+            // The dictionary is read in place, as the loop body writes it.
+            const object = context.bindings.pinValueToTemporary(
+                owner,
+                "object",
+                node,
+            ).cpp;
+            context.reachJson();
+            return {
+                keysCpp: `bbl::js::property_names(${object})`,
+                presentCpp: (key) => `${object}.has(${key})`,
+            };
+        }
+        if (dataType?.kind === "struct") {
+            // Keep this object's identity: later iterations observe field
+            // deletions, while rebinding the source must not change its owner.
+            context.dataTypes.markStoredObjectReferences(dataType);
+            const fields = context.dataTypes.structFields(dataType.name, node);
+            const access = context.dataTypes.isReferenceStruct(dataType.name)
+                ? "->"
+                : ".";
+            const object = context.bindings.pinValueToTemporary(
+                owner,
+                "object",
+                node,
+            ).cpp;
+            const presence = fields.map((field) => ({
+                field,
+                present: context.dataTypes.ownPropertyPresentCpp(
+                    dataType.name,
+                    field,
+                    `${object}${access}${field.name}`,
+                    node,
+                ),
+            }));
+            const optional = presence.filter(({ present }) => present);
+            const pushes = presence.map(({ field, present }) => {
+                const push = `own.push_back(${context.cppString(field.sourceName)});`;
+                return present ? `if (${present}) ${push}` : push;
+            });
+            return {
+                keysCpp: `[&] { bbl::js::Array<std::string> own; ${pushes.join(" ")} return own; }()`,
+                ...(optional.length
+                    ? {
+                          presentCpp: (key: string) =>
+                              optional
+                                  .map(
+                                      ({ field, present }) =>
+                                          `(${key} != ${context.cppString(field.sourceName)} || ${present})`,
+                                  )
+                                  .join(" && "),
+                      }
+                    : {}),
+            };
+        }
+        return context.fail(
+            node,
+            "for...in walks the own keys of a compile-time record, a string-keyed dictionary, a struct or a dynamic JSON object.",
+        );
+    }
+
     private emitForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
@@ -2713,7 +2911,60 @@ export class StatementLowerer {
         });
     }
 
-    /** Binds one statically unrolled element, including tuple patterns. */
+    /**
+     * `{ a, b: alias }` over one unrolled element: each name takes the
+     * element's property, a compile-time record's value or a struct's field.
+     */
+    private bindStaticObjectPattern(
+        context: StatementLoweringContext,
+        pattern: ts.ObjectBindingPattern,
+        value: Value,
+    ): void {
+        const struct =
+            value.kind === "data" && value.dataType?.kind === "struct"
+                ? value.dataType
+                : undefined;
+        if (value.kind !== "record" && !struct)
+            context.fail(
+                pattern,
+                "Object destructuring in static for...of requires record or struct elements.",
+            );
+        for (const element of pattern.elements) {
+            const property = element.propertyName
+                ? context.propertyName(element.propertyName)
+                : ts.isIdentifier(element.name)
+                  ? element.name.text
+                  : undefined;
+            if (
+                element.dotDotDotToken ||
+                element.initializer ||
+                !ts.isIdentifier(element.name) ||
+                property === undefined
+            )
+                context.fail(
+                    element,
+                    "Object destructuring in static for...of binds plain or renamed identifiers.",
+                );
+            const field = struct
+                ? context.dataTypes.structField(struct.name, property, element)
+                : undefined;
+            const member =
+                struct && field
+                    ? context.dataLowerer.leafValue(
+                          `${value.cpp}${context.dataTypes.isReferenceStruct(struct.name) ? "->" : "."}${field.name}`,
+                          field.type,
+                      )
+                    : value.recordProperties?.[property];
+            if (!member)
+                context.fail(
+                    element,
+                    `The unrolled element has no property '${property}'.`,
+                );
+            context.bindings.bindLocalValue(element.name, member);
+        }
+    }
+
+    /** Binds one statically unrolled element, including tuple and object patterns. */
     private bindStaticIterationValue(
         context: StatementLoweringContext,
         name: ts.BindingName,
@@ -2732,11 +2983,9 @@ export class StatementLowerer {
             }
             return;
         }
-        if (!ts.isArrayBindingPattern(name)) {
-            context.fail(
-                name,
-                "Static for...of destructuring requires an array pattern.",
-            );
+        if (ts.isObjectBindingPattern(name)) {
+            this.bindStaticObjectPattern(context, name, value);
+            return;
         }
         if (value.kind !== "tuple" || !value.tupleElements) {
             context.fail(
@@ -3012,6 +3261,8 @@ export class StatementLowerer {
                     type: "auto&&",
                     name: item,
                     initializer: `${range}[${indexCpp}]`,
+                    // `for (const [index] of list.entries())` binds no value.
+                    attributes: "[[maybe_unused]] ",
                 });
             }
             context.emitCapturedStatements(lines);

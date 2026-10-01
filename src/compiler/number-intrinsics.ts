@@ -47,6 +47,33 @@ const predicates: ReadonlyMap<
     ],
 ]);
 
+/**
+ * `Number.isFinite` and its siblings named as values (`list.every(Number.isFinite)`):
+ * a function of one number, which ignores the index and array an array
+ * method also passes.
+ */
+export function numberPredicateFunction(
+    expression: ts.Expression,
+    libraryGlobal: LibraryGlobal,
+): Value | undefined {
+    if (
+        !ts.isPropertyAccessExpression(expression) ||
+        libraryGlobal(expression.expression) !== "Number"
+    )
+        return undefined;
+    const predicate = predicates.get(expression.name.text);
+    if (!predicate) return undefined;
+    return {
+        kind: "data",
+        cpp: `bbl::js::Callback<bool(double)>([](double value) { return static_cast<bool>(${predicate.cpp}(value)); })`,
+        dataType: {
+            kind: "function",
+            parameters: [{ kind: "number" }],
+            result: { kind: "boolean" },
+        },
+    };
+}
+
 export function compileNumberPredicate(
     context: ExpressionContext,
     call: ts.CallExpression,

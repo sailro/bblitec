@@ -45,6 +45,7 @@ import {
     compileNumberPredicate,
     numberConstant,
     numberConstantValue,
+    numberPredicateFunction,
 } from "./number-intrinsics.js";
 import {
     compileAudioMethodCall,
@@ -75,6 +76,8 @@ import {
     OBJECT_STATIC_HANDLERS,
     compileObjectPrototypeCall,
     ownObjectEntries,
+    structOwnArray,
+    structOwnEntries,
 } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
 import { compileDateTimeFormat } from "./dates.js";
@@ -763,6 +766,13 @@ export class ExpressionLowerer {
             );
             if (numericConstant !== undefined)
                 return numberConstantValue(numericConstant);
+            const predicate = numberPredicateFunction(unwrapped, (owner) =>
+                this.context.libraryGlobal(owner),
+            );
+            if (predicate) {
+                this.context.reachJsData();
+                return predicate;
+            }
             // A read that descends into a parsed document has no static
             // shape to consult, so it is answered before the typed data
             // path tries to give it one.
@@ -1744,6 +1754,21 @@ export class ExpressionLowerer {
                 dataType: { kind: "vector", element },
                 freshData: true,
             };
+        }
+        if (
+            object.kind === "data" &&
+            object.dataType?.kind === "struct" &&
+            resultType?.kind === "vector"
+        ) {
+            const array = structOwnArray(
+                this.context,
+                object,
+                object.dataType,
+                resultType,
+                projection,
+                call,
+            );
+            if (array) return array;
         }
         const pairs = ownObjectEntries(this.context, object, call);
         if (!pairs) {
@@ -4448,6 +4473,13 @@ export class ExpressionLowerer {
         unwrapped: ts.ObjectLiteralExpression,
     ): Value | undefined {
         const dynamicSpread = hasDynamicObjectSpread(this.context, unwrapped);
+        // A struct whose `?` fields decide its keys at run time spreads into
+        // a dictionary of dynamic values when the position names one.
+        const optionalKeysSpread = unwrapped.properties.some(
+            (property) =>
+                ts.isSpreadAssignment(property) &&
+                this.spreadsOptionalOwnKeys(property.expression),
+        );
         if (
             unwrapped.properties.some(
                 (property) =>
@@ -4455,14 +4487,15 @@ export class ExpressionLowerer {
                     this.context.dataLowerer.dataTypeAt(property.expression)
                         ?.kind === "map",
             ) ||
-            dynamicSpread
+            dynamicSpread ||
+            optionalKeysSpread
         ) {
             const contextual =
                 this.context.checker.getContextualType(unwrapped);
             const type =
                 (contextual &&
                     this.context.dataTypes.withDynamicJsonTypes(
-                        dynamicSpread,
+                        dynamicSpread || optionalKeysSpread,
                         () =>
                             this.context.dataTypes.fromTsType(
                                 contextual,
@@ -4494,6 +4527,23 @@ export class ExpressionLowerer {
             }
         }
         return this.compileStaticObjectValue(unwrapped);
+    }
+
+    /** Whether a spread source is a struct whose `?` fields decide its keys at run time. */
+    private spreadsOptionalOwnKeys(expression: ts.Expression): boolean {
+        const dataType = this.context.dataLowerer.dataTypeAt(
+            this.context.unwrap(expression),
+        );
+        if (dataType?.kind !== "struct") return false;
+        return this.context.dataTypes
+            .structFields(dataType.name, expression)
+            .some(
+                (field) =>
+                    this.context.dataTypes.ownPropertyPresence(
+                        dataType.name,
+                        field,
+                    ) !== "own",
+            );
     }
 
     private compileStaticObjectValue(
@@ -4531,6 +4581,34 @@ export class ExpressionLowerer {
         for (const [index, property] of unwrapped.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
+                // A struct whose fields are always own spreads its current
+                // field values; a `?` field's key is decided at run time.
+                if (
+                    spread.kind === "data" &&
+                    spread.dataType?.kind === "struct" &&
+                    spread.recordProperties === undefined
+                ) {
+                    const entries = structOwnEntries(
+                        this.context,
+                        spread,
+                        spread.dataType,
+                        property,
+                    );
+                    if (entries.some((entry) => entry.presentCpp)) {
+                        if (allowDictionarySpread) return undefined;
+                        this.context.fail(
+                            property,
+                            "A struct with optional properties spreads into a dictionary or a struct; a compile-time record needs keys known at generation.",
+                        );
+                    }
+                    for (const { key, value } of entries)
+                        properties[key] = member(
+                            value,
+                            index,
+                            property.expression,
+                        );
+                    continue;
+                }
                 if (
                     spread.kind !== "record" &&
                     spread.recordProperties === undefined

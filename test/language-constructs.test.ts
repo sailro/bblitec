@@ -4086,3 +4086,278 @@ test("a setter-only property maps as data and refuses where its record is stored
         /has a setter without a getter/,
     );
 });
+
+check(
+    "optional-property-own-key-presence",
+    `
+    interface Stops { day?: string; strength?: number }
+    interface Quality { postProcess: boolean; steps?: number; maxPixels: number | undefined; stops?: Stops; charm?: { points: number } | null }
+    interface Config { name: string; quality: Quality; extra?: { scale: number } }
+    const DEFAULTS: Config = { name: "garden", quality: { postProcess: true, maxPixels: undefined, stops: { day: "a" }, charm: { points: 2 } } };
+    function isPlainObject(value: unknown): value is Record<string, unknown> {
+        return typeof value === "object" && value !== null && !Array.isArray(value);
+    }
+    function validate(candidate: unknown, defaults: unknown): string[] {
+        const problems: string[] = [];
+        const walk = (value: unknown, base: unknown, path: string): void => {
+            if (!isPlainObject(value) || !isPlainObject(base)) return;
+            for (const key of Object.keys(value)) {
+                const here = path === "" ? key : path + "." + key;
+                if (!(key in base)) { problems.push("unknown " + here); continue; }
+                const expected = base[key];
+                if (expected === undefined) { problems.push("open " + here); continue; }
+                walk(value[key], expected, here);
+            }
+        };
+        walk(candidate, defaults, "");
+        return problems;
+    }
+    const parsed = JSON.parse('{"name":"x","quality":{"steps":3,"maxPixels":5,"stops":{"day":"b","strength":2},"charm":{"points":1,"x":0}},"extra":{"scale":1}}') as unknown;
+    if (validate(parsed, DEFAULTS).join(",") !== "unknown quality.steps,open quality.maxPixels,unknown quality.stops.strength,unknown quality.charm.x,unknown extra")
+        throw new Error("dynamic view own keys");
+    const viewed = DEFAULTS.quality as unknown as Record<string, unknown>;
+    if (Object.keys(viewed).join(",") !== "postProcess,maxPixels,stops,charm" || "steps" in viewed || !("maxPixels" in viewed) || !("charm" in DEFAULTS.quality))
+        throw new Error("dynamic view keys");
+    type Weights = { base: number; bonus?: number; cap: number | undefined };
+    const weights: Weights = { base: 1, bonus: 4, cap: 2 };
+    if (Object.keys(weights).join(",") !== "base,bonus,cap" || Object.values(weights).map((value) => String(value)).join(",") !== "1,4,2")
+        throw new Error("present optional keys");
+    delete weights.bonus;
+    const entries = Object.entries(weights).map(([key, value]) => key + "=" + String(value));
+    if (entries.join(",") !== "base=1,cap=2" || "bonus" in weights || !("maxPixels" in DEFAULTS.quality))
+        throw new Error("deleted optional key");
+    const copy: Record<string, unknown> = { ...(DEFAULTS.quality as unknown as Record<string, unknown>) };
+    if (Object.keys(copy).join(",") !== "postProcess,maxPixels,stops,charm" || copy["maxPixels"] !== undefined)
+        throw new Error("spread own keys");
+`,
+);
+
+check(
+    "struct-spread-into-record-literal",
+    `
+    interface Spec { id: string; rgb: [number, number, number] }
+    interface Swatch extends Spec { swatch: string }
+    const SPECS: Spec[] = [{ id: "a", rgb: [1, 0.5, 0.25] }, { id: "b", rgb: [0.5, 1, 0.25] }];
+    const hex = (rgb: readonly [number, number, number]): string => rgb.map((c) => Math.round(c * 100)).join("-");
+    const swatches: Swatch[] = SPECS.map((s) => ({ ...s, swatch: hex(s.rgb) }));
+    if (swatches.length !== 2 || swatches[1]!.swatch !== "50-100-25" || swatches[0]!.id !== "a") throw new Error("spread fields");
+    SPECS[0]!.rgb[0] = 9;
+    SPECS[0]!.id = "z";
+    if (swatches[0]!.rgb[0] !== 9 || swatches[0]!.id !== "a") throw new Error("spread copies scalars and shares nested objects");
+    const lilies: { model: string; labelKey: string }[] = [{ model: "lily", labelKey: "k" }];
+    const list = [{ model: "x", labelKey: "y", tool: "flower" as const }, ...lilies.map((f) => ({ ...f, tool: "lily" as const }))];
+    if (list.length !== 2 || list[1]!.tool !== "lily" || list[1]!.model !== "lily" || list[0]!.labelKey !== "y") throw new Error("spread element");
+`,
+);
+
+check(
+    "for-in-own-keys",
+    `
+    const urls: Partial<Record<string, string>> = {};
+    urls["a"] = "x";
+    urls["b"] = "y";
+    urls["c"] = "z";
+    urls["d"] = "w";
+    const seen: string[] = [];
+    for (const k in urls) {
+        if (k === "a") delete urls["b"];
+        if (k === "c") continue;
+        if (k === "d") break;
+        seen.push(k + "=" + urls[k]!);
+    }
+    if (seen.join(",") !== "a=x") throw new Error("dictionary keys");
+    const fixed = { one: 1, three: 3 };
+    let total = 0;
+    for (const key in fixed) total += key.length;
+    if (total !== 8) throw new Error("record keys");
+    const doc = JSON.parse('{"p":1,"q":[2],"r":null}') as Record<string, unknown>;
+    const names: string[] = [];
+    for (const name in doc) names.push(name);
+    if (names.join(",") !== "p,q,r") throw new Error("document keys");
+    type Weights = { base: number; extra?: number; cap: number | undefined };
+    const weights: Weights[] = [{ base: 1, cap: undefined }, { base: 2, extra: 3, cap: 4 }];
+    const keys: string[] = [];
+    for (const item of weights) for (const key in item) keys.push(key);
+    if (keys.join(",") !== "base,cap,base,extra,cap") throw new Error("struct keys");
+`,
+);
+
+check(
+    "for-in-observes-struct-deletions",
+    `
+    const data: { a?: number; b?: number } = { a: 1, b: 2 };
+    const seen: string[] = [];
+    for (const key in data) {
+        seen.push(key);
+        if (key === "a") delete data.b;
+    }
+    if (seen.join(",") !== "a") throw new Error("enumerated deleted key");
+`,
+);
+
+check(
+    "for-in-retains-owner-after-rebinding",
+    `
+    let dictionary: Record<string, number> = { a: 1, b: 2 };
+    const original = dictionary;
+    const seen: string[] = [];
+    for (const key in dictionary) {
+        seen.push(key);
+        dictionary = { replacement: 3 };
+    }
+    if (seen.join(",") !== "a,b" || original.b !== 2)
+        throw new Error("enumeration changed owner");
+`,
+);
+
+check(
+    "runtime-for-of-renamed-fields-snapshot",
+    `
+    const items: { x: number; nested: { value: number } }[] = [{ x: 1, nested: { value: 3 } }];
+    const retained: Array<() => number> = [];
+    for (const { x: saved, nested: original } of items) {
+        items[0]!.x = 2;
+        items[0]!.nested = { value: 4 };
+        if (saved !== 1 || original.value !== 3) throw new Error("field snapshot");
+        retained.push(() => saved + original.value);
+    }
+    if (retained[0]!() !== 4) throw new Error("retained snapshot");
+`,
+);
+
+check(
+    "static-for-of-object-destructuring",
+    `
+    const CREDITS = [
+        { key: "us", name: "A" },
+        { key: "es", name: "B" },
+    ] as const;
+    const handlers: Array<() => string> = [];
+    for (const { key, name: who } of CREDITS) handlers.push(() => key + ":" + who);
+    if (handlers.map((handler) => handler()).join(",") !== "us:A,es:B") throw new Error("destructured elements");
+`,
+);
+
+check(
+    "array-entries-of-nullish-selection",
+    `
+    interface View { buffer?: number; byteLength: number }
+    interface Doc { bufferViews?: View[] }
+    const doc = JSON.parse('{"bufferViews":[{"buffer":0,"byteLength":4},{"byteLength":8}]}') as Doc;
+    let sum = 0;
+    for (const [index, view] of (doc.bufferViews ?? []).entries()) sum += index * 100 + (view.buffer ?? 7) + view.byteLength;
+    const empty = JSON.parse("{}") as Doc;
+    for (const [index] of (empty.bufferViews ?? []).entries()) sum += 1000 + index;
+    const typed: { list?: number[] } = { list: [5, 6] };
+    for (const [index, value] of (typed.list ?? []).entries()) sum += index * value;
+    if (sum !== 125) throw new Error("entries " + sum);
+`,
+);
+
+check(
+    "number-array-asserted-as-tuple",
+    `
+    type Vec3 = [number, number, number];
+    const BASE = [200, 100, 50] as const;
+    function scale(factor: number): [number, number, number] | null {
+        if (factor <= 0) return null;
+        return BASE.map((channel) => channel * factor) as [number, number, number];
+    }
+    function parse(raw: string, fallback: Vec3): Vec3 {
+        const parts = raw.split(",").map(Number);
+        return parts.length === 3 && parts.every((n) => Number.isFinite(n)) ? (parts as Vec3) : fallback;
+    }
+    const scaled = scale(0.5);
+    if (scaled === null || scaled[0] !== 100 || scaled[2] !== 25 || scale(0) !== null) throw new Error("mapped tuple");
+    const parsed = parse("1,2,3", [0, 0, 0]);
+    if (parsed[2] !== 3 || parse("1,2", [7, 8, 9])[0] !== 7) throw new Error("asserted tuple");
+    const parts = [4, 5, 6];
+    const view = parts as unknown as Vec3;
+    view[1] = 50;
+    if (parts[1] !== 50) throw new Error("asserted tuple keeps identity");
+`,
+);
+
+check(
+    "dictionary-entries-and-dynamic-record-keys",
+    `
+    const keys = ["a", "bb"];
+    const dict: Record<string, number> = {};
+    for (const k of keys) dict[k] = k.length * 10;
+    let sum = 0;
+    for (const [key, value] of Object.entries(dict)) sum += key.length + value;
+    function bones(captures: Readonly<Record<number, Float32Array>> | undefined): string {
+        if (!captures) return "none";
+        const out: string[] = [];
+        for (const [bone, values] of Object.entries(captures)) out.push(bone + ":" + values.length);
+        return out.join(",");
+    }
+    const captured: Record<number, Float32Array> = {};
+    captured[2] = new Float32Array(3);
+    captured[0] = new Float32Array(1);
+    if (sum !== 33 || bones(captured) !== "0:1,2:3" || bones(undefined) !== "none") throw new Error("dictionary entries " + sum + bones(captured));
+    type Slot = "chrome" | "hub" | "toast";
+    const SLOTS: readonly Slot[] = ["chrome", "hub", "toast"];
+    function stack(base: number, gap: number): Record<Slot, number> {
+        const bottoms = {} as Record<Slot, number>;
+        let cursor = base;
+        for (const slot of SLOTS) {
+            bottoms[slot] = cursor;
+            cursor += gap;
+        }
+        return bottoms;
+    }
+    const stacked = stack(10, 4);
+    if (stacked.chrome !== 10 || stacked.toast !== 18 || Object.keys(stacked).join(",") !== "chrome,hub,toast") throw new Error("dynamic record keys");
+`,
+);
+
+check(
+    "document-entries",
+    `
+    function names(value: unknown): string {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return "none";
+        const out: string[] = [];
+        for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+            const clip = raw as { from?: number } | null;
+            out.push(name + "=" + String(clip?.from));
+        }
+        return out.join(",");
+    }
+    const doc = JSON.parse('{"walk":{"from":2},"7":{"from":1},"idle":null}') as unknown;
+    if (names(doc) !== "7=1,walk=2,idle=undefined" || names(JSON.parse("[1]")) !== "none") throw new Error(names(doc));
+`,
+);
+
+check(
+    "number-predicates-as-callbacks",
+    `
+    interface Pose { x: number; y: number; z: number; yaw: number }
+    function admitted(origin: Readonly<Pose>): boolean {
+        return [origin.x, origin.y, origin.z, origin.yaw].every(Number.isFinite);
+    }
+    const values = [1, 2.5, Number.NaN, 4];
+    const isFinite = Number.isInteger;
+    if (!admitted({ x: 1, y: 2, z: 3, yaw: 0 }) || admitted({ x: 1, y: Number.POSITIVE_INFINITY, z: 3, yaw: 0 }))
+        throw new Error("every");
+    if (values.filter(Number.isFinite).length !== 3 || !values.some(Number.isNaN) || values.filter(isFinite).length !== 2)
+        throw new Error("predicates");
+`,
+);
+
+check(
+    "array-spread-of-wider-records",
+    `
+    type Spec = { id: string; rgb: [number, number, number] };
+    type Swatch = Spec & { swatch: string };
+    function palette(): { id: string; labelKey: string; rgb: [number, number, number]; swatch: string }[] {
+        return [{ id: "a", labelKey: "tint.a", rgb: [1, 2, 3], swatch: "#a" }];
+    }
+    const base = palette();
+    const extra: Spec = { id: "b", rgb: [4, 5, 6] };
+    const all: Swatch[] = [...base, { ...extra, swatch: "#b" }];
+    if (all.length !== 2 || all[0]!.swatch !== "#a" || all[0]!.rgb[2] !== 3 || all[1]!.id !== "b") throw new Error("spread records");
+    base[0]!.rgb[0] = 9;
+    if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
+`,
+);
