@@ -1,0 +1,29 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "The branch's native paths (PBR normal texture, run-time shadow map size, typed-array uniforms, glTF from fetched bytes) had no automated native run; `regression-runtime-options` exercises them on both backends.",
+            "applied": true
+        },
+        {
+            "summary": "Generation-time builder execution had three callers with different argument and acceptance rules and no caching; one runner serves shader sources, required template text and plugin `getCustomCode`, caches runs that read no enclosing-function binding, and reads a module constant's text once per symbol.",
+            "applied": true
+        },
+        {
+            "summary": "The typed-array uniform length error was hand-typed; it comes from the pin's error table (401 setter, 399 default value).",
+            "applied": true
+        },
+        {
+            "summary": "Literal-returning function resolution, literal kinds, template and `+` text, numeric record reads and fetched-bytes recognition restated existing helpers; they reuse `resolveFunctionDeclaration`, a shared scalar-literal reader, `compileStringLiteral`, `staticNumberValue` and the `fetchedBytes` carrier, and the shadow extent reuses `gpu_size`/`gpu_u32`.",
+            "applied": true
+        },
+        {
+            "summary": "Object spreads were settled in four places that disagreed; one `objectProperties` service feeds property lookup, validation, vector and colour reads and the physics, compute-texture, mesh-option and text walkers.",
+            "applied": true
+        },
+        {
+            "summary": "Option discarding is one `discardOption` that keeps source evaluation order; spec fields are optional; PBR takes `normal: { texture, scale }`; the normal-texture setter is emitted like the ORM one and its plumbing is deleted; `resizeEngine` keeps its argument's effects; the `resizeEngine`, uniform-caching and `normalBias` pin contracts are asserted in the compiler.",
+            "applied": true
+        }
+    ]
+}
