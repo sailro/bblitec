@@ -1,9 +1,0 @@
-{
-  "angles": ["reuse", "simplification", "efficiency", "altitude"],
-  "findings": [
-    {"summary": "Reuse the existing sort implementation and its receiver snapshot instead of maintaining a second comparator path.", "applied": true},
-    {"summary": "Remove obsolete frame-capture guard state while retaining owned capture and borrowed-event boundaries.", "applied": true},
-    {"summary": "Express forward-binding initialization policy at the ownership boundary and refuse stored closures without represented temporal-dead-zone storage.", "applied": true},
-    {"summary": "Preserve existing promise identity before converting raw payloads to contextual result types.", "applied": true}
-  ]
-}
