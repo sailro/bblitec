@@ -465,21 +465,9 @@ export class BindingScopes {
         return unbound;
     }
 
-    /** Whether code reads a source variable no scope binds yet. */
-    public readsUnboundVariable(code: ts.Node): boolean {
-        for (const symbol of this.codeReads(code).names.keys()) {
-            const declaration = symbol.valueDeclaration;
-            if (
-                declaration &&
-                (ts.isVariableDeclaration(declaration) ||
-                    ts.isParameter(declaration) ||
-                    ts.isBindingElement(declaration)) &&
-                !declaration.getSourceFile().isDeclarationFile &&
-                !this.peekBinding(symbol)
-            )
-                return true;
-        }
-        return false;
+    /** The names declared outside a piece of code that it reads. */
+    public readNames(code: ts.Node): Iterable<ts.Symbol> {
+        return this.codeReads(code).names.keys();
     }
 
     /** What one piece of code reads and reaches, without following either. */

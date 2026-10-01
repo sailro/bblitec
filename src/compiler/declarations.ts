@@ -341,23 +341,22 @@ export class DeclarationLowerer {
     /**
      * Makes a later binding a callback reads exist before the callback. When
      * running its initializer early could change its value or reorder an
-     * effect (DOM, listeners, audio), or it reads a binding not made yet,
-     * the binding is temporal-dead-zone storage its initializer fills where
-     * the source declares it; otherwise the declaration is materialized here
-     * and skipped when the walk reaches it. Without an owned data type such
-     * an initializer runs here too, unless `initializeAhead` is false: then
-     * nothing is hoisted.
+     * effect (DOM, listeners, audio), or it reads a binding still pending
+     * (`readsPending`), the binding is temporal-dead-zone storage its
+     * initializer fills where the source declares it; otherwise the
+     * declaration is materialized here and skipped when the walk reaches it.
+     * Without an owned data type such an initializer runs here too, unless
+     * `initializeAhead` is false: then nothing is hoisted.
      */
     public hoistForwardBinding(
         declaration: ForwardDeclaration,
         symbol: ts.Symbol,
         initializeAhead = true,
+        readsPending = false,
     ): void {
         const pure =
+            !readsPending &&
             this.context.evaluationOrder.isPureExpression(
-                declaration.initializer,
-            ) &&
-            !this.context.bindings.readsUnboundVariable(
                 declaration.initializer,
             );
         const type = pure

@@ -570,30 +570,19 @@ export class CallbackLowerer {
         }[] = [];
         const reads = this.context.bindings.unboundClosureReads(callback);
         for (const [symbol, { direct }] of reads) {
-            const declaration = symbol.valueDeclaration;
+            const pending = this.pendingDeclaration(symbol);
             if (
-                !declaration ||
-                !ts.isVariableDeclaration(declaration) ||
-                !declaration.initializer ||
-                !ts.isIdentifier(declaration.name) ||
-                !ts.isVariableStatement(declaration.parent.parent) ||
-                (!direct && functionOfDeclaration(declaration))
-            )
-                continue;
-            const statement = declaration.parent.parent;
-            // The statement its block is lowering; a later one is pending.
-            const owner = this.context.loweringStatementIn(statement.parent);
-            if (
-                !owner ||
-                owner.statement.pos >= statement.pos ||
-                !this.context.emitsAtLevelOf(owner)
+                !pending ||
+                !pending.declaration.initializer ||
+                (!direct && functionOfDeclaration(pending.declaration)) ||
+                !this.context.emitsAtLevelOf(pending.owner)
             )
                 continue;
             forward.push({
-                declaration: declaration as ForwardDeclaration,
+                declaration: pending.declaration as ForwardDeclaration,
                 symbol,
                 direct,
-                owner,
+                owner: pending.owner,
             });
         }
         forward.sort(
@@ -601,14 +590,43 @@ export class CallbackLowerer {
         );
         for (const { declaration, symbol, direct, owner } of forward) {
             if (this.context.bindings.peekBinding(symbol)) continue;
+            const readsPending = [
+                ...this.context.bindings.readNames(declaration.initializer),
+            ].some((read) => this.pendingDeclaration(read) !== undefined);
             this.context.bindings.withScopeDepth(owner.scopeDepth, () =>
                 this.context.declarations.hoistForwardBinding(
                     declaration,
                     symbol,
                     direct,
+                    readsPending,
                 ),
             );
         }
+    }
+
+    /**
+     * The declaration of a `let`/`const` a block being lowered has not
+     * reached yet, with the statement that block is lowering.
+     */
+    private pendingDeclaration(
+        symbol: ts.Symbol,
+    ):
+        | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
+        | undefined {
+        const declaration = symbol.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableStatement(declaration.parent.parent) ||
+            this.context.bindings.peekBinding(symbol)
+        )
+            return undefined;
+        const statement = declaration.parent.parent;
+        const owner = this.context.loweringStatementIn(statement.parent);
+        return owner && owner.statement.pos < statement.pos
+            ? { declaration, owner }
+            : undefined;
     }
 
     /**
