@@ -735,6 +735,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-page-canvas",
+        name: "Regression - Page Canvas",
+        source: "examples/regression-page-canvas/src/main.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Page Canvas",
+        page: { path: "examples/regression-page-canvas/page.html" },
+        // A text scene on a page-authored canvas that does not fill the
+        // window, over page chrome the canvas covers and under a label. The
+        // canvas matches exactly; the label text is the UI text residual.
+        parity: {
+            canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [29, 35, 48],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",

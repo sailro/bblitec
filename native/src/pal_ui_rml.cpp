@@ -3244,9 +3244,9 @@ public:
             frame.indices.push_back(base_vertex + static_cast<std::uint32_t>(index));
         }
 
-        // Geometry painted into the frame itself before an engine canvas
-        // lies beneath that canvas's opaque content.
-        const bool occludes = layers.empty() && occluded_from(base_vertex);
+        // Geometry painted before an engine canvas, in any layer, lies
+        // beneath the canvas's opaque content.
+        const bool occludes = occluded_from(base_vertex);
         if (clip_mask_enabled || occludes) {
             std::vector<UiClipTriangle> unoccluded;
             if (occludes)
