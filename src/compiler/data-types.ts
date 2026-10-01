@@ -585,14 +585,7 @@ export function tupleComponents(
     );
 }
 
-/**
- * Marks a stored value's own function type as identity-carrying.
- *
- * A Set member and a Map key are the two positions whose behaviour depends
- * on comparing the value: everything else stores a function without ever
- * asking whether two of them are the same one, and keeps the plain
- * `std::function` it already emitted.
- */
+/** Stored callback fields and collection entries preserve function identity. */
 function markIdentityFunctions(dataType: DataType): DataType {
     switch (dataType.kind) {
         case "product":
@@ -609,7 +602,7 @@ function markIdentityFunctions(dataType: DataType): DataType {
             return { ...dataType, identity: true };
         case "optional":
             return {
-                kind: "optional",
+                ...dataType,
                 inner: markIdentityFunctions(dataType.inner),
             };
         default:
