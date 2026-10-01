@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
@@ -73,6 +75,64 @@ test("refuses a module constant whose run would not describe the program's", () 
     const BLOCK = \`fn laneBase() -> f32 { return \${${varying}}; }\`;
 `),
             /Expected a string literal|without a static string|Template substitutions/,
+        );
+    }
+});
+
+// A module without run-time state folds its constants from their
+// initializers, and a computed one is no array literal.
+function deckModule(after: string): string {
+    const directory = resolve("artifacts/executed-module-constants");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "deck.ts"),
+        `
+    const ORDER: readonly ("left" | "up" | "right")[] = ["left", "up", "right"];
+    const LABELS: { action: string; label: string }[] = [
+        { action: "up", label: "Up arrow" },
+        { action: "left", label: "Left arrow" },
+        { action: "right", label: "Right arrow" },
+    ];
+    const KEYS: readonly { action: string; label: string }[] = ORDER.map((action) => ({
+        action,
+        label: LABELS.find((entry) => entry.action === action)!.label,
+    }));
+    export function createDeck(): HTMLElement {
+        const row = document.createElement("div");
+        for (const key of KEYS) {
+            const cell = document.createElement("span");
+            cell.dataset.action = key.action;
+            cell.textContent = key.label;
+            row.appendChild(cell);
+        }
+        return row;
+    }
+    ${after}`,
+    );
+    const fileName = join(directory, "entry.ts");
+    const source = `import { createDeck } from "./deck";
+document.body.appendChild(createDeck());`;
+    writeFileSync(fileName, source);
+    return compileSource(source, { fileName }).cpp;
+}
+
+test("unrolls a static iteration over a module constant the program computes", () => {
+    const labels = [...deckModule("").matchAll(/"(Left|Up|Right) arrow"/g)].map(
+        ([, label]) => label,
+    );
+    assert.deepEqual(labels, ["Left", "Up", "Right"]);
+});
+
+test("leaves a module constant built from a written one to its refusal", () => {
+    for (const write of [
+        `LABELS[0]!.label = "Moved";`,
+        `for (const entry of LABELS) entry.label = entry.label.toUpperCase();`,
+        `const first = LABELS.find((entry) => entry.action === "up")!; first.label = "x";`,
+        `Object.assign(LABELS[0]!, { label: "z" });`,
+    ]) {
+        assert.throws(
+            () => deckModule(write),
+            /Expected a static array literal/,
         );
     }
 });

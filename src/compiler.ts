@@ -97,9 +97,11 @@ import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
     cppIdentifierPattern,
+    doubleLiteral,
     sanitizeCppIdentifier,
     stringLiteral,
 } from "./cpp-literals.js";
+import { jsonToValue, type JsonValuePolicy } from "./compiler/json-value.js";
 import { compileAdaptations } from "./compiler/adaptations.js";
 import {
     emitPropertyAssignment,
@@ -184,12 +186,18 @@ import { createCompilerProgram } from "./compiler/program.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
+    declarationInDefaultLibrary,
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
+    libraryGlobal,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
-import { isNullable, presentMembers } from "./compiler/type-facts.js";
+import {
+    isNullable,
+    presentMembers,
+    typeCanCarryReference,
+} from "./compiler/type-facts.js";
 import { StaticEvaluator } from "./compiler/static-evaluator.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import { HandleCollections } from "./compiler/handle-collections.js";
@@ -208,13 +216,16 @@ import {
 } from "./compiler/user-functions.js";
 import {
     argumentAt,
+    bindingNameIdentifiers,
     identifierText,
     isAssignmentExpression,
     isDeclaredInside,
     isUpdateExpression,
     objectProperty,
+    rootIdentifier,
     sourceFunctionName,
     stringLiteralText,
+    unwrapExpression,
     unwrappedIdentifier,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
@@ -436,6 +447,48 @@ export { CompileError };
 
 /** A transaction that is not a probe: its work stands unless it throws. */
 const commitAlways = (): boolean => true;
+
+/** The library calls that write through their first argument. */
+const writingLibraryCalls: ReadonlySet<string> = new Set([
+    "Object.assign",
+    "Object.defineProperty",
+    "Object.defineProperties",
+    "Object.setPrototypeOf",
+    "Reflect.set",
+    "Reflect.defineProperty",
+    "Reflect.deleteProperty",
+    "Reflect.setPrototypeOf",
+]);
+
+/**
+ * Whether a language or platform library call leaves an argument alone:
+ * every one but the first argument of a call that writes through it.
+ */
+function libraryArgumentIsReadOnly(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    const called = checker.getResolvedSignature(call)?.declaration;
+    if (!called || !declarationInDefaultLibrary(called)) return false;
+    const callee = unwrapExpression(call.expression);
+    const name = ts.isPropertyAccessExpression(callee)
+        ? `${libraryGlobal(checker, callee.expression) ?? ""}.${callee.name.text}`
+        : undefined;
+    return index > 0 || name === undefined || !writingLibraryCalls.has(name);
+}
+
+/**
+ * Executed module constants: numbers are JavaScript doubles, and every value
+ * keeps full static metadata for the static positions that read it.
+ */
+const executedConstantJsonPolicy: JsonValuePolicy = {
+    numberLiteral: doubleLiteral,
+    nullCpp: "std::nullopt",
+    staticMetadata: true,
+    unsupportedMessage:
+        "An executed module constant holds a value JSON cannot represent.",
+};
 
 export function compileSource(
     source: string,
@@ -795,6 +848,8 @@ class Compiler implements LoweringServices {
         emissionRecord({});
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
+    /** @unjournaled `moduleConstantIsWritten` answers, a function of the program. */
+    private readonly writtenModuleConstants = new Map<ts.Symbol, boolean>();
     /** @unjournaled Results of closed generation runs, a function of their inputs alone. */
     private readonly generationRuns = new Map<
         ExecutedTarget,
@@ -2261,6 +2316,108 @@ class Compiler implements LoweringServices {
         );
         this.writtenConstArrays.set(symbol, written);
         return written;
+    }
+
+    /**
+     * Whether the program writes through a module constant: an assignment,
+     * an update or a mutating call through it, through a binding initialized
+     * from an expression that mentions it, or through an iteration binding
+     * over one; or it hands one to a call that may write it. The scan covers
+     * the constant's file, and every file when it is exported. A binding
+     * that only mentions the constant counts as one, which can only refuse
+     * more.
+     */
+    private moduleConstantIsWritten(name: ts.Identifier): boolean {
+        const symbol = this.symbols.valueSymbol(name);
+        const declaration = symbol?.declarations?.find(
+            ts.isVariableDeclaration,
+        );
+        if (!symbol || !declaration) return true;
+        const cached = this.writtenModuleConstants.get(symbol);
+        if (cached !== undefined) return cached;
+        const exported =
+            (ts.getCombinedModifierFlags(declaration) &
+                ts.ModifierFlags.Export) !==
+            0;
+        const files = exported
+            ? this.program
+                  .getSourceFiles()
+                  .filter((file) => !file.isDeclarationFile)
+            : [declaration.getSourceFile()];
+        const written = files.some((file) =>
+            this.writesThroughBinding(file, symbol),
+        );
+        this.writtenModuleConstants.set(symbol, written);
+        return written;
+    }
+
+    private writesThroughBinding(
+        file: ts.SourceFile,
+        symbol: ts.Symbol,
+    ): boolean {
+        const aliases = new Set([symbol]);
+        const names = (node: ts.Node): boolean => {
+            const named = ts.isIdentifier(node)
+                ? this.symbols.valueSymbol(node)
+                : undefined;
+            return named !== undefined && aliases.has(named);
+        };
+        // A function inside the expression reads the constant without
+        // handing it on; its own body is part of the walk.
+        const mentions = (expression: ts.Expression): boolean =>
+            someAnalysisNode(expression, names, { functions: "skip" }) &&
+            typeCanCarryReference(this.checker.getTypeAtLocation(expression));
+        let changed = true;
+        const alias = (binding: ts.BindingName): void => {
+            for (const identifier of bindingNameIdentifiers(binding)) {
+                const aliased = this.symbols.valueSymbol(identifier);
+                if (aliased && !aliases.has(aliased)) {
+                    aliases.add(aliased);
+                    changed = true;
+                }
+            }
+        };
+        while (changed) {
+            changed = false;
+            const written = someAnalysisNode(file, (node) => {
+                if (
+                    ts.isVariableDeclaration(node) &&
+                    node.initializer &&
+                    mentions(node.initializer)
+                )
+                    alias(node.name);
+                if (
+                    ts.isForOfStatement(node) &&
+                    ts.isVariableDeclarationList(node.initializer) &&
+                    mentions(node.expression)
+                )
+                    for (const iterated of node.initializer.declarations)
+                        alias(iterated.name);
+                return (
+                    writesThroughTrackedRoot(node, (target) => {
+                        const root = rootIdentifier(this.unwrap(target));
+                        return root !== undefined && names(root);
+                    }) ||
+                    (ts.isCallExpression(node) &&
+                        node.arguments.some(
+                            (argument, index) =>
+                                mentions(argument) &&
+                                !libraryArgumentIsReadOnly(
+                                    this.checker,
+                                    node,
+                                    index,
+                                ) &&
+                                !callArgumentIsReadOnly(
+                                    this.checker,
+                                    node,
+                                    index,
+                                ),
+                        ))
+                );
+            });
+            if (written) return true;
+        }
+        return false;
     }
 
     /**
@@ -3778,44 +3935,90 @@ class Compiler implements LoweringServices {
     /**
      * The text of a module-scope string `const` whose binding carries none
      * at generation (its module is materialized, or its initializer lowers
-     * to a concatenation): the constant run at generation, as its module
-     * runs it, once. A `const` string cannot change after its initializer,
-     * and the run reaches only module constants and functions. Undefined
-     * when the run reaches what generation does not carry (the host, the
-     * engine, a class, a `let`, the clock), which leaves the text to the
-     * static evaluator.
+     * to a concatenation): the constant run at generation (`runModuleConstant`).
+     * A `const` string cannot change after its initializer.
      */
     private moduleConstantText(identifier: ts.Identifier): string | undefined {
-        const declaration = this.symbols
-            .valueSymbol(identifier)
-            ?.declarations?.find(ts.isVariableDeclaration);
-        const statement = declaration?.parent.parent;
+        const constant = this.moduleConstantDeclaration(identifier);
         if (
-            !declaration?.initializer ||
-            !ts.isIdentifier(declaration.name) ||
-            !statement ||
-            !ts.isVariableStatement(statement) ||
-            !ts.isSourceFile(statement.parent) ||
-            statement.getSourceFile().isDeclarationFile ||
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
-            (this.checker.getTypeAtLocation(declaration.name).flags &
+            !constant ||
+            (this.checker.getTypeAtLocation(constant.name).flags &
                 ts.TypeFlags.StringLike) ===
                 0
         ) {
             return undefined;
         }
-        let text: unknown;
+        const text = this.runModuleConstant(constant.declaration);
+        return typeof text === "string" ? text : undefined;
+    }
+
+    /**
+     * The elements of a module-scope `const` array a static iteration needs
+     * and the static literal reader cannot resolve, run at generation
+     * (`runModuleConstant`).
+     */
+    public executedModuleConstantElements(
+        expression: ts.Expression,
+    ): readonly Value[] | undefined {
+        if (this.evaluator.staticArrayLiteral(expression)) return undefined;
+        const identifier = this.unwrap(expression);
+        const constant = ts.isIdentifier(identifier)
+            ? this.moduleConstantDeclaration(identifier)
+            : undefined;
+        if (!constant) return undefined;
+        const elements = this.runModuleConstant(constant.declaration);
+        return Array.isArray(elements)
+            ? elements.map((element: unknown) =>
+                  jsonToValue(
+                      this,
+                      executedConstantJsonPolicy,
+                      element,
+                      identifier,
+                  ),
+              )
+            : undefined;
+    }
+
+    /** The module-scope `const` declaration binding one name an identifier reads. */
+    private moduleConstantDeclaration(
+        identifier: ts.Identifier,
+    ):
+        | { declaration: ts.VariableDeclaration; name: ts.Identifier }
+        | undefined {
+        const declaration = this.symbols
+            .valueSymbol(identifier)
+            ?.declarations?.find(ts.isVariableDeclaration);
+        const statement = declaration?.parent.parent;
+        return declaration?.initializer &&
+            ts.isIdentifier(declaration.name) &&
+            statement &&
+            ts.isVariableStatement(statement) &&
+            ts.isSourceFile(statement.parent) &&
+            !statement.parent.isDeclarationFile &&
+            (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+            ? { declaration, name: declaration.name }
+            : undefined;
+    }
+
+    /**
+     * A module constant run at generation, as its module runs it, once: the
+     * run reaches only module constants and functions, none of which the
+     * program writes through (`moduleConstantIsWritten`). Undefined when it
+     * reaches what generation does not carry (the host, the engine, a class,
+     * a `let`, the clock, a written constant) or returns what is not plain
+     * data, which leaves the value to the static evaluator.
+     */
+    private runModuleConstant(declaration: ts.VariableDeclaration): unknown {
         try {
-            text = this.runGenerationFunction(
+            return this.runGenerationFunction(
                 declaration,
                 [],
-                `Module constant '${declaration.name.text}'`,
+                `Module constant '${declaration.name.getText()}'`,
             );
         } catch (error) {
             if (error instanceof CompileError) return undefined;
             throw error;
         }
-        return typeof text === "string" ? text : undefined;
     }
 
     /**
@@ -3914,6 +4117,12 @@ class Compiler implements LoweringServices {
                     closed = false;
                     return this.staticScalar(identifier);
                 },
+                ...(ts.isVariableDeclaration(declaration)
+                    ? {
+                          writtenThrough: (name: ts.Identifier) =>
+                              this.moduleConstantIsWritten(name),
+                      }
+                    : {}),
             },
             declaration,
             args,

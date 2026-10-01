@@ -1082,13 +1082,29 @@ export class StaticEvaluator {
     public expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression {
+        const resolved = this.staticArrayExpression(expression);
+        if (!ts.isArrayLiteralExpression(resolved)) {
+            this.fail(resolved, "Expected a static array literal.");
+        }
+        return resolved;
+    }
+
+    /** The array literal `expectStaticArrayLiteral` reads, or undefined. */
+    public staticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression | undefined {
+        const resolved = this.staticArrayExpression(expression);
+        return ts.isArrayLiteralExpression(resolved) ? resolved : undefined;
+    }
+
+    private staticArrayExpression(expression: ts.Expression): ts.Expression {
         // Same selection the array probe makes, through the same helper:
         // a list a scene chooses with a generation-known condition is
         // still a static list. Scene 140 writes `sg ? [sg] : undefined`
         // for its shadow lights, behind a query flag that folds. A live
         // condition selects nothing and falls to this position's own
         // refusal, which names an array rather than a condition.
-        const resolved =
+        return (
             selectedStaticExpression(
                 {
                     // The two members the fold reads, handed over
@@ -1101,11 +1117,8 @@ export class StaticEvaluator {
                         this.resolveStaticLiteral(node),
                 },
                 expression,
-            ) ?? this.resolveStaticLiteral(expression);
-        if (!ts.isArrayLiteralExpression(resolved)) {
-            this.fail(resolved, "Expected a static array literal.");
-        }
-        return resolved;
+            ) ?? this.resolveStaticLiteral(expression)
+        );
     }
 
     public compileStringLiteral(expression: ts.Expression): string {

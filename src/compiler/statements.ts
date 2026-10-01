@@ -139,6 +139,7 @@ interface StatementLoweringContext extends Pick<
     | "eraseBrowserInstrumentation"
     | "requiresStaticIteration"
     | "requiresStaticDataIteration"
+    | "executedModuleConstantElements"
     | "emitNativeDataIteration"
     | "knownCollectionCardinality"
     | "runtimeCollectionCardinality"
@@ -2158,6 +2159,26 @@ export class StatementLowerer {
                 statement,
                 "break/continue in for...of requires a runtime data container.",
             );
+        }
+        // A module constant the program computes (`ORDER.map(...)`) runs
+        // at generation, which states the elements a literal would.
+        const executed = context.executedModuleConstantElements(
+            statement.expression,
+        );
+        if (executed) {
+            for (const value of executed)
+                this.emitUnrolledIteration(
+                    context,
+                    statement,
+                    statement.statement,
+                    () =>
+                        this.bindStaticIterationValue(
+                            context,
+                            declaration.name,
+                            value,
+                        ),
+                );
+            return;
         }
         const values = context.expectStaticArrayLiteral(statement.expression);
         const compiled = this.preferNativeDataIteration(context, statement)

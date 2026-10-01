@@ -53,6 +53,12 @@ interface ExecutedFunctionContext {
      * an enclosing function, or undefined when the compiler cannot fold it.
      */
     foldEnclosing(identifier: ts.Identifier): ExecutedScalar | undefined;
+    /**
+     * Whether the program writes through a module constant the run reads,
+     * for a run that must describe the constant as its module builds it (a
+     * module constant run at generation); unchecked when absent.
+     */
+    writtenThrough?(name: ts.Identifier): boolean;
 }
 
 /** The pinned imports an executed closure may reach, by imported name. */
@@ -407,6 +413,18 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 `${this.label} reads a module-scope 'let' or 'var', which the scene may reassign after generation ran it.`,
             );
         }
+        if (ts.isVariableStatement(statement) && this.context.writtenThrough)
+            for (const name of statementDeclaredNames(statement))
+                if (
+                    typeCanCarryReference(
+                        this.context.checker.getTypeAtLocation(name),
+                    ) &&
+                    this.context.writtenThrough(name)
+                )
+                    this.context.fail(
+                        name,
+                        `${this.label} reads '${name.text}', which the program writes through.`,
+                    );
         part.statements.add(statement);
         this.queue.push({ root: statement, file: statement.getSourceFile() });
     }

@@ -381,18 +381,9 @@ export function statementDeclaredNames(
     statement: ts.Statement,
 ): ts.Identifier[] {
     const names: ts.Identifier[] = [];
-    const bind = (name: ts.BindingName): void => {
-        if (ts.isIdentifier(name)) {
-            names.push(name);
-            return;
-        }
-        for (const element of name.elements) {
-            if (ts.isBindingElement(element)) bind(element.name);
-        }
-    };
     if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
-            bind(declaration.name);
+            names.push(...bindingNameIdentifiers(declaration.name));
         }
     } else if (
         (ts.isFunctionDeclaration(statement) ||
@@ -403,6 +394,16 @@ export function statementDeclaredNames(
         names.push(statement.name);
     }
     return names;
+}
+
+/** The identifiers a binding name binds, through object and array patterns. */
+export function bindingNameIdentifiers(name: ts.BindingName): ts.Identifier[] {
+    if (ts.isIdentifier(name)) return [name];
+    return name.elements.flatMap((element) =>
+        ts.isBindingElement(element)
+            ? bindingNameIdentifiers(element.name)
+            : [],
+    );
 }
 
 /** Whether a node is written inside another. */

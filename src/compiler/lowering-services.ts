@@ -158,6 +158,9 @@ export interface LoweringServices {
     constArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
+    executedModuleConstantElements(
+        expression: ts.Expression,
+    ): readonly Value[] | undefined;
     compileBrowserGeneratedString(call: ts.CallExpression): Value | undefined;
     compileRegisteredConstant(importedName: string): Value | undefined;
     compileStaticFetch(
