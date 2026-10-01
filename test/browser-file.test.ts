@@ -165,7 +165,7 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
 
     assert.match(result.cpp, /bbl::ui_set_file_input/);
     assert.match(result.cpp, /bbl::ui_set_file_accept/);
-    assert.match(result.cpp, /bbl::ui_on_file_change/);
+    assert.match(result.cpp, /bbl::ui_on_event\([^;]+"change"/);
     assert.match(result.cpp, /bbl::js::input_files/);
     assert.match(result.cpp, /bbl::js::file_at/);
     assert.match(result.cpp, /static_cast<bool>\(v_[^)]+file[^)]*\)/);
@@ -209,7 +209,10 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
         input.click();
         engine.canvas.width = loaded;
     `);
-    assert.match(result.cpp, /bbl::ui_on_file_change\(v_engine, v_input,/);
+    assert.match(
+        result.cpp,
+        /bbl::ui_set_event_handler\(v_engine, v_input, "change",/,
+    );
     assert.match(result.cpp, /bbl::js::FileReader\{\}/);
     assert.match(result.cpp, /\.set_onload\(/);
     assert.match(result.cpp, /\.set_onerror\(/);
@@ -227,16 +230,10 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
                 error instanceof CompileError && pattern.test(error.message),
         );
     refusal(
-        `const button = document.createElement("button");
-         button.onclick = () => {};`,
-        /event handler property 'onclick' is not lowered/,
-    );
-    refusal(
         `const input = document.createElement("input");
          input.type = "file";
-         input.onchange = () => {};
-         input.onchange = () => {};`,
-        /onchange handler is assigned once/,
+         input.oninput = () => {};`,
+        /file input dispatches only change/,
     );
     refusal(
         `const reader = new FileReader();
@@ -404,7 +401,7 @@ test("lowers the complete map export/import browser source shape", () => {
         "json_stringify",
         "create_object_url",
         "ui_set_download_url",
-        "ui_on_file_change",
+        "ui_on_event",
         "input_files",
         "file_text",
         "json_parse",

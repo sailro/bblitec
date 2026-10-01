@@ -603,19 +603,20 @@ export class PlatformCalls {
             const event = this.context.compileStringLiteral(
                 argumentAt(call, 0),
             );
-            const fileChange = event === "change" && uiElement.uiFileInput;
+            if (uiElement.uiFileInput && event === "input")
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "A native file input dispatches only change.",
+                );
             if (event === "change") {
-                if (
-                    !["input", "textarea", "select"].includes(
-                        uiElement.uiTag ?? "",
-                    )
-                ) {
+                if (!this.ui.isUiFormControl(uiElement, callee.expression)) {
                     this.context.fail(
                         argumentAt(call, 0),
                         "The native 'change' event requires a retained form control.",
                     );
                 }
-                if (fileChange) this.context.reachFeature("browser:file", call);
+                if (uiElement.uiFileInput)
+                    this.context.reachFeature("browser:file", call);
             }
             const mappedEvent =
                 event === "pointerdown"
@@ -656,43 +657,21 @@ export class PlatformCalls {
                 // Native has no browser context menu to suppress.
                 return true;
             }
-            const parameter =
-                this.context.allocateTemporaryCppName("ui_pointer_event");
-            const pointerValue: Value = {
-                kind: "platform-mouse-event",
-                cpp: parameter,
-                readOnly: true,
-            };
-            const lambda = this.context.callbacks.compilePlatformCallback(
-                callback,
-                event === "click" || fileChange
-                    ? undefined
-                    : {
-                          cppType: "const bbl::PlatformMouseEvent&",
-                          name: parameter,
-                      },
-                event === "click" || fileChange ? [] : [pointerValue],
-                undefined,
-                true,
-                false,
-            );
-            const registration =
-                event === "click"
-                    ? "ui_on_click"
-                    : fileChange
-                      ? "ui_on_file_change"
-                      : "ui_on_event";
             this.context.emit({
                 kind: "expression",
                 code:
-                    `bbl::${registration}(` +
-                    `${engine}, ${uiElement.cpp}, ` +
-                    `${
-                        event === "click" || fileChange
-                            ? ""
-                            : `${this.context.cppString(mappedEvent)}, `
-                    }` +
-                    `${lambda.cpp});`,
+                    event === "click"
+                        ? `bbl::ui_on_click(${engine}, ${uiElement.cpp}, ${
+                              this.context.callbacks.compilePlatformCallback(
+                                  callback,
+                                  undefined,
+                                  [],
+                                  undefined,
+                                  true,
+                                  false,
+                              ).cpp
+                          });`
+                        : `bbl::ui_on_event(${engine}, ${uiElement.cpp}, ${this.context.cppString(mappedEvent)}, ${this.ui.compileUiElementCallback(callback)});`,
             });
             return true;
         }
@@ -1063,7 +1042,8 @@ export class PlatformCalls {
             callee.expression.name.text === "classList" &&
             (callee.name.text === "add" ||
                 callee.name.text === "remove" ||
-                callee.name.text === "toggle");
+                callee.name.text === "toggle" ||
+                callee.name.text === "contains");
         const rootAppend =
             (callee.name.text === "append" ||
                 callee.name.text === "appendChild") &&
@@ -1364,6 +1344,48 @@ export class PlatformCalls {
                 kind: "void",
                 cpp: whenPresent(element, focus),
             };
+        }
+        if (element && callee.name.text === "blur") {
+            this.context.expectArgumentCount(call, 0, 0);
+            const engine = this.context.requireEngine(element, call);
+            return {
+                kind: "void",
+                cpp: whenPresent(
+                    element,
+                    `bbl::ui_blur(${engine}, ${element.cpp})`,
+                ),
+            };
+        }
+        if (
+            element &&
+            (callee.name.text === "contains" ||
+                callee.name.text === "hasAttribute" ||
+                callee.name.text === "getAttribute")
+        ) {
+            this.context.expectArgumentCount(call, 1, 1);
+            const engine = this.context.requireEngine(element, call);
+            const method = callee.name.text;
+            const result =
+                method === "contains"
+                    ? this.uiContainsCpp(element, engine, argumentAt(call, 0))
+                    : method === "hasAttribute"
+                      ? `bbl::ui_has_attribute(${engine}, ${element.cpp}, ${this.context.cppString(this.ui.uiAttributeName(argumentAt(call, 0)))})`
+                      : `bbl::ui_dataset_value(${engine}, ${element.cpp}, ${this.context.cppString(this.ui.uiAttributeName(argumentAt(call, 0)))})`;
+            if (method === "getAttribute") {
+                if (ts.isOptionalChain(call))
+                    this.context.fail(
+                        call,
+                        "An optional getAttribute call would mix an absent receiver's undefined with a missing attribute's null.",
+                    );
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: result,
+                    dataType: { kind: "optional", inner: { kind: "string" } },
+                    freshData: true,
+                };
+            }
+            return this.elementBoolean(presenceFlagCpp(element), call, result);
         }
         if (element && callee.name.text === "click") {
             this.context.expectArgumentCount(call, 0, 0);
@@ -1767,11 +1789,12 @@ export class PlatformCalls {
             return {
                 kind: "record",
                 cpp: "",
+                // DOMRect sizes are the border box, as offsetWidth/Height are.
                 recordProperties: {
                     left: component("left"),
                     top: component("top"),
-                    width: component("width"),
-                    height: component("height"),
+                    width: component("offset_width"),
+                    height: component("offset_height"),
                 },
             };
         }
@@ -1820,7 +1843,7 @@ export class PlatformCalls {
                 const method = callee.name.text;
                 this.context.expectArgumentCount(
                     call,
-                    method === "toggle" ? 2 : 1,
+                    1,
                     method === "toggle" ? 2 : 1,
                 );
                 const name = this.context.compileStringLiteral(
@@ -1832,12 +1855,28 @@ export class PlatformCalls {
                         `Native UI class name '${name}' is not valid.`,
                     );
                 }
+                if (method === "contains") {
+                    const engine = this.context.requireEngine(
+                        classElement,
+                        call,
+                    );
+                    return this.elementBoolean(
+                        presenceFlagCpp(classElement),
+                        call,
+                        `bbl::ui_has_class(${engine}, ${classElement.cpp}, ${this.context.cppString(name)})`,
+                    );
+                }
+                // An unforced toggle flips the class and returns its presence.
+                const forced =
+                    method !== "toggle" || call.arguments.length === 2;
                 const enabled =
                     method === "toggle"
-                        ? this.ui.uiBooleanCpp(
-                              argumentAt(call, 1),
-                              "UI classList.toggle",
-                          )
+                        ? forced
+                            ? this.ui.uiBooleanCpp(
+                                  argumentAt(call, 1),
+                                  "UI classList.toggle",
+                              )
+                            : ""
                         : method === "add"
                           ? "true"
                           : "false";
@@ -1854,16 +1893,84 @@ export class PlatformCalls {
                     });
                 }
                 const engine = this.context.requireEngine(classElement, call);
-                const mutation =
+                const toggle =
                     `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
-                    `${this.context.cppString(name)}, ${enabled})`;
-                return {
-                    kind: "void",
-                    cpp: whenPresent(classElement, mutation),
-                };
+                    `${this.context.cppString(name)}`;
+                return forced
+                    ? {
+                          kind: "void",
+                          cpp: whenPresent(
+                              classElement,
+                              `${toggle}, ${enabled})`,
+                          ),
+                      }
+                    : this.elementBoolean(
+                          presenceFlagCpp(classElement),
+                          call,
+                          `${toggle})`,
+                      );
             }
         }
         return undefined;
+    }
+
+    /** A boolean element result; through `?.`, an absent element yields undefined. */
+    private elementBoolean(
+        found: string | undefined,
+        call: ts.CallExpression,
+        cpp: string,
+    ): Value {
+        if (!found || !ts.isOptionalChain(call))
+            return { kind: "boolean", cpp, impure: true };
+        const dataType = {
+            kind: "optional",
+            inner: { kind: "boolean" },
+        } as const;
+        const cppType = this.context.dataTypes.cppType(dataType);
+        return {
+            kind: "data",
+            cpp: `(${found} ? ${cppType}{${cpp}} : ${cppType}{})`,
+            dataType,
+        };
+    }
+
+    /** `element.contains(node)` for a retained element, an event target or null. */
+    private uiContainsCpp(
+        element: Value,
+        engine: string,
+        argument: ts.Expression,
+    ): string {
+        const other = this.context.compileValue(argument);
+        if (other.kind === "json-null") {
+            this.context.emitDiscardedValue(other);
+            return "false";
+        }
+        if (other.kind === "ui-element") {
+            this.context.expectSameEngine(element, other, argument);
+            const contained = `bbl::ui_contains(${engine}, ${element.cpp}, ${other.cpp})`;
+            const found = presenceFlagCpp(other);
+            return found ? `(${found} && ${contained})` : contained;
+        }
+        const type = other.kind === "data" ? other.dataType : undefined;
+        const inner = type?.kind === "optional" ? type.inner : type;
+        if (inner?.kind === "event-target") {
+            this.context.reachFeature("input:dom", argument);
+            return `bbl::dom_target_within(${engine}, ${element.cpp}, ${other.cpp})`;
+        }
+        if (inner?.kind === "handle" && inner.handle === "ui-element") {
+            const node = this.context.bindings.pinValueToTemporary(
+                other,
+                "contained_node",
+                argument,
+            );
+            return type?.kind === "optional"
+                ? `(${node.cpp}.has_value() && bbl::ui_contains(${engine}, ${element.cpp}, *${node.cpp}))`
+                : `bbl::ui_contains(${engine}, ${element.cpp}, ${node.cpp})`;
+        }
+        return this.context.fail(
+            argument,
+            "Node.contains requires a retained element, an event target or null.",
+        );
     }
 
     private compileUiQuery(
@@ -1898,19 +2005,12 @@ export class PlatformCalls {
         this.context.reachFeature("ui:rml", call);
         this.context.reachJsData();
         const terms = `{${selectors.join(", ")}}`;
-        if (method === "matches") {
-            const query = `bbl::ui_matches_element(${engine}, ${root}, ${terms})`;
-            return found
-                ? {
-                      kind: "data",
-                      cpp: `(${found} ? std::optional<bool>{${query}} : std::nullopt)`,
-                      dataType: {
-                          kind: "optional",
-                          inner: { kind: "boolean" },
-                      },
-                  }
-                : { kind: "boolean", cpp: query };
-        }
+        if (method === "matches")
+            return this.elementBoolean(
+                found,
+                call,
+                `bbl::ui_matches_element(${engine}, ${root}, ${terms})`,
+            );
         if (method === "querySelectorAll") {
             const query = `bbl::ui_query_elements(${engine}, ${root}, ${terms})`;
             const array = {

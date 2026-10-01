@@ -393,12 +393,18 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
-/** Last computed retained-layout box exposed as DOMRect's reached surface. */
+/**
+ * Last computed retained-layout box: border-box position and client (padding minus scrollbar)
+ * size as DOMRect's reached surface, and the border-box (offset) size.
+ */
 struct UiClientRect {
     double left = 0.0;
     double top = 0.0;
     double width = 0.0;
     double height = 0.0;
+    double offset_width = 0.0;
+    double offset_height = 0.0;
+    [[nodiscard]] bool operator==(const UiClientRect&) const = default;
 };
 
 struct MeshHandle {
@@ -3559,6 +3565,9 @@ struct UiStyleRule {
     UiOrientation orientation = UiOrientation::Any;
 };
 
+/** One event's listeners on a retained element, shared so a dispatch outlives storage growth. */
+using UiEventListeners = PlatformEventListeners<void(const PlatformMouseEvent&)>;
+
 /**
  * The retained UI representation produced by DOM lowering.
  *
@@ -3647,14 +3656,15 @@ struct UiElementRecord {
     /** Materialized static-markup nodes owned by this element. */
     std::vector<UiElementHandle> markup_children;
     std::vector<std::function<void()>> click_callbacks;
-    std::unordered_map<std::string, std::vector<std::function<void(const PlatformMouseEvent&)>>>
-        event_callbacks;
+    /** Form-control and toggle listeners by event; a list exists only while it listens. */
+    std::unordered_map<std::string, std::shared_ptr<UiEventListeners>> event_callbacks;
     /** Browser-file state exists only for retained <a>/<input> elements. */
     ObjectUrlHandle download_url{};
     BrowserFileHandle selected_file{};
     std::string download_name;
     std::string file_accept;
-    std::vector<std::function<void()>> file_change_callbacks;
+    /** A file input's change listeners; the native picker dispatches no other event. */
+    std::shared_ptr<UiEventListeners> file_change_callbacks;
     bool file_input = false;
     UiClientRect client_rect{};
     bool client_rect_requested = false;
@@ -3662,6 +3672,17 @@ struct UiElementRecord {
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
 };
+
+/** Dispatches to the element's `type` listeners; the list outlives a listener that grows the
+ * element arena or removes it. */
+inline void dispatch_ui_listeners(const UiElementRecord& record, const std::string& type,
+                                  const PlatformMouseEvent& event) {
+    const auto found = record.event_callbacks.find(type);
+    if (found == record.event_callbacks.end())
+        return;
+    const auto listeners = found->second;
+    listeners->dispatch(event);
+}
 
 /** One recyclable object-URL slot. Generation prevents stale-handle reuse. */
 struct ObjectUrlRecord {
@@ -4188,6 +4209,34 @@ struct Engine {
     std::vector<std::shared_ptr<pal::LoadedTexels>> unread_loaded_texels;
     std::vector<FileTexture> render_texture_facades;
 };
+
+/** The node a retained element ascends to: its parent, else a markup node's owner; none at a
+ * document root. */
+inline UiElementHandle ui_tree_parent(const UiElementRecord& record) {
+    if (record.attached_to_root)
+        return {};
+    return record.parent.value != invalid_handle ? record.parent : record.markup_owner;
+}
+
+/** Node.contains over retained parents and markup owners; an invalid node is not contained. */
+inline bool ui_contains(const Engine& engine, UiElementHandle ancestor, UiElementHandle node) {
+    static_cast<void>(handle_at(engine.ui_elements, ancestor));
+    for (; node.value != invalid_handle; node = ui_tree_parent(handle_at(engine.ui_elements, node)))
+        if (node == ancestor)
+            return true;
+    return false;
+}
+
+/** Node.isConnected: the element's tree reaches the document. */
+inline bool ui_is_connected(const Engine& engine, UiElementHandle element) {
+    while (element.value != invalid_handle) {
+        const auto& record = handle_at(engine.ui_elements, element);
+        if (record.attached_to_root)
+            return true;
+        element = ui_tree_parent(record);
+    }
+    return false;
+}
 
 inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target) {
     return {&engine, target, engine.lifetime.token()};

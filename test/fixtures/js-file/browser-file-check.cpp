@@ -162,7 +162,9 @@ int main(int argc, char** argv) {
     engine.ui_elements.push_back(std::move(input));
     int changes = 0;
     std::string selected_text;
-    engine.ui_elements[input_handle.value].file_change_callbacks.push_back([&]() {
+    auto& listeners = engine.ui_elements[input_handle.value].file_change_callbacks;
+    listeners = std::make_shared<bbl::UiEventListeners>();
+    listeners->add([&](const bbl::PlatformMouseEvent&) {
         ++changes;
         const bbl::js::FileList files = bbl::js::input_files(engine, input_handle);
         require(files.length() == 1u, "selected FileList length");
@@ -308,8 +310,10 @@ int main(int argc, char** argv) {
     capped_input.file_input = true;
     capped_engine.ui_elements.push_back(std::move(capped_input));
     int capped_changes = 0;
-    capped_engine.ui_elements[capped_input_handle.value].file_change_callbacks.push_back(
-        [&capped_changes]() { ++capped_changes; });
+    auto& capped_listeners =
+        capped_engine.ui_elements[capped_input_handle.value].file_change_callbacks;
+    capped_listeners = std::make_shared<bbl::UiEventListeners>();
+    capped_listeners->add([&capped_changes](const bbl::PlatformMouseEvent&) { ++capped_changes; });
     open_file = bbl::pal::SelectedFileSnapshot{
         .bytes = {'f', 'o', 'u', 'r'},
         .display_name = "four.txt",

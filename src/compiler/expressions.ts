@@ -610,7 +610,7 @@ export class ExpressionLowerer {
             // winning expression re-compiles with its precision kept.
             const folded = this.context.evaluator.tryResolveNullish(unwrapped);
             if (folded) {
-                return this.compileValue(folded);
+                return this.compileSelectedOperand(folded);
             }
             // The general operator over the data model: an optional
             // selects natively with the right side lazy, and a left the
@@ -4106,6 +4106,15 @@ export class ExpressionLowerer {
         return value;
     }
 
+    /**
+     * A folded conditional's or nullish's selected operand is the whole
+     * expression's value, so it takes the full value pipeline (platform and
+     * worker values included).
+     */
+    private compileSelectedOperand(expression: ts.Expression): Value {
+        return this.context.compileValue(expression);
+    }
+
     private compileConditionalValue(
         unwrapped: ts.ConditionalExpression,
     ): Value | undefined {
@@ -4144,7 +4153,7 @@ export class ExpressionLowerer {
                 foldedCondition === "true"
                     ? unwrapped.whenFalse
                     : unwrapped.whenTrue;
-            const selected = this.compileValue(taken);
+            const selected = this.compileSelectedOperand(taken);
             // When the arm generation just discarded was the NULL one,
             // the binding it feeds can no longer be absent -- and the
             // scene's own guard over it is therefore settled. Say so on
@@ -4225,7 +4234,7 @@ export class ExpressionLowerer {
                 // Keep the selected Value's generation-known metadata.
                 // A string-only sink would discard staticNumber, for
                 // example when the chosen number configures engine MSAA.
-                return this.compileValue(
+                return this.compileSelectedOperand(
                     condition === "true"
                         ? unwrapped.whenTrue
                         : unwrapped.whenFalse,
@@ -4282,7 +4291,7 @@ export class ExpressionLowerer {
             unwrapped.condition,
         );
         if (condition === "true" || condition === "false") {
-            return this.compileValue(
+            return this.compileSelectedOperand(
                 condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,
             );
         }

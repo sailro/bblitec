@@ -6,6 +6,7 @@ import { declaredInDefaultLibrary } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { requireWindowHost } from "./window-events.js";
+import { isWindowObserver, windowInterfaceTypeof } from "./dom-targets.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 export interface CanvasContext
@@ -68,10 +69,8 @@ export function compileCanvasValue(
     const node = context.unwrap(expression);
     if (!context.options.workers) {
         if (
-            (ts.isNewExpression(node) &&
-                ["MutationObserver", "ResizeObserver"].includes(
-                    context.libraryGlobal(node.expression) ?? "",
-                )) ||
+            ((ts.isNewExpression(node) || ts.isTypeOfExpression(node)) &&
+                isWindowObserver(context.libraryGlobal(node.expression))) ||
             (ts.isCallExpression(node) &&
                 context.libraryGlobal(node.expression) === "matchMedia")
         )
@@ -135,6 +134,18 @@ export function compileCanvasValue(
             };
         }
     }
+    const windowInterface = ts.isTypeOfExpression(node)
+        ? windowInterfaceTypeof(
+              context.libraryGlobal(node.expression),
+              context.options.workers,
+          )
+        : undefined;
+    if (windowInterface)
+        return {
+            kind: "string",
+            cpp: `std::string(${JSON.stringify(windowInterface)})`,
+            staticString: windowInterface,
+        };
     if (
         ts.isTypeOfExpression(node) &&
         context.libraryGlobal(node.expression) === "Worker"

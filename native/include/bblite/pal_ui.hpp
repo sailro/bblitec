@@ -74,6 +74,9 @@ std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::
 std::string ui_remove_style_property(Engine& engine, UiElementHandle element,
                                      std::string_view name);
 void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, bool enabled);
+/** classList.toggle(name): flips the class and returns whether it is now present. */
+bool ui_toggle_class(Engine& engine, UiElementHandle element, std::string name);
+bool ui_has_class(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string class_name,
                         std::string style);
 void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet);
@@ -104,6 +107,8 @@ void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> 
 /** Programmatic HTMLElement.click(), including reached default actions. */
 void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
+/** HTMLElement.blur(): unfocuses the element only while it is the focused element. */
+void ui_blur(Engine& engine, UiElementHandle element);
 /** Records focus without focus or blur events: native focus a Window display resolved. */
 void ui_record_focus(Engine& engine, UiElementHandle element, bool visible);
 bool ui_clear_focus(Engine& engine, UiElementHandle next = {});
@@ -113,10 +118,13 @@ void ui_set_download_url(Engine& engine, UiElementHandle element, ObjectUrlHandl
 void ui_set_download_name(Engine& engine, UiElementHandle element, std::string name);
 void ui_set_file_input(Engine& engine, UiElementHandle element);
 void ui_set_file_accept(Engine& engine, UiElementHandle element, std::string accept);
-void ui_on_file_change(Engine& engine, UiElementHandle element, std::function<void()> callback);
 #endif
-void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
-                 std::function<void(const PlatformMouseEvent&)> callback);
+/** A form-control listener; a file input's change listeners are its picker's. */
+void ui_on_event(Engine& engine, UiElementHandle element, const std::string& event,
+                 UiEventListeners::Callback callback);
+/** A form control's `on<event>` handler; an empty callback removes it. */
+void ui_set_event_handler(Engine& engine, UiElementHandle element, const std::string& event,
+                          UiEventListeners::Callback callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
 UiElementHandle ui_primary_canvas(Engine&, std::string_view id);

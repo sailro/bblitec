@@ -140,13 +140,7 @@ struct LayoutSnapshot {
     InputCapabilities input;
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
-               screen == other.screen && input == other.input &&
-               rectangles.size() == other.rectangles.size() &&
-               std::equal(rectangles.begin(), rectangles.end(), other.rectangles.begin(),
-                          [](const auto& left, const auto& right) {
-                              return left.left == right.left && left.top == right.top &&
-                                     left.width == right.width && left.height == right.height;
-                          });
+               screen == other.screen && input == other.input && rectangles == other.rectangles;
     }
 };
 
@@ -314,7 +308,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
         ListenerNames names;
         names.click = !native.click_callbacks.empty();
         for (const auto& [name, callbacks] : native.event_callbacks)
-            if (!callbacks.empty())
+            if (!callbacks->empty())
                 names.events.push_back(name);
         if (native.tag == "details" &&
             std::find(names.events.begin(), names.events.end(), "toggle") == names.events.end())
@@ -327,7 +321,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
         native.click_callbacks.clear();
         native.event_callbacks.clear();
 #if BBLITE_HAS_BROWSER_FILE
-        if (!native.file_change_callbacks.empty() || native.file_input ||
+        if (native.file_change_callbacks || native.file_input ||
             native.download_url.slot != invalid_handle) {
             throw std::runtime_error("Window realm file actions are not admitted.");
         }
@@ -400,8 +394,9 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                 post_input(std::move(event));
             });
         for (const auto& name : snapshot.listeners[index].events) {
-            target.event_callbacks[name].push_back([post_input, &engine, element,
-                                                    name](const PlatformMouseEvent& pointer) {
+            auto& listeners = target.event_callbacks[name];
+            listeners = std::make_shared<UiEventListeners>();
+            listeners->add([post_input, &engine, element, name](const PlatformMouseEvent& pointer) {
                 auto event = std::make_unique<WindowEvent>();
                 event->element = element;
                 event->type = name;
@@ -719,6 +714,8 @@ UiClientRect window_element_size(UiElementHandle element) {
     box.top /= layout->pixel_ratio;
     box.width /= layout->pixel_ratio;
     box.height /= layout->pixel_ratio;
+    box.offset_width /= layout->pixel_ratio;
+    box.offset_height /= layout->pixel_ratio;
     return box;
 }
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {
@@ -965,10 +962,13 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                 EventLoop::current().dispatch_callback(callback);
                         } else if (const auto found = record.event_callbacks.find(event->type);
                                    found != record.event_callbacks.end()) {
-                            const auto callbacks = found->second;
-                            for (const auto& callback : callbacks)
-                                EventLoop::current().dispatch_callback(
-                                    [&] { callback(event->mouse); });
+                            const auto listeners = found->second;
+                            listeners->dispatch_with(
+                                [](auto& callback, const PlatformMouseEvent& pointer) {
+                                    EventLoop::current().dispatch_callback(
+                                        [&] { callback(pointer); });
+                                },
+                                event->mouse);
                         }
                     });
                     loop.run(

@@ -487,18 +487,18 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
     // Cancel changes neither the previous FileList nor its event sequence.
     if (!selected)
         return;
-    std::vector<std::function<void()>> callbacks;
+    std::shared_ptr<UiEventListeners> listeners;
     {
         const UiElementRecord& element = browser_file_ui_element(engine, handle);
         if (element.tag != "input" || !element.file_input) {
             throw std::runtime_error("Native file input changed type while its dialog was open.");
         }
-        callbacks = element.file_change_callbacks;
+        listeners = element.file_change_callbacks;
     }
     replace_browser_file(engine, browser_file_ui_element(engine, handle).selected_file,
                          std::move(*selected));
-    for (const auto& callback : callbacks)
-        callback();
+    if (listeners)
+        listeners->dispatch(PlatformMouseEvent{});
 }
 #endif
 

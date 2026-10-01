@@ -33,8 +33,9 @@ int main() {
         auto& engine = pal::window_document_engine();
         engine.ui_measure_element = [](Engine& owner, UiElementHandle element) {
             ++pal::measured_rectangles;
-            return UiClientRect{
-                0, 0, ui_get_attribute(owner, element, "data-mode") == "a,b" ? 90.0 : 120.0, 40};
+            const double width =
+                ui_get_attribute(owner, element, "data-mode") == "a,b" ? 90.0 : 120.0;
+            return UiClientRect{0, 0, width, 40, width, 40};
         };
         assert(generated_main() == 0);
         assert(pal::measured_rectangles == 2);

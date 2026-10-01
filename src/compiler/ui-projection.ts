@@ -70,6 +70,12 @@ import {
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
+import {
+    elementDomHandlerFamily,
+    emitDomEventHandler,
+    eventHandlerResult,
+} from "./dom-listeners.js";
+import { elementInterfaceTag } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
 import { engineCanvasIds, primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -169,6 +175,7 @@ interface UiProjectionContext extends Pick<
     | "dataLowerer"
     | "defaultEngine"
     | "emit"
+    | "emitDiscardedValue"
     | "evaluator"
     | "expectKind"
     | "expectSameEngine"
@@ -194,6 +201,26 @@ interface UiProjectionContext extends Pick<
     | "symbols"
     | "unwrap"
 > {}
+
+/** String IDL attributes reflecting one content attribute. */
+interface UiReflectedAttribute {
+    attribute: string;
+    readable: boolean;
+    tag?: string;
+}
+const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
+    new Map<string, UiReflectedAttribute>([
+        ["id", { attribute: "id", readable: true }],
+        ["className", { attribute: "class", readable: true }],
+        ["lang", { attribute: "lang", readable: true }],
+        ["type", { attribute: "type", readable: false }],
+        ...["min", "max", "step"].map(
+            (name): [string, UiReflectedAttribute] => [
+                name,
+                { attribute: name, readable: true, tag: "input" },
+            ],
+        ),
+    ]);
 
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
@@ -485,6 +512,24 @@ export class UiProjection {
             }
         }
         return undefined;
+    }
+
+    /**
+     * The element's tag, or the one its declared HTML interface names when
+     * storage (a record field, a container) did not carry the tag.
+     */
+    public declaredUiTag(
+        element: Value,
+        expression: ts.Expression,
+    ): string | undefined {
+        if (element.uiTag !== undefined) return element.uiTag;
+        return elementInterfaceTag(
+            this.context.checker
+                .getNonNullableType(
+                    this.context.checker.getTypeAtLocation(expression),
+                )
+                .getSymbol()?.name ?? "",
+        );
     }
 
     /** Evaluate helper receivers at admitted operations, not during erasure probes. */
@@ -1363,8 +1408,34 @@ export class UiProjection {
         new EmissionSet<string>([
             "-webkit-backdrop-filter",
             "backdrop-filter",
+            "font-feature-settings",
             "font-variant-numeric",
         ]);
+
+    /**
+     * CSS admits two transform-origin keywords in either order; RmlUi's
+     * shorthand reads the horizontal one first.
+     */
+    private static readonly UI_TRANSFORM_ORIGIN_KEYWORDS =
+        /^\s*(left|center|right|top|bottom)\s+(left|center|right|top|bottom)(\s+[^\s]+)?\s*$/i;
+
+    private static canonicalUiTransformOrigin(value: string): string {
+        const keywords = UiProjection.UI_TRANSFORM_ORIGIN_KEYWORDS.exec(value);
+        if (!keywords) return value;
+        const [, first, second, depth] = keywords;
+        return /^(?:top|bottom)$/i.test(first!) ||
+            /^(?:left|right)$/i.test(second!)
+            ? `${second!} ${first!}${depth ?? ""}`
+            : value;
+    }
+
+    /** font-feature-settings naming only the numeral variants font-variant-numeric covers. */
+    private static readonly UI_NUMERAL_FEATURES = (() => {
+        const feature = String.raw`["'](?:tnum|lnum|pnum|onum)["'](?:\s+(?:on|off|0|1))?`;
+        return new RegExp(
+            String.raw`^(?:normal|${feature}(?:\s*,\s*${feature})*)$`,
+        );
+    })();
 
     private static supportedBackdropFilter(value: string): boolean {
         return /^(?:none|blur\(\s*(?:\d+(?:\.\d+)?|\.\d+)px\s*\))$/i.test(
@@ -1669,7 +1740,7 @@ export class UiProjection {
             if (
                 property === "transform-origin" &&
                 !/^(?:(?:left|center|right|top|bottom)|(?:0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))|(?:left|center|right|0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))\s+(?:top|center|bottom|0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))(?:\s+(?:0|[+-]?\d+(?:\.\d+)?(?:px|em|rem)))?)$/.test(
-                    literalValue,
+                    UiProjection.canonicalUiTransformOrigin(literalValue),
                 )
             ) {
                 this.uiStyleRefusal(
@@ -1815,6 +1886,15 @@ export class UiProjection {
             ) {
                 return;
             }
+            if (
+                property === "font-feature-settings" &&
+                !UiProjection.UI_NUMERAL_FEATURES.test(literalValue)
+            )
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only normal and the numeral variant features tnum, lnum, pnum and onum are accepted, with a recorded degradation",
+                );
             if (UiProjection.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
                 this.uiDegradedStyleProperties.add(property);
                 return;
@@ -2187,6 +2267,23 @@ export class UiProjection {
         return effects.length > 0 ? effects.join(",") : undefined;
     }
 
+    /** Properties whose values RmlUi reads in its own grammar. */
+    private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
+        "border-image",
+        "transform-origin",
+    ]);
+
+    /** One property value in RmlUi's grammar, for declaration lists and style writes. */
+    private lowerUiStyleValue(
+        property: string,
+        value: string,
+        site?: ts.Node,
+    ): string {
+        return property === "border-image"
+            ? this.lowerUiBorderImage(value, site)
+            : UiProjection.canonicalUiTransformOrigin(value);
+    }
+
     private lowerUiBorderImage(value: string, site?: ts.Node): string {
         const image = /__BBLITE_UI_STYLE_\d+__/.test(value)
             ? undefined
@@ -2250,8 +2347,11 @@ export class UiProjection {
                 let lowered = declaration;
                 if (colon >= 0 && property === "-webkit-appearance") {
                     lowered = `appearance:${declaration.slice(colon + 1)}`;
-                } else if (colon >= 0 && property === "border-image") {
-                    lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
+                } else if (
+                    colon >= 0 &&
+                    UiProjection.UI_LOWERED_STYLE_VALUES.has(property)
+                ) {
+                    lowered = `${property}:${this.lowerUiStyleValue(property, declaration.slice(colon + 1), site)}`;
                 } else if (colon >= 0 && isUiLayoutProperty(property)) {
                     lowered = `${property}:${declaration
                         .slice(colon + 1)
@@ -3774,45 +3874,123 @@ export class UiProjection {
     }
 
     /**
-     * `input.onchange = handler` on a retained file input: the handler the
-     * change after a selection dispatches, as `addEventListener("change")`
-     * registers it. The attribute is one slot, so it is assigned once.
-     * Every other event-handler property refuses by name.
+     * `element.on<type> = handler`: the HTML event handler of an event the
+     * element's listeners represent. The first handler joins the listeners in
+     * registration order, a later one replaces it in place and `null` removes
+     * it. A handler that can return `false` (which cancels the event) and
+     * events without a native listener family refuse.
      */
     private emitUiEventHandlerProperty(
         element: Value,
         engine: string,
         property: string,
+        receiver: ts.Expression,
         assignment: ts.BinaryExpression,
     ): void {
-        if (property !== "onchange" || !element.uiFileInput)
+        const type = property.slice(2);
+        const handlerType = this.context.checker.getTypeAtLocation(
+            assignment.right,
+        );
+        const nullish =
+            (handlerType.flags &
+                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+            0;
+        if (!nullish && handlerType.getCallSignatures().length === 0)
+            this.context.fail(
+                assignment.right,
+                `Native UI event handler property '${property}' requires a function or null.`,
+            );
+        const handler = nullish ? undefined : assignment.right;
+        if (handler)
+            this.context.callbacks.hoistForwardCallbackBindings(
+                handler,
+                assignment.pos,
+            );
+        if (
+            (type === "change" || type === "input") &&
+            this.isUiFormControl(element, receiver)
+        ) {
+            if (element.uiFileInput && type !== "change")
+                this.context.fail(
+                    assignment.left,
+                    "A native file input dispatches only change.",
+                );
+            if (element.uiFileInput)
+                this.context.reachFeature("browser:file", assignment);
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_event_handler(${engine}, ${element.cpp}, ${this.context.cppString(type)}, ${handler ? this.compileUiElementCallback(handler, true) : "{}"});`,
+            });
+            return;
+        }
+        const family = elementDomHandlerFamily(type);
+        if (!family)
             this.context.fail(
                 assignment.left,
-                `Native UI event handler property '${property}' is not lowered; register the handler with addEventListener.`,
+                `Native UI event handler property '${property}' is not lowered: '${type}' has no native element listener.`,
             );
-        if (element.uiFileChangeHandler)
-            this.context.fail(
-                assignment,
-                "A file input's onchange handler is assigned once; replacing it is not lowered.",
-            );
-        writable(element).uiFileChangeHandler = true;
-        this.context.callbacks.hoistForwardCallbackBindings(
-            assignment.right,
-            assignment.pos,
+        emitDomEventHandler(
+            this.context,
+            element,
+            family,
+            type,
+            handler,
+            receiver,
         );
-        const handler = this.context.callbacks.compilePlatformCallback(
-            assignment.right,
-            undefined,
-            [],
+    }
+
+    /**
+     * The content attribute a string IDL attribute reflects. `type` is an
+     * enumerated attribute whose missing value is not empty, so only its
+     * writes reflect; min/max/step belong to inputs.
+     */
+    public reflectedUiAttribute(
+        element: Value,
+        property: string,
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): UiReflectedAttribute | undefined {
+        const reflected = UI_REFLECTED_ATTRIBUTES.get(property);
+        if (
+            reflected?.tag !== undefined &&
+            this.declaredUiTag(element, receiver) !== reflected.tag
+        )
+            this.context.fail(
+                site,
+                `UI ${property} requires an ${reflected.tag} element.`,
+            );
+        return reflected;
+    }
+
+    /** Retained controls dispatching input and change from their own state. */
+    public isUiFormControl(element: Value, expression: ts.Expression): boolean {
+        return ["input", "textarea", "select"].includes(
+            this.declaredUiTag(element, expression) ?? "",
+        );
+    }
+
+    /**
+     * A per-element listener or handler outside shared DOM dispatch (form
+     * input/change, a file input's change): it receives a borrowed mouse
+     * event view. A handler's false result cancels its event.
+     */
+    public compileUiElementCallback(
+        callback: ts.Expression,
+        handler = false,
+    ): string {
+        const parameter =
+            this.context.allocateTemporaryCppName("ui_pointer_event");
+        return this.context.callbacks.compilePlatformCallback(
+            callback,
+            { cppType: "const bbl::PlatformMouseEvent&", name: parameter },
+            [{ kind: "platform-mouse-event", cpp: parameter, readOnly: true }],
             undefined,
             true,
             false,
-        );
-        this.context.reachFeature("browser:file", assignment);
-        this.context.emit({
-            kind: "expression",
-            code: `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
-        });
+            handler
+                ? eventHandlerResult(this.context, parameter, callback)
+                : undefined,
+        ).cpp;
     }
 
     public compileUiBrowserFileAttribute(
@@ -3974,18 +4152,6 @@ export class UiProjection {
                 directElement,
                 expression.left,
             );
-            if (["min", "max", "step"].includes(property)) {
-                if (directElement.uiTag !== "input")
-                    this.context.fail(
-                        expression.left,
-                        `UI ${property} requires an input element.`,
-                    );
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(property)}, ${this.uiStringCpp(expression.right, `Input ${property}`)});`,
-                });
-                return true;
-            }
             if (property === "checked") {
                 if (directElement.uiTag && directElement.uiTag !== "input")
                     this.context.fail(
@@ -4025,7 +4191,10 @@ export class UiProjection {
             if (
                 property === "value" &&
                 ["textarea", "input", "select", "option", "output"].includes(
-                    directElement.uiTag ?? "",
+                    this.declaredUiTag(
+                        directElement,
+                        expression.left.expression,
+                    ) ?? "",
                 ) &&
                 !directElement.uiFileInput
             ) {
@@ -4055,6 +4224,7 @@ export class UiProjection {
                     directElement,
                     engine,
                     property,
+                    expression.left.expression,
                     expression,
                 );
                 return true;
@@ -4251,14 +4421,12 @@ export class UiProjection {
                 });
                 return true;
             }
-            const attribute =
-                property === "className"
-                    ? "class"
-                    : property === "id" ||
-                        property === "type" ||
-                        property === "lang"
-                      ? property
-                      : undefined;
+            const attribute = this.reflectedUiAttribute(
+                directElement,
+                property,
+                expression.left.expression,
+                expression.left,
+            )?.attribute;
             if (attribute) {
                 if (attribute === "class" || attribute === "id") {
                     this.recordUiStaticAttribute(
@@ -4338,9 +4506,12 @@ export class UiProjection {
         );
         const engine = this.context.requireEngine(styleElement, site);
         if (
-            ["filter", "overflow-wrap", "word-break"].includes(
-                nativeProperty,
-            ) ||
+            [
+                "filter",
+                "overflow-wrap",
+                "word-break",
+                "transform-origin",
+            ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {
             const value = this.tryUiStaticString(valueExpression);
@@ -4355,11 +4526,20 @@ export class UiProjection {
             nativeProperty,
             valueExpression,
         );
-        const styleValue =
+        // Border images lower only from static text; other lowered values
+        // pass a runtime string through as written.
+        const staticValue =
             nativeProperty === "border-image"
+                ? this.context.compileStringLiteral(valueExpression)
+                : UiProjection.UI_LOWERED_STYLE_VALUES.has(nativeProperty)
+                  ? this.tryUiStaticString(valueExpression)
+                  : undefined;
+        const styleValue =
+            staticValue !== undefined
                 ? this.context.cppString(
-                      this.lowerUiBorderImage(
-                          this.context.compileStringLiteral(valueExpression),
+                      this.lowerUiStyleValue(
+                          nativeProperty,
+                          staticValue,
                           valueExpression,
                       ),
                   )

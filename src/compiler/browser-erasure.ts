@@ -21,6 +21,7 @@ import {
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
+import { windowInterfaceTypeof } from "./dom-targets.js";
 import { writesUnobservedCanvasMetadata } from "./canvas-instrumentation.js";
 import { staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
@@ -1570,6 +1571,12 @@ export class BrowserErasure {
             // guards can select their own unavailable-recording path.
             if (global === "MediaRecorder")
                 return { kind: "string", value: "undefined" };
+            const windowInterface = windowInterfaceTypeof(
+                global,
+                this.context.options.workers,
+            );
+            if (windowInterface)
+                return { kind: "string", value: windowInterface };
             if (
                 global &&
                 [
