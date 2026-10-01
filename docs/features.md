@@ -298,7 +298,7 @@ distribution are not implemented; Simulator captures do not qualify device behav
 
 | Format | Supported | Limits |
 | --- | --- | --- |
-| glTF | Meshes/materials, lights, perspective cameras, skins/morphs, animation, reached extensions, compressed/external assets | Contiguous FLOAT MAT4 inverse binds; complete contiguous animation accessors; fixed light capacity |
+| glTF | Meshes/materials, lights, perspective cameras, skins/morphs, animation, reached extensions, compressed/external assets; raw bytes read from a packaged fetch response | Contiguous FLOAT MAT4 inverse binds; complete contiguous animation accessors; fixed light capacity; raw bytes must be self-contained (GLB or `data:` URIs) |
 | glTF ORM composition | Source-selected occlusion/metallic-roughness merge | Equally sized opaque images; no scaled/alpha/compressed bitmap composition |
 | `.babylon` | Parented meshes/nodes, Standard materials, point lights, cameras, loadCamera/loadTextures | maxMeshes unsupported |
 | Closed collectors | Source traversal/order and per-asset metadata | Rest/default/optional parameters, partial/repeated hierarchies, early break, instanced/splat producers |
