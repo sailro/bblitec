@@ -12,7 +12,7 @@ import {
 } from "../src/host-page.js";
 import type { HostPageElement, HostPageNode } from "../src/host-page-parser.js";
 
-const fixture = "test/fixtures/host-page/page.html";
+const fixture = "examples/regression-host-page/page.html";
 const xhtml = "http://www.w3.org/1999/xhtml";
 // Chromium parses the fixture once for every test.
 const host = readHostPage({ path: fixture });
@@ -53,8 +53,11 @@ function page(
 const entryScript = element("script", { type: "module", src: "/src/main.ts" });
 
 test("an HTML page names its entry and its markup is the host model", () => {
-    assert.equal(host.entry, resolve("test/fixtures/host-page/src/main.ts"));
-    assert.equal(host.title, "Host page fixture");
+    assert.equal(
+        host.entry,
+        resolve("examples/regression-host-page/src/main.ts"),
+    );
+    assert.equal(host.title, "Host page");
     assert.deepEqual(host.hostUi?.htmlAttributes, { lang: "en" });
     const [sheet, ...otherSheets] = host.hostUi?.styleSheets ?? [];
     assert.deepEqual(otherSheets, []);
@@ -205,7 +208,10 @@ test("markup the host model cannot represent refuses, naming the page", () => {
     for (const [read, message] of refusals)
         assert.throws(read, (error: Error) => {
             assert.match(error.message, message);
-            assert.match(error.message, /^Host page 'test\/fixtures/);
+            assert.match(
+                error.message,
+                /^Host page 'examples\/regression-host-page/,
+            );
             return true;
         });
     // A page with nothing but its language and entry has no host document.

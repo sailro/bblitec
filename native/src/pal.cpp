@@ -254,7 +254,7 @@ std::string environment_variable(const char* name);
 // executable reports which sources it was built from. bblitec sets
 // BBLITE_BUILD_STAMP_OUT before a measured run and refuses the result
 // when the stamp no longer matches the generated tree on disk.
-static void report_build_stamp() {
+void report_build_stamp() {
     const std::string path = environment_variable("BBLITE_BUILD_STAMP_OUT");
     if (path.empty()) {
         return;

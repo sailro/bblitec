@@ -218,6 +218,8 @@ struct WindowServices final : CanvasProvider {
 struct WindowDocument {
     explicit WindowDocument(std::shared_ptr<WindowServices> host, EngineOptions options)
         : host(std::move(host)) {
+        // An engine-less Window application never creates an engine.
+        report_build_stamp();
         engine.options = std::move(options);
         engine.ui_attribute_changed = [this](UiElementHandle element,
                                              const std::string& attribute) {
@@ -238,20 +240,18 @@ struct WindowDocument {
     void update_capture_ready() {
         if (!wait_for_canvas_ready)
             return;
-        host->capture_ready->store(
-            std::any_of(canvases.begin(), canvases.end(), [this](const auto& entry) {
-                return ui_get_attribute(engine, UiElementHandle{entry.first}, "data-ready") ==
-                       "true";
-            }));
+        // GPU canvases and retained Canvas2D canvases both render the page.
+        bool ready = false;
         std::string failure;
-        for (const auto& [index, canvas] : canvases) {
-            static_cast<void>(canvas);
-            const auto error = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
-            if (!error.empty()) {
-                failure = error;
-                break;
-            }
+        for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
+            if (handle_at(engine.ui_elements, UiElementHandle{index}).tag != "canvas")
+                continue;
+            ready = ready ||
+                    ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
+            if (failure.empty())
+                failure = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
         }
+        host->capture_ready->store(ready);
         std::lock_guard lock(host->mutex);
         host->capture_failure = std::move(failure);
     }

@@ -64,6 +64,7 @@ test("registers unique generated scene targets", () => {
             "audit-shader-frame-graph",
             "regression-runtime-sweep",
             "regression-sprite-layer-arms",
+            "regression-host-page",
             "regression-instanced-ground",
             "regression-morph-ground",
             "regression-light-setters",
@@ -573,16 +574,35 @@ test("resolves a registered scene by source path", () => {
     assert.equal(scene.id, "scene10");
 });
 
-test("an HTML page is an ad-hoc source hosting the entry it names", () => {
-    const scene = resolveScene("test/fixtures/host-page/page.html");
-    assert.equal(scene.id, "page");
-    assert.equal(scene.source, "test/fixtures/host-page/src/main.ts");
-    assert.deepEqual(scene.page, { path: "test/fixtures/host-page/page.html" });
+test("an HTML page is a scene source hosting the entry it names", () => {
+    const registered = getScene("regression-host-page");
     assert.equal(
-        registrySceneCompileOptions(scene).nativeHostUi?.sourcePath,
-        scene.page?.path,
+        resolveScene("examples/regression-host-page/page.html"),
+        registered,
     );
-    assert.deepEqual(sceneReferencePage(scene), { hostPage: scene.page?.path });
+    assert.equal(
+        registrySceneCompileOptions(registered).nativeHostUi?.sourcePath,
+        registered.page?.path,
+    );
+    assert.deepEqual(sceneReferencePage(registered), {
+        hostPage: registered.page?.path,
+    });
+    const page = ".cache/adhoc-page.html";
+    mkdirSync(".cache", { recursive: true });
+    writeFileSync(".cache/adhoc-page.ts", "export {};\n");
+    writeFileSync(
+        page,
+        '<!doctype html><script type="module" src="./adhoc-page.ts"></script>\n',
+    );
+    try {
+        const scene = resolveScene(page);
+        assert.equal(scene.id, "adhoc-page");
+        assert.equal(scene.source, ".cache/adhoc-page.ts");
+        assert.deepEqual(scene.page, { path: page });
+    } finally {
+        rmSync(page, { force: true });
+        rmSync(".cache/adhoc-page.ts", { force: true });
+    }
 });
 
 test("rejects ad-hoc sources that collide with registered scene ids", () => {

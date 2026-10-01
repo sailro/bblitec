@@ -38,6 +38,8 @@ void run_engine(Engine& engine);
  * compiler cache can serve it.
  */
 const char* bblite_build_stamp();
+/** Write the build stamp where a measured run asked (`BBLITE_BUILD_STAMP_OUT`). */
+void report_build_stamp();
 std::vector<std::uint8_t> read_binary_file(const std::string& path);
 std::string join_path(const std::string& root, const std::string& relative_path);
 std::string parent_path(const std::string& path);

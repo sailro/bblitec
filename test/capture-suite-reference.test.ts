@@ -187,6 +187,30 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
     }
 });
 
+test("a host page's inline loader imports the served scene module", async () => {
+    const server = createSuiteSceneServer("export {};\n", {
+        sourcePath: "examples/regression-host-page/src/main.ts",
+        hostPage: "examples/regression-host-page/page.html",
+    });
+    try {
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+        const address = server.address();
+        assert.ok(address && typeof address !== "string");
+        const html = await (
+            await fetch(`http://127.0.0.1:${address.port}/scene.html`)
+        ).text();
+        assert.match(
+            html,
+            /await import\("\/examples\/regression-host-page\/src\/main\.js"\);/,
+        );
+        assert.doesNotMatch(html, /import\("\/src\/main\.ts"\)/);
+        // The loader's other statements stay the page's own.
+        assert.match(html, /location\.protocol === "file:"/);
+    } finally {
+        await new Promise<void>((done) => server.close(() => done()));
+    }
+});
+
 test("preserves the reference query when navigating to the suite scene", async () => {
     const navigations: Array<{
         url: string;

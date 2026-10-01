@@ -717,6 +717,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-host-page",
+        name: "Regression - Host Page",
+        source: "examples/regression-host-page/src/main.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Host Page",
+        page: { path: "examples/regression-host-page/page.html" },
+        // The foreground is the page's own text: the heading and canvas
+        // match exactly; text after an inline element and centred button
+        // labels sit at whole pixels where Chromium places them at
+        // fractional ones (the UI text residual, TODO.md).
+        parity: {
+            maxFullMad: 0.08,
+            maxForegroundMad: 7,
+            backgroundColor: [35, 40, 30],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",
