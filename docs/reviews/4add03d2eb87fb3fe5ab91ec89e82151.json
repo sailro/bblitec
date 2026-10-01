@@ -1,0 +1,9 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Classify MIME wildcard syntax once before scanning file descriptors.",
+      "applied": true
+    }
+  ]
+}
