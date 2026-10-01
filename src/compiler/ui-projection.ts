@@ -1188,9 +1188,15 @@ export class UiProjection {
                 : [...new EmissionSet(updated)];
     }
 
-    public recordUiStaticAppend(parent: Value, child: Value): void {
+    /** A child joining `parent`; one that does not join last leaves the child order unknown. */
+    public recordUiStaticAppend(
+        parent: Value,
+        child: Value,
+        last = true,
+    ): void {
         const parentElement = this.uiStaticElement(parent);
         if (!parentElement) return;
+        if (!last) writable(parentElement).childShapeKnown = false;
         if (child.uiStaticId === undefined) {
             writable(parentElement).childCardinalityKnown = false;
             writable(parentElement).childShapeKnown = false;

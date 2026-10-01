@@ -1276,6 +1276,53 @@ UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElemen
     return child;
 }
 
+UiElementHandle ui_insert_child(Engine& engine, UiElementHandle parent, UiElementHandle child,
+                                UiElementHandle reference) {
+    if (reference == child)
+        throw std::logic_error("A node cannot be inserted before itself.");
+    ui_append_child(engine, parent, child);
+    if (reference.value == invalid_handle)
+        return child;
+    auto& children = ui_element(engine, parent).children;
+    const auto at = std::find(children.begin(), children.end(), reference);
+    if (at == children.end())
+        throw std::runtime_error("The node before which to insert is not a child of this node.");
+    std::rotate(at, std::prev(children.end()), children.end());
+    return child;
+}
+
+void ui_insert_text(Engine& engine, UiElementHandle parent, std::string text,
+                    UiElementHandle reference) {
+    static_cast<void>(
+        ui_insert_child(engine, parent, ui_create_text_node(engine, std::move(text)), reference));
+}
+
+UiElementHandle ui_first_child_node(Engine& engine, UiElementHandle parent,
+                                    std::initializer_list<UiElementHandle> inserted) {
+    {
+        const UiElementRecord& record = ui_element(engine, parent);
+        if (!record.inner_rml.empty() || record.markup_owner.value != invalid_handle)
+            throw std::runtime_error(
+                "Inserting into innerHTML content needs an authored markup tree.");
+        if (record.text.empty()) {
+            // The nodes being inserted leave their places first.
+            const auto found = std::find_if(
+                record.children.begin(), record.children.end(), [&](UiElementHandle child) {
+                    return std::find(inserted.begin(), inserted.end(), child) == inserted.end();
+                });
+            return found == record.children.end() ? UiElementHandle{} : *found;
+        }
+    }
+    // Leaf text renders before any children: it becomes the first text node.
+    auto text = std::exchange(ui_element(engine, parent).text, {});
+    mark_ui_changed(engine, ui_element(engine, parent));
+    const auto first = ui_element(engine, parent).children.empty()
+                           ? UiElementHandle{}
+                           : ui_element(engine, parent).children.front();
+    const auto node = ui_create_text_node(engine, std::move(text));
+    return ui_insert_child(engine, parent, node, first);
+}
+
 UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child) {
     if (engine.ui_document_roots.active())
         return ui_append_child(engine, engine.ui_document_roots.body, child);

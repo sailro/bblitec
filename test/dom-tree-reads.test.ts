@@ -59,6 +59,17 @@ test("element tree, text, editability, selection and narrowed event reads run na
             list.append(row.label, value);
         }
         if (list.textContent !== "A=B=") throw new Error("data text append");
+        const strip = document.createElement("div");
+        const first = document.createElement("i");
+        const second = document.createElement("b");
+        strip.append("tail");
+        strip.prepend(first, "mid");
+        if (strip.firstElementChild !== first || strip.textContent !== "midtail") throw new Error("prepend");
+        strip.prepend(second, first);
+        if (strip.firstElementChild !== second || second.nextElementSibling !== first) throw new Error("prepend moves");
+        strip.replaceChildren(first, "only");
+        if (strip.lastElementChild !== first || strip.textContent !== "only" || second.parentElement !== null)
+            throw new Error("replaceChildren");
         const pause = close.lastElementChild as HTMLElement;
         pause.textContent = "Pause";
         if (close.textContent !== "xPause!") throw new Error("asserted child");
@@ -130,6 +141,7 @@ test("element tree, text, editability, selection and narrowed event reads run na
     assert.match(cpp, /bbl::ui_is_content_editable\(/);
     assert.match(cpp, /bbl::dom_target_is_content_editable\(/);
     assert.match(cpp, /bbl::ui_select_text\(/);
+    assert.match(cpp, /bbl::ui_first_child_node\(/);
     assert.match(cpp, /bbl::dom_target_is_node\(/);
     assert.match(cpp, /\.as<bbl::PlatformKeyboardEvent>\(\)\.key/);
     assert.match(cpp, /window_document_engine\(\)\.document_hidden/);

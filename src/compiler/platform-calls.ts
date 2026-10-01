@@ -1793,12 +1793,18 @@ export class PlatformCalls {
                 engineCpp: engine,
             };
         }
+        const insertion = callee.name.text;
         if (
             element &&
-            (callee.name.text === "append" ||
-                (callee.name.text === "replaceChildren" &&
-                    call.arguments.length > 0))
+            (insertion === "append" ||
+                insertion === "prepend" ||
+                (insertion === "replaceChildren" && call.arguments.length > 0))
         ) {
+            if (insertion !== "append" && element.uiRoot)
+                this.context.fail(
+                    call,
+                    `Retained document roots do not support ${insertion}().`,
+                );
             // Even named handles need a snapshot: later arguments may rebind
             // the receiver or an earlier argument before insertion begins.
             const snapshot = (
@@ -1814,17 +1820,18 @@ export class PlatformCalls {
                 );
             };
             const replace = callee.name.text === "replaceChildren";
-            if (replace && element.uiRoot)
-                this.context.fail(
-                    call,
-                    "Replacing the document root children is not supported.",
-                );
             const receiver = element.uiRoot
                 ? element
                 : snapshot(element, "append_receiver", callee.expression);
             const children = call.arguments.map((argument) => {
-                if (ts.isSpreadElement(argument))
+                if (ts.isSpreadElement(argument)) {
+                    if (insertion === "prepend")
+                        this.context.fail(
+                            argument,
+                            "Prepend requires individual nodes or text; spread lists are supported by append and replaceChildren.",
+                        );
                     return this.uiElementSpread(argument);
+                }
                 const child = this.context.compileValue(argument);
                 if (!isStringValue(child))
                     this.context.expectKind(child, "ui-element", argument);
@@ -1836,7 +1843,23 @@ export class PlatformCalls {
             const engine = receiver.uiRoot
                 ? this.ui.documentEngine(call)
                 : this.context.requireEngine(receiver, call);
-            const insertion = (value: Value): string => {
+            // Prepended nodes go before the child that was first.
+            const reference =
+                insertion === "prepend"
+                    ? this.context.allocateTemporaryCppName("prepend_reference")
+                    : undefined;
+            if (reference)
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: reference,
+                    initializer: `bbl::ui_first_child_node(${engine}, ${receiver.cpp}, {${children
+                        .flatMap((child) =>
+                            "spread" in child || isStringValue(child) ? [] : [child.cpp],
+                        )
+                        .join(", ")}})`,
+                });
+            const insert = (value: Value): string => {
                 const text = isStringValue(value);
                 const child: Value = text
                     ? {
@@ -1859,7 +1882,11 @@ export class PlatformCalls {
                     return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
                 }
                 this.context.expectSameEngine(receiver, child, call);
-                this.ui.recordUiStaticAppend(receiver, child);
+                this.ui.recordUiStaticAppend(receiver, child, !reference);
+                if (reference)
+                    return text
+                        ? `bbl::ui_insert_text(${engine}, ${receiver.cpp}, ${value.cpp}, ${reference})`
+                        : `bbl::ui_insert_child(${engine}, ${receiver.cpp}, ${child.cpp}, ${reference})`;
                 if (text)
                     return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
                 return `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child.cpp})`;
@@ -1873,7 +1900,7 @@ export class PlatformCalls {
             }
             for (const value of children) {
                 if (!("spread" in value)) {
-                    operations.push(insertion(value));
+                    operations.push(insert(value));
                     continue;
                 }
                 // The static model cannot name a spread's elements.

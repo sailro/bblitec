@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -105,6 +106,15 @@ void ui_add_host_style_rule(
 js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
                                           std::string_view class_name);
 UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child);
+/** The parent's first child node other than `inserted`, its leaf text becoming a text node;
+ * invalid when it has none. */
+UiElementHandle ui_first_child_node(Engine& engine, UiElementHandle parent,
+                                    std::initializer_list<UiElementHandle> inserted = {});
+/** Inserts before `reference`, a child of `parent`, or appends when the reference is invalid. */
+UiElementHandle ui_insert_child(Engine& engine, UiElementHandle parent, UiElementHandle child,
+                                UiElementHandle reference);
+void ui_insert_text(Engine& engine, UiElementHandle parent, std::string text,
+                    UiElementHandle reference);
 UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child);
 void ui_replace_children(Engine& engine, UiElementHandle parent);
 void ui_remove(Engine& engine, UiElementHandle element);
