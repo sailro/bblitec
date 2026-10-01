@@ -5,6 +5,7 @@ import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
+import { isJsonValue } from "./json-bridge.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -307,44 +308,42 @@ export function compileObjectPrototypeCall(
 }
 
 /**
- * A dictionary's `[key, value]` pairs as a fresh array, in its enumeration
- * order. A number-keyed dictionary's keys are spelled as property names.
+ * `[name, value]` pairs as a fresh array, pushed by a loop over the owner
+ * that binds `name` and the value's spelling.
  */
-function dictionaryEntries(
+function pairArray(
     context: ObjectStaticContext,
     owner: Value,
-    dataType: DataType<"map">,
+    ownerType: string,
+    value: Value,
+    loop: (push: string) => string,
     resultType: DataType<"vector">,
     node: ts.Node,
 ): Value {
     context.reachJson();
-    let push = "";
+    let pair = "";
     const emitted = context.captureEmittedLines(() => {
-        push = context.dataLowerer.compileKnownValueForSink(
+        pair = context.dataLowerer.compileKnownValueForSink(
             {
                 kind: "tuple",
                 cpp: "",
                 tupleElements: [
                     context.dataLowerer.leafValue("name", { kind: "string" }),
-                    context.dataLowerer.leafValue("value", dataType.value),
+                    value,
                 ],
             },
             resultType.element,
             node,
         );
     });
-    if (
-        emitted.length > 0 ||
-        (dataType.key.kind !== "string" && dataType.key.kind !== "number")
-    )
+    if (emitted.length > 0)
         context.fail(
             node,
-            "A dictionary's entries enumerate as an array when each pair converts to its element in place.",
+            "Object entries enumerate as an array when each pair converts to its element in place.",
         );
-    const cppType = context.dataTypes.cppType(resultType);
     return {
         kind: "data",
-        cpp: `[](const auto& own_owner) { ${cppType} own; bbl::js::for_each_property_entry(own_owner, [&](const std::string& name, const auto& value) { own.push_back(${push}); }); return own; }(${owner.cpp})`,
+        cpp: `[](const ${ownerType}& own_owner) { ${context.dataTypes.cppType(resultType)} own; ${loop(`own.push_back(${pair});`)} return own; }(${owner.cpp})`,
         dataType: resultType,
         freshData: true,
     };
@@ -382,16 +381,40 @@ function compileObjectEntries(
         );
         if (array) return array;
     }
+    if (isJsonValue(owner)) {
+        // A document's values are documents too.
+        const documentType = context.dataTypes.withDynamicJsonTypes(true, () =>
+            context.dataLowerer.dataTypeAt(call),
+        );
+        // A parsed document's own pairs, in property order.
+        if (documentType?.kind === "vector")
+            return pairArray(
+                context,
+                owner,
+                "bbl::js::JsonValue",
+                context.dataLowerer.leafValue("own_owner.get(name)", {
+                    kind: "json",
+                }),
+                (push) =>
+                    `for (const std::string& name : own_owner.own_keys()) ${push}`,
+                documentType,
+                call,
+            );
+    }
     if (
         owner.kind === "data" &&
         owner.dataType?.kind === "map" &&
         owner.dataType.dictionary &&
         resultType?.kind === "vector"
     )
-        return dictionaryEntries(
+        // A dictionary's pairs in property order, a number key spelled as a name.
+        return pairArray(
             context,
             owner,
-            owner.dataType,
+            "auto",
+            context.dataLowerer.leafValue("value", owner.dataType.value),
+            (push) =>
+                `bbl::js::for_each_property_entry(own_owner, [&](const std::string& name, const auto& value) { ${push} });`,
             resultType,
             call,
         );

@@ -4268,3 +4268,20 @@ check(
     if (stacked.chrome !== 10 || stacked.toast !== 18 || Object.keys(stacked).join(",") !== "chrome,hub,toast") throw new Error("dynamic record keys");
 `,
 );
+
+check(
+    "document-entries",
+    `
+    function names(value: unknown): string {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return "none";
+        const out: string[] = [];
+        for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+            const clip = raw as { from?: number } | null;
+            out.push(name + "=" + String(clip?.from));
+        }
+        return out.join(",");
+    }
+    const doc = JSON.parse('{"walk":{"from":2},"7":{"from":1},"idle":null}') as unknown;
+    if (names(doc) !== "7=1,walk=2,idle=undefined" || names(JSON.parse("[1]")) !== "none") throw new Error(names(doc));
+`,
+);

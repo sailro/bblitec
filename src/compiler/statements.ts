@@ -2907,7 +2907,6 @@ export class StatementLowerer {
         });
     }
 
-    /** Binds one statically unrolled element, including tuple patterns. */
     /**
      * `{ a, b: alias }` over one unrolled element: each name takes the
      * element's property, a compile-time record's value or a struct's field.
@@ -2942,16 +2941,16 @@ export class StatementLowerer {
                     element,
                     "Object destructuring in static for...of binds plain or renamed identifiers.",
                 );
-            const member = struct
-                ? context.dataLowerer.leafValue(
-                      `${value.cpp}${context.dataTypes.isReferenceStruct(struct.name) ? "->" : "."}${context.dataTypes.structField(struct.name, property, element).name}`,
-                      context.dataTypes.structField(
-                          struct.name,
-                          property,
-                          element,
-                      ).type,
-                  )
-                : value.recordProperties?.[property];
+            const field = struct
+                ? context.dataTypes.structField(struct.name, property, element)
+                : undefined;
+            const member =
+                struct && field
+                    ? context.dataLowerer.leafValue(
+                          `${value.cpp}${context.dataTypes.isReferenceStruct(struct.name) ? "->" : "."}${field.name}`,
+                          field.type,
+                      )
+                    : value.recordProperties?.[property];
             if (!member)
                 context.fail(
                     element,
@@ -2961,6 +2960,7 @@ export class StatementLowerer {
         }
     }
 
+    /** Binds one statically unrolled element, including tuple and object patterns. */
     private bindStaticIterationValue(
         context: StatementLoweringContext,
         name: ts.BindingName,
