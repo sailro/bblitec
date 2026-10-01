@@ -1,5 +1,6 @@
 #include <bblite/features/has_audio.hpp>
 #include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_engine.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 
 #include <bblite/pal_window_realm.hpp>
@@ -927,6 +928,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 try {
                     const js::RealmScope state;
                     EventLoop loop(services->inbox);
+#if !BBLITE_HAS_ENGINE
+                    // No engine startup will select this realm's capture clock.
+                    if (frame_options.frame_delta_ms > 0)
+                        loop.use_fixed_animation_time(frame_options.frame_delta_ms);
+#endif
                     WindowDocument owner(services, options);
                     document = &owner;
                     struct Reset {

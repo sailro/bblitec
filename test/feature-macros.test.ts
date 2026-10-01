@@ -47,6 +47,7 @@ test("every feature macro is a header of its own, 0 until its row is reached", (
 test("each macro follows the features its row names", () => {
     for (const [features, macro] of [
         [["input:gamepad"], "BBLITE_HAS_GAMEPAD"],
+        [["backend:sdl"], "BBLITE_HAS_ENGINE"],
         [["renderer:scene"], "BBLITE_HAS_PBR_RENDERER"],
         [["physics:character-controller"], "BBLITE_HAS_PHYSICS_CHARACTER"],
         [["navigation:tile-cache"], "BBLITE_HAS_NAV_TILE_CACHE"],

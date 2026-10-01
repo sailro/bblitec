@@ -29,6 +29,10 @@ bool checked_cleanup = false;
 int presentation_count = 0;
 int final_presentation = 0;
 std::vector<std::string> captures;
+double frame_delta = 0;
+bool collect_clock = false;
+std::vector<double> frame_times;
+double entry_time = 0, timer_time = -1;
 
 void write_file(const std::string& path, const std::string& content) {
     std::ofstream stream(path);
@@ -40,7 +44,11 @@ std::string read_file(const std::string& path) {
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 void request_frame(bbl::pal::WorkerRealm& realm) {
-    realm.request_animation_frame([&realm](double) { request_frame(realm); });
+    realm.request_animation_frame([&realm](double timestamp) {
+        if (collect_clock)
+            frame_times.push_back(timestamp);
+        request_frame(realm);
+    });
 }
 struct ReadyImage final : bbl::pal::OffscreenImage {};
 void request_ready_frame(bbl::pal::WorkerRealm& realm, bbl::UiElementHandle canvas,
@@ -60,6 +68,8 @@ std::string asset_path(std::string_view) {
 }
 std::string environment_variable(const char* name) {
     const std::string_view key(name);
+    if (key == "BBLITE_FRAME_DELTA_MS")
+        return std::to_string(frame_delta);
     if (key == "BBLITE_TEST_PASS")
         return "1";
     if (key == "BBLITE_MAX_FRAMES")
@@ -166,6 +176,35 @@ int main() {
     engine_options.width = 320;
     engine_options.height = 200;
     for (const bool display_clock : {false, true}) {
+        FixtureWindowFrameClock::enabled = display_clock;
+        for (const double step : {0.0, 10.0}) {
+            frame_delta = step;
+            collect_clock = true;
+            capture_ui = false;
+            frame_times.clear();
+            timer_time = -1;
+            assert(run_window_application(
+                       [](WorkerRealm& realm) {
+                           auto& loop = EventLoop::current();
+                           std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                           entry_time = loop.now();
+                           loop.set_timeout([&loop] { timer_time = loop.now(); }, 25);
+                           request_frame(realm);
+                       },
+                       engine_options) == 0);
+            assert(frame_times.size() >= 4);
+            if (!BBLITE_HAS_ENGINE && step > 0) {
+                assert(entry_time == 0 && timer_time == 30);
+                for (std::size_t index = 0; index < frame_times.size(); ++index)
+                    assert(frame_times[index] == static_cast<double>(index) * step);
+            } else {
+                assert(entry_time > 0 && frame_times.front() > 0);
+                for (std::size_t index = 1; index < frame_times.size(); ++index)
+                    assert(frame_times[index] > frame_times[index - 1]);
+            }
+        }
+        collect_clock = false;
+        frame_delta = 0;
         FixtureWindowFrameClock::enabled = display_clock;
         for (const auto& checkpoint : parsed) {
             write_file(checkpoint.path, "stale");
