@@ -1254,7 +1254,13 @@ export class DataTypeRegistry {
     /** The absent spelling of a nullable type: an empty optional, or the null reference of a shared object. */
     public absentValue(type: DataType): string {
         const cpp = this.cppType(type);
-        return type.kind === "optional" ? `${cpp}{std::nullopt}` : `${cpp}{}`;
+        const optional =
+            type.kind === "optional" &&
+            !(
+                type.inner.kind === "struct" &&
+                this.isReferenceStruct(type.inner.name)
+            );
+        return optional ? `${cpp}{std::nullopt}` : `${cpp}{}`;
     }
 
     /** `value` carried as the nullable `type`: wrapped for an optional, as itself for a shared object. */

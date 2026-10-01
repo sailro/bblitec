@@ -67,12 +67,13 @@ function valueOptional(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    const absent = lowerer.context.dataTypes.absentValue(dataType);
     if (value.kind === "void") {
         lowerer.context.emitDiscardedValue(value);
-        return "std::nullopt";
+        return absent;
     }
     if (value.kind === "json-null") {
-        return "std::nullopt";
+        return absent;
     }
     if (value.dataType?.kind === "optional") {
         const sourceType = value.dataType.inner;
@@ -88,7 +89,7 @@ function valueOptional(
         });
         return (
             `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} { ` +
-            `const auto ${source} = (${value.cpp}).to_optional(); if (!${source}) return std::nullopt; ` +
+            `const auto ${source} = (${value.cpp}).to_optional(); if (!${source}) return ${absent}; ` +
             `${lines.join("\n")} return ${converted}; }())`
         );
     }
@@ -105,10 +106,10 @@ function valueOptional(
         const cppType = lowerer.context.dataTypes.cppType(dataType);
         if (lines.length)
             return (
-                `([&]() -> ${cppType} { if (!(${found})) return std::nullopt; ` +
+                `([&]() -> ${cppType} { if (!(${found})) return ${absent}; ` +
                 `${lines.join("\n")} return ${inner}; }())`
             );
-        return `(${found} ? ${cppType}{${inner}} : ${cppType}{std::nullopt})`;
+        return `(${found} ? ${cppType}{${inner}} : ${absent})`;
     }
     return lowerer.compileKnownValueForSink(value, dataType.inner, node);
 }

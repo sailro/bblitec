@@ -682,7 +682,7 @@ export class DataLowerer {
                 );
             }
             this.context.reachJsData();
-            argumentsCpp.push("std::nullopt");
+            argumentsCpp.push(this.context.dataTypes.absentValue(parameter));
         }
         return argumentsCpp;
     }
@@ -4253,7 +4253,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.ElementAccessExpression,
     ): Value | undefined {
         const owner = this.compileDataPath(access.expression, "read");
-        return owner ? this.guardableElementRead(owner, access) : undefined;
+        return owner
+            ? this.guardableElementRead(
+                  this.narrowOptional(owner, access.expression),
+                  access,
+              )
+            : undefined;
     }
 
     /**
@@ -10629,6 +10634,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 nullSide === left ? right : left,
             );
             const value =
+                (ts.isElementAccessExpression(nullSide)
+                    ? this.context.probeEmission(() =>
+                          this.compileGuardableElementAccess(nullSide),
+                      )
+                    : undefined) ??
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
             if (isJsonValue(value)) {
@@ -11957,7 +11967,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): string {
         const unwrapped = this.context.unwrap(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
-            return "std::nullopt";
+            return this.context.dataTypes.absentValue(dataType);
         }
         const optional =
             (ts.isElementAccessExpression(unwrapped)
@@ -11979,7 +11989,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // empty optional when it reaches a typed sink; requiring
             // the null token to remain syntactically in place would
             // make destructuring observably different.
-            return "std::nullopt";
+            return this.context.dataTypes.absentValue(dataType);
         }
         if (
             optional?.kind === "data" &&

@@ -174,6 +174,44 @@ test("generic queue returns preserve existing records and callback fields across
 `,
     ));
 
+test("stored nullable record callback arguments follow shared record storage", (t) =>
+    nativeCheck(
+        t,
+        "nullable-record-arguments",
+        `
+    let visits=0;
+    type Entry={value:number};
+    type Rule={test:(entry:Entry|null)=>boolean,optional:(entry?:Entry)=>boolean};
+    const rules:Rule[]=[{test:()=>{visits++;return true;},optional:()=>{visits++;return true;}}];
+    const entries:Entry[]=[{value:7}];
+    function absent():undefined{visits++;return undefined;}
+    if(!rules[0]!.test(null)||!rules[0]!.test(entries[0]!)||!rules[0]!.test(entries[3]??null))throw new Error("nullable record arguments");
+    if(!rules[0]!.optional()||!rules[0]!.optional(undefined)||!rules[0]!.optional(absent())||!rules[0]!.optional(entries[0]!))throw new Error("optional record arguments");
+    if(!rules[0]!.optional.call(undefined,entries[0]!)||visits!==9)throw new Error("callback argument effects");
+`,
+    ));
+
+test("array absence guards retain missing elements through nullable function results", (t) =>
+    nativeCheck(
+        t,
+        "array-absence-guards",
+        `
+    const items:string[]=["first"];
+    let reads=0,index=0;
+    function next():number{reads++;return index++;}
+    if(items[next()]===undefined||items[next()]!==undefined||reads!==2)throw new Error("indexed presence and effects");
+    function collect(count:number):string[]|null{if(count<0)return null;const result:string[]=[];for(let i=0;i<count;i++)result.push("entry");return result;}
+    let seen=0;
+    for(let count=0;count<3;count++){
+        const values=collect(count);
+        if(!values)throw new Error("present array");
+        if(values[0]!==undefined)seen++;
+        if(values[1]!==undefined)seen+=10;
+    }
+    if(seen!==12||collect(-1)!==null)throw new Error("nullable array index guard");
+`,
+    ));
+
 test("deferred recursive callbacks and async record methods retain independent activation state", (t) =>
     nativeCheck(
         t,
