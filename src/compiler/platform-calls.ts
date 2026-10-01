@@ -136,6 +136,7 @@ interface PlatformCallContext
             | "symbols"
             | "userFunctions"
             | "unwrap"
+            | "useNativeValue"
         > {}
 
 /**
@@ -946,6 +947,27 @@ export class PlatformCalls {
                 node,
                 "Platform event listener is not a callback.",
             );
+        }
+        if (callback.runtimeCallbackIdentityCpp) {
+            this.context.useNativeValue(callback);
+            return callback.runtimeCallbackIdentityCpp;
+        }
+        const identity =
+            callback.callbackRecordOwner?.runtimeCallbackIdentityCpp;
+        if (identity) {
+            this.context.useNativeValue({ kind: "number", cpp: identity });
+            return identity;
+        }
+        const expression = ts.isExpression(node)
+            ? this.context.unwrap(node)
+            : node;
+        if (
+            callback.callbackRecordOwner?.repeatedCallbackEvaluation &&
+            (ts.isArrowFunction(expression) ||
+                ts.isFunctionExpression(expression))
+        ) {
+            this.context.reachJsData();
+            return "bbl::js::next_callback_identity()";
         }
         if (callback.platformCallbackIdentity !== undefined) {
             return `${callback.platformCallbackIdentity}u`;

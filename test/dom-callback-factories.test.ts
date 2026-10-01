@@ -1,8 +1,9 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { runRmlUiFixture } from "./native-fixture.js";
+import { cppFunction, runRmlUiFixture } from "./native-fixture.js";
 
 test("callbacks passed through helpers keep per-evaluation identity and removal", (t) => {
     const directory = resolve("artifacts/dom-callback-factories");
@@ -144,8 +145,96 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
         const canvas = document.createElement("canvas");
         function canvasTabIndex(value: HTMLCanvasElement): number { return value.tabIndex; }
         if (canvasTabIndex(canvas) !== 0) throw new Error("native canvas focus contract");
-        log.textContent = "complete";
-        globalThis.close();
+        let selfCalls = "";
+        function installSelf(value: number): void {
+            const remove = (): void => {
+                selfCalls += String(value);
+                target.removeEventListener("click", remove);
+            };
+            target.addEventListener("click", remove);
+            target.addEventListener("click", remove);
+        }
+        for (const value of [1, 2]) installSelf(value);
+        target.click(); target.click();
+        if (selfCalls !== "12") throw new Error("factory self-removal identity");
+        let inlineCalls = "";
+        function installInline(element: HTMLElement, value: number): void {
+            element.addEventListener("click", () => { inlineCalls += String(value); }, {once: true});
+        }
+        for (const value of [1, 2]) installInline(target, value);
+        target.click(); target.click();
+        if (inlineCalls !== "12") throw new Error("inline factory evaluation identity");
+        let namedInlineCalls = "";
+        function installNamedInline(element: HTMLElement, value: number): void {
+            element.addEventListener("click", function once(event: MouseEvent): void {
+                if (event.target !== element || event.button !== 0)
+                    throw new Error("named mouse callback payload");
+                event.preventDefault();
+                namedInlineCalls += String(value);
+                element.removeEventListener("click", once);
+            });
+        }
+        for (const value of [1, 2]) installNamedInline(target, value);
+        target.click(); target.click();
+        if (namedInlineCalls !== "12") throw new Error("named inline self-removal identity");
+        let namedEventCalls = "";
+        function installNamedEvent(element: HTMLElement, value: number): void {
+            element.addEventListener("click", function record(event: Event): void {
+                if (event.target !== element) throw new Error("named event callback payload");
+                event.preventDefault();
+                namedEventCalls += String(value);
+            }, {once: true});
+        }
+        for (const value of [1, 2]) installNamedEvent(target, value);
+        target.click(); target.click();
+        if (namedEventCalls !== "12") throw new Error("named event callback identity");
+        const visibility = document.createElement("div");
+        visibility.id = "visibility-log";
+        document.body.appendChild(visibility);
+        let visibleCalls = "";
+        function installVisibility(value: number): void {
+            const change = (): void => {
+                visibleCalls += String(value);
+                visibility.textContent = visibleCalls;
+                document.removeEventListener("visibilitychange", change);
+            };
+            document.addEventListener("visibilitychange", change);
+            document.addEventListener("visibilitychange", change);
+        }
+        for (const value of [1, 2]) installVisibility(value);
+        const fading = document.createElement("div");
+        fading.id = "transition-log";
+        document.body.appendChild(fading);
+        let transitions = "";
+        function installTransition(value: number): void {
+            const hide = (event?: TransitionEvent): void => {
+                if (event && (event.target !== fading || event.propertyName !== "opacity")) return;
+                fading.removeEventListener("transitionend", hide);
+                transitions += String(value);
+                fading.textContent = transitions;
+            };
+            fading.addEventListener("transitionend", hide);
+            fading.addEventListener("transitionend", hide);
+            if (value === 3) setTimeout(() => hide(), 0);
+        }
+        for (const value of [1, 2, 3]) installTransition(value);
+        let frames = "";
+        function follow(read: () => number): () => void {
+            let count = 0;
+            let ticket = requestAnimationFrame(function step(): void {
+                frames += String(read());
+                if (++count < 2) ticket = requestAnimationFrame(step);
+                if (frames.length === 4) {
+                    if (frames !== "1212") throw new Error("named frame closure ownership");
+                    log.textContent = "complete";
+                    globalThis.close();
+                }
+            });
+            return () => { cancelAnimationFrame(ticket); ticket = 0; };
+        }
+        const stops: Array<() => void> = [];
+        for (const value of [1, 2, 3]) stops.push(follow(() => value));
+        stops[2]!();
     `,
         {
             fileName: join(directory, "entry.ts"),
@@ -156,6 +245,15 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
         },
     );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
+    const scene = readFileSync("src/lowering/scene-lowerer.ts", "utf8");
+    writeFileSync(
+        join(directory, "visibility.hpp"),
+        "namespace bbl {\n" +
+            ["void on_visibility_change(", "void off_visibility_change("]
+                .map((signature) => cppFunction(scene, signature))
+                .join("\n") +
+            "\n}",
+    );
     runRmlUiFixture(t, "dom-callback-factories", {
         macros: {
             BBLITE_WORKERS: 1,
@@ -163,4 +261,25 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
             BBLITE_HAS_DOM_INPUT: 1,
         },
     });
+});
+
+test("named inline callbacks keep platform event borrows within dispatch", () => {
+    for (const eventType of ["Event", "MouseEvent"]) {
+        for (const body of [
+            "setTimeout(() => event.preventDefault(), 0);",
+            "saved = event;",
+        ]) {
+            assert.throws(
+                () =>
+                    compileSource(`
+                        const element = document.createElement("button");
+                        let saved: ${eventType} | null = null;
+                        element.addEventListener("click", function handle(event: ${eventType}): void {
+                            ${body}
+                        });
+                    `),
+                /escaping callback cannot capture platform event|borrowed platform event cannot escape/,
+            );
+        }
+    }
 });

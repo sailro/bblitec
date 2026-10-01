@@ -290,6 +290,46 @@ test("a stored callback reaching a signature its storage cannot serve refuses in
     );
 });
 
+test("named function expressions retain their own identity and per-call captures", (t) =>
+    nativeCheck(
+        "named-expression-self",
+        `
+    const pending: Array<() => number> = [];
+    const step = (): number => 99;
+    function create(seed: number): () => number {
+        let count = seed;
+        pending.push(function step(): number {
+            count++;
+            if (count < seed + 2) pending.push(step);
+            return count;
+        });
+        return () => count;
+    }
+    const firstCount = create(1), secondCount = create(5);
+    const first = pending.shift()!, second = pending.shift()!;
+    if (first === second || first() !== 2 || second() !== 6)
+        throw new Error("factory captures or identity");
+    if (pending[0] !== first || pending[1] !== second || step() !== 99)
+        throw new Error("named self identity or shadowing");
+    const retained = pending.shift()!;
+    if (retained() !== 3 || pending.shift()!() !== 7 || pending.length !== 0 || firstCount() !== 3 || secondCount() !== 7)
+        throw new Error("retained recursive storage");
+    const named = function self(n: number): number { return n ? self(n - 1) : 1; };
+    const alias = named;
+    const both = function self(n: number): number {
+        return n ? (n > 1 ? self(n - 1) : both(n - 1)) : 2;
+    };
+    let rebound: (n: number) => number = function self(n: number): number {
+        return n ? self(n - 1) : 3;
+    };
+    const old = rebound;
+    rebound = () => 4;
+    if (alias(3) !== 1 || both(3) !== 2 || old(3) !== 3 || rebound(3) !== 4)
+        throw new Error("lexical self binding and outer aliases");
+    `,
+        t,
+    ));
+
 test("a reassigned function local takes storage of its inferred type", (t) =>
     nativeCheck(
         "reassigned-function-local",
