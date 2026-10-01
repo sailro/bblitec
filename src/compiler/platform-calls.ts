@@ -8,7 +8,12 @@ import {
 } from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
-import { isPresentValue, presenceFlagCpp, type Value } from "./types.js";
+import {
+    isPresentValue,
+    isStringValue,
+    presenceFlagCpp,
+    type Value,
+} from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import {
     documentEngine,
@@ -1821,7 +1826,7 @@ export class PlatformCalls {
                 if (ts.isSpreadElement(argument))
                     return this.uiElementSpread(argument);
                 const child = this.context.compileValue(argument);
-                if (child.kind !== "string")
+                if (!isStringValue(child))
                     this.context.expectKind(child, "ui-element", argument);
                 return snapshot(child, "append_argument", argument);
             });
@@ -1832,17 +1837,16 @@ export class PlatformCalls {
                 ? this.ui.documentEngine(call)
                 : this.context.requireEngine(receiver, call);
             const insertion = (value: Value): string => {
-                const child: Value =
-                    value.kind === "string"
-                        ? {
-                              kind: "ui-element",
-                              cpp: "",
-                              engineCpp: engine,
-                              uiTag: "#text",
-                              uiStaticId:
-                                  this.ui.createUiStaticElement("#text"),
-                          }
-                        : value;
+                const text = isStringValue(value);
+                const child: Value = text
+                    ? {
+                          kind: "ui-element",
+                          cpp: "",
+                          engineCpp: engine,
+                          uiTag: "#text",
+                          uiStaticId: this.ui.createUiStaticElement("#text"),
+                      }
+                    : value;
                 if (receiver.uiRoot) {
                     this.context.expectSameEngine(
                         { kind: "engine", cpp: engine, engineCpp: engine },
@@ -1850,13 +1854,13 @@ export class PlatformCalls {
                         call,
                     );
                     this.ui.recordUiStaticRootAppend(child);
-                    if (value.kind === "string")
+                    if (text)
                         return `bbl::ui_append_text(${engine}, {}, ${value.cpp})`;
                     return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
                 }
                 this.context.expectSameEngine(receiver, child, call);
                 this.ui.recordUiStaticAppend(receiver, child);
-                if (value.kind === "string")
+                if (text)
                     return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
                 return `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child.cpp})`;
             };

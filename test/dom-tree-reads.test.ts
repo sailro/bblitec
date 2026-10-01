@@ -50,6 +50,15 @@ test("element tree, text, editability, selection and narrowed event reads run na
             return surface;
         }
         if (topSurface(label) !== panel) throw new Error("walk");
+        const rows: { label: string }[] = [];
+        for (const name of ["a", "b"]) rows.push({ label: name.toUpperCase() });
+        const list = document.createElement("div");
+        for (const row of rows) {
+            const value = document.createElement("b");
+            value.textContent = "=";
+            list.append(row.label, value);
+        }
+        if (list.textContent !== "A=B=") throw new Error("data text append");
         const pause = close.lastElementChild as HTMLElement;
         pause.textContent = "Pause";
         if (close.textContent !== "xPause!") throw new Error("asserted child");
