@@ -48,6 +48,7 @@ Check them before adding an implementation. Source rejection does not imply miss
   location.search assignment complete the task/microtasks, then recreate realms retaining durable storage
   and the current query; other navigation refuses. Screen/viewport metrics use CSS pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
+- document.hidden/visibilityState and visibilitychange follow window hide/minimize and show/restore, once per change.
 
 Host multi-canvas companions retain canvases, dividers and labels. Canvas-only captures include every
 canvas at its page position.
@@ -59,14 +60,16 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 
 | Area | Supported | Limits |
 | --- | --- | --- |
-| Construction | Static tags, appendChild, mixed text/element append and replaceChildren, spreads of element arrays, remove, retained roots | No general DOM implementation |
-| Content | textContent/innerText, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute | Compound text writes; unsupported root replacement/removal |
-| Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
-| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
+| Construction | Static tags, appendChild, mixed text/element append/prepend/replaceChildren, element-array spreads in append/replaceChildren, remove, retained roots; parent, first/last child and sibling element reads | No general DOM implementation; prepend spreads refuse; tree, text and insertion reads inside innerHTML throw; document roots only append |
+| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute, isContentEditable from contenteditable | Compound text writes; `<style>` text reads; unsupported root replacement/removal |
+| Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
+| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
-| Handler properties | Element `on<event>` for represented pointer, keyboard and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
+| Handler properties | Element `on<event>` for represented pointer, keyboard, file-drag and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
+| Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |
+| File drags | SDL file dragenter/dragover/dragleave/drop on elements, Document and Window; dragover cancellation accepts a drop; borrowed DataTransfer.files, count and first file with name/size | No authored drags, text transfers, items, effects or wider file indices; dragover follows native motion notifications |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
-| Focus/forms | Focus/blur, focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
+| Focus/forms | Focus/blur, focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
@@ -90,9 +93,11 @@ Values are six-digit opaque RGB; changing an input to or from color refuses.
 Native select keyboard navigation requires opening the menu first.
 
 Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.
+A base Event asserted to KeyboardEvent or MouseEvent reads a checked view of its payload.
 Native input views borrow dispatch; CustomEvent retains its detail and identity. Optional element calls snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
-Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element methods.
+Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element
+methods; an unrepresented canvas is not content-editable.
 Queued form events copy value, checked, selected option and disclosure state before application callbacks.
 
 Window pagehide runs before realm cleanup on close/reload, with Document target and Window currentTarget.
@@ -112,10 +117,10 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
-live cap and per-file limits. Completion may occur before click returns. FileReader reads a
+live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
 assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.
-Multiple files/directories, unsupported accept values, arbitrary source paths, file-input type
+Multiple input selections, directories, unsupported accept values, arbitrary source paths, file-input type
 transitions and other FileReader reads refuse.
 
 iOS uses UIKit Files with local storage and security-scoped imports; other platforms use SDL dialogs.

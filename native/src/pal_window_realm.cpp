@@ -99,6 +99,10 @@ struct WindowPointerEvent final : ExternalEvent {
     SDL_Event pointer{};
     SDL_MouseButtonFlags buttons = 0;
 };
+/** The page visibility the display observed, recorded on the realm's document. */
+struct WindowVisibilityEvent final : ExternalEvent {
+    bool hidden = false;
+};
 struct ListenerNames {
     bool click = false;
     std::vector<std::string> events;
@@ -129,12 +133,16 @@ struct DocumentSnapshot {
     UiElementHandle focused_element{};
     std::uint64_t focus_revision = 0;
     bool focus_visible = true;
+    UiElementHandle text_selection{};
+    std::uint64_t text_selection_revision = 0;
     std::set<std::string> dom_event_types;
     std::set<std::uint32_t> dom_pointer_elements;
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
     std::vector<UiContentBox> content_boxes;
+    /** Computed styles of the elements the realm requested, by element. */
+    std::vector<UiComputedStyle> styles;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
     ScreenMetrics screen;
@@ -142,7 +150,7 @@ struct LayoutSnapshot {
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
                screen == other.screen && input == other.input && rectangles == other.rectangles &&
-               content_boxes == other.content_boxes;
+               content_boxes == other.content_boxes && styles == other.styles;
     }
 };
 
@@ -262,6 +270,7 @@ struct WindowDocument {
     std::uint64_t published_text_revision = 0;
     std::uint64_t published_canvas_revision = 0;
     std::uint64_t published_focus_revision = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t published_text_selection_revision = 0;
     std::uint64_t published_input_revision = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
     std::unordered_map<std::uint32_t, std::shared_ptr<CanvasElement>> canvases;
@@ -338,6 +347,8 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
     snapshot->focused_element = engine.ui_focused_element;
     snapshot->focus_revision = engine.ui_focus_revision;
     snapshot->focus_visible = engine.ui_focus_visible;
+    snapshot->text_selection = engine.ui_text_selection;
+    snapshot->text_selection_revision = engine.ui_text_selection_revision;
     if (engine.dom_input) {
         snapshot->dom_event_types = engine.dom_input->event_types;
         snapshot->dom_pointer_elements = engine.dom_input->pointer_elements;
@@ -364,6 +375,8 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
     engine.ui_focused_element = snapshot.focused_element;
     engine.ui_focus_revision = snapshot.focus_revision;
     engine.ui_focus_visible = snapshot.focus_visible;
+    engine.ui_text_selection = snapshot.text_selection;
+    engine.ui_text_selection_revision = snapshot.text_selection_revision;
     if (!snapshot.dom_event_types.empty()) {
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
@@ -609,18 +622,22 @@ void update_window_document(bool wait) {
     }
     // Snapshot source state on its owner before taking the presentation lock.
     const auto input_revision = doc.engine.dom_input ? doc.engine.dom_input->revision : 0;
-    const auto text_since = doc.published_input_revision == input_revision &&
-                                    doc.published_focus_revision == doc.engine.ui_focus_revision &&
-                                    doc.engine.ui_only_text_changed_since(
-                                        doc.published_revision, doc.published_text_revision)
-                                ? std::optional(doc.published_text_revision)
-                                : std::nullopt;
-    auto snapshot = publish && (doc.published_revision != doc.engine.ui_revision ||
-                                doc.published_input_revision != input_revision ||
-                                doc.published_canvas_revision != doc.engine.ui_canvas_revision ||
-                                doc.published_focus_revision != doc.engine.ui_focus_revision)
-                        ? snapshot_document(doc.engine, text_since, doc.published_canvas_revision)
-                        : nullptr;
+    const auto text_since =
+        doc.published_input_revision == input_revision &&
+                doc.published_focus_revision == doc.engine.ui_focus_revision &&
+                doc.published_text_selection_revision == doc.engine.ui_text_selection_revision &&
+                doc.engine.ui_only_text_changed_since(doc.published_revision,
+                                                      doc.published_text_revision)
+            ? std::optional(doc.published_text_revision)
+            : std::nullopt;
+    auto snapshot =
+        publish && (doc.published_revision != doc.engine.ui_revision ||
+                    doc.published_input_revision != input_revision ||
+                    doc.published_canvas_revision != doc.engine.ui_canvas_revision ||
+                    doc.published_focus_revision != doc.engine.ui_focus_revision ||
+                    doc.published_text_selection_revision != doc.engine.ui_text_selection_revision)
+            ? snapshot_document(doc.engine, text_since, doc.published_canvas_revision)
+            : nullptr;
     std::unique_lock lock(host.mutex);
     if (host.stopping)
         throw WorkerTerminated{};
@@ -631,6 +648,7 @@ void update_window_document(bool wait) {
         doc.published_text_revision = doc.engine.ui_text_revision;
         doc.published_canvas_revision = doc.engine.ui_canvas_revision;
         doc.published_focus_revision = doc.engine.ui_focus_revision;
+        doc.published_text_selection_revision = doc.engine.ui_text_selection_revision;
         doc.published_input_revision = input_revision;
         host.wake.notify_all();
         if (wait)
@@ -644,6 +662,7 @@ void update_window_document(bool wait) {
              index < layout->rectangles.size() && index < doc.engine.ui_elements.size(); ++index) {
             doc.engine.ui_elements[index].client_rect = layout->rectangles[index];
             doc.engine.ui_elements[index].content_box = layout->content_boxes[index];
+            doc.engine.ui_elements[index].computed_style = layout->styles[index];
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->rectangles.size())
@@ -922,6 +941,13 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                 [&] { dispatch_canvas_input(*pointer); });
                             return;
                         }
+                        if (const auto* visibility =
+                                dynamic_cast<WindowVisibilityEvent*>(packet.get())) {
+                            EventLoop::current().dispatch_callback([&] {
+                                set_document_hidden(window_document_engine(), visibility->hidden);
+                            });
+                            return;
+                        }
                         // Acknowledge document input however its dispatch ends,
                         // so the display can finish any pending input wait.
                         const auto handled = js::finally([&] {
@@ -1094,9 +1120,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 }
                 next_layout.rectangles.resize(display.ui_elements.size());
                 next_layout.content_boxes.resize(display.ui_elements.size());
+                next_layout.styles.resize(display.ui_elements.size());
                 for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
                     next_layout.rectangles[index] = display.ui_elements[index].client_rect;
                     next_layout.content_boxes[index] = display.ui_elements[index].content_box;
+                    next_layout.styles[index] = display.ui_elements[index].computed_style;
                 }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
@@ -1195,6 +1223,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         await_input();
                     if (finished)
                         break;
+                    if (const auto hidden = window_visibility(event)) {
+                        auto packet = std::make_unique<WindowVisibilityEvent>();
+                        packet->hidden = *hidden;
+                        services->inbox->post(std::move(packet));
+                    }
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                         pointer_capture = {};
                         pointer_buttons = 0;

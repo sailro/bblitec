@@ -262,3 +262,73 @@ export function windowErrorEventValue(
         },
     };
 }
+
+/** `document.hidden` or `document.visibilityState`. */
+export function isDocumentVisibilityRead(
+    context: Pick<LoweringServices, "unwrap" | "libraryGlobal">,
+    expression: ts.Expression,
+): expression is ts.PropertyAccessExpression {
+    const read = context.unwrap(expression);
+    return (
+        ts.isPropertyAccessExpression(read) &&
+        (read.name.text === "hidden" || read.name.text === "visibilityState") &&
+        context.libraryGlobal(read.expression) === "document"
+    );
+}
+
+/**
+ * Whether a document answers visibility here: a visibility callback's
+ * argument, a Window application's document or a created engine's.
+ */
+export function documentVisibilityAvailable(
+    context: Pick<
+        LoweringServices,
+        "options" | "defaultEngine" | "platformDocumentHidden"
+    >,
+): boolean {
+    return (
+        context.platformDocumentHidden() !== undefined ||
+        (context.options.workers
+            ? !context.options.workers.namespace
+            : context.defaultEngine() !== undefined)
+    );
+}
+
+/**
+ * A visibility read's `document_hidden` C++: the callback's argument inside
+ * a visibility callback, the owning document's state elsewhere.
+ */
+export function documentHiddenCpp(
+    context: Pick<
+        LoweringServices,
+        | "options"
+        | "defaultEngine"
+        | "requireDefaultEngine"
+        | "reachFeature"
+        | "fail"
+        | "platformDocumentHidden"
+    >,
+    read: ts.PropertyAccessExpression,
+): string | undefined {
+    const callback = context.platformDocumentHidden();
+    if (callback !== undefined) return callback;
+    const engine = documentEngine(context, read);
+    return engine === undefined ? undefined : `${engine}.document_hidden`;
+}
+
+/** The element a `getComputedStyle(element)` or `window.getComputedStyle(element)` call reads. */
+export function computedStyleElement(
+    context: Pick<LoweringServices, "unwrap" | "libraryGlobal">,
+    expression: ts.Expression,
+): ts.Expression | undefined {
+    const call = context.unwrap(expression);
+    if (!ts.isCallExpression(call) || call.arguments.length === 0)
+        return undefined;
+    const callee = context.unwrap(call.expression);
+    const global =
+        context.libraryGlobal(callee) === "getComputedStyle" ||
+        (ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "getComputedStyle" &&
+            context.libraryGlobal(callee.expression) === "window");
+    return global ? call.arguments[0] : undefined;
+}

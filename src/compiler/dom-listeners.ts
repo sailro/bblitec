@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { documentEngine } from "./window-events.js";
 import { compileBooleanOptions } from "./option-helpers.js";
@@ -78,9 +78,17 @@ const serviceNames = new Set([
     "animationend",
     "animationiteration",
     "animationcancel",
+    "dragstart",
+    "drag",
+    "dragend",
 ]);
 
+const dragNames = new Set(["dragenter", "dragover", "dragleave", "drop"]);
+
 const keyboardNames = new Set(["keydown", "keyup"]);
+
+/** CSS transition events the UI projection sources. */
+const transitionNames = new Set(["transitionend"]);
 
 /** These names already carry a distinct native payload/service contract. */
 export function isCustomDomEventName(type: string): boolean {
@@ -88,25 +96,32 @@ export function isCustomDomEventName(type: string): boolean {
         !pointerNames.has(type) &&
         !serviceNames.has(type) &&
         !keyboardNames.has(type) &&
+        !transitionNames.has(type) &&
+        !dragNames.has(type) &&
         type !== "pagehide"
     );
 }
 
-type DomListenerFamily = "custom" | "keyboard" | "pointer";
+type DomListenerFamily =
+    "custom" | "keyboard" | "pointer" | "transition" | "drag";
 
 /** The shared dispatch family a DOM event name joins, if any. */
 function domListenerFamily(type: string): DomListenerFamily | undefined {
     if (keyboardNames.has(type)) return "keyboard";
     if (pointerNames.has(type)) return "pointer";
+    if (transitionNames.has(type)) return "transition";
+    if (dragNames.has(type)) return "drag";
     return isCustomDomEventName(type) ? "custom" : undefined;
 }
 
 /** The DOM listener family an element `on<type>` handler joins, if any. */
 export function elementDomHandlerFamily(
     type: string,
-): "keyboard" | "pointer" | undefined {
+): "keyboard" | "pointer" | "drag" | undefined {
     const family = domListenerFamily(type);
-    return family === "custom" || type === "resize" ? undefined : family;
+    return family === "custom" || family === "transition" || type === "resize"
+        ? undefined
+        : family;
 }
 
 /** Each family's borrowed event view. */
@@ -121,6 +136,15 @@ const DOM_CALLBACK_EVENTS = {
     },
     pointer: {
         cppType: "const bbl::PlatformMouseEvent&",
+        kind: "platform-mouse-event",
+    },
+    drag: {
+        cppType: "const bbl::PlatformDragEvent&",
+        kind: "platform-mouse-event",
+    },
+    // Read through the base Event view; TransitionEvent adds propertyName.
+    transition: {
+        cppType: "const bbl::PlatformTransitionEvent&",
         kind: "platform-mouse-event",
     },
 } as const;
@@ -243,20 +267,27 @@ function compileDomCallback(
         callback,
         { cppType: event.cppType, name },
         [
-            {
-                kind: event.kind,
-                cpp: name,
-                readOnly: true,
-                engineCpp: engine,
-                ...(family === "custom"
-                    ? {
-                          dataType: {
-                              kind: "handle" as const,
-                              handle: "custom-event" as const,
-                          },
-                      }
-                    : {}),
-            },
+            family === "transition" || family === "drag"
+                ? valueForKind("platform-mouse-event", {
+                      cpp: `bbl::js::BorrowedEvent(${name})`,
+                      readOnly: true,
+                      engineCpp: engine,
+                      platformEventBase: true,
+                  })
+                : {
+                      kind: event.kind,
+                      cpp: name,
+                      readOnly: true,
+                      engineCpp: engine,
+                      ...(family === "custom"
+                          ? {
+                                dataType: {
+                                    kind: "handle" as const,
+                                    handle: "custom-event" as const,
+                                },
+                            }
+                          : {}),
+                  },
         ],
         undefined,
         true,
@@ -284,7 +315,7 @@ export function emitDomEventHandler(
         | "cppString"
     >,
     element: Value,
-    family: "keyboard" | "pointer",
+    family: "keyboard" | "pointer" | "drag",
     type: string,
     handler: ts.Expression | undefined,
     site: ts.Expression,

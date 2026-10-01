@@ -725,11 +725,29 @@ export class BindingScopes {
             owner.set(symbol, rebound);
             return;
         }
+        innermost.set(symbol, rebound);
+        // A retained element's generation facts (tag, construction identity,
+        // canvas and host roles) are knowledge: an element without them is
+        // any element, which the native calls check. After a nested rebind
+        // the outer name keeps only the facts both handles share.
+        if (
+            value.kind === "ui-element" &&
+            binding.value.kind === "ui-element" &&
+            presenceFlagCpp(binding.value) === undefined &&
+            presenceFlagCpp(value) === undefined
+        ) {
+            const shared: Value = { ...binding.value };
+            for (const field of metadataFieldsForKind("ui-element"))
+                if (shared[field] !== value[field])
+                    delete writable(shared)[field];
+            this.context.describeNativeValue(shared);
+            owner.set(symbol, { ...binding, value: shared });
+            return;
+        }
         owner.set(symbol, {
             ...binding,
             reboundInNestedScope: true,
         });
-        innermost.set(symbol, rebound);
     }
 
     /**

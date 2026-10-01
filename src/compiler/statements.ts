@@ -3254,7 +3254,11 @@ export class StatementLowerer {
                 ) {
                     // Point a handle name at a different handle of the
                     // same kind; `rebindVariable` carries what that means.
-                    const right = context.compileValue(unwrapped.right);
+                    // A nullable handle the source guarded is that handle.
+                    const right = context.dataLowerer.narrowOptional(
+                        context.compileValue(unwrapped.right),
+                        unwrapped.right,
+                    );
                     if (right.kind !== target.kind) {
                         context.fail(
                             unwrapped.right,

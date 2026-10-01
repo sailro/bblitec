@@ -43,6 +43,8 @@ bool dom_clicked = false;
 bool prevent_down = false;
 int moved = 0;
 constexpr int motion_count = 32;
+// Visibility the realm's document recorded at each visibilitychange.
+std::vector<bool> visibility_changes;
 } // namespace
 
 namespace bbl::pal {
@@ -78,6 +80,14 @@ struct InputOrderPresenter final : WindowPresenter {
         // before the host polls again.
         if (document_live.load() && ++live_presentations == 6) {
             SDL_Event event{};
+            // Minimizing and restoring reach the realm's document before the gesture.
+            for (const auto type :
+                 {SDL_EVENT_WINDOW_MINIMIZED, SDL_EVENT_WINDOW_HIDDEN, SDL_EVENT_WINDOW_RESTORED}) {
+                event = {};
+                event.type = type;
+                assert(SDL_PushEvent(&event));
+            }
+            event = {};
             event.type = SDL_EVENT_MOUSE_MOTION;
             event.motion.which = replay_ui_mouse_id;
             event.motion.x = 30;
@@ -301,8 +311,14 @@ int main() {
                 realm.request_animation_frame(*next);
         };
         realm.request_animation_frame(*frame);
+        engine.visibility_change_callbacks.add(4, [](bool hidden) {
+            assert(window_document_engine().document_hidden == hidden);
+            visibility_changes.push_back(hidden);
+        });
         on_dom_pointer(engine, DomEventTarget::node(button.value), "pointerdown", 1,
                        [button, canvas, frame](const PlatformMouseEvent& pointer) {
+                           // A repeated hidden state dispatches no second change.
+                           assert((visibility_changes == std::vector<bool>{true, false}));
                            animation_at_down = animation_count;
                            input_phase.store(1);
                            if (prevent_down)
@@ -315,6 +331,12 @@ int main() {
                                const auto bounds = window_element_size(button);
                                assert(bounds.width == 80);
                            }
+                           // A first computed style read publishes its request and
+                           // adopts the display's serialization.
+                           auto& owner = window_document_engine();
+                           assert(ui_computed_style(owner, button, "visibility") == "visible");
+                           assert(ui_computed_style(owner, button, "z-index") == "auto");
+                           assert(ui_computed_style(owner, button, "opacity") == "1");
                            check_host_metrics(canvas);
                            // The following packets must see a newly added listener even
                            // before another document snapshot is published.
@@ -363,6 +385,7 @@ int main() {
             native_pointer_down = 0;
             animation_count = 0;
             moved = 0;
+            visibility_changes.clear();
             clicked = false;
             dom_clicked = false;
             document_live = false;

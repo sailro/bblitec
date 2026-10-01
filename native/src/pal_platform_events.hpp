@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bblite/features/device_recovery.hpp>
+#include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/runtime.hpp>
@@ -10,6 +11,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <charconv>
 #include <optional>
 #include <string>
@@ -18,6 +20,9 @@
 #include <vector>
 
 #include "pal_runtime_trace.hpp"
+#if BBLITE_HAS_BROWSER_FILE
+#include "pal_file_dialog.hpp"
+#endif
 #include "pal_window.hpp"
 #include "pal_sdl_application.hpp"
 
@@ -903,6 +908,110 @@ inline void sync_pointer_lock(SDL_Window* window, Engine& engine) {
     dispatch_pointer_lock_change(engine);
 }
 
+/** Whether a listener names a file drag event. */
+inline bool listens_dom_drag(const DomInput& input) {
+    return std::any_of(input.event_types.begin(), input.event_types.end(), [](const auto& type) {
+        return type == "dragenter" || type == "dragover" || type == "dragleave" || type == "drop";
+    });
+}
+
+/**
+ * File drags over the window: dragenter and dragleave as the element under the
+ * drag changes, dragover while it moves, and drop with the files read at the
+ * drop; a drag that leaves or ends without files ends with dragleave.
+ */
+inline std::shared_ptr<DomEventBatch> dom_drag_input(Engine& engine, const SDL_Event& event) {
+    auto& input = *engine.dom_input;
+    const auto reset = [&] {
+        input.drag_path.clear();
+        input.dropped_files = {};
+        input.drag_acceptance.reset();
+    };
+    if (event.type == SDL_EVENT_DROP_BEGIN || !listens_dom_drag(input)) {
+        reset();
+        return {};
+    }
+    auto batch = std::make_shared<DomEventBatch>();
+    const auto add = [&](std::string type, const std::vector<DomEventTarget>& path, bool cancelable,
+                         std::shared_ptr<const DroppedFiles> files) {
+        PlatformDragEvent payload;
+        payload.client_x = input.drag_x;
+        payload.client_y = input.drag_y;
+        payload.files = std::move(files);
+        if (type == "dragover")
+            payload.acceptance = input.drag_acceptance;
+        batch->add(dom_event(std::move(payload), std::move(type), path, true, cancelable), true);
+    };
+    const auto move_to = [&](float x, float y) {
+        input.drag_x = x * engine.canvas_window_to_client_scale;
+        input.drag_y = y * engine.canvas_window_to_client_scale;
+        auto path = input.hit_path ? input.hit_path(input.drag_x, input.drag_y) : dom_canvas_path();
+        if (path.empty())
+            throw std::logic_error("A file drag requires a DOM target path.");
+        if (!input.drag_path.empty() && path.front() == input.drag_path.front())
+            return false;
+        add("dragenter", path, true, {});
+        if (!input.drag_path.empty())
+            add("dragleave", input.drag_path, false, {});
+        input.drag_path = std::move(path);
+        input.drag_acceptance = std::make_shared<std::atomic<bool>>(false);
+        return true;
+    };
+    if (event.type == SDL_EVENT_DROP_POSITION) {
+        move_to(event.drop.x, event.drop.y);
+        add("dragover", input.drag_path, true, {});
+        return batch;
+    }
+    if (event.type == SDL_EVENT_DROP_FILE) {
+        // Platforms without drag positions report the drop's own coordinates.
+        if (move_to(event.drop.x, event.drop.y))
+            add("dragover", input.drag_path, true, {});
+        if (!event.drop.data)
+            throw std::runtime_error("A dropped file has no path.");
+        if (input.dropped_files.count >= maximum_browser_file_snapshots)
+            throw std::runtime_error("A file drop exceeds its 4096-file bound.");
+#if BBLITE_HAS_BROWSER_FILE
+        if (input.dropped_files.count == 0) {
+            const std::u8string path(reinterpret_cast<const char8_t*>(event.drop.data));
+            auto snapshot = detail::selected_file_snapshot(std::filesystem::path(path));
+            input.dropped_files.bytes = std::move(snapshot.bytes);
+            input.dropped_files.name = std::move(snapshot.display_name);
+        }
+#endif
+        ++input.dropped_files.count;
+        return batch;
+    }
+    if (event.type != SDL_EVENT_DROP_COMPLETE)
+        return {};
+    if (!input.drag_path.empty()) {
+        if (input.dropped_files.count == 0 ||
+            !input.drag_acceptance->load(std::memory_order_acquire))
+            add("dragleave", input.drag_path, false, {});
+        else
+            add("drop", input.drag_path, true,
+                std::make_shared<const DroppedFiles>(std::move(input.dropped_files)));
+    }
+    reset();
+    return batch;
+}
+
+/** The page visibility a window event reports: hidden or minimized, or shown again. */
+inline std::optional<bool> window_visibility(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_WINDOW_HIDDEN || event.type == SDL_EVENT_WINDOW_MINIMIZED)
+        return true;
+    if (event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED)
+        return false;
+    return std::nullopt;
+}
+
+/** Records document.hidden and dispatches visibilitychange when it changed. */
+inline void set_document_hidden(Engine& engine, bool hidden) {
+    if (engine.document_hidden == hidden)
+        return;
+    engine.document_hidden = hidden;
+    engine.visibility_change_callbacks.dispatch(hidden);
+}
+
 inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool include_dom = true) {
     if (event.type == SDL_EVENT_WINDOW_RESIZED ||
         event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
@@ -1004,13 +1113,8 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
         sync_pointer_lock(SDL_GetWindowFromID(event.window.windowID), engine);
         return;
     }
-    const bool hidden =
-        event.type == SDL_EVENT_WINDOW_HIDDEN || event.type == SDL_EVENT_WINDOW_MINIMIZED;
-    const bool visible =
-        event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED;
-    if (hidden || visible) {
-        engine.visibility_change_callbacks.dispatch(hidden);
-    }
+    if (const auto hidden = window_visibility(event))
+        set_document_hidden(engine, *hidden);
 }
 
 inline void append_touch_cancel(Engine& engine, DomEventBatch& batch, DomTouchContact contact) {
@@ -1208,6 +1312,9 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         input.pending_resize = false;
         batch->add(
             dom_event(PlatformMouseEvent{}, "resize", {DomEventTarget::window()}, false, false));
+    } else if (event.type == SDL_EVENT_DROP_BEGIN || event.type == SDL_EVENT_DROP_POSITION ||
+               event.type == SDL_EVENT_DROP_FILE || event.type == SDL_EVENT_DROP_COMPLETE) {
+        return dom_drag_input(engine, event);
     } else
         return {};
     return batch;

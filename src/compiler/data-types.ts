@@ -487,11 +487,17 @@ export function platformHandleKind(
     return undefined;
 }
 
-function borrowedPlatformEventKind(
+export function borrowedPlatformEventKind(
     symbol: ts.Symbol | undefined,
 ): DataType<"borrowed-platform-event">["event"] | undefined {
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
-    if (symbol.name === "Event") return "event";
+    // Extended events and DataTransfer borrow the checked dispatch payload.
+    if (
+        ["Event", "TransitionEvent", "DragEvent", "DataTransfer"].includes(
+            symbol.name,
+        )
+    )
+        return "event";
     if (symbol.name === "MouseEvent") return "mouse";
     if (symbol.name === "KeyboardEvent") return "keyboard";
     if (symbol.name === "ErrorEvent") return "error";

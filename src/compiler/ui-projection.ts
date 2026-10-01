@@ -401,35 +401,17 @@ export class UiProjection {
             if (value.kind !== "data" || !value.dataType) {
                 return undefined;
             }
-            const requested = this.context.dataLowerer.dataTypeAt(expression);
-            const requestedElement =
-                requested?.kind === "handle" &&
-                requested.handle === "ui-element";
+            const target = this.narrowedTargetElement(value, expression);
+            if (target) return target;
             const narrowed = this.context.dataLowerer.narrowOptional(
                 value,
                 expression,
-                requestedElement &&
-                    value.dataType.kind === "optional" &&
-                    value.dataType.inner.kind === "event-target",
             );
             if (
                 narrowed.kind === "data" &&
                 narrowed.dataType?.kind === "event-target"
-            ) {
-                if (!requestedElement) return undefined;
-                const selected = { ...narrowed };
-                delete selected.nativeBinding;
-                const snapshot = this.context.bindings.pinValueToTemporary(
-                    selected,
-                    "event_target",
-                    expression,
-                );
-                return valueForKind("ui-element", {
-                    cpp: `bbl::dom_target_element(${snapshot.cpp})`,
-                    dataType: { kind: "handle", handle: "ui-element" },
-                    engineCpp: `bbl::dom_target_owner(${snapshot.cpp})`,
-                });
-            }
+            )
+                return undefined;
             if (narrowed.kind === "ui-element") {
                 return withTrackedTag(narrowed);
             }
@@ -524,6 +506,65 @@ export class UiProjection {
             }
         }
         return undefined;
+    }
+
+    /**
+     * An event target the program narrowed to an element interface, viewed
+     * as that element; the view throws when the target is not an Element of
+     * its owning document.
+     */
+    public narrowedTargetElement(
+        value: Value,
+        expression: ts.Expression,
+    ): Value<"ui-element"> | undefined {
+        const target = this.narrowedTarget(value, expression);
+        return target === undefined ? undefined : this.targetElement(target);
+    }
+
+    /** The element view of a pinned event target. */
+    public targetElement(target: string): Value<"ui-element"> {
+        return valueForKind("ui-element", {
+            cpp: `bbl::dom_target_element(${target})`,
+            dataType: { kind: "handle", handle: "ui-element" },
+            engineCpp: `bbl::dom_target_owner(${target})`,
+        });
+    }
+
+    /** An event target the program narrowed to an element interface, pinned for one read. */
+    public narrowedTarget(
+        value: Value,
+        expression: ts.Expression,
+    ): string | undefined {
+        if (value.kind !== "data") return undefined;
+        const optional = value.dataType?.kind === "optional";
+        const inner =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        const requested = this.context.dataLowerer.dataTypeAt(expression);
+        if (
+            inner?.kind !== "event-target" ||
+            requested?.kind !== "handle" ||
+            requested.handle !== "ui-element"
+        )
+            return undefined;
+        const narrowed = this.context.dataLowerer.narrowOptional(
+            value,
+            expression,
+            optional,
+        );
+        if (
+            narrowed.kind !== "data" ||
+            narrowed.dataType?.kind !== "event-target"
+        )
+            return undefined;
+        const selected = { ...narrowed };
+        delete selected.nativeBinding;
+        return this.context.bindings.pinValueToTemporary(
+            selected,
+            "event_target",
+            expression,
+        ).cpp;
     }
 
     /**
@@ -1147,9 +1188,15 @@ export class UiProjection {
                 : [...new EmissionSet(updated)];
     }
 
-    public recordUiStaticAppend(parent: Value, child: Value): void {
+    /** A child joining `parent`; one that does not join last leaves the child order unknown. */
+    public recordUiStaticAppend(
+        parent: Value,
+        child: Value,
+        last = true,
+    ): void {
         const parentElement = this.uiStaticElement(parent);
         if (!parentElement) return;
+        if (!last) writable(parentElement).childShapeKnown = false;
         if (child.uiStaticId === undefined) {
             writable(parentElement).childCardinalityKnown = false;
             writable(parentElement).childShapeKnown = false;

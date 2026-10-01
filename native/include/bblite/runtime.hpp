@@ -190,6 +190,21 @@ struct PlatformKeyboardEvent {
     void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
+/** The end of a CSS transition on a retained element. */
+struct PlatformTransitionEvent {
+    std::string property_name{};
+    mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+
+    void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default())
+            return;
+        default_prevented = true;
+    }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+};
+
 /** Browser-neutral mouse data delivered by the platform event loop. */
 struct PlatformMouseEvent {
     double button = 0.0;
@@ -393,6 +408,35 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
+/** A drop count and its first file, the FileList index the compiler admits. */
+struct DroppedFiles {
+    std::size_t count = 0;
+    std::vector<std::uint8_t> bytes;
+    std::string name;
+};
+
+/** A file drag over the window: dragenter, dragover, dragleave or drop. */
+struct PlatformDragEvent {
+    double client_x = 0.0;
+    double client_y = 0.0;
+    /** The drop's files; empty while dragging, as a browser withholds them before the drop. */
+    std::shared_ptr<const DroppedFiles> files{};
+    /** The File the drop's first file became in the owning realm, made on first read. */
+    mutable BrowserFileHandle first_file{};
+    /** Dragover cancellation crosses the Window realm mailbox back to the display. */
+    std::shared_ptr<std::atomic<bool>> acceptance{};
+    mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+
+    void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default())
+            return;
+        default_prevented = true;
+    }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+};
+
 /**
  * Last computed retained-layout box: border-box position and client (padding minus scrollbar)
  * size as DOMRect's reached surface, and the border-box (offset) size.
@@ -414,6 +458,15 @@ struct UiContentBox {
     double width = 0.0;
     double height = 0.0;
     [[nodiscard]] bool operator==(const UiContentBox&) const = default;
+};
+
+/** The computed style values an element's last layout serialized; empty when not rendered. */
+struct UiComputedStyle {
+    std::string display;
+    std::string opacity;
+    std::string visibility;
+    std::string z_index;
+    [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;
 };
 
 struct MeshHandle {
@@ -3679,6 +3732,9 @@ struct UiElementRecord {
     /** Synced with `client_rect`: where a canvas presents its GPU content. */
     UiContentBox content_box{};
     bool client_rect_requested = false;
+    /** Read by getComputedStyle; the layout serializes it once requested. */
+    UiComputedStyle computed_style{};
+    bool computed_style_requested = false;
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
@@ -4018,6 +4074,8 @@ struct Engine {
     /** Programmatic focus requested by the source render canvas. */
     bool canvas_focused = false;
     PlatformEventListeners<void(bool)> visibility_change_callbacks;
+    /** document.hidden: the window is hidden or minimized. */
+    bool document_hidden = false;
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
     /** The primary 2D canvas, when this engine is only a platform host. */
@@ -4027,6 +4085,9 @@ struct Engine {
     UiElementHandle ui_focused_element{};
     std::uint64_t ui_focus_revision = 0;
     bool ui_focus_visible = true;
+    /** The control whose text select() last selected; the projection applies each revision. */
+    UiElementHandle ui_text_selection{};
+    std::uint64_t ui_text_selection_revision = 0;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
     struct DocumentRoots {
@@ -4266,6 +4327,26 @@ inline bool ui_is_connected(const Engine& engine, UiElementHandle element) {
         if (record.attached_to_root)
             return true;
         element = ui_tree_parent(record);
+    }
+    return false;
+}
+
+/** HTMLElement.isContentEditable: the nearest contenteditable state; an invalid value inherits. */
+inline bool ui_is_content_editable(const Engine& engine, UiElementHandle element) {
+    for (; element.value != invalid_handle;
+         element = ui_tree_parent(handle_at(engine.ui_elements, element))) {
+        const auto& attributes = handle_at(engine.ui_elements, element).attributes;
+        const auto found = attributes.find("contenteditable");
+        if (found == attributes.end())
+            continue;
+        std::string state = found->second;
+        for (char& letter : state)
+            if (letter >= 'A' && letter <= 'Z')
+                letter = static_cast<char>(letter - 'A' + 'a');
+        if (state.empty() || state == "true" || state == "plaintext-only")
+            return true;
+        if (state == "false")
+            return false;
     }
     return false;
 }

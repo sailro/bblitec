@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -47,6 +48,11 @@ ui_query_element(Engine& engine, UiElementHandle root,
                  UiQueryMode mode = UiQueryMode::First);
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors);
+/** Element tree reads over retained parents and children; innerHTML content throws. */
+enum class UiTreeRead { Parent, FirstChild, LastChild, PreviousSibling, NextSibling };
+js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
+                                              UiTreeRead read);
+std::string ui_text_content(Engine& engine, UiElementHandle node);
 std::string ui_get_form_value(Engine& engine, UiElementHandle element);
 bool ui_get_checked(Engine& engine, UiElementHandle element);
 void ui_set_checked(Engine& engine, UiElementHandle element, bool checked);
@@ -55,6 +61,8 @@ void ui_set_selected(Engine& engine, UiElementHandle element, bool selected);
 void ui_set_selection(Engine& engine, UiElementHandle select, UiElementHandle option);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element);
+/** getComputedStyle(element)[property] for display, opacity, visibility and z-index. */
+std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property);
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text);
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup);
 UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
@@ -100,6 +108,15 @@ void ui_add_host_style_rule(
 js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
                                           std::string_view class_name);
 UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child);
+/** The parent's first child node other than `inserted`, its leaf text becoming a text node;
+ * invalid when it has none. */
+UiElementHandle ui_first_child_node(Engine& engine, UiElementHandle parent,
+                                    std::initializer_list<UiElementHandle> inserted = {});
+/** Inserts before `reference`, a child of `parent`, or appends when the reference is invalid. */
+UiElementHandle ui_insert_child(Engine& engine, UiElementHandle parent, UiElementHandle child,
+                                UiElementHandle reference);
+void ui_insert_text(Engine& engine, UiElementHandle parent, std::string text,
+                    UiElementHandle reference);
 UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child);
 void ui_replace_children(Engine& engine, UiElementHandle parent);
 void ui_remove(Engine& engine, UiElementHandle element);
@@ -109,6 +126,8 @@ void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
 /** HTMLElement.blur(): unfocuses the element only while it is the focused element. */
 void ui_blur(Engine& engine, UiElementHandle element);
+/** HTMLInputElement/HTMLTextAreaElement select(): selects the control's whole text. */
+void ui_select_text(Engine& engine, UiElementHandle element);
 /** Records focus without focus or blur events: native focus a Window display resolved. */
 void ui_record_focus(Engine& engine, UiElementHandle element, bool visible);
 bool ui_clear_focus(Engine& engine, UiElementHandle next = {});

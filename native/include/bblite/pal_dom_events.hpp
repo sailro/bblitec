@@ -143,6 +143,8 @@ struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
     DomEventListeners<PlatformCustomEvent> custom;
+    DomEventListeners<PlatformTransitionEvent> transition;
+    DomEventListeners<PlatformDragEvent> drag;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -159,12 +161,19 @@ struct DomInput {
     bool native_pointer_default = false;
     bool canvas_background = true;
     bool pending_resize = false;
+    /** The path under an active file drag and the files its drop carries. */
+    std::vector<DomEventTarget> drag_path;
+    DroppedFiles dropped_files;
+    std::shared_ptr<std::atomic<bool>> drag_acceptance;
+    double drag_x = 0, drag_y = 0;
 
 #if BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {
         pointer.gc_trace(visitor);
         keyboard.gc_trace(visitor);
         custom.gc_trace(visitor);
+        transition.gc_trace(visitor);
+        drag.gc_trace(visitor);
     }
 #endif
 };
@@ -191,11 +200,16 @@ inline DomInput& listen_dom_pointer(Engine& engine, DomEventTarget target,
     return input;
 }
 
-inline DomInput& listen_dom_keyboard(Engine& engine, const std::string& type) {
+/** The display learns a listened type it sources natively, such as a key or a transition end. */
+inline DomInput& listen_dom_type(Engine& engine, const std::string& type) {
     auto& input = dom_input(engine);
     if (input.event_types.insert(type).second)
         ++input.revision;
     return input;
+}
+
+inline DomInput& listen_dom_keyboard(Engine& engine, const std::string& type) {
+    return listen_dom_type(engine, type);
 }
 
 inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
@@ -247,6 +261,45 @@ inline void off_dom_keyboard(Engine& engine, DomEventTarget target, std::string 
         engine.dom_input->keyboard.remove(target, std::move(type), identity, capture);
 }
 
+inline void on_dom_transition(Engine& engine, DomEventTarget target, std::string type,
+                              std::size_t identity,
+                              DomEventListeners<PlatformTransitionEvent>::Callback callback,
+                              bool capture = false, bool once = false, bool passive = false) {
+    listen_dom_type(engine, type)
+        .transition.add(target, std::move(type), identity, std::move(callback), capture, once,
+                        passive);
+}
+
+inline void off_dom_transition(Engine& engine, DomEventTarget target, std::string type,
+                               std::size_t identity, bool capture = false) {
+    if (engine.dom_input)
+        engine.dom_input->transition.remove(target, std::move(type), identity, capture);
+}
+
+/** The platform sources file drags while a listened type names them. */
+inline void on_dom_drag(Engine& engine, DomEventTarget target, std::string type,
+                        std::size_t identity,
+                        DomEventListeners<PlatformDragEvent>::Callback callback,
+                        bool capture = false, bool once = false, bool passive = false) {
+    listen_dom_pointer(engine, target, type)
+        .drag.add(target, std::move(type), identity, std::move(callback), capture, once, passive);
+}
+
+inline void off_dom_drag(Engine& engine, DomEventTarget target, std::string type,
+                         std::size_t identity, bool capture = false) {
+    if (engine.dom_input)
+        engine.dom_input->drag.remove(target, std::move(type), identity, capture);
+}
+
+inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::string type,
+                                 DomEventListeners<PlatformDragEvent>::Callback callback) {
+    if (callback)
+        listen_dom_pointer(engine, target, type);
+    else if (!engine.dom_input)
+        return;
+    engine.dom_input->drag.set_handler(target, std::move(type), std::move(callback));
+}
+
 template <typename Event>
 [[nodiscard]] Event dom_event(Event payload, std::string type, std::vector<DomEventTarget> path,
                               bool bubbles = true, bool cancelable = true,
@@ -294,7 +347,8 @@ inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event
  * display checks completion between frames, so callbacks can request layout
  * without deadlocking behind a synchronous input acknowledgement. */
 struct DomEventBatch {
-    using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent>;
+    using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent, PlatformTransitionEvent,
+                                 PlatformDragEvent>;
     struct Entry {
         Payload payload;
         bool controls_default = false;
@@ -329,6 +383,13 @@ struct DomEventBatch {
                             engine.dom_input->pointer.dispatch(event, invoke, &engine);
                             if (type == "pointerdown" && event.default_prevented)
                                 suppressed.insert(event.pointer_id);
+                        } else if constexpr (std::is_same_v<PayloadType, PlatformTransitionEvent>)
+                            engine.dom_input->transition.dispatch(event, invoke, &engine);
+                        else if constexpr (std::is_same_v<PayloadType, PlatformDragEvent>) {
+                            engine.dom_input->drag.dispatch(event, invoke, &engine);
+                            if (event.acceptance)
+                                event.acceptance->store(event.default_prevented,
+                                                        std::memory_order_release);
                         } else
                             engine.dom_input->keyboard.dispatch(event, invoke, &engine);
                     }
@@ -420,6 +481,26 @@ inline bool dom_target_is_element(DomEventTargetValue value, bool html) {
 
 inline bool dom_target_is_element(const js::Nullable<DomEventTargetValue>& value, bool html) {
     return value.has_value() && dom_target_is_element(*value, html);
+}
+
+/** isContentEditable of an element target; the render canvas a page does not retain has no
+ * contenteditable state. */
+inline bool dom_target_is_content_editable(DomEventTargetValue value) {
+    if (value.target.kind == DomEventTargetKind::Canvas &&
+        dom_target_retained_element(value).value == invalid_handle)
+        return false;
+    return ui_is_content_editable(dom_target_owner(value), dom_target_element(value));
+}
+
+/** `instanceof Node`: the Document, the canvas and retained elements and text, not the Window. */
+inline bool dom_target_is_node(DomEventTargetValue value) {
+    if (value.target.kind != DomEventTargetKind::Element)
+        return value.target.kind != DomEventTargetKind::Window;
+    return value.target.element < dom_target_owner(value).ui_elements.size();
+}
+
+inline bool dom_target_is_node(const js::Nullable<DomEventTargetValue>& value) {
+    return value.has_value() && dom_target_is_node(*value);
 }
 
 inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHandle target) {

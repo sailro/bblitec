@@ -20,7 +20,9 @@
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
+#include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
+#include <RmlUi/Core/Elements/ElementFormControlTextArea.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/FontEngineInterface.h>
@@ -463,6 +465,63 @@ UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part) {
     throw std::runtime_error("Unknown native document root.");
 }
 
+namespace {
+
+/** A node whose children the retained records hold: innerHTML content has no records. */
+const UiElementRecord& ui_traversable(Engine& engine, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle || !record.inner_rml.empty())
+        throw std::runtime_error("DOM tree reads inside innerHTML need an authored markup tree.");
+    return record;
+}
+
+} // namespace
+
+js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
+                                              UiTreeRead read) {
+    const auto element = [&](UiElementHandle candidate) {
+        return ui_element(engine, candidate).tag != "#text";
+    };
+    if (read == UiTreeRead::FirstChild || read == UiTreeRead::LastChild) {
+        const auto& children = ui_traversable(engine, node).children;
+        if (read == UiTreeRead::FirstChild) {
+            const auto found = std::find_if(children.begin(), children.end(), element);
+            return found == children.end() ? js::Nullable<UiElementHandle>{} : *found;
+        }
+        const auto found = std::find_if(children.rbegin(), children.rend(), element);
+        return found == children.rend() ? js::Nullable<UiElementHandle>{} : *found;
+    }
+    // A node appended to the document before its roots existed belongs to the body; asking for it
+    // creates the roots as document.body does.
+    UiElementHandle parent = ui_traversable(engine, node).parent;
+    if (ui_element(engine, node).attached_to_root)
+        parent = engine.ui_document_roots.active() && node == engine.ui_document_roots.html
+                     ? UiElementHandle{}
+                     : ui_document_root(engine, UiDocumentPart::Body);
+    if (parent.value == invalid_handle)
+        return std::nullopt;
+    if (read == UiTreeRead::Parent)
+        return parent;
+    const auto& siblings = ui_element(engine, parent).children;
+    const auto at = std::find(siblings.begin(), siblings.end(), node);
+    if (read == UiTreeRead::NextSibling) {
+        const auto found = std::find_if(std::next(at), siblings.end(), element);
+        return found == siblings.end() ? js::Nullable<UiElementHandle>{} : *found;
+    }
+    const auto found = std::find_if(std::make_reverse_iterator(at), siblings.rend(), element);
+    return found == siblings.rend() ? js::Nullable<UiElementHandle>{} : *found;
+}
+
+std::string ui_text_content(Engine& engine, UiElementHandle node) {
+    const UiElementRecord& record = ui_traversable(engine, node);
+    if (record.tag == "style")
+        throw std::runtime_error("A retained <style> element's text is not represented.");
+    std::string text = record.text;
+    for (const auto child : record.children)
+        text += ui_text_content(engine, child);
+    return text;
+}
+
 UiElementHandle ui_create_text_node(Engine& engine, std::string text) {
     const auto handle = ui_create_element(engine, "#text");
     ui_set_text(engine, handle, std::move(text));
@@ -528,6 +587,28 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
     const auto& rect = record.client_rect;
     return {rect.left * scale,   rect.top * scale,          rect.width * scale,
             rect.height * scale, rect.offset_width * scale, rect.offset_height * scale};
+}
+
+std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property) {
+    if (UiElementRecord& record = ui_element(engine, element); !record.computed_style_requested) {
+        record.computed_style_requested = true;
+        // A Window display learns of the request through the next document snapshot.
+        if (engine.ui_measure_element)
+            ++engine.ui_revision;
+    }
+    // Window reads flush layout, adopting the display's computed styles.
+    if (engine.ui_measure_element)
+        static_cast<void>(engine.ui_measure_element(engine, element));
+    const auto& style = ui_element(engine, element).computed_style;
+    if (property == "display")
+        return style.display;
+    if (property == "opacity")
+        return style.opacity;
+    if (property == "visibility")
+        return style.visibility;
+    if (property == "z-index")
+        return style.z_index;
+    throw std::runtime_error("Unsupported computed style property: " + std::string(property));
 }
 
 std::string ui_get_form_value(Engine& engine, UiElementHandle element) {
@@ -1217,6 +1298,53 @@ UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElemen
     return child;
 }
 
+UiElementHandle ui_insert_child(Engine& engine, UiElementHandle parent, UiElementHandle child,
+                                UiElementHandle reference) {
+    if (reference == child)
+        throw std::logic_error("A node cannot be inserted before itself.");
+    ui_append_child(engine, parent, child);
+    if (reference.value == invalid_handle)
+        return child;
+    auto& children = ui_element(engine, parent).children;
+    const auto at = std::find(children.begin(), children.end(), reference);
+    if (at == children.end())
+        throw std::runtime_error("The node before which to insert is not a child of this node.");
+    std::rotate(at, std::prev(children.end()), children.end());
+    return child;
+}
+
+void ui_insert_text(Engine& engine, UiElementHandle parent, std::string text,
+                    UiElementHandle reference) {
+    static_cast<void>(
+        ui_insert_child(engine, parent, ui_create_text_node(engine, std::move(text)), reference));
+}
+
+UiElementHandle ui_first_child_node(Engine& engine, UiElementHandle parent,
+                                    std::initializer_list<UiElementHandle> inserted) {
+    {
+        const UiElementRecord& record = ui_element(engine, parent);
+        if (!record.inner_rml.empty() || record.markup_owner.value != invalid_handle)
+            throw std::runtime_error(
+                "Inserting into innerHTML content needs an authored markup tree.");
+        if (record.text.empty()) {
+            // The nodes being inserted leave their places first.
+            const auto found = std::find_if(
+                record.children.begin(), record.children.end(), [&](UiElementHandle child) {
+                    return std::find(inserted.begin(), inserted.end(), child) == inserted.end();
+                });
+            return found == record.children.end() ? UiElementHandle{} : *found;
+        }
+    }
+    // Leaf text renders before any children: it becomes the first text node.
+    auto text = std::exchange(ui_element(engine, parent).text, {});
+    mark_ui_changed(engine, ui_element(engine, parent));
+    const auto first = ui_element(engine, parent).children.empty()
+                           ? UiElementHandle{}
+                           : ui_element(engine, parent).children.front();
+    const auto node = ui_create_text_node(engine, std::move(text));
+    return ui_insert_child(engine, parent, node, first);
+}
+
 UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child) {
     if (engine.ui_document_roots.active())
         return ui_append_child(engine, engine.ui_document_roots.body, child);
@@ -1465,6 +1593,17 @@ void ui_focus(Engine& engine, UiElementHandle element, bool visible) {
         return;
     set_ui_focused_element(engine, element);
     dispatch_ui_focus(engine, element, "focus", previous);
+}
+
+void ui_select_text(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    if (record.tag != "textarea" && record.tag != "input")
+        throw std::runtime_error("select() requires an input or textarea element.");
+    // Input types without selectable text ignore it; RmlUi's do as well.
+    if (record.file_input)
+        return;
+    engine.ui_text_selection = element;
+    ++engine.ui_text_selection_revision;
 }
 
 #if BBLITE_HAS_BROWSER_FILE
@@ -2046,6 +2185,59 @@ private:
     bool& default_prevented;
     bool& projecting;
     bool& native_focus_pending;
+    const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
+};
+
+/** CSS serializations of the computed values getComputedStyle reads. */
+UiComputedStyle ui_serialized_computed_style(Rml::Element& element) {
+    static constexpr std::array<std::string_view, 16> displays{"none",
+                                                               "block",
+                                                               "inline",
+                                                               "inline-block",
+                                                               "flow-root",
+                                                               "flex",
+                                                               "inline-flex",
+                                                               "table",
+                                                               "inline-table",
+                                                               "table-row",
+                                                               "table-row-group",
+                                                               "table-column",
+                                                               "table-column-group",
+                                                               "table-cell",
+                                                               "grid",
+                                                               "inline-grid"};
+    const auto& computed = element.GetComputedValues();
+    UiComputedStyle style;
+    style.display = displays.at(static_cast<std::size_t>(computed.display()));
+    // RmlUi inherits opacity; CSS computes the element's own value, 1 unless declared.
+    const Rml::Property* opacity = element.GetLocalProperty(Rml::PropertyId::Opacity);
+    char number[32];
+    std::snprintf(number, sizeof number, "%.6g", opacity ? opacity->Get<float>() : 1.0f);
+    style.opacity = number;
+    style.visibility =
+        computed.visibility() == Rml::Style::Visibility::Hidden ? "hidden" : "visible";
+    const auto z_index = computed.z_index();
+    style.z_index = z_index.type == Rml::Style::NumberAuto::Auto
+                        ? "auto"
+                        : std::to_string(static_cast<int>(z_index.value));
+    return style;
+}
+
+/** Records the transitions RmlUi ends on retained elements; dispatch waits for its update. */
+class UiTransitionListener final : public Rml::EventListener {
+public:
+    UiTransitionListener(std::vector<std::pair<DomEventTarget, std::string>>& ended,
+                         const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets)
+        : ended(ended), event_targets(event_targets) {}
+
+    void ProcessEvent(Rml::Event& event) override {
+        const auto target = event_targets.find(event.GetTargetElement());
+        if (target != event_targets.end())
+            ended.emplace_back(target->second, event.GetParameter<Rml::String>("property", ""));
+    }
+
+private:
+    std::vector<std::pair<DomEventTarget, std::string>>& ended;
     const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
 };
 
@@ -5259,6 +5451,31 @@ struct UiRmlRuntime {
         }
     }
 
+    /** Sources transitionend once a listener names it. */
+    void listen_transitions() {
+        if (transition_listener || !document || !engine.dom_input ||
+            !engine.dom_input->event_types.contains("transitionend"))
+            return;
+        transition_listener =
+            std::make_unique<UiTransitionListener>(ended_transitions, event_targets);
+        document->AddEventListener(Rml::EventId::Transitionend, transition_listener.get());
+    }
+
+    /** Transitions the previous update ended, each bubbling from its element. */
+    void dispatch_ended_transitions() {
+        for (auto& [target, property] : std::exchange(ended_transitions, {})) {
+            if (target.element >= engine.ui_elements.size())
+                continue;
+            PlatformTransitionEvent payload;
+            payload.property_name = std::move(property);
+            auto batch = std::make_shared<DomEventBatch>();
+            batch->add(dom_event(std::move(payload), "transitionend",
+                                 dom_ui_path(engine, UiElementHandle{target.element}), true,
+                                 false));
+            dispatch_dom_batch(engine, batch);
+        }
+    }
+
     bool sync_focus() {
         const auto focused = ui_active_element(engine);
         if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused)
@@ -5274,6 +5491,24 @@ struct UiRmlRuntime {
         }
         projected_focus_revision = engine.ui_focus_revision;
         projected_focused = focused;
+        return true;
+    }
+
+    /** Applies the latest select() to its projected text control. */
+    bool sync_text_selection() {
+        if (projected_text_selection_revision == engine.ui_text_selection_revision)
+            return false;
+        projected_text_selection_revision = engine.ui_text_selection_revision;
+        const auto selected = engine.ui_text_selection;
+        if (selected.value >= projected_elements.size())
+            return false;
+        auto* element = handle_at(projected_elements, selected).element;
+        if (auto* input = dynamic_cast<Rml::ElementFormControlInput*>(element))
+            input->Select();
+        else if (auto* area = dynamic_cast<Rml::ElementFormControlTextArea*>(element))
+            area->Select();
+        else
+            return false;
         return true;
     }
 
@@ -5840,9 +6075,13 @@ struct UiRmlRuntime {
         for (std::uint32_t index = 0;
              index < projected_elements.size() && index < engine.ui_elements.size(); ++index) {
             UiElementRecord& record = engine.ui_elements[index];
+            Rml::Element* element = projected_elements[index].element;
+            // Computed values change with animations, so a requested style follows every update.
+            if (record.computed_style_requested)
+                record.computed_style =
+                    element ? ui_serialized_computed_style(*element) : UiComputedStyle{};
             if (!all_elements && !record.client_rect_requested)
                 continue;
-            Rml::Element* element = projected_elements[index].element;
             if (!element) {
                 record.client_rect = {};
                 record.content_box = {};
@@ -5924,6 +6163,9 @@ struct UiRmlRuntime {
     std::uint64_t projected_text_revision = 0;
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
+    std::uint64_t projected_text_selection_revision = 0;
+    std::vector<std::pair<DomEventTarget, std::string>> ended_transitions;
+    std::unique_ptr<UiTransitionListener> transition_listener;
     std::string css_font_family;
     std::unique_ptr<SystemUiFontEngine> system_fonts;
     std::string css_sans_family;
@@ -6137,6 +6379,7 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     if (cpu.enabled)
         ++cpu.sample.updates;
     runtime.sync_native_focus();
+    runtime.dispatch_ended_transitions();
     UiProjectionScope projection_scope(runtime.projecting);
     const bool dimensions_changed =
         runtime.viewport_width != width || runtime.viewport_height != height;
@@ -6172,13 +6415,14 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         }
     }
     cpu.split(cpu.sample.projection, checkpoint);
+    runtime.listen_transitions();
     runtime.context->Update();
     bool root_font_changed = runtime.sync_root_font_math();
     cpu.split(cpu.sample.context, checkpoint);
     if (runtime.sync_text_form_metrics())
         runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
-    if (focus_changed)
+    if (runtime.sync_text_selection() || focus_changed)
         runtime.context->Update();
     if (runtime.sync_focus_within())
         runtime.context->Update();

@@ -1270,7 +1270,10 @@ export interface UserFunctionContext
             | "increaseIndent"
             | "decreaseIndent"
             | "fail"
-        > {}
+        > {
+    /** The document-hidden flag platform callbacks read, while one is lowered. */
+    platformDocumentHiddenCpp: string | undefined;
+}
 
 /**
  * The browser-only nullable fallback shape two success-path matchers share:
@@ -3361,6 +3364,10 @@ export class UserFunctionLowerer {
             ? context.dataTypes.cppType(entry.returnType)
             : "void";
         let returnMetadata: Value | undefined;
+        // A separately emitted body cannot read an enclosing visibility
+        // callback's argument.
+        const documentHidden = context.platformDocumentHiddenCpp;
+        context.platformDocumentHiddenCpp = undefined;
         context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
             const parameterDeclarations: string[] = [];
@@ -3780,6 +3787,7 @@ export class UserFunctionLowerer {
                 });
         } finally {
             context.bindings.popScope();
+            context.platformDocumentHiddenCpp = documentHidden;
         }
         return returnMetadata;
     }
