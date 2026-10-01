@@ -253,3 +253,32 @@ test("query readers specialize caller-supplied keys and defaults", () => {
     );
     assert.ok(result.cpp.includes("int main()"));
 });
+
+test("a module constant a platform probe initializes is a run-time condition", () => {
+    const directory = resolve("artifacts/platform-constant");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "platform.ts"),
+        `function detectMac(): boolean {
+            if (typeof navigator === "undefined") return false;
+            return /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || "");
+        }
+        export const IS_MAC = detectMac();`,
+    );
+    const fileName = join(directory, "entry.ts");
+    const source = `import { IS_MAC } from "./platform";
+        const NAMES: Record<string, string> = { "keys.cmd": "Cmd", "keys.ctrl": "Ctrl" };
+        function name(key: string): string { return NAMES[key] ?? key; }
+        export function render(): void {
+            localStorage.setItem("modifier", name(IS_MAC ? "keys.cmd" : "keys.ctrl"));
+            if (IS_MAC) localStorage.setItem("platform", "mac");
+        }
+        render();`;
+    writeFileSync(fileName, source);
+    const { cpp } = compileSource(source, { fileName });
+    assert.match(
+        cpp,
+        /\(bblscene::detectMac\(\) \? "keys\.cmd" : "keys\.ctrl"\)/,
+    );
+    assert.match(cpp, /if \(bblscene::detectMac\(\)\)/);
+});

@@ -532,6 +532,18 @@ export class ConditionLowerer {
                 if (value.kind === "json-null") {
                     return "false";
                 }
+            } else if (
+                ts.isCallExpression(
+                    this.context.evaluator.resolveStaticExpression(unwrapped),
+                )
+            ) {
+                // A module constant a call initializes (`IS_MAC =
+                // detectMac()`) reads the call's value, as the call itself
+                // does in this position.
+                const condition = this.context.dataLowerer.truthinessCondition(
+                    this.context.compileValue(unwrapped),
+                );
+                if (condition !== undefined) return condition;
             }
             return this.context.compileBoolean(unwrapped);
         }
