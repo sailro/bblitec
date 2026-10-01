@@ -3459,6 +3459,14 @@ public:
                             } else
 #endif
                                 draw_transparent(render_task.draw_lists.transparent);
+#if BBLITE_HAS_TEXT
+                            // The scene's text, bound for this pass's
+                            // attachments (`validate_text_scene`).
+                            if (graph_layer == 0 && task.render.scene_stages) {
+                                state.text->scene.draw(state.text->borrow_pass(task_pass),
+                                                       bbl::text_surface(engine));
+                            }
+#endif
 #if BBLITE_PINNED_BACKGROUNDS
                             // Ground is the final scene stage, after transparent
                             // meshes, exactly as in the non-frame-graph pass.

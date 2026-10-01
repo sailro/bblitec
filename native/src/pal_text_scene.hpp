@@ -15,11 +15,35 @@
 
 namespace bbl::pal {
 
+/**
+ * Whether the scene's text draws in its one compiler-owned scene pass: the
+ * default render pass, or the scene-stage render task of the default task
+ * graph a surface scene registers with. Another render or geometry task
+ * would mirror the text into a pass of its own.
+ */
+inline bool text_in_default_scene_pass(const Scene& scene) {
+    if (!scene.state->default_render_task)
+        return false;
+    std::size_t scene_passes = 0;
+    for (const TaskHandle handle : scene.tasks) {
+        const FrameTaskRecord& task = handle_at(scene.engine->frame_tasks, handle);
+        if (task.kind == FrameTaskKind::geometry ||
+            (task.kind == FrameTaskKind::render && !task.render.scene_stages))
+            return false;
+        if (task.kind == FrameTaskKind::render)
+            ++scene_passes;
+    }
+    return scene.tasks.empty() || scene_passes == 1;
+}
+
 /** Validate the scene that actually owns the retained text bindings. */
 inline void validate_text_scene(const Scene& scene) {
     if (scene.state->text_renderables.empty())
         return;
-    if (!scene.state->default_render_task || !scene.tasks.empty()) {
+    if (!scene.engine) {
+        throw std::runtime_error("Text scene bindings require an explicit camera.");
+    }
+    if (!text_in_default_scene_pass(scene)) {
         throw std::runtime_error("Text scene bindings require the default render pass.");
     }
     if (!scene.meshes.empty() || !scene.splat_meshes.empty() ||

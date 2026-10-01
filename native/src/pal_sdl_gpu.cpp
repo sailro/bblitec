@@ -3110,6 +3110,14 @@ public:
                                                      : SDL_GPU_TEXTUREFORMAT_INVALID,
                                                  target_sample_count(state, target_record)});
                             if (task.render.scene_stages) {
+#if BBLITE_HAS_TEXT
+                                // The scene's text, bound for this pass's
+                                // attachments (`validate_text_scene`).
+                                if (graph_layer == 0)
+                                    state.text->scene.draw(
+                                        state.text->borrow_pass(command, task_pass),
+                                        bbl::text_surface(engine));
+#endif
 #if BBLITE_PINNED_BACKGROUNDS
                                 draw_task_background(task_pass, handle, task_matrix, task_camera,
                                                      state.background_draws.ground);

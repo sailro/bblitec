@@ -534,7 +534,8 @@ repertoire with static layout options; alignment is left/center/right. Runs are 
 (`{ ...run, defaultColor, pixelsPerFontUnit }`); literal glyph lists, replacement storages and user glyph
 storages (createGlyphStorage, extractGlyphCurves, createTextData) refuse.
 
-Renderable text needs one text-only default scene with a static FreeCamera or supported ArcRotate controls.
+Renderable text needs one text-only default scene (or default task graph, on an authored canvas) with a static
+FreeCamera or supported ArcRotate controls.
 Transforms/opacity are live; membership/order/depth precede attachment. Late attachment, reflective writes,
 high-precision matrices and custom tasks refuse. Standalone layers support affine pixel placement,
 opacity/gamma/visibility/order; data replacement and mixed renderer families refuse.
