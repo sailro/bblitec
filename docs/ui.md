@@ -37,6 +37,8 @@ Check them before adding an implementation. Source rejection does not imply miss
   identity across Window/globalThis reads; nullable query caches retain live results. Pointer/hover admits
   conjunctions and follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable;
   `typeof` MutationObserver/ResizeObserver is `function` in the Window realm.
+  Their constructors pass through immutable aliases and generation-known options records; dynamic
+  constructor storage and constructor identity comparisons refuse.
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - MutationObserver supports microtask attribute notifications, static attribute filters and disconnect.
   Mutation records, old values, child-list changes and subtree observation refuse.

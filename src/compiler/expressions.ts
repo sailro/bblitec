@@ -1395,6 +1395,7 @@ export class ExpressionLowerer {
                           dataType?.kind === "enum"
                         ? "string"
                         : operand.kind === "callback" ||
+                            operand.builtinConstructor !== undefined ||
                             dataType?.kind === "function"
                           ? "function"
                           : operand.kind === "void"

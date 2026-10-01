@@ -1,4 +1,5 @@
 import { EmissionMap, writable } from "./emission-transaction.js";
+import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -1259,6 +1260,14 @@ export function emitPropertyAssignment(
         writable(fields)[left.name.text] = context.compileValue(left.name);
         return;
     }
+    if (
+        resolvedBuiltinConstructor(context, left) ||
+        resolvedBuiltinConstructor(context, expression.right)
+    )
+        context.fail(
+            left,
+            "Builtin constructor fields require an immutable generation-known binding.",
+        );
     if (
         context.browserErasure.isBrowserOnlyExpression(left) ||
         context.browserErasure.isBrowserDomValue(left)

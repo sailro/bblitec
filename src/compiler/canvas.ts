@@ -9,6 +9,7 @@ import { requireWindowHost } from "./window-events.js";
 import { isWindowObserver, windowInterfaceTypeof } from "./dom-targets.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { nativeFunctionValue } from "./native-function-values.js";
+import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 
 export interface CanvasContext
     extends
@@ -30,6 +31,26 @@ function hasDomInterface(
         symbol?.name === name &&
         (symbol.declarations?.some(ts.isInterfaceDeclaration) ?? false) &&
         declaredInDefaultLibrary(symbol)
+    );
+}
+
+/** Pick/Omit views retain the original DOM method declarations. */
+function hasDomMethod(
+    context: CanvasContext,
+    expression: ts.PropertyAccessExpression,
+    interfaceName: string,
+): boolean {
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(expression.expression),
+    );
+    const method = type.getProperty(expression.name.text);
+    return (
+        declaredInDefaultLibrary(method) &&
+        (method?.declarations ?? []).some(
+            (declaration) =>
+                ts.isInterfaceDeclaration(declaration.parent) &&
+                declaration.parent.name.text === interfaceName,
+        )
     );
 }
 
@@ -68,18 +89,29 @@ export function compileCanvasValue(
     expression: ts.Expression,
 ): Value | undefined {
     const node = context.unwrap(expression);
+    const global = context.libraryGlobal(node);
     if (!context.options.workers) {
         if (
             ((ts.isNewExpression(node) || ts.isTypeOfExpression(node)) &&
                 isWindowObserver(context.libraryGlobal(node.expression))) ||
             (ts.isCallExpression(node) &&
                 context.libraryGlobal(node.expression) === "matchMedia") ||
-            context.libraryGlobal(node) === "matchMedia"
+            global === "matchMedia" ||
+            isWindowObserver(global)
         )
             throw new ApplicationRealmRequired();
         return undefined;
     }
-    if (context.libraryGlobal(node) === "matchMedia") {
+    if (global === "ResizeObserver" || global === "MutationObserver") {
+        requireWindowHost(context, node);
+        return {
+            kind: "record",
+            cpp: "",
+            recordProperties: {},
+            builtinConstructor: global,
+        };
+    }
+    if (global === "matchMedia") {
         requireWindowHost(context, node);
         return nativeFunctionValue(
             context,
@@ -199,37 +231,41 @@ export function compileCanvasValue(
             impure: true,
         };
     }
-    if (
-        !context.options.workers.namespace &&
-        ts.isNewExpression(node) &&
-        context.libraryGlobal(node.expression) === "MutationObserver"
-    ) {
-        if (node.arguments?.length !== 1)
-            return context.fail(
-                node,
-                "MutationObserver requires one callback.",
+    if (!context.options.workers.namespace && ts.isNewExpression(node)) {
+        const constructor = resolvedBuiltinConstructor(
+            context,
+            node.expression,
+        );
+        if (
+            constructor === "MutationObserver" ||
+            constructor === "ResizeObserver"
+        ) {
+            if (node.arguments?.length !== 1)
+                return context.fail(
+                    node,
+                    `${constructor} requires one callback.`,
+                );
+            requireWindowHost(context, node);
+            const callback = context.callbacks.compileFrameCallback(
+                argumentAt(node, 0),
+                "void",
             );
-        requireWindowHost(context, node);
-        return {
-            kind: "worker-mutation-observer",
-            dataType: { kind: "handle", handle: "worker-mutation-observer" },
-            cpp: `bbl::pal::create_mutation_observer(${context.callbacks.compileFrameCallback(argumentAt(node, 0), "void")})`,
-            impure: true,
-        };
-    }
-    if (
-        !context.options.workers.namespace &&
-        ts.isNewExpression(node) &&
-        context.libraryGlobal(node.expression) === "ResizeObserver"
-    ) {
-        if (node.arguments?.length !== 1)
-            return context.fail(node, "ResizeObserver requires one callback.");
-        requireWindowHost(context, node);
-        return {
-            kind: "worker-resize-observer",
-            cpp: `bbl::pal::create_resize_observer(${context.callbacks.compileFrameCallback(argumentAt(node, 0), "void")})`,
-            impure: true,
-        };
+            return constructor === "MutationObserver"
+                ? {
+                      kind: "worker-mutation-observer",
+                      dataType: {
+                          kind: "handle",
+                          handle: "worker-mutation-observer",
+                      },
+                      cpp: `bbl::pal::create_mutation_observer(${callback})`,
+                      impure: true,
+                  }
+                : {
+                      kind: "worker-resize-observer",
+                      cpp: `bbl::pal::create_resize_observer(${callback})`,
+                      impure: true,
+                  };
+        }
     }
     if (ts.isCallExpression(node)) {
         const callee = context.unwrap(node.expression);
@@ -289,7 +325,7 @@ export function compileCanvasValue(
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
-            hasDomInterface(context, callee.expression, "MutationObserver")
+            hasDomMethod(context, callee, "MutationObserver")
         ) {
             const owner = context.compileValue(callee.expression);
             if (owner.kind !== "worker-mutation-observer") return undefined;
@@ -380,7 +416,7 @@ export function compileCanvasValue(
         if (
             ts.isPropertyAccessExpression(callee) &&
             ["observe", "unobserve", "disconnect"].includes(callee.name.text) &&
-            hasDomInterface(context, callee.expression, "ResizeObserver")
+            hasDomMethod(context, callee, "ResizeObserver")
         ) {
             const owner = context.compileValue(callee.expression);
             if (owner.kind === "worker-resize-observer") {

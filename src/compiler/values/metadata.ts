@@ -45,6 +45,7 @@ const resourceMetadataFields = {
         "classDeclaration",
         "classCandidates",
         "classStatics",
+        "builtinConstructor",
         "classTypeArguments",
         "nativeError",
         "sceneNodeVector",
