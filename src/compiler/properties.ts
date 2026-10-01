@@ -1836,6 +1836,13 @@ const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
     ["clientWidth", "width"],
     ["clientHeight", "height"],
 ]);
+/** Computed style reads and the CSS properties they name. */
+const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
+    ["display", "display"],
+    ["opacity", "opacity"],
+    ["visibility", "visibility"],
+    ["zIndex", "z-index"],
+]);
 /** Element tree reads and their `bbl::UiTreeRead` arms. */
 const UI_TREE_READS: ReadonlyMap<string, string> = new Map([
     ["parentElement", "Parent"],
@@ -2464,6 +2471,21 @@ export class PropertyAccessLowerer {
             };
         }
         const property = expression.name.text;
+        if (owner.kind === "ui-element" && owner.uiComputedStyle) {
+            const name = UI_COMPUTED_STYLES.get(property);
+            if (!name)
+                this.context.fail(
+                    expression.name,
+                    `Computed style '${property}' is not represented; display, opacity, visibility and zIndex are.`,
+                );
+            return {
+                kind: "string",
+                cpp: `bbl::ui_computed_style(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(name)})`,
+                dataType: { kind: "string" },
+                freshData: true,
+                impure: true,
+            };
+        }
         const drawn = property === "canvas" ? contextCanvas(owner) : undefined;
         if (drawn) return drawn;
         if (owner.kind === "physics-viewer" && property === "scene") {

@@ -315,3 +315,20 @@ export function documentHiddenCpp(
     const engine = documentEngine(context, read);
     return engine === undefined ? undefined : `${engine}.document_hidden`;
 }
+
+/** The element a `getComputedStyle(element)` or `window.getComputedStyle(element)` call reads. */
+export function computedStyleElement(
+    context: Pick<LoweringServices, "unwrap" | "libraryGlobal">,
+    expression: ts.Expression,
+): ts.Expression | undefined {
+    const call = context.unwrap(expression);
+    if (!ts.isCallExpression(call) || call.arguments.length === 0)
+        return undefined;
+    const callee = context.unwrap(call.expression);
+    const global =
+        context.libraryGlobal(callee) === "getComputedStyle" ||
+        (ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "getComputedStyle" &&
+            context.libraryGlobal(callee.expression) === "window");
+    return global ? call.arguments[0] : undefined;
+}

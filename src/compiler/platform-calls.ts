@@ -16,6 +16,7 @@ import {
 } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import {
+    computedStyleElement,
     documentEngine,
     requireWindowHost,
     windowErrorEventValue,
@@ -239,6 +240,18 @@ export class PlatformCalls {
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         if (this.emitPlatformEventListener(call))
             return { kind: "void", cpp: "" };
+        const styled = computedStyleElement(this.context, call);
+        if (styled) {
+            this.context.expectArgumentCount(call, 1, 1);
+            const element = this.ui.compileUiElementReceiver(styled);
+            if (element?.kind !== "ui-element")
+                this.context.fail(
+                    styled,
+                    "getComputedStyle requires a retained element.",
+                );
+            this.context.reachFeature("ui:rml", call);
+            return { ...element, uiComputedStyle: true };
+        }
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
             const typeName = this.context.checker

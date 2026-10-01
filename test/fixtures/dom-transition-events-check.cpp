@@ -60,12 +60,13 @@ int run() {
         // The root's own end removes its listener.
         update(300);
         update(310);
-        assert(ui_element(engine, log).text == "DcT");
+        // Its listener read the computed styles of the update that ended it.
+        assert(ui_element(engine, log).text == "DcT[block,0,visible,auto;0]");
         fade(false);
         update(400);
         update(800);
         update(810);
-        assert(ui_element(engine, log).text == "DcTD");
+        assert(ui_element(engine, log).text == "DcT[block,0,visible,auto;0]D");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

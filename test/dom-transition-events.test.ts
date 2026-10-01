@@ -19,7 +19,7 @@ function compileEntry(body: string): string {
     ).cpp;
 }
 
-test("transitionend dispatches from the UI projection with target, propertyName and removal", (t) => {
+test("transitionend dispatches from the UI projection; computed style reads follow layout", (t) => {
     const cpp = compileEntry(`
         const log = document.createElement("div");
         log.id = "log";
@@ -37,6 +37,12 @@ test("transitionend dispatches from the UI projection with target, propertyName 
         child.className = "fade quick";
         root.appendChild(child);
         document.body.appendChild(root);
+        // Computed styles serialize from the layout after their first read.
+        const style = (element: HTMLElement): string => {
+            const computed = getComputedStyle(element);
+            return computed.display + "," + computed.opacity + "," + computed.visibility + "," + computed.zIndex;
+        };
+        if (style(root) === style(child) + "!") record("!");
         const hide = (e?: TransitionEvent): void => {
             // A descendant's transition bubbles here too.
             if (e && (e.target !== root || e.propertyName !== "opacity")) {
@@ -45,6 +51,7 @@ test("transitionend dispatches from the UI projection with target, propertyName 
             }
             root.removeEventListener("transitionend", hide);
             record(e ? "T" : "t");
+            record("[" + style(root) + ";" + window.getComputedStyle(child).opacity + "]");
         };
         root.addEventListener("transitionend", hide);
         document.addEventListener("transitionend", (event) => {
@@ -56,6 +63,7 @@ test("transitionend dispatches from the UI projection with target, propertyName 
     assert.match(cpp, /bbl::on_dom_transition\([^;]+"transitionend"/);
     assert.match(cpp, /bbl::off_dom_transition\([^;]+"transitionend"/);
     assert.match(cpp, /\.as<bbl::PlatformTransitionEvent>\(\)\.property_name/);
+    assert.match(cpp, /bbl::ui_computed_style\([^;]+"z-index"\)/);
     runRmlUiFixture(t, "dom-transition-events", {
         macros: {
             BBLITE_WORKERS: 1,
@@ -82,5 +90,14 @@ test("transition event handler properties and unrepresented fields refuse", () =
         panel.addEventListener("transitionend", (event) => { panel.textContent = String(event.elapsedTime); });
     `),
         /do not expose 'elapsedTime'/,
+    );
+    assert.throws(
+        () =>
+            compileEntry(`
+        const panel = document.createElement("div");
+        document.body.appendChild(panel);
+        panel.textContent = getComputedStyle(panel).color;
+    `),
+        /Computed style 'color' is not represented/,
     );
 });

@@ -331,6 +331,12 @@ int main() {
                                const auto bounds = window_element_size(button);
                                assert(bounds.width == 80);
                            }
+                           // A first computed style read publishes its request and
+                           // adopts the display's serialization.
+                           auto& owner = window_document_engine();
+                           assert(ui_computed_style(owner, button, "visibility") == "visible");
+                           assert(ui_computed_style(owner, button, "z-index") == "auto");
+                           assert(ui_computed_style(owner, button, "opacity") == "1");
                            check_host_metrics(canvas);
                            // The following packets must see a newly added listener even
                            // before another document snapshot is published.

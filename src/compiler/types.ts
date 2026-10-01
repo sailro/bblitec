@@ -2015,6 +2015,8 @@ export interface ValueFields {
     /** The live DOMStringMap view returned by an element's `dataset`. */
     uiDataset?: true;
     uiStyle?: true;
+    /** The read-only CSSStyleDeclaration `getComputedStyle` returns for an element. */
+    uiComputedStyle?: true;
     /**
      * Generation-known identity for one retained element construction site.
      * Runtime loops may evaluate the site more than once, but every resulting

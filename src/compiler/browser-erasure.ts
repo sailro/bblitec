@@ -30,6 +30,7 @@ import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
 import {
+    computedStyleElement,
     documentVisibilityAvailable,
     isDocumentVisibilityRead,
 } from "./window-events.js";
@@ -1469,6 +1470,9 @@ export class BrowserErasure {
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.bindings.lookupOptional(unwrapped);
             }
+            // getComputedStyle(element) views the element's computed style.
+            const computed = computedStyleElement(this.context, unwrapped);
+            if (computed) return owner(computed);
             if (ts.isConditionalExpression(unwrapped)) {
                 // Either arm is the owner: both must bridge the same kind.
                 const whenTrue = owner(unwrapped.whenTrue);

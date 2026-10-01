@@ -141,6 +141,8 @@ struct DocumentSnapshot {
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
     std::vector<UiContentBox> content_boxes;
+    /** Computed styles of the elements the realm requested, by element. */
+    std::vector<UiComputedStyle> styles;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
     ScreenMetrics screen;
@@ -148,7 +150,7 @@ struct LayoutSnapshot {
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
                screen == other.screen && input == other.input && rectangles == other.rectangles &&
-               content_boxes == other.content_boxes;
+               content_boxes == other.content_boxes && styles == other.styles;
     }
 };
 
@@ -660,6 +662,7 @@ void update_window_document(bool wait) {
              index < layout->rectangles.size() && index < doc.engine.ui_elements.size(); ++index) {
             doc.engine.ui_elements[index].client_rect = layout->rectangles[index];
             doc.engine.ui_elements[index].content_box = layout->content_boxes[index];
+            doc.engine.ui_elements[index].computed_style = layout->styles[index];
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->rectangles.size())
@@ -1117,9 +1120,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 }
                 next_layout.rectangles.resize(display.ui_elements.size());
                 next_layout.content_boxes.resize(display.ui_elements.size());
+                next_layout.styles.resize(display.ui_elements.size());
                 for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
                     next_layout.rectangles[index] = display.ui_elements[index].client_rect;
                     next_layout.content_boxes[index] = display.ui_elements[index].content_box;
+                    next_layout.styles[index] = display.ui_elements[index].computed_style;
                 }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);

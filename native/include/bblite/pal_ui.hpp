@@ -61,6 +61,8 @@ void ui_set_selected(Engine& engine, UiElementHandle element, bool selected);
 void ui_set_selection(Engine& engine, UiElementHandle select, UiElementHandle option);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element);
+/** getComputedStyle(element)[property] for display, opacity, visibility and z-index. */
+std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property);
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text);
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup);
 UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,

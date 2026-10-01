@@ -431,6 +431,15 @@ struct UiContentBox {
     [[nodiscard]] bool operator==(const UiContentBox&) const = default;
 };
 
+/** The computed style values an element's last layout serialized; empty when not rendered. */
+struct UiComputedStyle {
+    std::string display;
+    std::string opacity;
+    std::string visibility;
+    std::string z_index;
+    [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;
+};
+
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
     /**
@@ -3694,6 +3703,9 @@ struct UiElementRecord {
     /** Synced with `client_rect`: where a canvas presents its GPU content. */
     UiContentBox content_box{};
     bool client_rect_requested = false;
+    /** Read by getComputedStyle; the layout serializes it once requested. */
+    UiComputedStyle computed_style{};
+    bool computed_style_requested = false;
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;

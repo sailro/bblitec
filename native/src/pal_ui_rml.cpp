@@ -589,6 +589,28 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
             rect.height * scale, rect.offset_width * scale, rect.offset_height * scale};
 }
 
+std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property) {
+    if (UiElementRecord& record = ui_element(engine, element); !record.computed_style_requested) {
+        record.computed_style_requested = true;
+        // A Window display learns of the request through the next document snapshot.
+        if (engine.ui_measure_element)
+            ++engine.ui_revision;
+    }
+    // Window reads flush layout, adopting the display's computed styles.
+    if (engine.ui_measure_element)
+        static_cast<void>(engine.ui_measure_element(engine, element));
+    const auto& style = ui_element(engine, element).computed_style;
+    if (property == "display")
+        return style.display;
+    if (property == "opacity")
+        return style.opacity;
+    if (property == "visibility")
+        return style.visibility;
+    if (property == "z-index")
+        return style.z_index;
+    throw std::runtime_error("Unsupported computed style property: " + std::string(property));
+}
+
 std::string ui_get_form_value(Engine& engine, UiElementHandle element) {
     const auto& record = ui_element(engine, element);
     if (record.tag == "output")
@@ -2165,6 +2187,41 @@ private:
     bool& native_focus_pending;
     const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
 };
+
+/** CSS serializations of the computed values getComputedStyle reads. */
+UiComputedStyle ui_serialized_computed_style(Rml::Element& element) {
+    static constexpr std::array<std::string_view, 16> displays{"none",
+                                                               "block",
+                                                               "inline",
+                                                               "inline-block",
+                                                               "flow-root",
+                                                               "flex",
+                                                               "inline-flex",
+                                                               "table",
+                                                               "inline-table",
+                                                               "table-row",
+                                                               "table-row-group",
+                                                               "table-column",
+                                                               "table-column-group",
+                                                               "table-cell",
+                                                               "grid",
+                                                               "inline-grid"};
+    const auto& computed = element.GetComputedValues();
+    UiComputedStyle style;
+    style.display = displays.at(static_cast<std::size_t>(computed.display()));
+    // RmlUi inherits opacity; CSS computes the element's own value, 1 unless declared.
+    const Rml::Property* opacity = element.GetLocalProperty(Rml::PropertyId::Opacity);
+    char number[32];
+    std::snprintf(number, sizeof number, "%.6g", opacity ? opacity->Get<float>() : 1.0f);
+    style.opacity = number;
+    style.visibility =
+        computed.visibility() == Rml::Style::Visibility::Hidden ? "hidden" : "visible";
+    const auto z_index = computed.z_index();
+    style.z_index = z_index.type == Rml::Style::NumberAuto::Auto
+                        ? "auto"
+                        : std::to_string(static_cast<int>(z_index.value));
+    return style;
+}
 
 /** Records the transitions RmlUi ends on retained elements; dispatch waits for its update. */
 class UiTransitionListener final : public Rml::EventListener {
@@ -6018,9 +6075,13 @@ struct UiRmlRuntime {
         for (std::uint32_t index = 0;
              index < projected_elements.size() && index < engine.ui_elements.size(); ++index) {
             UiElementRecord& record = engine.ui_elements[index];
+            Rml::Element* element = projected_elements[index].element;
+            // Computed values change with animations, so a requested style follows every update.
+            if (record.computed_style_requested)
+                record.computed_style =
+                    element ? ui_serialized_computed_style(*element) : UiComputedStyle{};
             if (!all_elements && !record.client_rect_requested)
                 continue;
-            Rml::Element* element = projected_elements[index].element;
             if (!element) {
                 record.client_rect = {};
                 record.content_box = {};
