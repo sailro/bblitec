@@ -4131,3 +4131,140 @@ check(
         throw new Error("spread own keys");
 `,
 );
+
+check(
+    "struct-spread-into-record-literal",
+    `
+    interface Spec { id: string; rgb: [number, number, number] }
+    interface Swatch extends Spec { swatch: string }
+    const SPECS: Spec[] = [{ id: "a", rgb: [1, 0.5, 0.25] }, { id: "b", rgb: [0.5, 1, 0.25] }];
+    const hex = (rgb: readonly [number, number, number]): string => rgb.map((c) => Math.round(c * 100)).join("-");
+    const swatches: Swatch[] = SPECS.map((s) => ({ ...s, swatch: hex(s.rgb) }));
+    if (swatches.length !== 2 || swatches[1]!.swatch !== "50-100-25" || swatches[0]!.id !== "a") throw new Error("spread fields");
+    SPECS[0]!.rgb[0] = 9;
+    SPECS[0]!.id = "z";
+    if (swatches[0]!.rgb[0] !== 9 || swatches[0]!.id !== "a") throw new Error("spread copies scalars and shares nested objects");
+    const lilies: { model: string; labelKey: string }[] = [{ model: "lily", labelKey: "k" }];
+    const list = [{ model: "x", labelKey: "y", tool: "flower" as const }, ...lilies.map((f) => ({ ...f, tool: "lily" as const }))];
+    if (list.length !== 2 || list[1]!.tool !== "lily" || list[1]!.model !== "lily" || list[0]!.labelKey !== "y") throw new Error("spread element");
+`,
+);
+
+check(
+    "for-in-own-keys",
+    `
+    const urls: Partial<Record<string, string>> = {};
+    urls["a"] = "x";
+    urls["b"] = "y";
+    urls["c"] = "z";
+    urls["d"] = "w";
+    const seen: string[] = [];
+    for (const k in urls) {
+        if (k === "a") delete urls["b"];
+        if (k === "c") continue;
+        if (k === "d") break;
+        seen.push(k + "=" + urls[k]!);
+    }
+    if (seen.join(",") !== "a=x") throw new Error("dictionary keys");
+    const fixed = { one: 1, three: 3 };
+    let total = 0;
+    for (const key in fixed) total += key.length;
+    if (total !== 8) throw new Error("record keys");
+    const doc = JSON.parse('{"p":1,"q":[2],"r":null}') as Record<string, unknown>;
+    const names: string[] = [];
+    for (const name in doc) names.push(name);
+    if (names.join(",") !== "p,q,r") throw new Error("document keys");
+    type Weights = { base: number; extra?: number; cap: number | undefined };
+    const weights: Weights[] = [{ base: 1, cap: undefined }, { base: 2, extra: 3, cap: 4 }];
+    const keys: string[] = [];
+    for (const item of weights) for (const key in item) keys.push(key);
+    if (keys.join(",") !== "base,cap,base,extra,cap") throw new Error("struct keys");
+`,
+);
+
+check(
+    "static-for-of-object-destructuring",
+    `
+    const CREDITS = [
+        { key: "us", name: "A" },
+        { key: "es", name: "B" },
+    ] as const;
+    const handlers: Array<() => string> = [];
+    for (const { key, name: who } of CREDITS) handlers.push(() => key + ":" + who);
+    if (handlers.map((handler) => handler()).join(",") !== "us:A,es:B") throw new Error("destructured elements");
+`,
+);
+
+check(
+    "array-entries-of-nullish-selection",
+    `
+    interface View { buffer?: number; byteLength: number }
+    interface Doc { bufferViews?: View[] }
+    const doc = JSON.parse('{"bufferViews":[{"buffer":0,"byteLength":4},{"byteLength":8}]}') as Doc;
+    let sum = 0;
+    for (const [index, view] of (doc.bufferViews ?? []).entries()) sum += index * 100 + (view.buffer ?? 7) + view.byteLength;
+    const empty = JSON.parse("{}") as Doc;
+    for (const [index] of (empty.bufferViews ?? []).entries()) sum += 1000 + index;
+    const typed: { list?: number[] } = { list: [5, 6] };
+    for (const [index, value] of (typed.list ?? []).entries()) sum += index * value;
+    if (sum !== 125) throw new Error("entries " + sum);
+`,
+);
+
+check(
+    "number-array-asserted-as-tuple",
+    `
+    type Vec3 = [number, number, number];
+    const BASE = [200, 100, 50] as const;
+    function scale(factor: number): [number, number, number] | null {
+        if (factor <= 0) return null;
+        return BASE.map((channel) => channel * factor) as [number, number, number];
+    }
+    function parse(raw: string, fallback: Vec3): Vec3 {
+        const parts = raw.split(",").map(Number);
+        return parts.length === 3 && parts.every((n) => Number.isFinite(n)) ? (parts as Vec3) : fallback;
+    }
+    const scaled = scale(0.5);
+    if (scaled === null || scaled[0] !== 100 || scaled[2] !== 25 || scale(0) !== null) throw new Error("mapped tuple");
+    const parsed = parse("1,2,3", [0, 0, 0]);
+    if (parsed[2] !== 3 || parse("1,2", [7, 8, 9])[0] !== 7) throw new Error("asserted tuple");
+    const parts = [4, 5, 6];
+    const view = parts as unknown as Vec3;
+    view[1] = 50;
+    if (parts[1] !== 50) throw new Error("asserted tuple keeps identity");
+`,
+);
+
+check(
+    "dictionary-entries-and-dynamic-record-keys",
+    `
+    const keys = ["a", "bb"];
+    const dict: Record<string, number> = {};
+    for (const k of keys) dict[k] = k.length * 10;
+    let sum = 0;
+    for (const [key, value] of Object.entries(dict)) sum += key.length + value;
+    function bones(captures: Readonly<Record<number, Float32Array>> | undefined): string {
+        if (!captures) return "none";
+        const out: string[] = [];
+        for (const [bone, values] of Object.entries(captures)) out.push(bone + ":" + values.length);
+        return out.join(",");
+    }
+    const captured: Record<number, Float32Array> = {};
+    captured[2] = new Float32Array(3);
+    captured[0] = new Float32Array(1);
+    if (sum !== 33 || bones(captured) !== "0:1,2:3" || bones(undefined) !== "none") throw new Error("dictionary entries " + sum + bones(captured));
+    type Slot = "chrome" | "hub" | "toast";
+    const SLOTS: readonly Slot[] = ["chrome", "hub", "toast"];
+    function stack(base: number, gap: number): Record<Slot, number> {
+        const bottoms = {} as Record<Slot, number>;
+        let cursor = base;
+        for (const slot of SLOTS) {
+            bottoms[slot] = cursor;
+            cursor += gap;
+        }
+        return bottoms;
+    }
+    const stacked = stack(10, 4);
+    if (stacked.chrome !== 10 || stacked.toast !== 18 || Object.keys(stacked).join(",") !== "chrome,hub,toast") throw new Error("dynamic record keys");
+`,
+);

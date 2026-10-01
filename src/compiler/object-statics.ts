@@ -19,6 +19,7 @@ type ObjectStaticContext = Pick<
     | "dataTypes"
     | "cppString"
     | "reachJsData"
+    | "reachJson"
     | "expectArgumentCount"
     | "allocateTemporaryCppName"
     | "emit"
@@ -306,6 +307,50 @@ export function compileObjectPrototypeCall(
 }
 
 /**
+ * A dictionary's `[key, value]` pairs as a fresh array, in its enumeration
+ * order. A number-keyed dictionary's keys are spelled as property names.
+ */
+function dictionaryEntries(
+    context: ObjectStaticContext,
+    owner: Value,
+    dataType: DataType<"map">,
+    resultType: DataType<"vector">,
+    node: ts.Node,
+): Value {
+    context.reachJson();
+    let push = "";
+    const emitted = context.captureEmittedLines(() => {
+        push = context.dataLowerer.compileKnownValueForSink(
+            {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: [
+                    context.dataLowerer.leafValue("name", { kind: "string" }),
+                    context.dataLowerer.leafValue("value", dataType.value),
+                ],
+            },
+            resultType.element,
+            node,
+        );
+    });
+    if (
+        emitted.length > 0 ||
+        (dataType.key.kind !== "string" && dataType.key.kind !== "number")
+    )
+        context.fail(
+            node,
+            "A dictionary's entries enumerate as an array when each pair converts to its element in place.",
+        );
+    const cppType = context.dataTypes.cppType(resultType);
+    return {
+        kind: "data",
+        cpp: `[](const auto& own_owner) { ${cppType} own; bbl::js::for_each_property_entry(own_owner, [&](const std::string& name, const auto& value) { own.push_back(${push}); }); return own; }(${owner.cpp})`,
+        dataType: resultType,
+        freshData: true,
+    };
+}
+
+/**
  * `Object.entries(object)` as a value: a compile-time record's pairs are a
  * compile-time tuple of `[key, value]` tuples, which the static tuple
  * methods and loops consume. A dictionary's entries are iterated in a
@@ -316,7 +361,11 @@ function compileObjectEntries(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 1);
-    const owner = context.compileValue(argumentAt(call, 0));
+    const raw = context.compileValue(argumentAt(call, 0));
+    const owner =
+        raw.kind === "data"
+            ? context.dataLowerer.narrowOptional(raw, argumentAt(call, 0))
+            : raw;
     const resultType = context.dataLowerer.dataTypeAt(call);
     if (
         owner.kind === "data" &&
@@ -333,11 +382,24 @@ function compileObjectEntries(
         );
         if (array) return array;
     }
+    if (
+        owner.kind === "data" &&
+        owner.dataType?.kind === "map" &&
+        owner.dataType.dictionary &&
+        resultType?.kind === "vector"
+    )
+        return dictionaryEntries(
+            context,
+            owner,
+            owner.dataType,
+            resultType,
+            call,
+        );
     const pairs = ownObjectEntries(context, owner, call);
     if (!pairs) {
         return context.fail(
             argumentAt(call, 0),
-            "Object.entries as a value takes a compile-time record or a struct; a dictionary's entries are iterated in a for...of.",
+            "Object.entries takes a compile-time record, a struct or a dictionary.",
         );
     }
     return {

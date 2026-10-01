@@ -7193,6 +7193,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (this.spanCompatible(value.dataType, dataType)) {
             return value.cpp;
         }
+        if (dataType.kind === "tuple" && value.dataType.kind === "vector")
+            return this.compileKnownValueForSink(value, dataType, expression);
         if (
             dataType.kind === "span" &&
             (value.dataType.kind === "vector" ||
@@ -8840,6 +8842,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
                 const key = this.context.compileValue(left.argumentExpression);
                 if (key.staticString === undefined) {
+                    // A key known only at run time needs the binding's
+                    // keyed storage: the declaration is lowered again with
+                    // it.
+                    const declaration = resolvedSymbol(
+                        this.context.checker,
+                        left.expression,
+                    )?.valueDeclaration;
+                    const storage =
+                        declaration &&
+                        ts.isVariableDeclaration(declaration) &&
+                        declaration.initializer
+                            ? this.dataTypeAt(left.expression)
+                            : undefined;
+                    if (
+                        declaration &&
+                        ts.isVariableDeclaration(declaration) &&
+                        (storage?.kind === "map" || storage?.kind === "enummap")
+                    )
+                        throw new DynamicBindingStorageRequired(
+                            declaration,
+                            storage,
+                        );
                     this.context.fail(
                         left.argumentExpression,
                         "A compile-time record assignment requires a static string key.",
@@ -10932,6 +10956,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   this.callSpanValue(expression) ??
                   this.selectedIterationValue(expression) ??
                   this.runtimeArrayLiteral(expression) ??
+                  this.nullishArrayValue(expression) ??
                   (knownTuple
                       ? this.materializeKnownTuple(expression, knownTuple)
                       : undefined) ??
@@ -11088,8 +11113,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       }
                     : range;
             }
+            // A parsed document's elements view indexes like an array.
+            const documentElements =
+                kind === undefined && range.element.kind === "json";
             if (
-                (kind !== "vector" && kind !== "span") ||
+                (kind !== "vector" && kind !== "span" && !documentElements) ||
                 this.pairedElement(range.element)
             ) {
                 return undefined;
@@ -11109,6 +11137,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   }
                 : { container, element: { kind: "array-index", indexCpp } };
         });
+    }
+
+    /** `array ?? []`: the selected array, read as the vector its type names. */
+    private nullishArrayValue(expression: ts.Expression): Value | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            !ts.isBinaryExpression(unwrapped) ||
+            unwrapped.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+        )
+            return undefined;
+        const value = this.context.probeEmission(() => {
+            const selected = this.context.compileValue(unwrapped);
+            return selected.kind === "data" &&
+                (selected.dataType?.kind === "vector" || isJsonValue(selected))
+                ? selected
+                : undefined;
+        });
+        if (value) return value;
+        const dataType = this.dataTypeAt(unwrapped);
+        if (dataType?.kind !== "vector") return undefined;
+        this.context.reachJsData();
+        return this.leafValue(
+            this.compileForSink(unwrapped, dataType),
+            dataType,
+        );
     }
 
     private runtimeArrayLiteral(expression: ts.Expression): Value | undefined {
@@ -11495,20 +11548,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             for (const binding of name.elements) {
+                const property = binding.propertyName
+                    ? this.context.propertyName(binding.propertyName)
+                    : ts.isIdentifier(binding.name)
+                      ? binding.name.text
+                      : undefined;
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||
                     binding.dotDotDotToken ||
-                    binding.propertyName
+                    property === undefined
                 ) {
                     this.context.fail(
                         binding,
-                        "Struct destructuring supports plain identifiers.",
+                        "Struct destructuring supports plain and renamed identifiers.",
                     );
                 }
                 const field = this.context.dataTypes.structField(
                     element.name,
-                    binding.name.text,
+                    property,
                     binding,
                 );
                 const value = this.leafValue(

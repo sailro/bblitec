@@ -302,6 +302,16 @@ function valueTuple(
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
     }
+    // A number array asserted as a tuple stays the same array; its length
+    // is checked where the assertion runs.
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "vector" &&
+        value.dataType.element.kind === "number"
+    ) {
+        lowerer.context.reachJsData();
+        return `bbl::js::array_as_tuple<${dataType.arity}>(${value.cpp})`;
+    }
     return undefined;
 }
 

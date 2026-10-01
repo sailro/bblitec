@@ -2549,6 +2549,12 @@ public:
     Tuple(Storage values)
         : values_(detail::make_recycled_vector<RetainedStorage>(
               [&](RetainedStorage& storage) { storage.assign(values.begin(), values.end()); })) {}
+    /** The same JavaScript array as a number Array of exactly N elements. */
+    explicit Tuple(std::shared_ptr<RetainedStorage> values) : values_(std::move(values)) {
+        if (!values_ || values_->size() != N)
+            throw std::runtime_error("An array asserted as a " + std::to_string(N) +
+                                     "-element tuple has another length.");
+    }
     [[nodiscard]] const std::shared_ptr<RetainedStorage>& retained_storage() const {
         return values_;
     }
@@ -2600,6 +2606,11 @@ template <typename... T> struct Traceable<Product<T...>> : Traceable<std::tuple<
 
 template <std::size_t N> [[nodiscard]] inline Tuple<N> clone_tuple(const Tuple<N>& tuple) {
     return tuple.clone();
+}
+
+/** A number array asserted as an N-element tuple keeps its identity; its length must be N. */
+template <std::size_t N> [[nodiscard]] inline Tuple<N> array_as_tuple(const Array<double>& values) {
+    return Tuple<N>(values.retained_storage());
 }
 
 /**

@@ -3383,6 +3383,15 @@ export class DataTypeRegistry {
         if (key?.kind !== "enum") {
             return undefined;
         }
+        // Asserted from `{}`, a closed record lacks each entry until it is
+        // written, which a dictionary keeps apart from a stored value.
+        if (this.isPartialRecord(type))
+            return {
+                kind: "map",
+                key: { kind: "string" },
+                dictionary: true,
+                value: this.markStoredObjectReferences(element),
+            };
         return {
             kind: "enummap",
             enumName: key.name,
