@@ -12,6 +12,7 @@ import { presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import {
     parseUiSelectorSequence,
@@ -503,6 +504,10 @@ export class PlatformCalls {
         if (nested && recurring) {
             return { kind: "void", cpp: "" };
         }
+        // Without an engine or a presentation host, frames come from the
+        // Window application's repaint clock.
+        if (!this.context.defaultEngine() && !this.context.options.workers)
+            throw new ApplicationRealmRequired();
         const engine = this.context.requireDefaultEngine(call);
         const callback = this.context.callbacks.compileFrameCallback(
             argumentAt(call, 0),
@@ -879,8 +884,14 @@ export class PlatformCalls {
                 type.inner.kind === "handle" &&
                 type.inner.handle === "ui-element"
             ) {
+                const receiver =
+                    stored ?? this.context.compileValue(callee.expression);
+                // An element the host page holds is present: the chain
+                // cannot short-circuit, whatever the checker's type says.
+                if (receiver.kind === "ui-element" && receiver.uiHostId)
+                    return this.compileUiCall(call, callee, receiver);
                 return this.context.dataLowerer.optionalAccess(
-                    stored ?? this.context.compileValue(callee.expression),
+                    receiver,
                     call,
                     (element) => this.compileUiCall(call, callee, element),
                 );
@@ -1073,6 +1084,28 @@ export class PlatformCalls {
             this.context.expectArgumentCount(call, 0, 0);
             return { kind: "void", cpp: "" };
         }
+        // A host page's canvas is a retained canvas once the program draws
+        // on it; one handed to createEngine belongs to the engine instead.
+        if (
+            element?.kind === "ui-element" &&
+            element.uiTag === "canvas" &&
+            element.uiHostId !== undefined &&
+            !element.uiCanvas &&
+            callee.name.text === "getContext"
+        ) {
+            this.context.expectArgumentCount(call, 1, 1);
+            if (this.context.compileStringLiteral(argumentAt(call, 0)) !== "2d")
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "Retained native canvas only supports the '2d' context.",
+                );
+            return {
+                ...element,
+                uiCanvas: true,
+                uiCanvasId: this.ui.hostCanvasId(element.uiHostId, call),
+                uiCanvasContext: true,
+            };
+        }
         if (
             element?.uiCanvas &&
             !element.uiCanvasContext &&
@@ -1123,6 +1156,8 @@ export class PlatformCalls {
                     return invocation("clear_rect", 4);
                 case "fillRect":
                     return invocation("fill_rect", 4);
+                case "strokeRect":
+                    return invocation("stroke_rect", 4);
                 case "beginPath":
                     return invocation("begin_path", 0);
                 case "moveTo":

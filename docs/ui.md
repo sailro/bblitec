@@ -119,8 +119,9 @@ mixed currentColor/literal paints and internal SVG queries refuse.
 
 ## Canvas2D
 
-Supports backing dimensions, scale, full clear, fillRect, bounded paths/fill/stroke, putImageData,
-destination-rectangle canvas drawImage and bounded fillText. Offscreen pixels are premultiplied RGBA.
+Supports backing dimensions, scale, full clear, fillRect, strokeRect, bounded paths/fill/stroke, putImageData,
+destination-rectangle canvas drawImage and bounded fillText; a context's `canvas` is its element. Host canvases the
+program draws on are retained canvases sized by their width/height attributes. Offscreen pixels are premultiplied RGBA.
 Closed canvas producers can bake getImageData; mutable module/engine inputs refuse.
 Retained canvas commands follow DOM stacking, visibility and clipping; Window snapshots publish canvas
 changes independently of text and layout updates.

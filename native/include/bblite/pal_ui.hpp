@@ -148,6 +148,7 @@ void ui_canvas_arc_to(Engine&, UiElementHandle, double, double, double, double, 
 void ui_canvas_arc(Engine&, UiElementHandle, double, double, double, double, double, bool);
 void ui_canvas_fill(Engine&, UiElementHandle);
 void ui_canvas_stroke(Engine&, UiElementHandle);
+void ui_canvas_stroke_rect(Engine&, UiElementHandle, double, double, double, double);
 void ui_canvas_set_image_smoothing(Engine&, UiElementHandle, bool);
 void ui_canvas_put_image_data(Engine&, UiElementHandle, const js::U8Array&, double, double, double,
                               double);

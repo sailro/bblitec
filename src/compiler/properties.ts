@@ -2094,6 +2094,15 @@ export class PropertyAccessLowerer {
             };
         }
         const property = expression.name.text;
+        // A retained Canvas2D context's `canvas` is the element it draws on.
+        if (
+            owner.kind === "ui-element" &&
+            owner.uiCanvasContext &&
+            property === "canvas"
+        ) {
+            const { uiCanvasContext: _drawing, ...canvas } = owner;
+            return canvas;
+        }
         if (owner.kind === "physics-viewer" && property === "scene") {
             return {
                 kind: "scene",

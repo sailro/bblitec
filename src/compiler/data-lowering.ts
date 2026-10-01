@@ -2204,6 +2204,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return left;
         }
         const leftFound = presenceFlagCpp(left);
+        // A retained element without a presence flag is present: a host
+        // element, or a 2D context drawing on one.
+        if (left.kind === "ui-element" && leftFound === undefined) return left;
         if (left.kind === "data" && left.dataType?.kind === "function") {
             const type = left.dataType;
             const value =

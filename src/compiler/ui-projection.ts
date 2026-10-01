@@ -454,6 +454,17 @@ export class UiProjection {
         ) {
             return asElement(this.context.resolveThisField(owner.name.text));
         }
+        // A retained Canvas2D context's `canvas` is the element it draws on.
+        if (
+            ts.isPropertyAccessExpression(owner) &&
+            owner.name.text === "canvas"
+        ) {
+            const drawing = this.uiElementValue(owner.expression);
+            if (drawing?.uiCanvasContext) {
+                const { uiCanvasContext: _drawing, ...canvas } = drawing;
+                return canvas;
+            }
+        }
         if (
             ts.isPropertyAccessExpression(owner) ||
             ts.isElementAccessExpression(owner)
@@ -1603,6 +1614,27 @@ export class UiProjection {
 
     /** Mints `uiCanvasId` for each created retained canvas element. */
     @journaled public accessor uiCanvasIds = 0;
+
+    private readonly hostCanvasIds = new EmissionMap<string, number>();
+
+    /**
+     * The retained-canvas identity of the host canvas with `id`, shared by
+     * every lookup of it. A canvas the program hands to createEngine
+     * presents the engine instead.
+     */
+    public hostCanvasId(id: string, site: ts.Node): number {
+        if (engineCanvasIds(this.context).has(id))
+            this.context.fail(
+                site,
+                `The host canvas '${id}' belongs to a Babylon engine; it cannot also acquire a Canvas2D context.`,
+            );
+        let canvasId = this.hostCanvasIds.get(id);
+        if (canvasId === undefined) {
+            canvasId = this.uiCanvasIds++;
+            this.hostCanvasIds.set(id, canvasId);
+        }
+        return canvasId;
+    }
 
     private uiStyleRefusal(
         site: ts.Node | undefined,
@@ -4992,6 +5024,18 @@ export class UiProjection {
                     `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
                         `${this.context.cppString(name)}, ${this.context.cppString(value)});`,
                 );
+                // A canvas's width and height attributes are its backing
+                // store's size, parsed as HTML non-negative integers; an
+                // unparsable one keeps the default.
+                const size = /^[\t\n\f\r ]*\+?(\d+)/.exec(sourceValue)?.[1];
+                if (
+                    normalizedTag === "canvas" &&
+                    (name === "width" || name === "height") &&
+                    size !== undefined
+                )
+                    emitted.push(
+                        `${indent}bbl::ui_canvas_set_${name}(${engine}, ${handle}, ${doubleLiteral(Number(size))});`,
+                    );
             }
             for (const child of element.children ?? []) {
                 appendElement(child, handle);
