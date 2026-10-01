@@ -3634,7 +3634,7 @@ public:
             }
             capture_render_state();
 #endif
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+#if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
             capture_render_state();
 #endif
         } else {
