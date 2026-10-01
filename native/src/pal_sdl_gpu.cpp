@@ -3632,9 +3632,8 @@ public:
                 SDL_BlitGPUTexture(command, &present);
                 capture_texture = resized ? state.color : state.post_process_present;
             }
-            capture_render_state();
 #endif
-#if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
+#if BBLITE_HAS_TAA || BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
             capture_render_state();
 #endif
         } else {

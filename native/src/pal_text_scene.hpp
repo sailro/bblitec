@@ -40,11 +40,13 @@ inline bool text_in_default_scene_pass(const Scene& scene) {
 inline void validate_text_scene(const Scene& scene) {
     if (scene.state->text_renderables.empty())
         return;
-    if (!scene.engine) {
+    if (!scene.engine || scene.camera.value >= scene.engine->cameras.size()) {
         throw std::runtime_error("Text scene bindings require an explicit camera.");
     }
     if (!text_in_default_scene_pass(scene)) {
-        throw std::runtime_error("Text scene bindings require the default render pass.");
+        throw std::runtime_error("Text scene bindings require the scene's default pass: its own "
+                                 "render pass, or its default task graph's scene-stage task "
+                                 "beside no other render or geometry task.");
     }
     if (!scene.meshes.empty() || !scene.splat_meshes.empty() ||
 #if BBLITE_HAS_SPRITES
@@ -54,9 +56,6 @@ inline void validate_text_scene(const Scene& scene) {
         scene.environment.has_solid_skybox || scene.environment.has_ground) {
         throw std::runtime_error(
             "Text scene bindings require merged ordering for the attached non-text renderables.");
-    }
-    if (!scene.engine || scene.camera.value >= scene.engine->cameras.size()) {
-        throw std::runtime_error("Text scene bindings require an explicit camera.");
     }
     const auto& camera = handle_at(scene.engine->cameras, scene.camera);
     if (camera.kind == CameraKind::geospatial || camera.orthographic) {
