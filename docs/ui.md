@@ -33,8 +33,9 @@ Check them before adding an implementation. Source rejection does not imply miss
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution, reduced-motion and pointer/hover matchMedia queries retain identity/current matches and
-  zero-argument change listeners with identity-based removal. Pointer/hover admits conjunctions and
-  follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable;
+  zero-argument change listeners with identity-based removal. Extracted matchMedia functions retain
+  identity across Window/globalThis reads; nullable query caches retain live results. Pointer/hover admits
+  conjunctions and follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable;
   `typeof` MutationObserver/ResizeObserver is `function` in the Window realm.
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - MutationObserver supports microtask attribute notifications, static attribute filters and disconnect.
@@ -69,7 +70,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |
 | File drags | SDL file dragenter/dragover/dragleave/drop on elements, Document and Window; dragover cancellation accepts a drop; borrowed DataTransfer.files, count and first file with name/size | No authored drags, text transfers, items, effects or wider file indices; dragover follows native motion notifications |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
-| Focus/forms | Focus/blur, focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
+| Focus/forms | Focus/blur, literal/stored/optional focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Focus-option getters and spreads; full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 

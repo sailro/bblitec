@@ -17,6 +17,34 @@ test("Window media queries retain typed nullable values, live matches and change
         `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
+        interface Slot { read: (() => number) | null; optional?: () => number; }
+        const slots: Slot[] = [{ read: null }];
+        function nullType(value: (() => number) | null): string { return typeof value; }
+        function optionalType(value?: () => number): string { return typeof value; }
+        if (typeof slots[0]!.read !== "object" || typeof slots[0]!.optional !== "undefined" ||
+            nullType(null) !== "object" || optionalType() !== "undefined")
+            throw new Error("absent callback type");
+        slots[0]!.read = () => 1;
+        slots[0]!.optional = () => 2;
+        if (typeof slots[0]!.read !== "function" || typeof slots[0]!.optional !== "function" ||
+            nullType(slots[0]!.read) !== "function" || optionalType(slots[0]!.optional) !== "function")
+            throw new Error("present callback type");
+        let source: ((query: string) => MediaQueryList) | null = null;
+        let cached: MediaQueryList | null = null;
+        let acquisitions = 0;
+        function motion(): boolean {
+            const match = typeof window === "undefined" ? undefined : window.matchMedia;
+            if (typeof match !== "function") return false;
+            if (match !== source || cached === null) {
+                source = match;
+                acquisitions++;
+                cached = match.call(window, "(prefers-reduced-motion: reduce)");
+            }
+            return cached?.matches === true;
+        }
+        if (motion() || motion() || acquisitions !== 1) throw new Error("cached function identity");
+        if (window.matchMedia !== globalThis.matchMedia || window.matchMedia !== matchMedia)
+            throw new Error("global function identity");
         let fallbacks = 0;
         function fallback(): MediaQueryList { fallbacks++; return matchMedia("(resolution: 1dppx)"); }
         const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? fallback();
@@ -45,6 +73,7 @@ test("Window media queries retain typed nullable values, live matches and change
         reduced.removeEventListener("change", removed);
         setTimeout(() => {
             if (state.changes !== 1) throw new Error("change delivery");
+            if (!motion() || acquisitions !== 1) throw new Error("cached live media result");
             globalThis.close();
         }, 0);
     `,

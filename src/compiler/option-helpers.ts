@@ -15,7 +15,7 @@ import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { argumentAt } from "./syntax.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 import {
     MATH_CONSTANTS,
     mathMemberAccess,
@@ -75,6 +75,8 @@ export interface BooleanOptionsSpelling {
     readonly forms: string;
     /** The temporaries' name stem. */
     readonly temporary: string;
+    /** Defaults for undefined members; other members use boolean conversion. */
+    readonly undefinedDefaults?: Readonly<Record<string, boolean>>;
     /** Members that refuse, with their message. */
     readonly refused?: Readonly<Record<string, string>>;
 }
@@ -96,8 +98,10 @@ export function compileBooleanOptions<N extends string>(
     const result: Partial<Record<N, string>> = {};
     if (!expression) return result;
     const type = context.checker.getTypeAtLocation(expression);
-    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0)
+    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0) {
+        context.emitDiscardedValue(context.compileValue(expression));
         return result;
+    }
     const named = (name: string): name is N =>
         names.some((candidate) => candidate === name);
     const store = (name: N, condition: string): void => {
@@ -110,13 +114,54 @@ export function compileBooleanOptions<N extends string>(
         });
         result[name] = cpp;
     };
+    const condition = (name: N, value: Value): string => {
+        const converted = values.truthinessCondition(value);
+        if (converted === undefined)
+            return context.fail(
+                expression,
+                `The ${spelling.member} '${name}' has no native boolean conversion.`,
+            );
+        const fallback = spelling.undefinedDefaults?.[name];
+        if (fallback === undefined) return converted;
+        if (value.kind === "json-null" && value.cpp === "std::nullopt")
+            return String(fallback);
+        if (
+            value.dataType?.kind !== "optional" ||
+            !value.dataType.undefinedOnly
+        )
+            return converted;
+        if (value.dataType.inner.kind === "boolean")
+            return `${value.cpp}.value_or(${fallback})`;
+        const cpp = context.allocateTemporaryCppName(spelling.temporary);
+        const truth = values.truthinessCondition(
+            values.leafValue(cpp, value.dataType),
+        );
+        return `([&]() { const auto ${cpp} = ${value.cpp}; return ${optionalPresentCpp(cpp)} ? ${truth} : ${fallback}; }())`;
+    };
     const source = context.unwrap(expression);
     if (!ts.isObjectLiteralExpression(source)) {
         const owner = context.compileValue(expression);
+        if (owner.kind === "json-null") {
+            context.emitDiscardedValue(owner);
+            return result;
+        }
         const properties: Record<string, Value> = {};
-        if (owner.kind === "record")
+        let present: string | undefined;
+        const recordType =
+            owner.dataType?.kind === "optional"
+                ? owner.dataType.inner
+                : owner.dataType;
+        if (owner.kind === "record") {
+            if (
+                Object.keys(owner.recordGetters ?? {}).length !== 0 ||
+                Object.keys(owner.recordSetters ?? {}).length !== 0
+            )
+                context.fail(
+                    expression,
+                    `${spelling.subject} require named data properties.`,
+                );
             Object.assign(properties, owner.recordProperties);
-        else if (owner.kind === "data" && owner.dataType?.kind === "struct") {
+        } else if (owner.kind === "data" && recordType?.kind === "struct") {
             const cpp = context.allocateTemporaryCppName(
                 `${spelling.temporary}s`,
             );
@@ -125,18 +170,26 @@ export function compileBooleanOptions<N extends string>(
                 type: "const auto",
                 name: cpp,
                 initializer: owner.cpp,
+                attributes: "[[maybe_unused]] ",
             });
-            const member = context.dataTypes.isReferenceStruct(
-                owner.dataType.name,
-            )
-                ? "->"
-                : ".";
+            const reference = context.dataTypes.isReferenceStruct(
+                recordType.name,
+            );
+            const object =
+                owner.dataType?.kind === "optional" ? `(*${cpp})` : cpp;
+            present =
+                owner.dataType?.kind === "optional"
+                    ? optionalPresentCpp(cpp)
+                    : reference
+                      ? `static_cast<bool>(${cpp})`
+                      : undefined;
+            const member = reference ? "->" : ".";
             for (const field of context.dataTypes.structFields(
-                owner.dataType.name,
+                recordType.name,
                 expression,
             ))
-                properties[field.name] = values.leafValue(
-                    `${cpp}${member}${field.name}`,
+                properties[field.sourceName] = values.leafValue(
+                    `${object}${member}${field.name}`,
                     field.type,
                 );
         } else
@@ -149,13 +202,13 @@ export function compileBooleanOptions<N extends string>(
         for (const name of names) {
             const property = properties[name];
             if (!property) continue;
-            const value = values.truthinessCondition(property);
-            if (value === undefined)
-                context.fail(
-                    expression,
-                    `The ${spelling.member} '${name}' has no native boolean conversion.`,
-                );
-            store(name, value);
+            const value = condition(name, property);
+            store(
+                name,
+                present
+                    ? `(${present} ? ${value} : ${spelling.undefinedDefaults?.[name] ?? false})`
+                    : value,
+            );
         }
         return result;
     }
@@ -176,8 +229,21 @@ export function compileBooleanOptions<N extends string>(
             : property.initializer;
         const refusal = spelling.refused?.[name];
         if (refusal) context.fail(property, refusal);
-        if (named(name))
-            store(name, context.conditions.compileCondition(initializer));
+        if (named(name)) {
+            if (spelling.undefinedDefaults?.[name] === undefined)
+                store(name, context.conditions.compileCondition(initializer));
+            else {
+                const value = context.compileValue(initializer);
+                if (
+                    (context.checker.getTypeAtLocation(initializer).flags &
+                        ts.TypeFlags.Undefined) !==
+                    0
+                ) {
+                    context.emitDiscardedValue(value);
+                    store(name, String(spelling.undefinedDefaults[name]));
+                } else store(name, condition(name, value));
+            }
+        }
         // Object construction still evaluates unused properties.
         else context.emitDiscardedValue(context.compileValue(initializer));
     }

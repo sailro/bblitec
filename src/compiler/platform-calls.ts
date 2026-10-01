@@ -23,6 +23,7 @@ import {
 } from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import {
     parseUiSelectorSequence,
@@ -196,45 +197,19 @@ export class PlatformCalls {
     private focusVisibleOption(
         options: ts.Expression | undefined,
     ): string | undefined {
-        if (!options) return undefined;
-        const object = this.context.unwrap(options);
-        if (!ts.isObjectLiteralExpression(object))
-            return this.context.fail(
-                options,
-                "focus options require an object literal.",
-            );
-        let visible: string | undefined;
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.context.propertyName(property.name)
-                    : undefined;
-            const value = ts.isPropertyAssignment(property)
-                ? property.initializer
-                : ts.isShorthandPropertyAssignment(property)
-                  ? property.name
-                  : undefined;
-            if (!value || (name !== "preventScroll" && name !== "focusVisible"))
-                return this.context.fail(
-                    property,
-                    "focus options represent preventScroll and focusVisible only.",
-                );
-            if (name === "focusVisible")
-                visible = this.context.bindings.pinValueToTemporary(
-                    {
-                        kind: "boolean",
-                        cpp: this.context.conditions.compileCondition(value),
-                    },
-                    "focus_visible",
-                    value,
-                ).cpp;
-            else
-                this.context.emitDiscardedValue(
-                    this.context.compileValue(value),
-                );
-        }
-        return visible;
+        return compileBooleanOptions(
+            this.context,
+            this.context.dataLowerer,
+            options,
+            ["focusVisible"] as const,
+            {
+                subject: "Focus options",
+                member: "focus option",
+                forms: "a represented options record",
+                temporary: "focus_option",
+                undefinedDefaults: { focusVisible: true },
+            },
+        ).focusVisible;
     }
 
     /** Platform-backed browser APIs that remain ordinary expression values. */

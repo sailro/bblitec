@@ -8,13 +8,14 @@ import type { WorkerLoweringContext } from "./workers.js";
 import { requireWindowHost } from "./window-events.js";
 import { isWindowObserver, windowInterfaceTypeof } from "./dom-targets.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { nativeFunctionValue } from "./native-function-values.js";
 
 export interface CanvasContext
     extends
         WorkerLoweringContext,
         Pick<
             LoweringServices,
-            "checker" | "isCanvasElement" | "reachFeature"
+            "checker" | "isCanvasElement" | "reachFeature" | "callbackIdentity"
         > {}
 
 function hasDomInterface(
@@ -72,10 +73,25 @@ export function compileCanvasValue(
             ((ts.isNewExpression(node) || ts.isTypeOfExpression(node)) &&
                 isWindowObserver(context.libraryGlobal(node.expression))) ||
             (ts.isCallExpression(node) &&
-                context.libraryGlobal(node.expression) === "matchMedia")
+                context.libraryGlobal(node.expression) === "matchMedia") ||
+            context.libraryGlobal(node) === "matchMedia"
         )
             throw new ApplicationRealmRequired();
         return undefined;
+    }
+    if (context.libraryGlobal(node) === "matchMedia") {
+        requireWindowHost(context, node);
+        return nativeFunctionValue(
+            context,
+            node,
+            {
+                kind: "function",
+                parameters: [{ kind: "string" }],
+                result: { kind: "handle", handle: "worker-media-query" },
+                identity: true,
+            },
+            "return bbl::pal::create_media_query(argument_0);",
+        );
     }
     const ratio = devicePixelRatioValue(context, node);
     if (ratio) {

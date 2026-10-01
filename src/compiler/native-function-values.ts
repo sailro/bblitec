@@ -17,14 +17,14 @@ type Context = Pick<
 /** Builtin function objects share declaration identity and typed native calls. */
 export function nativeFunctionValue(
     context: Context,
-    access: ts.PropertyAccessExpression,
+    access: ts.Expression,
     type: DataType<"function">,
     body: string,
 ): Value {
-    const declaration = resolvedSymbol(
-        context.checker,
-        access,
-    )?.valueDeclaration;
+    const symbol = resolvedSymbol(context.checker, access);
+    const declaration =
+        symbol?.declarations?.find(ts.isFunctionDeclaration) ??
+        symbol?.valueDeclaration;
     if (!declaration)
         return context.fail(
             access,

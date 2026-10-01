@@ -2428,7 +2428,8 @@ export class DeclarationLowerer {
             annotated.kind === "span" ||
             annotated.kind === "table" ||
             (annotated.kind === "optional" &&
-                annotated.inner.kind === "handle") ||
+                annotated.inner.kind === "handle" &&
+                annotated.inner.handle !== "worker-media-query") ||
             (annotated.kind === "tuple" &&
                 !ts.isArrayLiteralExpression(initializerLiteral) &&
                 !ts.isConditionalExpression(initializerLiteral))
@@ -2439,7 +2440,8 @@ export class DeclarationLowerer {
             // path. An optional HANDLE local (`Mesh | undefined` from a
             // search) keeps the value path too: a handle a search
             // produced carries its found flag, which is this port's
-            // representation of that optionality.
+            // representation of that optionality. Media queries instead own
+            // a shared runtime object and can use ordinary nullable storage.
             //
             // A HANDLE annotation is carried by the value the initializer
             // produces rather than by this declaration: `const box: Mesh =

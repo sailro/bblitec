@@ -1394,17 +1394,25 @@ export class ExpressionLowerer {
                           dataType?.kind === "string" ||
                           dataType?.kind === "enum"
                         ? "string"
-                        : operand.kind === "callback"
+                        : operand.kind === "callback" ||
+                            dataType?.kind === "function"
                           ? "function"
                           : operand.kind === "void"
                             ? "undefined"
                             : "object";
-            const present =
+            let present = presenceCpp(operand);
+            if (operand.dataType?.kind === "function") {
+                const callable = `static_cast<bool>(${operand.cpp})`;
+                present =
+                    present === undefined
+                        ? callable
+                        : `(${present} && ${callable})`;
+            } else if (
                 operand.parameterBinding &&
                 !checked.undefined &&
                 operand.kind !== "record"
-                    ? undefined
-                    : presenceCpp(operand);
+            )
+                present = undefined;
             if (present !== undefined) {
                 return {
                     kind: "data",
