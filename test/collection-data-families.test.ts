@@ -63,6 +63,35 @@ test("readonly string tuple mapping keeps contextual lanes through spreads and r
     runGeneratedProgram(native, "collection-tuple-mapping", result.cpp);
 });
 
+test("readonly record arrays preserve declaration and activation identities", (t) => {
+    const result = compileSource(`
+        const firstRows = [{id:1}] as const;
+        const secondRows = [{id:1}] as const;
+        const alias = firstRows;
+        const first = firstRows.find(row => row.id === 1)!;
+        const second = secondRows.find(row => row.id === 1)!;
+        if(first === second || first !== alias.find(row => row.id === 1) || first !== firstRows[0])
+            throw new Error("declaration identity");
+        function create() {
+            const rows = [{id:1}] as const;
+            const selected = rows.find(row => row.id === 1)!;
+            if(selected !== rows.find(row => row.id === 1) || selected !== rows[0])
+                throw new Error("local alias");
+            return selected;
+        }
+        const left = create(), right = create();
+        if(left === right || left === first)throw new Error("activation identity");
+        function select(rows: readonly {id:number}[]) { return rows.find(row => row.id === 1)!; }
+        if(select(firstRows) !== first || select(alias) !== first)throw new Error("parameter identity");
+        const forwardedRows=[{id:1}] as const;
+        const forwardedFirst=select(forwardedRows), forwardedAgain=select(forwardedRows);
+        if(forwardedFirst!==forwardedAgain)throw new Error("forwarded source identity");
+    `);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "readonly-array-identities", result.cpp);
+});
+
 test("computed module catalogues support runtime loop control", (t) => {
     const directory = resolve("artifacts/collection-module-loop");
     mkdirSync(directory, { recursive: true });
@@ -71,6 +100,12 @@ test("computed module catalogues support runtime loop control", (t) => {
         `
         const rows=[{id:"last",rank:3},{id:"first",rank:1,marked:true},{id:"middle",rank:2}] as const;
         const ordered=[...rows].sort((a,b)=>a.rank-b.rank);
+        const first=[{id:1}] as const, second=[{id:1}] as const;
+        const alias=first;
+        export function identities():boolean {
+            const found=first.find(row=>row.id===1);
+            return found!==second.find(row=>row.id===1)&&found===alias.find(row=>row.id===1);
+        }
         export function collect(limit:number):string {
             let result="";
             for(const row of ordered) {
@@ -84,8 +119,9 @@ test("computed module catalogues support runtime loop control", (t) => {
     );
     const result = compileSource(
         `
-        import {collect} from "./catalogue";
+        import {collect,identities} from "./catalogue";
         if(collect(0)!==""||collect(2)!=="first"||collect(4)!=="firstlast")throw new Error("module loop control");
+        if(!identities()||!identities())throw new Error("module declaration identity");
     `,
         { fileName: resolve(directory, "entry.ts") },
     );

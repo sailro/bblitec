@@ -4712,6 +4712,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!element) {
             return undefined;
         }
+        const scalarElements = ["number", "boolean", "string", "enum"].includes(
+            element.kind,
+        );
+        if (!scalarElements && bound) {
+            // Keep allocated elements at the lexical initializer, including
+            // fresh factory calls and aliases that precede the first search.
+            const declaration = resolvedSymbol(
+                this.context.checker,
+                unwrapped,
+            )?.valueDeclaration;
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer
+            )
+                throw new DynamicBindingStorageRequired(declaration, {
+                    kind: "vector",
+                    element,
+                });
+            return this.materializeKnownTuple(unwrapped, bound);
+        }
         const elements = this.context.probeEmission(
             () => {
                 let entries: readonly Value[] = [];
@@ -4747,15 +4768,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!elements) {
             return undefined;
         }
-        // An inlined parameter can bind different constants at each call.
-        // Share storage only when the element type and contents match.
-        const reference = this.context.dataTypes.registerSharedConstantArray(
-            unwrapped.text,
-            this.context.dataTypes.cppType(element),
-            elements,
-            this.context.dataTypes.constantAllocates(element),
-            literal ?? unwrapped,
-        );
+        // Scalar contents can share storage. Allocated elements belong to
+        // their source literal; equal contents do not imply shared identity.
+        const reference = scalarElements
+            ? this.context.dataTypes.registerSharedConstantArray(
+                  unwrapped.text,
+                  this.context.dataTypes.cppType(element),
+                  elements,
+                  this.context.dataTypes.constantAllocates(element),
+                  literal ?? unwrapped,
+              )
+            : this.context.dataTypes.registerConstantArray(
+                  literal!,
+                  unwrapped.text,
+                  this.context.dataTypes.cppType(element),
+                  elements,
+                  this.context.dataTypes.constantAllocates(element),
+              );
         this.context.reachJsData();
         return {
             kind: "data",
