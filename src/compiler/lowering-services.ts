@@ -542,6 +542,7 @@ export interface LoweringServices {
             kind: "function";
         },
         owner?: Value,
+        prototypeMethod?: boolean,
     ): string;
     /**
      * A record accessor as the stored callback of an accessor-backed field:
