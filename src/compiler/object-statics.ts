@@ -24,6 +24,7 @@ type ObjectStaticContext = Pick<
     | "emitDiscardedValue"
     | "isInRuntimeControlFlow"
     | "bindings"
+    | "refuseBorrowedPlatformEventEscape"
     | "resolveRecordValue"
     | "unwrap"
     | "libraryGlobal"
@@ -323,7 +324,8 @@ function compileObjectAssign(
         context.resolveRecordValue(targetExpression) ??
         context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
-    const sourcePairs = (source: ts.Expression): Array<[string, Value]> => {
+    const fresh = ts.isObjectLiteralExpression(targetExpression);
+    const readPairs = (source: ts.Expression): Array<[string, Value]> => {
         const value = context.compileValue(source);
         if (value.kind === "record") {
             if (
@@ -345,10 +347,21 @@ function compileObjectAssign(
             "Object.assign sources are compile-time records, object literals or structs.",
         );
     };
+    // An existing target keeps what it receives, as a field store does.
+    const sourcePairs = (source: ts.Expression): Array<[string, Value]> => {
+        const pairs = readPairs(source);
+        if (!fresh)
+            for (const [, value] of pairs)
+                context.refuseBorrowedPlatformEventEscape(
+                    value,
+                    source,
+                    "Object.assign",
+                );
+        return pairs;
+    };
     if (target.kind === "record") {
         if (target.moduleNamespace)
             context.fail(call, "Module namespace properties are read-only.");
-        const fresh = ts.isObjectLiteralExpression(targetExpression);
         if (!fresh && context.isInRuntimeControlFlow()) {
             context.fail(
                 call,

@@ -570,6 +570,15 @@ test("refuses borrowed payloads at retained storage and capture sites", () => {
             pattern: /through data field assignment/,
         },
         {
+            name: "object-assign",
+            declarations: `
+                interface Holder { saved: Payload | null; }
+                const holder: Holder = { saved: null };
+            `,
+            body: "Object.assign(holder, { saved: payload });",
+            pattern: /through Object\.assign/,
+        },
+        {
             name: "timer",
             declarations: "",
             body: "setTimeout(() => payload.domEvent.preventDefault(), 0);",
