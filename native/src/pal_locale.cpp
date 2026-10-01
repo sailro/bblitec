@@ -1,6 +1,9 @@
 #include <bblite/pal_locale.hpp>
 #include <bblite/js_data.hpp>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <deque>
 
 #ifdef _WIN32
 #include <icu.h>
@@ -9,6 +12,8 @@
 #include <unicode/uloc.h>
 #include <unicode/unorm2.h>
 #include <unicode/uenum.h>
+#include <unicode/unum.h>
+#include <unicode/unumsys.h>
 #endif
 
 namespace bbl::pal {
@@ -140,16 +145,33 @@ void validate_collation(const std::string& value) {
         throw std::runtime_error("Invalid collation type.");
 }
 
-IcuCollator open_collator(const std::vector<std::string>& locales,
-                          const CollationOptions& options) {
+/** The ICU locale a request list resolves to, and the requested tag that selected it. */
+struct ResolvedLocale {
+    std::string id;
+    std::string selected;
+};
+
+ResolvedLocale resolve_locale(const std::vector<std::string>& locales,
+                              const std::optional<std::string>& locale_matcher) {
     // Canonicalize every requested tag before selection: an invalid later
     // entry still throws even when an earlier locale is supported.
     std::vector<std::string> requested;
     for (const auto& locale : locales)
         requested.push_back(locale_id(locale));
-    const auto matcher = options.locale_matcher.value_or("best fit");
+    const auto matcher = locale_matcher.value_or("best fit");
     if (matcher != "lookup" && matcher != "best fit")
         throw std::runtime_error("Invalid locale matcher.");
+    for (const auto& locale : requested) {
+        auto matched = match_locale(locale, matcher == "lookup");
+        if (!matched.empty())
+            return {std::move(matched), locale};
+    }
+    return {uloc_getDefault(), {}};
+}
+
+IcuCollator open_collator(const std::vector<std::string>& locales,
+                          const CollationOptions& options) {
+    auto [id, selected] = resolve_locale(locales, options.locale_matcher);
     const auto usage = options.usage.value_or("sort");
     if (usage != "sort" && usage != "search")
         throw std::runtime_error("Invalid collation usage.");
@@ -158,16 +180,6 @@ IcuCollator open_collator(const std::vector<std::string>& locales,
     if (options.case_first && *options.case_first != "upper" && *options.case_first != "lower" &&
         *options.case_first != "false")
         throw std::runtime_error("Invalid collation caseFirst.");
-    std::string id = uloc_getDefault();
-    std::string selected;
-    for (const auto& locale : requested) {
-        const auto matched = match_locale(locale, matcher == "lookup");
-        if (matched.empty())
-            continue;
-        id = matched;
-        selected = locale;
-        break;
-    }
     // Only ECMA-402's supported Unicode extension keys affect a Collator.
     for (const auto* key : {"colnumeric", "colcasefirst"}) {
         const auto value = keyword(selected, key);
@@ -216,27 +228,148 @@ IcuCollator open_collator(const std::vector<std::string>& locales,
     return collator;
 }
 
-// Sorting repeatedly uses the same locale/options. Keep bounded per-thread
-// state: ICU collators are mutable objects and must not cross worker realms.
-UCollator* cached_collator(const std::vector<std::string>& locales,
-                           const CollationOptions& options) {
+using IcuNumberFormat = std::unique_ptr<UNumberFormat, decltype(&unum_close)>;
+
+/** ECMA-402 DefaultNumberOption: absent is `fallback`, otherwise an integer in range. */
+int32_t digit_option(const std::optional<double>& value, int32_t minimum, int32_t maximum,
+                     int32_t fallback) {
+    if (!value)
+        return fallback;
+    if (std::isnan(*value) || *value < minimum || *value > maximum)
+        throw std::runtime_error("Number format digit option is out of range.");
+    return static_cast<int32_t>(std::floor(*value));
+}
+
+/** A numbering system ECMA-402 admits: one ICU knows with a simple digit mapping. */
+bool simple_numbering_system(const std::string& name) {
+    UErrorCode status = U_ZERO_ERROR;
+    const std::unique_ptr<UNumberingSystem, decltype(&unumsys_close)> system(
+        unumsys_openByName(name.c_str(), &status), &unumsys_close);
+    return U_SUCCESS(status) && system && !unumsys_isAlgorithmic(system.get());
+}
+
+IcuNumberFormat open_number_format(const std::vector<std::string>& locales,
+                                   const NumberFormatOptions& options) {
+    auto [id, selected] = resolve_locale(locales, options.locale_matcher);
+    // The only Unicode extension key ECMA-402 gives a NumberFormat is nu.
+    const auto numbers = keyword(selected, "numbers");
+    if (!numbers.empty() && simple_numbering_system(numbers))
+        set_keyword(id, "numbers", numbers);
+    const auto style = options.style.value_or("decimal");
+    if (style == "currency" || style == "unit")
+        throw std::runtime_error("Number format style '" + style + "' is not supported natively.");
+    if (style != "decimal" && style != "percent")
+        throw std::runtime_error("Invalid number format style.");
+    // SetNumberFormatDigitOptions with roundingPriority "auto" and standard notation.
+    const auto minimum_integer = digit_option(options.minimum_integer_digits, 1, 21, 1);
+    const bool significant =
+        options.minimum_significant_digits || options.maximum_significant_digits;
+    int32_t minimum = 0, maximum = style == "percent" ? 0 : 3;
+    if (significant) {
+        minimum = digit_option(options.minimum_significant_digits, 1, 21, 1);
+        maximum = digit_option(options.maximum_significant_digits, minimum, 21, 21);
+    } else if (options.minimum_fraction_digits || options.maximum_fraction_digits) {
+        const auto fraction = [](const std::optional<double>& value) -> std::optional<int32_t> {
+            if (!value)
+                return std::nullopt;
+            return digit_option(value, 0, 100, 0);
+        };
+        const auto lower = fraction(options.minimum_fraction_digits);
+        const auto upper = fraction(options.maximum_fraction_digits);
+        if (!lower) {
+            minimum = std::min(minimum, *upper);
+            maximum = *upper;
+        } else if (!upper) {
+            minimum = *lower;
+            maximum = std::max(maximum, *lower);
+        } else if (*lower > *upper) {
+            throw std::runtime_error("Number format fraction digits are out of range.");
+        } else {
+            minimum = *lower;
+            maximum = *upper;
+        }
+    }
+    // GetBooleanOrStringNumberFormatOption: "true"/"false" strings select the default.
+    auto grouping = options.use_grouping.value_or("auto");
+    if (grouping == "true" || grouping == "false")
+        grouping = "auto";
+    if (!grouping.empty() && grouping != "always" && grouping != "auto" && grouping != "min2")
+        throw std::runtime_error("Invalid number format useGrouping.");
+    UErrorCode status = U_ZERO_ERROR;
+    IcuNumberFormat format(unum_open(style == "percent" ? UNUM_PERCENT : UNUM_DECIMAL, nullptr, 0,
+                                     id.c_str(), nullptr, &status),
+                           &unum_close);
+    check_icu(status);
+    auto* handle = format.get();
+    // ECMA-402 rounds half away from zero; ICU's default is half even.
+    unum_setAttribute(handle, UNUM_ROUNDING_MODE, UNUM_ROUND_HALFUP);
+    unum_setAttribute(handle, UNUM_MIN_INTEGER_DIGITS, minimum_integer);
+    unum_setAttribute(handle, UNUM_SIGNIFICANT_DIGITS_USED, significant ? 1 : 0);
+    unum_setAttribute(handle, significant ? UNUM_MAX_SIGNIFICANT_DIGITS : UNUM_MAX_FRACTION_DIGITS,
+                      maximum);
+    unum_setAttribute(handle, significant ? UNUM_MIN_SIGNIFICANT_DIGITS : UNUM_MIN_FRACTION_DIGITS,
+                      minimum);
+    unum_setAttribute(handle, UNUM_GROUPING_USED, grouping.empty() ? 0 : 1);
+    // A DecimalFormat groups from the first separator; "auto" and "min2" read the locale.
+    if (!grouping.empty())
+        unum_setAttribute(handle, UNUM_MINIMUM_GROUPING_DIGITS,
+                          grouping == "always" ? 1
+                          : grouping == "auto" ? -2 /* UNUM_MINIMUM_GROUPING_DIGITS_AUTO */
+                                               : -3 /* UNUM_MINIMUM_GROUPING_DIGITS_MIN2 */);
+    return format;
+}
+
+// Sorting and formatting repeatedly use the same locale/options. Keep bounded
+// per-thread state: ICU collators and formatters are mutable objects and must
+// not cross worker realms.
+template <typename Options, typename Handle> class LocaleCache {
+public:
+    template <typename Open>
+    auto* get(const std::vector<std::string>& locales, const Options& options, Open open) {
+        for (const auto& entry : entries_)
+            if (entry.locales == locales && entry.options == options)
+                return entry.handle.get();
+        auto handle = open(locales, options);
+        if (entries_.size() == 8)
+            entries_.pop_front();
+        entries_.push_back({locales, options, std::move(handle)});
+        return entries_.back().handle.get();
+    }
+
+private:
     struct Entry {
         std::vector<std::string> locales;
-        CollationOptions options;
-        IcuCollator collator;
+        Options options;
+        Handle handle;
     };
-    thread_local std::deque<Entry> cache;
-    for (const auto& entry : cache)
-        if (entry.locales == locales && entry.options == options)
-            return entry.collator.get();
-    auto collator = open_collator(locales, options);
-    if (cache.size() == 8)
-        cache.pop_front();
-    cache.push_back({locales, options, std::move(collator)});
-    return cache.back().collator.get();
+    std::deque<Entry> entries_;
+};
+
+UCollator* cached_collator(const std::vector<std::string>& locales,
+                           const CollationOptions& options) {
+    thread_local LocaleCache<CollationOptions, IcuCollator> cache;
+    return cache.get(locales, options, open_collator);
 }
 
 } // namespace
+
+std::string format_number(double value, const std::vector<std::string>& locales,
+                          const NumberFormatOptions& options) {
+    thread_local LocaleCache<NumberFormatOptions, IcuNumberFormat> cache;
+    const auto* format = cache.get(locales, options, open_number_format);
+    UErrorCode status = U_ZERO_ERROR;
+    std::u16string output(32, u'\0');
+    auto length = unum_formatDouble(format, value, output.data(), icu_length(output.size()),
+                                    nullptr, &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+        output.resize(static_cast<std::size_t>(length));
+        status = U_ZERO_ERROR;
+        length = unum_formatDouble(format, value, output.data(), length, nullptr, &status);
+    }
+    check_icu(status);
+    output.resize(static_cast<std::size_t>(length));
+    return js::string_from_code_units(output);
+}
 
 std::string normalize_string(const std::string& value, const std::string& form) {
     UErrorCode status = U_ZERO_ERROR;

@@ -56,17 +56,21 @@ function optionalArgument(
 }
 
 /**
- * The `locales` and `options` arguments `localeCompare` and `Intl.Collator`
- * share, evaluated in order: the requested locale list and the
- * `bbl::pal::CollationOptions` C++ expressions.
+ * The `locales` and `options` arguments the Intl operations share, evaluated
+ * in order: the requested tags as a `std::vector<std::string>`, read after
+ * the options ran as the operation reads them, and the options' fields (a
+ * plain record's properties or a struct's fields by source name). Absent or
+ * undefined options have none; a field outside `names` refuses.
  */
-function compileCollation(
+function compileLocalesAndOptions(
     lowerer: DataLowerer,
     api: string,
+    kind: string,
     localeNode: ts.Expression | undefined,
     optionsNode: ts.Expression | undefined,
+    names: readonly string[],
     site: ts.Node,
-): { locales: string; options: string } {
+): { locales: string; fields: Readonly<Record<string, Value>> } {
     const context = lowerer.context;
     const localeValue = localeNode
         ? context.compileValue(localeNode)
@@ -86,60 +90,107 @@ function compileCollation(
             ? { kind: "vector", element: { kind: "string" } }
             : { kind: "string" },
         localeNode ?? site,
-        "collation_locale",
+        "requested_locale",
     );
-    const locales = context.allocateTemporaryCppName("collation_locales");
     const options = optionsNode ? context.compileValue(optionsNode) : undefined;
+    const locales = context.allocateTemporaryCppName("requested_locales");
     context.emit({
         kind: "declaration",
         type: "const auto",
         name: locales,
-        initializer: `bbl::pal::collation_locales(${locale})`,
+        initializer: `bbl::pal::requested_locales(${locale})`,
     });
-    let fields: Readonly<Record<string, Value>> = {};
     if (
-        optionsNode &&
-        options &&
-        !(options.kind === "json-null" && options.cpp === "std::nullopt")
+        !optionsNode ||
+        !options ||
+        (options.kind === "json-null" && options.cpp === "std::nullopt")
+    )
+        return { locales, fields: {} };
+    if (
+        options.kind === "record" &&
+        !Object.keys(options.recordGetters ?? {}).length &&
+        !Object.keys(options.recordMethods ?? {}).length
     ) {
-        if (
-            options.kind === "record" &&
-            !Object.keys(options.recordGetters ?? {}).length &&
-            !Object.keys(options.recordMethods ?? {}).length
-        ) {
-            fields = options.recordProperties ?? {};
-        } else if (options.dataType?.kind === "struct") {
-            const type = options.dataType;
-            const cpp = context.bindings.pinValueToTemporary(
-                options,
-                "collation_options",
-            ).cpp;
-            const access = context.dataTypes.isReferenceStruct(type.name)
-                ? "->"
-                : ".";
-            fields = Object.fromEntries(
-                context.dataTypes
-                    .structFields(type.name, optionsNode)
-                    .map((field) => [
-                        field.sourceName,
-                        lowerer.leafValue(
-                            `${cpp}${access}${field.name}`,
-                            field.type,
-                        ),
-                    ]),
-            );
-        } else
-            context.fail(
-                optionsNode,
-                `${api} options require a record of collation options.`,
-            );
+        const fields = options.recordProperties ?? {};
         for (const key of Object.keys(fields))
-            if (!collationOptionNames.some((name) => name === key))
+            if (!names.includes(key))
                 context.fail(
                     optionsNode,
                     `${api} option '${key}' is not lowered.`,
                 );
+        return { locales, fields };
     }
+    // A struct, or an optional one whose absence leaves every field absent.
+    const optional = options.dataType?.kind === "optional";
+    const type =
+        options.dataType?.kind === "optional"
+            ? options.dataType.inner
+            : options.dataType;
+    if (type?.kind !== "struct")
+        return context.fail(
+            optionsNode,
+            `${api} options require a record of ${kind}.`,
+        );
+    const cpp = context.bindings.pinValueToTemporary(
+        options,
+        "locale_options",
+    ).cpp;
+    const access =
+        optional || context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
+    const fields: Record<string, Value> = {};
+    for (const field of context.dataTypes.structFields(
+        type.name,
+        optionsNode,
+    )) {
+        const read = `${cpp}${access}${field.name}`;
+        const fieldType: DataType =
+            !optional || field.type.kind === "optional"
+                ? field.type
+                : { kind: "optional", inner: field.type };
+        const fieldCpp = context.dataTypes.cppType(fieldType);
+        const value = optional
+            ? `(${cpp} ? ${fieldCpp}(${read}) : ${fieldCpp}{})`
+            : read;
+        if (names.includes(field.sourceName)) {
+            fields[field.sourceName] = lowerer.leafValue(value, fieldType);
+            continue;
+        }
+        // The declared type names an option this lowering does not
+        // implement: the program may leave it absent, never set it.
+        if (fieldType.kind !== "optional")
+            context.fail(
+                optionsNode,
+                `${api} option '${field.sourceName}' is not lowered.`,
+            );
+        context.emit({
+            kind: "expression",
+            code: `if (${value}) throw std::runtime_error(${context.cppString(`${api} option '${field.sourceName}' is not supported natively.`)});`,
+        });
+    }
+    return { locales, fields };
+}
+
+/**
+ * The `locales` and `options` arguments `localeCompare` and `Intl.Collator`
+ * share, evaluated in order: the requested locale list and the
+ * `bbl::pal::CollationOptions` C++ expressions.
+ */
+function compileCollation(
+    lowerer: DataLowerer,
+    api: string,
+    localeNode: ts.Expression | undefined,
+    optionsNode: ts.Expression | undefined,
+    site: ts.Node,
+): { locales: string; options: string } {
+    const { locales, fields } = compileLocalesAndOptions(
+        lowerer,
+        api,
+        "collation options",
+        localeNode,
+        optionsNode,
+        collationOptionNames,
+        site,
+    );
     const optionsCpp = collationOptionNames.map((key) =>
         optionalArgument(
             lowerer,
@@ -158,6 +209,84 @@ function compileCollation(
         locales,
         options: `bbl::pal::CollationOptions{${optionsCpp.join(", ")}}`,
     };
+}
+
+/** The `Intl.NumberFormat` options lowered, in `bbl::pal::NumberFormatOptions` order. */
+const numberFormatOptions = [
+    ["localeMatcher", "string"],
+    ["style", "string"],
+    ["minimumIntegerDigits", "number"],
+    ["minimumFractionDigits", "number"],
+    ["maximumFractionDigits", "number"],
+    ["minimumSignificantDigits", "number"],
+    ["maximumSignificantDigits", "number"],
+    ["useGrouping", "grouping"],
+] as const;
+
+/**
+ * `number.toLocaleString(locales?, options?)`: the number as the platform's
+ * ICU number format renders it once `Intl.NumberFormat` resolves the locales
+ * and options. Currency and unit styles refuse.
+ */
+export function compileNumberLocaleString(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+): Value {
+    const context = lowerer.context;
+    context.expectArgumentCount(call, 0, 2);
+    context.reachFeature("data:locale", call);
+    const value = snapshot(
+        lowerer,
+        owner,
+        { kind: "number" },
+        call.expression,
+        "formatted_number",
+    );
+    const optionsNode = call.arguments[1];
+    const { locales, fields } = compileLocalesAndOptions(
+        lowerer,
+        "Number.toLocaleString",
+        "number format options",
+        call.arguments[0],
+        optionsNode,
+        numberFormatOptions.map(([name]) => name),
+        call,
+    );
+    const style = fields.style?.staticString;
+    if (style === "currency" || style === "unit")
+        context.fail(
+            optionsNode ?? call,
+            `Number.toLocaleString style '${style}' is not lowered.`,
+        );
+    const options = numberFormatOptions.map(([key, kind]) => {
+        const field = fields[key];
+        if (kind !== "grouping")
+            return optionalArgument(
+                lowerer,
+                field,
+                { kind },
+                optionsNode ?? call,
+                `number_format_${key}`,
+            );
+        // A boolean selects "always" or no grouping; a string names a strategy.
+        const type =
+            field?.dataType?.kind === "optional"
+                ? field.dataType.inner
+                : field?.dataType;
+        const boolean = field?.kind === "boolean" || type?.kind === "boolean";
+        return `bbl::pal::grouping_option(${optionalArgument(
+            lowerer,
+            field,
+            { kind: boolean ? "boolean" : "string" },
+            optionsNode ?? call,
+            `number_format_${key}`,
+        )})`;
+    });
+    return lowerer.leafValue(
+        `bbl::pal::format_number(${value}, ${locales}, bbl::pal::NumberFormatOptions{${options.join(", ")}})`,
+        { kind: "string" },
+    );
 }
 
 /** Unicode operations use the platform's ICU implementation. */
