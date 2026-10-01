@@ -1,9 +1,0 @@
-{
-  "angles": ["reuse", "simplification", "efficiency", "altitude"],
-  "findings": [
-    {"summary": "Keep dense-array growth explicitly refused until sparse holes have a native representation.", "applied": true},
-    {"summary": "Snapshot the sort receiver before evaluating a comparator expression.", "applied": true},
-    {"summary": "Derive capture readiness from reached canvas metadata instead of source-text matching.", "applied": true},
-    {"summary": "Share effective site-root resolution and prefer public assets consistently across browser capture and native packaging.", "applied": true}
-  ]
-}
