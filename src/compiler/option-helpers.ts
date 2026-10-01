@@ -2,6 +2,7 @@ import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { BindingLookup } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
+import type { DataLowerer } from "./data-lowering.js";
 // Shared option-lowering helpers.
 //
 // The option compilers agree on three small contracts: an options
@@ -49,6 +50,138 @@ export function validateObjectProperties(
         }
         traceSourceNode(property);
     }
+}
+
+export interface BooleanOptionsContext extends Pick<
+    LoweringServices,
+    | "checker"
+    | "unwrap"
+    | "conditions"
+    | "compileValue"
+    | "allocateTemporaryCppName"
+    | "emit"
+    | "emitDiscardedValue"
+    | "dataTypes"
+    | "fail"
+> {}
+
+/** How one options dictionary names itself in refusals and temporaries. */
+export interface BooleanOptionsSpelling {
+    /** "Event listener options". */
+    readonly subject: string;
+    /** "event option", for a member without a boolean conversion. */
+    readonly member: string;
+    /** What a non-literal value must be: "a represented options record". */
+    readonly forms: string;
+    /** The temporaries' name stem. */
+    readonly temporary: string;
+    /** Members that refuse, with their message. */
+    readonly refused?: Readonly<Record<string, string>>;
+}
+
+/**
+ * The boolean members `names` of an options dictionary, each read once in
+ * source order into a `const bool`: from an object literal (shorthand
+ * included, its other members still evaluated and ignored, as Web IDL
+ * dictionaries ignore them) or from a represented options record or
+ * struct. Absent or nullish options leave every member unset.
+ */
+export function compileBooleanOptions<N extends string>(
+    context: BooleanOptionsContext,
+    values: Pick<DataLowerer, "truthinessCondition" | "leafValue">,
+    expression: ts.Expression | undefined,
+    names: readonly N[],
+    spelling: BooleanOptionsSpelling,
+): Partial<Record<N, string>> {
+    const result: Partial<Record<N, string>> = {};
+    if (!expression) return result;
+    const type = context.checker.getTypeAtLocation(expression);
+    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0)
+        return result;
+    const named = (name: string): name is N =>
+        names.some((candidate) => candidate === name);
+    const store = (name: N, condition: string): void => {
+        const cpp = context.allocateTemporaryCppName(spelling.temporary);
+        context.emit({
+            kind: "declaration",
+            type: "const bool",
+            name: cpp,
+            initializer: condition,
+        });
+        result[name] = cpp;
+    };
+    const source = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(source)) {
+        const owner = context.compileValue(expression);
+        const properties: Record<string, Value> = {};
+        if (owner.kind === "record")
+            Object.assign(properties, owner.recordProperties);
+        else if (owner.kind === "data" && owner.dataType?.kind === "struct") {
+            const cpp = context.allocateTemporaryCppName(
+                `${spelling.temporary}s`,
+            );
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: cpp,
+                initializer: owner.cpp,
+            });
+            const member = context.dataTypes.isReferenceStruct(
+                owner.dataType.name,
+            )
+                ? "->"
+                : ".";
+            for (const field of context.dataTypes.structFields(
+                owner.dataType.name,
+                expression,
+            ))
+                properties[field.name] = values.leafValue(
+                    `${cpp}${member}${field.name}`,
+                    field.type,
+                );
+        } else
+            context.fail(
+                expression,
+                `${spelling.subject} require ${spelling.forms}.`,
+            );
+        for (const [name, message] of Object.entries(spelling.refused ?? {}))
+            if (properties[name]) context.fail(expression, message);
+        for (const name of names) {
+            const property = properties[name];
+            if (!property) continue;
+            const value = values.truthinessCondition(property);
+            if (value === undefined)
+                context.fail(
+                    expression,
+                    `The ${spelling.member} '${name}' has no native boolean conversion.`,
+                );
+            store(name, value);
+        }
+        return result;
+    }
+    for (const property of source.properties) {
+        if (
+            (!ts.isPropertyAssignment(property) &&
+                !ts.isShorthandPropertyAssignment(property)) ||
+            (!ts.isIdentifier(property.name) &&
+                !ts.isStringLiteral(property.name))
+        )
+            context.fail(
+                property,
+                `${spelling.subject} require named data properties.`,
+            );
+        const name = property.name.text;
+        const initializer = ts.isShorthandPropertyAssignment(property)
+            ? property.name
+            : property.initializer;
+        const refusal = spelling.refused?.[name];
+        if (refusal) context.fail(property, refusal);
+        if (named(name))
+            store(name, context.conditions.compileCondition(initializer));
+        // Object construction still evaluates unused properties.
+        else context.emitDiscardedValue(context.compileValue(initializer));
+    }
+    return result;
 }
 
 /** What the static folds read, as a lowering context carries it. */

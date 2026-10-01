@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import { isBinaryDataType } from "./data-types.js";
+import { compileBooleanOptions } from "./option-helpers.js";
 import type { Value } from "./types.js";
 
 /** The Encoding Standard's labels of UTF-8, the one encoding lowered. */
@@ -54,43 +55,22 @@ export function compileTextCodecNew(
                 "TextDecoder lowers the UTF-8 encoding; its label must name UTF-8 at generation.",
             );
     }
-    const flags = { fatal: "false", ignoreBOM: "false" };
-    const options = arguments_[1] && context.unwrap(arguments_[1]);
-    if (options) {
-        if (!ts.isObjectLiteralExpression(options))
-            return context.fail(
-                options,
-                "TextDecoder options must be an object literal.",
-            );
-        for (const property of options.properties) {
-            const key =
-                ts.isPropertyAssignment(property) &&
-                (ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name))
-                    ? property.name.text
-                    : undefined;
-            if (
-                !ts.isPropertyAssignment(property) ||
-                (key !== "fatal" && key !== "ignoreBOM")
-            )
-                return context.fail(
-                    property,
-                    "TextDecoder options take the fatal and ignoreBOM properties.",
-                );
-            // A dictionary boolean member is ToBoolean of its value, read
-            // in source order.
-            const flag = context.allocateTemporaryCppName("decoder_flag");
-            context.emit({
-                kind: "declaration",
-                type: "const bool",
-                name: flag,
-                initializer: context.conditions.compileCondition(
-                    property.initializer,
-                ),
-            });
-            flags[key] = flag;
-        }
-    }
+    const flags = {
+        fatal: "false",
+        ignoreBOM: "false",
+        ...compileBooleanOptions(
+            context,
+            lowerer,
+            arguments_[1],
+            ["fatal", "ignoreBOM"] as const,
+            {
+                subject: "TextDecoder options",
+                member: "TextDecoder option",
+                forms: "a represented options record",
+                temporary: "decoder_flag",
+            },
+        ),
+    };
     return {
         kind: "data",
         cpp: `bbl::js::make_text_decoder(${flags.fatal}, ${flags.ignoreBOM})`,

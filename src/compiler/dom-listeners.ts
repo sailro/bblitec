@@ -3,6 +3,7 @@ import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { documentEngine } from "./window-events.js";
+import { compileBooleanOptions } from "./option-helpers.js";
 
 type Context = Pick<
     LoweringServices,
@@ -108,112 +109,38 @@ export function listenerOptions(
 ): { capture: string; once: string; passive: string } {
     const result = { capture: "false", once: "false", passive: "false" };
     if (!expression) return result;
-    const source = context.unwrap(expression);
-    const type = context.checker.getTypeAtLocation(expression);
-    if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
+    if (
+        (context.checker.getTypeAtLocation(expression).flags &
+            ts.TypeFlags.BooleanLike) !==
+        0
+    ) {
         result.capture = context.conditions.compileCondition(expression);
         return result;
     }
-    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0)
-        return result;
-    if (!ts.isObjectLiteralExpression(source)) {
-        const owner = context.compileValue(expression);
-        const properties: Record<string, Value> = {};
-        if (owner.kind === "record")
-            Object.assign(properties, owner.recordProperties);
-        else if (owner.kind === "data" && owner.dataType?.kind === "struct") {
-            const cpp = context.allocateTemporaryCppName("event_options");
-            context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: cpp,
-                initializer: owner.cpp,
-            });
-            const member = context.dataTypes.isReferenceStruct(
-                owner.dataType.name,
-            )
-                ? "->"
-                : ".";
-            for (const field of context.dataTypes.structFields(
-                owner.dataType.name,
-                expression,
-            ))
-                properties[field.name] = context.dataLowerer.leafValue(
-                    `${cpp}${member}${field.name}`,
-                    field.type,
-                );
-        } else
-            context.fail(
-                expression,
-                "Event listener options require a boolean or a represented options record.",
-            );
-        if (!removing && properties.signal)
-            context.fail(
-                expression,
-                "AbortSignal listener lifetime is not represented yet.",
-            );
-        for (const name of [
-            "capture",
-            ...(!removing ? (["once", "passive"] as const) : []),
-        ] as const) {
-            const property = properties[name];
-            if (!property) continue;
-            const value = context.dataLowerer.truthinessCondition(property);
-            if (value === undefined)
-                context.fail(
-                    expression,
-                    `The event option '${name}' has no native boolean conversion.`,
-                );
-            const cpp = context.allocateTemporaryCppName("event_option");
-            context.emit({
-                kind: "declaration",
-                type: "const bool",
-                name: cpp,
-                initializer: value,
-            });
-            result[name] = cpp;
-        }
-        return result;
-    }
-    for (const property of source.properties) {
-        if (
-            (!ts.isPropertyAssignment(property) &&
-                !ts.isShorthandPropertyAssignment(property)) ||
-            (!ts.isIdentifier(property.name) &&
-                !ts.isStringLiteral(property.name))
-        )
-            context.fail(
-                property,
-                "Event listener options require named data properties.",
-            );
-        const name = property.name.text;
-        const initializer = ts.isShorthandPropertyAssignment(property)
-            ? property.name
-            : property.initializer;
-        if (
-            name === "capture" ||
-            (!removing && (name === "once" || name === "passive"))
-        ) {
-            const cpp = context.conditions.compileCondition(initializer);
-            const value = context.allocateTemporaryCppName("event_option");
-            context.emit({
-                kind: "declaration",
-                type: "const bool",
-                name: value,
-                initializer: cpp,
-            });
-            result[name] = value;
-        } else if (!removing && name === "signal") {
-            context.fail(
-                property,
-                "AbortSignal listener lifetime is not represented yet.",
-            );
-        } else {
-            // Object construction still evaluates unused properties.
-            context.emitDiscardedValue(context.compileValue(initializer));
-        }
-    }
-    return result;
+    return {
+        ...result,
+        ...compileBooleanOptions(
+            context,
+            context.dataLowerer,
+            expression,
+            removing
+                ? (["capture"] as const)
+                : (["capture", "once", "passive"] as const),
+            {
+                subject: "Event listener options",
+                member: "event option",
+                forms: "a boolean or a represented options record",
+                temporary: "event_option",
+                ...(removing
+                    ? {}
+                    : {
+                          refused: {
+                              signal: "AbortSignal listener lifetime is not represented yet.",
+                          },
+                      }),
+            },
+        ),
+    };
 }
 
 function pinDetached(

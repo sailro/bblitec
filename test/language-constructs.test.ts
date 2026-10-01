@@ -1932,6 +1932,13 @@ check(
     let name = "";
     try { strict.decode(broken); } catch (error) { name = (error as Error).name; }
     if (name !== "TypeError") throw new Error("fatal decode");
+    const fatal = true;
+    const settings = { fatal, ignoreBOM: false, label: "kept" };
+    let refused = 0;
+    for (const decoder of [new TextDecoder("utf-8", { fatal }), new TextDecoder("utf-8", settings)]) {
+        try { decoder.decode(broken); } catch { refused++; }
+    }
+    if (refused !== 2) throw new Error("shorthand and record options");
     const encoded = encoder.encode("\\u00e9\\u20ac\\ud800");
     if (encoded.length !== 8 || encoded[0] !== 0xc3 || encoded[2] !== 0xe2 || encoded[5] !== 0xef || encoded[7] !== 0xbd) throw new Error("encode");
     if (strict.decode(encoded.buffer) !== "\\u00e9\\u20ac\\ufffd" || encoder.encode().length !== 0) throw new Error("round trip");
