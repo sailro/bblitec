@@ -1,0 +1,63 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "`EvaluationOrder.isPureExpression` and `callsAnswerFromArguments` share one private `callsAnswer` walk instead of two copies of the call scan.",
+            "applied": true
+        },
+        {
+            "summary": "`lexicalBindingType` takes the binding's name and initializer rather than the whole declaration its callers had already destructured.",
+            "applied": true
+        },
+        {
+            "summary": "js_data.hpp now includes js_binding.hpp, so the worker include list's own js_binding.hpp line was a duplicate and is dropped.",
+            "applied": true
+        },
+        {
+            "summary": "`css_box_shadow_valid` validates each token as the tokenizer ends it instead of building a vector of vectors first; a deferred var()/math value still needs balanced parentheses.",
+            "applied": true
+        },
+        {
+            "summary": "`begin_frame` uses `frame_bounds()` instead of building the frame rectangle by hand a third time.",
+            "applied": true
+        },
+        {
+            "summary": "0028's descendant search skips display:none subtrees, which paint nothing and cannot read a backdrop; its comment no longer repeats the patch header.",
+            "applied": true
+        },
+        {
+            "summary": "0008 drops `image.Width() > 0 && image.Height() > 0`: a nonempty intersection already implies a nonempty image.",
+            "applied": true
+        },
+        {
+            "summary": "0029 builds the outer shadows' padding-border clip geometry once per texture instead of copying the mesh per shadow, computes the column slices once, folds the shadow margin into the existing length-resolution loop and shortens its comments.",
+            "applied": true
+        },
+        {
+            "summary": "Patch 0030 had no test of its own: the ui-attributes fixture now parses `rgb(1,2,3)` and `rgb(1,2,3)55` through StyleSheetSpecification, and adds trailing-comma and stray-parenthesis negatives for the CSSOM check.",
+            "applied": true
+        },
+        {
+            "summary": "docs/ui.md Limits now names the filter-plus-backdrop-filter order, that only box-shadow assignments are grammar-checked, and that an unknown color keyword in a box-shadow passes the check and refuses.",
+            "applied": true
+        },
+        {
+            "summary": "Clip filter-less layer composites to the source layer's painted bounds instead of the active scissor, and optionally sample the source layer directly instead of copying a snapshot.",
+            "applied": false,
+            "blockedBy": "Declined: both backends' filter surfaces reallocate whenever their size changes, so bounds that follow animated UI would allocate GPU textures every frame. Measured instead: the backdrop root costs about 0.13 ms per frame on Dawn and is within noise on SDL_GPU at Antigravity's menu, the only registered scene that nests backdrops.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "0008 could regenerate an image's quad only when its snapped rectangles change rather than on every sub-pixel offset change.",
+            "applied": false,
+            "blockedBy": "Declined: the check re-runs the object-fit computation each time the offset moves, to save rebuilding a four-vertex quad; docs/ui.md Limits records the regeneration.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "`ui_set_style_property` could validate before its unchanged-value early return and drop the `unchanged` local.",
+            "applied": false,
+            "blockedBy": "Declined: the guard keeps repeated identical assignments, which scripts make every frame, free of grammar validation.",
+            "filedIn": "docs/reviews (declined in this record)"
+        }
+    ]
+}
