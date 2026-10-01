@@ -45,12 +45,90 @@ test("callbacks observe completed lexical initializers and preserve failed initi
             const inner=setTimeout(()=>{nested++;clearTimeout(inner);},0);
         },0);
         let mutable=setTimeout(()=>{if(mutable!==23)throw new Error("mutable binding capture");},0);mutable=23;
+        let earlyFunctionReads = 0;
+        function forwardFunction(seed: number): number {
+            let calls = 0;
+            const inspect = (): void => {
+                const alias = action;
+                if (alias !== action) throw new Error("forward function identity");
+                alias();
+            };
+            const run = (remaining: number): void => {
+                if (remaining > 0) { run(remaining - 1); return; }
+                inspect();
+            };
+            try { run(1); throw new Error("early function read accepted"); }
+            catch (error) {
+                if (!error.message.includes("before initialization")) throw error;
+                earlyFunctionReads++;
+            }
+            const action = (): void => { calls += seed; };
+            run(1);
+            return calls;
+        }
+        if (forwardFunction(2) !== 2 || forwardFunction(5) !== 5 || earlyFunctionReads !== 2)
+            throw new Error("forward function declaration initialization");
+        let cycleCalls = 0, completedCycles = 0, completedLabels = 0;
+        const cycleListeners: Array<() => void> = [];
+        interface Scheduler {
+            setTimer(callback: () => void, delay: number): number;
+            clearTimer(id: number): void;
+            on(callback: () => void): void;
+            off(callback: () => void): void;
+        }
+        function cycleScheduler(): Scheduler {
+            return {
+                setTimer: (callback, delay) => setTimeout(callback, delay),
+                clearTimer: id => clearTimeout(id),
+                on: callback => { cycleListeners.push(callback); },
+                off: callback => {
+                    const index = cycleListeners.indexOf(callback);
+                    if (index >= 0) cycleListeners.splice(index, 1);
+                },
+            };
+        }
+        function startCycle(label: number, limit: number, scheduler: Scheduler = cycleScheduler()): () => void {
+            let ticket: number | null = null;
+            let turns = 0;
+            const cancel = (): void => {
+                if (ticket !== null) { scheduler.clearTimer(ticket); ticket = null; }
+            };
+            const finish = (): void => {
+                cancel();
+                scheduler.off(change);
+                completedCycles++;
+                completedLabels += label;
+            };
+            const arm = (): void => {
+                cancel();
+                if (turns >= limit) { finish(); return; }
+                ticket = scheduler.setTimer(() => {
+                    ticket = null;
+                    cycleCalls += label;
+                    if (++turns >= limit) finish();
+                    else arm();
+                }, 0);
+            };
+            const change = (): void => { arm(); };
+            scheduler.on(change);
+            arm();
+            return () => { cancel(); scheduler.off(change); };
+        }
+        startCycle(1, 2);
+        startCycle(10, 3);
+        const cancelledCycle = startCycle(100, 1);
+        cancelledCycle();
+        if (cycleCalls !== 0 || cycleListeners.length !== 2)
+            throw new Error("deferred cycles and cancellation");
+        for (const listener of [...cycleListeners]) listener();
         function complete(): void {
-            if(count<6||nested<1||repeated<2||named<2||timers.size!==0) {
+            if(count<6||nested<1||repeated<2||named<2||timers.size!==0||completedCycles<2) {
                 setTimeout(complete, 1);
                 return;
             }
             if(early!==1||failed!==1||count!==6||nested!==1||repeated!==2||named!==2||timers.size!==0)throw new Error("timer results");
+            if (cycleCalls !== 32 || completedCycles !== 2 || completedLabels !== 11 || cycleListeners.length !== 0)
+                throw new Error("deferred cycle results: " + cycleCalls + "," + completedCycles + "," + completedLabels + "," + cycleListeners.length);
             globalThis.close();
         }
         setTimeout(complete, 0);
