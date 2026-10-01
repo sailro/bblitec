@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import type { CompileOptions } from "../src/compiler/types.js";
 
 const program = (engineId: string, drawnId: string): string => `
     import { createEngine } from "@babylonjs/lite";
@@ -52,6 +53,67 @@ test("the native primary canvas is created under the id the program finds it by"
         result.cpp,
         /bbl::ui_primary_canvas\([^()]+, "renderCanvas"\)/,
     );
+});
+
+/** A program finding its engine canvas, and a host button before and after the engine, by `find`. */
+const compileFound = (
+    find: (id: string) => string,
+    nativeHostUi?: CompileOptions["nativeHostUi"],
+) =>
+    compileSource(
+        `
+        import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+        const canvas = ${find("app")} as HTMLCanvasElement | null;
+        if (!canvas) throw new Error("canvas is missing");
+        ${nativeHostUi ? `const before = ${find("go")} as HTMLButtonElement;` : ""}
+        const engine = await createEngine(canvas);
+        ${
+            nativeHostUi
+                ? `registerScene(createSceneContext(engine));
+                   const after = ${find("go")} as HTMLButtonElement;
+                   before.addEventListener("click", () => { after.textContent = "Clicked"; });
+                   await startEngine(engine);`
+                : "console.log(engine !== undefined);"
+        }
+    `,
+        { fileName: "found.ts", ...(nativeHostUi ? { nativeHostUi } : {}) },
+    );
+const byId = (id: string) => `document.getElementById(${JSON.stringify(id)})`;
+const bySelector = (selector: string) =>
+    `document.querySelector(${JSON.stringify(selector)})`;
+
+test("an ID-selector query finds the primary canvas as its id lookup does", () => {
+    assert.equal(
+        compileFound((id) => bySelector(`#${id}`)).cpp,
+        compileFound(byId).cpp,
+    );
+});
+
+test("an ID-selector query finds a host companion element as its id lookup does", () => {
+    const companion = {
+        sourcePath: "test/primary-canvas-id.test.ts",
+        elements: [
+            {
+                tag: "button",
+                text: "Go",
+                attributes: { id: "go", type: "button" },
+            },
+        ],
+    };
+    assert.equal(
+        compileFound((id) => bySelector(`#${id}`), companion).cpp,
+        compileFound(byId, companion).cpp,
+    );
+});
+
+test("a selector that is not one ID selector does not name the primary canvas", () => {
+    for (const selector of ["canvas#app", "#app canvas", "#\\61pp"]) {
+        assert.throws(
+            () => compileFound(() => bySelector(selector)),
+            /Browser-dependent condition cannot be determined/,
+            selector,
+        );
+    }
 });
 
 test("another id is not the primary canvas once the program names its own", () => {

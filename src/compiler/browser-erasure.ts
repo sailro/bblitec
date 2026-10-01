@@ -16,6 +16,7 @@ import {
     argumentAt,
     identifierText,
     isAssignmentExpression,
+    stringLiteralText,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -28,6 +29,7 @@ import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { documentLookupId } from "../ui-selector.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -179,7 +181,7 @@ type PrimaryCanvasContext = Pick<
 >;
 
 /**
- * The ids `document.getElementById` finds the native primary canvas by:
+ * The ids a document lookup finds the native primary canvas by:
  * the ids the program looks up the canvas it hands `createEngine` by,
  * followed through constant bindings and through the parameters of the
  * local functions that pass the canvas on. A program whose engine canvas
@@ -259,25 +261,43 @@ export function engineCanvasIds(
     return ids;
 }
 
-/** The id a library `document.getElementById(id)` call looks up. */
-function elementIdLookup(
-    context: PrimaryCanvasContext,
+/**
+ * The id a library `document.getElementById`/`querySelector` call finds one
+ * element by (`documentLookupId`), its argument's text read by `textOf`.
+ */
+function documentLookupCallId(
+    context: BrowserGlobalContext,
     expression: ts.Expression,
+    textOf: (argument: ts.Expression) => string | undefined,
 ): string | undefined {
     if (!ts.isCallExpression(expression) || expression.arguments.length !== 1)
         return undefined;
     const callee = context.unwrap(expression.expression);
     if (
         !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "getElementById" ||
+        (callee.name.text !== "getElementById" &&
+            callee.name.text !== "querySelector") ||
         context.libraryGlobal(callee.expression) !== "document"
     )
         return undefined;
-    const argument = context.unwrap(argumentAt(expression, 0));
-    const id = ts.isIdentifier(argument)
-        ? constInitializer(context, argument)
-        : argument;
-    return id && ts.isStringLiteralLike(id) ? id.text : undefined;
+    const text = textOf(argumentAt(expression, 0));
+    return text === undefined
+        ? undefined
+        : documentLookupId(callee.name.text, text);
+}
+
+/** The id a library document lookup of one element looks up, read without a scope. */
+function elementIdLookup(
+    context: PrimaryCanvasContext,
+    expression: ts.Expression,
+): string | undefined {
+    return documentLookupCallId(context, expression, (argument) => {
+        const value = context.unwrap(argument);
+        const literal = ts.isIdentifier(value)
+            ? constInitializer(context, value)
+            : value;
+        return literal && stringLiteralText(literal);
+    });
 }
 
 /**
@@ -1853,22 +1873,18 @@ export class BrowserErasure {
                 return { kind: "null" };
             }
             if (ts.isPropertyAccessExpression(unwrapped.expression)) {
+                const elementId = documentLookupCallId(
+                    this.context,
+                    unwrapped,
+                    (argument) => {
+                        const text = this.browserValueOf(argument);
+                        return text?.kind === "string" ? text.value : undefined;
+                    },
+                );
                 if (
-                    this.context.libraryGlobal(
-                        unwrapped.expression.expression,
-                    ) === "document" &&
-                    unwrapped.expression.name.text === "getElementById" &&
-                    unwrapped.arguments.length === 1
+                    elementId !== undefined &&
+                    primaryCanvasIds(this.context).has(elementId)
                 ) {
-                    const elementId = this.browserValueOf(
-                        argumentAt(unwrapped, 0),
-                    );
-                    if (
-                        elementId?.kind !== "string" ||
-                        !primaryCanvasIds(this.context).has(elementId.value)
-                    ) {
-                        return undefined;
-                    }
                     // The generated native executable is launched with the
                     // canvas its scene entry point expects. The browser page's
                     // auto-run guard therefore selects the same branch in the

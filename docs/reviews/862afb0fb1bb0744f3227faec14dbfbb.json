@@ -1,0 +1,29 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "Host companion lookups still split the fact: `isNativeHostUiLookup` claimed every `querySelector`, so `querySelector(\"#id\")` before the engine became a Window-realm retained query and after it an untagged optional, where `getElementById` binds a tagged companion element. `UiProjection.lookupElementId` now feeds `isNativeHostUiLookup`, the declaration binding and the call lowering, with a companion twin of the equality test.",
+            "applied": true
+        },
+        {
+            "summary": "The \"one ID selector\" grammar lives beside the selector parser (`uiSelectorId`, `documentLookupId` in ui-selector.ts) instead of privately in browser erasure; the static-markup `querySelector` path drops its own `#id` regex for it.",
+            "applied": true
+        },
+        {
+            "summary": "The `{argument, idOf}` closure record is replaced by `documentLookupCallId(context, call, textOf)`, which returns the id; both erasure callers shrink to one call and one test.",
+            "applied": true
+        },
+        {
+            "summary": "The method-name test runs before `libraryGlobal`, so ordinary one-argument calls no longer resolve their receiver through the checker on this path.",
+            "applied": true
+        },
+        {
+            "summary": "`elementIdLookup` reads the literal through `stringLiteralText` instead of re-spelling it.",
+            "applied": true
+        },
+        {
+            "summary": "The `primaryCanvasIds` comment names a document lookup rather than `getElementById` alone; the tests share one `compileFound` helper; docs/ui.md states the equivalence once, in the Queries row.",
+            "applied": true
+        }
+    ]
+}

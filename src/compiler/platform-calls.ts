@@ -19,6 +19,7 @@ import {
     uiSelectorSequenceCpp,
     uiSelectorSequenceTests,
     isUiSelectorState,
+    uiSelectorId,
 } from "../ui-selector.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
@@ -976,7 +977,12 @@ export class PlatformCalls {
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
-            if (callee.name.text !== "getElementById") {
+            // A one-ID-selector query is the same lookup by id.
+            const byId = callee.name.text === "getElementById";
+            const id = byId
+                ? this.context.evaluator.staticTextValue(argumentAt(call, 0))
+                : this.ui.lookupElementId(call);
+            if (!byId && id === undefined) {
                 return this.compileUiQuery(
                     call,
                     callee.name.text,
@@ -984,9 +990,6 @@ export class PlatformCalls {
                     "{}",
                 );
             }
-            const id = this.context.evaluator.staticTextValue(
-                argumentAt(call, 0),
-            );
             const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
             const tag =
@@ -1000,7 +1003,7 @@ export class PlatformCalls {
             if (!tag || optionalReceiver)
                 return {
                     kind: "data",
-                    cpp: `bbl::ui_find_element_by_id(${engine}, ${this.ui.uiStringCpp(argumentAt(call, 0), "element id")})`,
+                    cpp: `bbl::ui_find_element_by_id(${engine}, ${byId ? this.ui.uiStringCpp(argumentAt(call, 0), "element id") : this.context.cppString(id!)})`,
                     dataType: {
                         kind: "optional",
                         inner: { kind: "handle", handle: "ui-element" },
@@ -1415,17 +1418,18 @@ export class PlatformCalls {
                     "Retained UI querySelector requires a statically-known retained root.",
                 );
             }
+            const id = uiSelectorId(selector);
             const query = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/)
                 ? {
                       kind: "class" as const,
                       name: selector.slice(1),
                       value: "",
                   }
-                : selector.match(/^#([A-Za-z_][A-Za-z0-9_-]*)$/)
+                : id !== undefined
                   ? {
                         kind: "attribute" as const,
                         name: "id",
-                        value: selector.slice(1),
+                        value: id,
                     }
                   : (() => {
                         const matched = selector.match(
