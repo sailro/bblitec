@@ -1951,6 +1951,8 @@ check(
     if (padding.some((byte) => byte !== 0x20) || !padding.every((byte) => byte === 0x20)) throw new Error("predicates over a view");
     if (bytes.find((b) => b < 8) !== 0 || bytes.findIndex((b) => b === 7) !== 3 || bytes.find((b) => b > 99) !== undefined) throw new Error("find");
     if (floats.indexOf(3) !== 2 || !floats.includes(-2) || floats.lastIndexOf(9) !== -1 || floats.at(-1) !== 3) throw new Error("search");
+    const missing: number[] = [1, NaN];
+    if (!Float32Array.of(NaN).includes(NaN) || !missing.includes(NaN) || missing.indexOf(NaN) !== -1) throw new Error("includes is SameValueZero");
     if (floats.join("|") !== "1.5|-2|3" || view.join() !== "-4,9,2") throw new Error("join");
     if (floats.reduce((sum, value) => sum + value, 0) !== 2.5 || view.reduce((max, value) => Math.max(max, value), -99) !== 9) throw new Error("reduce");
     const doubled = floats.map((value) => value * 2);

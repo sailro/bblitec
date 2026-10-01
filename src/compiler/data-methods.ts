@@ -42,7 +42,6 @@ import {
     pinnedHandleKind,
     platformHandleKind,
     isTypedArrayType,
-    typedArrayStem,
     typedArrayStoreExpression,
     type DataType,
     type TypedArrayKind,
@@ -1025,21 +1024,19 @@ function compileKnownDataMethod(
             },
         };
     }
-    if (method === "indexOf" || method === "includes") {
-        // Readonly arrays and materialized constants reach this
-        // too: the demo cycles its mode through a
-        // a `readonly` array of tags, which is a span of them, and a
-        // constant numeric array is a one-dimensional table.
-        const element =
-            dataType?.kind === "vector" || dataType?.kind === "span"
-                ? dataType.element
-                : dataType?.kind === "table" && dataType.dimensions.length === 1
-                  ? ({ kind: "number" } as DataType)
-                  : undefined;
-        if (element) {
-            return lowerer.compileArraySearch(call, narrowed, element, method);
-        }
-    }
+    // A constant numeric array is a one-dimensional table; arrays and
+    // readonly spans search in the array-method tail below.
+    if (
+        (method === "indexOf" || method === "includes") &&
+        dataType?.kind === "table" &&
+        dataType.dimensions.length === 1
+    )
+        return lowerer.compileArraySearch(
+            call,
+            narrowed,
+            { kind: "number" },
+            method,
+        );
     if (isTypedArrayType(dataType) && method === "fill") {
         if (call.arguments.length < 1 || call.arguments.length > 3) {
             lowerer.context.fail(
@@ -1167,46 +1164,47 @@ function compileKnownDataMethod(
         }
     }
     if (isTypedArrayType(dataType)) {
-        return compileTypedArrayArrayMethod(
-            lowerer,
-            call,
+        if (method === "sort")
+            return compileTypedArraySort(lowerer, call, narrowed, dataType);
+        if (!typedArrayReadMethods.has(method)) return undefined;
+        return compileArrayMethodTail(
+            {
+                lowerer,
+                call,
+                narrowed: typedArrayReader(
+                    lowerer,
+                    call,
+                    method,
+                    narrowed,
+                    dataType,
+                ),
+                dataType: typedArrayNumbers,
+                dynamicOwner,
+                expectedResult: undefined,
+                typedResult: dataType,
+            },
             method,
-            narrowed,
-            dataType,
-            dynamicOwner,
         );
     }
     if (dataType?.kind !== "vector" && dataType?.kind !== "span") {
         return undefined;
     }
-    const arrayValue = compileArrayValueMethod(
-        lowerer,
-        call,
-        method,
-        narrowed,
-        dataType,
-    );
-    if (arrayValue) return arrayValue;
-    if (dataType.kind === "span" && !readOnlyDataMethods.has(method)) {
-        // A readonly array parameter is a span. Its observing methods
-        // share the vector loop below; mutating/copy-producing methods
-        // keep requiring owning storage.
-        return undefined;
-    }
-    lowerer.context.reachJsData();
-    const handler = arrayMethodHandlers.get(method);
-    if (handler)
-        return handler({
-            lowerer,
-            call,
-            narrowed,
-            dataType,
-            dynamicOwner,
-            expectedResult,
-        });
-    lowerer.context.fail(
-        callee.name,
-        `Array method '${method}' is not supported.`,
+    return (
+        compileArrayMethodTail(
+            {
+                lowerer,
+                call,
+                narrowed,
+                dataType,
+                dynamicOwner,
+                expectedResult,
+            },
+            method,
+        ) ??
+        lowerer.context.fail(
+            callee.name,
+            `Array method '${method}' is not supported.`,
+        )
     );
 }
 
@@ -1217,7 +1215,76 @@ interface ArrayMethodState {
     dataType: DataType & { kind: "vector" | "span" };
     dynamicOwner: Value | undefined;
     expectedResult: DataType<"vector"> | undefined;
+    /** A typed array's `map`/`filter` collect into the receiver's own kind. */
+    typedResult?: DataType<TypedArrayKind>;
 }
+
+/** The method lowering an array, a readonly span and a typed array's numbers share. */
+function compileArrayMethodTail(
+    state: ArrayMethodState,
+    method: string,
+): Value | undefined {
+    const { lowerer, call, narrowed, dataType } = state;
+    if (method === "indexOf" || method === "includes")
+        return lowerer.compileArraySearch(
+            call,
+            narrowed,
+            dataType.element,
+            method,
+        );
+    const arrayValue = compileArrayValueMethod(
+        lowerer,
+        call,
+        method,
+        narrowed,
+        dataType,
+    );
+    if (arrayValue) return arrayValue;
+    // A readonly array parameter is a span. Its observing methods share the
+    // vector loop; mutating/copy-producing methods keep requiring owning storage.
+    if (dataType.kind === "span" && !readOnlyDataMethods.has(method))
+        return undefined;
+    lowerer.context.reachJsData();
+    return arrayMethodHandlers.get(method)?.(state);
+}
+
+/** A map or filter collector: the array type, or a fill of the typed result. */
+function collectorCppType(
+    state: ArrayMethodState,
+    arrayType: DataType<"vector">,
+): string {
+    const types = state.lowerer.context.dataTypes;
+    return state.typedResult
+        ? `bbl::js::TypedArrayFill<${types.cppType(state.typedResult)}>`
+        : types.cppType(arrayType);
+}
+
+/** The collected array; a typed result is taken from its fill once the walk ends. */
+function collectedArray(
+    state: ArrayMethodState,
+    output: string,
+    arrayType: DataType<"vector">,
+): Value {
+    const lowerer = state.lowerer;
+    if (!state.typedResult) {
+        lowerer.registerLocal(output, "owned");
+        return { kind: "data", cpp: output, dataType: arrayType };
+    }
+    const typed = lowerer.context.allocateTemporaryCppName("typed_result");
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "auto",
+        name: typed,
+        initializer: `${output}.take()`,
+    });
+    lowerer.registerLocal(typed, "owned");
+    return { kind: "data", cpp: typed, dataType: state.typedResult };
+}
+
+const typedArrayNumbers: DataType<"span"> = {
+    kind: "span",
+    element: { kind: "number" },
+};
 
 /** The array methods a typed array shares, read through `TypedArrayNumbers`. */
 const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
@@ -1237,28 +1304,19 @@ const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
 ]);
 
 /**
- * A typed array's array methods are the array lowering over its elements
- * read as numbers (`bbl::js::TypedArrayNumbers`): each read is the element
- * at that moment, through a view's bytes as through owned storage. `map`
- * and `filter` build the receiver's own kind, converting each kept number
- * as a store does; `sort` orders numerically or sorts the list of its
- * elements with the comparator and writes it back, as the spec does.
+ * A typed array as the array-method tail reads it: its elements as numbers
+ * (`bbl::js::TypedArrayNumbers`), each read the element at that moment,
+ * through a view's bytes as through owned storage. `map` and `filter` fill
+ * the receiver's own kind (`typedResult`), converting each number as a
+ * store does.
  */
-function compileTypedArrayArrayMethod(
+function typedArrayReader(
     lowerer: DataLowerer,
     call: ts.CallExpression,
     method: string,
     narrowed: Value,
     dataType: DataType<TypedArrayKind>,
-    dynamicOwner: Value | undefined,
-): Value | undefined {
-    const numbers: DataType<"span"> = {
-        kind: "span",
-        element: { kind: "number" },
-    };
-    if (method === "sort")
-        return compileTypedArraySort(lowerer, call, narrowed, dataType);
-    if (!typedArrayReadMethods.has(method)) return undefined;
+): Value {
     const callback = call.arguments[0];
     const arrayParameter = method === "reduce" ? 3 : 2;
     if (
@@ -1274,47 +1332,12 @@ function compileTypedArrayArrayMethod(
         );
     lowerer.context.reachJsData();
     const cppType = lowerer.context.dataTypes.cppType(dataType);
-    const reader: Value = {
+    return {
         kind: "data",
         cpp: `bbl::js::typed_array_numbers(${narrowed.cpp})`,
-        dataType: numbers,
+        dataType: typedArrayNumbers,
         nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${cppType}>`,
     };
-    const valueMethod = compileArrayValueMethod(
-        lowerer,
-        call,
-        method,
-        reader,
-        numbers,
-    );
-    if (valueMethod) return valueMethod;
-    if (method === "indexOf" || method === "includes")
-        return lowerer.compileArraySearch(
-            call,
-            reader,
-            numbers.element,
-            method,
-        );
-    const handler = arrayMethodHandlers.get(method);
-    if (!handler) return undefined;
-    const result = handler({
-        lowerer,
-        call,
-        narrowed: reader,
-        dataType: numbers,
-        dynamicOwner,
-        expectedResult:
-            method === "map"
-                ? { kind: "vector", element: { kind: "number" } }
-                : undefined,
-    });
-    return method === "map" || method === "filter"
-        ? {
-              kind: "data",
-              cpp: `bbl::js::${typedArrayStem(dataType.kind)}_array_from(${result.cpp})`,
-              dataType,
-          }
-        : result;
 }
 
 function compileTypedArraySort(
@@ -1772,7 +1795,7 @@ function compileArrayFilter(state: ArrayMethodState): Value {
         false,
         (source) => {
             lowerer.context.emit(
-                `${lowerer.context.dataTypes.cppType(filteredType)} ${output};`,
+                `${collectorCppType(state, filteredType)} ${output};`,
             );
             lowerer.context.emit({
                 kind: "expression",
@@ -1805,12 +1828,7 @@ function compileArrayFilter(state: ArrayMethodState): Value {
             lowerer.context.emit({ kind: "close", code: "}" });
         },
     );
-    lowerer.registerLocal(output, "owned");
-    return {
-        kind: "data",
-        cpp: output,
-        dataType: filteredType,
-    };
+    return collectedArray(state, output, filteredType);
 }
 
 function compileArrayReduce(state: ArrayMethodState): Value {
@@ -2040,7 +2058,9 @@ function compileArrayMap(
 ): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const requested = state.expectedResult ?? arrayResultType(lowerer, call);
+    const requested: DataType<"vector"> | undefined = state.typedResult
+        ? { kind: "vector", element: { kind: "number" } }
+        : (state.expectedResult ?? arrayResultType(lowerer, call));
     if (requested?.kind !== "vector") {
         lowerer.context.fail(
             call,
@@ -2069,7 +2089,9 @@ function compileArrayMap(
             name: source,
             initializer: narrowed.cpp,
         });
-        lowerer.context.emit(`bbl::js::Array<double> ${output};`);
+        lowerer.context.emit(
+            `${collectorCppType(state, mappedType)} ${output};`,
+        );
         lowerer.context.emit({
             kind: "expression",
             code: `${output}.reserve(${source}.size());`,
@@ -2090,12 +2112,7 @@ function compileArrayMap(
         });
         lowerer.context.decreaseIndent();
         lowerer.context.emit({ kind: "close", code: "}" });
-        lowerer.registerLocal(output, "owned");
-        return {
-            kind: "data",
-            cpp: output,
-            dataType: mappedType,
-        };
+        return collectedArray(state, output, mappedType);
     }
     const output = lowerer.context.allocateTemporaryCppName("map_result");
     const lines = lowerer.context.captureEmittedLines(() =>
@@ -2190,16 +2207,9 @@ function compileArrayMap(
             },
         ),
     );
-    lowerer.context.emit(
-        `bbl::js::Array<${lowerer.context.dataTypes.cppType(mappedType.element)}> ${output};`,
-    );
+    lowerer.context.emit(`${collectorCppType(state, mappedType)} ${output};`);
     for (const line of lines) lowerer.context.emit(line);
-    lowerer.registerLocal(output, "owned");
-    return {
-        kind: "data",
-        cpp: output,
-        dataType: mappedType,
-    };
+    return collectedArray(state, output, mappedType);
 }
 
 function compileArrayForEach(state: ArrayMethodState): Value {

@@ -2,7 +2,6 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
-#include <bblite/js_text_codec.hpp>
 
 namespace bbl::js {
 namespace search_params_detail {

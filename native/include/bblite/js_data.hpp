@@ -255,6 +255,8 @@ public:
     }
     [[nodiscard]] std::size_t byte_offset() const { return view_ ? view_->offset : 0; }
     [[nodiscard]] std::size_t byte_length() const { return size() * sizeof(T); }
+    /** Whether the elements live in owned contiguous storage rather than a buffer view. */
+    [[nodiscard]] bool owns_elements() const { return !view_; }
     [[nodiscard]] const void* identity() const {
         return view_ ? static_cast<const void*>(view_.get())
                      : static_cast<const void*>(values_.get());
@@ -3677,12 +3679,13 @@ template <typename Values>
 // every element type reaching here is a scalar or a handle id, so a
 // plain `==` is that comparison. NaN matches nothing in either
 // language, for the same reason.
-// The needle is non-deduced so the element type always comes from the
-// container: a literal argument then converts to it instead of
-// deducing a second, conflicting T.
-template <typename T>
-[[nodiscard]] inline double array_index_of(const Array<T>& values,
-                                           const std::type_identity_t<T>& value) {
+// One search over every indexed container (Array, a readonly span, a pinned
+// body's std::vector, a constant std::array, a typed array's numbers). The
+// needle takes the container's element type, so a literal argument converts
+// to it instead of deducing a second, conflicting type.
+template <typename Values>
+[[nodiscard]] inline double array_index_of(const Values& values,
+                                           const typename Values::value_type& value) {
     for (std::size_t index = 0; index < values.size(); ++index) {
         if (values[index] == value) {
             return static_cast<double>(index);
@@ -3691,40 +3694,15 @@ template <typename T>
     return -1.0;
 }
 
-template <typename T>
-[[nodiscard]] inline double array_index_of(Span<const T> values,
-                                           const std::type_identity_t<T>& value) {
+/** `includes`: SameValueZero, so a NaN needle finds a NaN element. */
+template <typename Values>
+[[nodiscard]] inline bool array_includes(const Values& values,
+                                         const typename Values::value_type& value) {
     for (std::size_t index = 0; index < values.size(); ++index) {
-        if (values[index] == value) {
-            return static_cast<double>(index);
-        }
+        if (detail::same_value_zero(static_cast<typename Values::value_type>(values[index]), value))
+            return true;
     }
-    return -1.0;
-}
-
-/** The same search over the owned list a lowered pinned body keeps. */
-template <typename T>
-[[nodiscard]] inline double array_index_of(const std::vector<T>& values,
-                                           const std::type_identity_t<T>& value) {
-    for (std::size_t index = 0; index < values.size(); ++index) {
-        if (values[index] == value) {
-            return static_cast<double>(index);
-        }
-    }
-    return -1.0;
-}
-
-// Constant arrays materialize as `std::array`, so searching one needs
-// no conversion at the call site.
-template <typename T, std::size_t N>
-[[nodiscard]] inline double array_index_of(const std::array<T, N>& values,
-                                           const std::type_identity_t<T>& value) {
-    for (std::size_t index = 0; index < N; ++index) {
-        if (values[index] == value) {
-            return static_cast<double>(index);
-        }
-    }
-    return -1.0;
+    return false;
 }
 
 template <typename Values, typename T>
@@ -4506,8 +4484,11 @@ public:
     using value_type = double;
     class const_iterator {
     public:
+        using iterator_category = std::input_iterator_tag;
         using value_type = double;
         using difference_type = std::ptrdiff_t;
+        using pointer = void;
+        using reference = double;
         const_iterator() = default;
         const_iterator(const Values* values, std::size_t index) : values_(values), index_(index) {}
         [[nodiscard]] double operator*() const {
@@ -4548,23 +4529,32 @@ template <typename Values>
     return TypedArrayNumbers<Values>(values);
 }
 
-template <typename Values>
-[[nodiscard]] inline double array_index_of(const TypedArrayNumbers<Values>& values, double value) {
-    for (std::size_t index = 0; index < values.size(); ++index) {
-        if (values[index] == value)
-            return static_cast<double>(index);
+/**
+ * The typed array a `map`, `filter` or `from(source, mapper)` builds: each
+ * `push_back` stores the next number as an element store converts it, into
+ * storage reserved at the final length when the walk knows it.
+ */
+template <typename Values> class TypedArrayFill {
+public:
+    using value_type = double;
+    void reserve(std::size_t count) { elements_.reserve(count); }
+    void push_back(double value) { elements_.push_back(numeric_store_value<Element>(value)); }
+    [[nodiscard]] Values take() {
+        if constexpr (std::is_same_v<Values, U8Array>)
+            return U8Array(ArrayBuffer(std::move(elements_)));
+        else
+            return Values(std::move(elements_));
     }
-    return -1.0;
-}
+
+private:
+    using Element = typename Values::value_type;
+    std::vector<Element> elements_;
+};
 
 /** The elements as an owned list of numbers: the list a comparator sort orders. */
 template <typename Values>
 [[nodiscard]] inline Array<double> typed_array_number_list(const Values& values) {
-    Array<double> result;
-    result.reserve(values.size());
-    for (std::size_t index = 0; index < values.size(); ++index)
-        result.push_back(static_cast<double>(typed_array_load(values, index)));
-    return result;
+    return array_from_iterable<double>(typed_array_numbers(values));
 }
 
 /** Writes back a list read from the same array, so every number converts exactly. */
@@ -4576,8 +4566,7 @@ inline void typed_array_store_numbers(Values values, const Numbers& numbers) {
 
 /** `%TypedArray%.prototype.sort()`: stable numeric order, -0 before +0, NaN last. */
 template <typename Values> inline Values typed_array_sort(Values values) {
-    auto numbers = typed_array_number_list(values);
-    std::stable_sort(numbers.begin(), numbers.end(), [](double left, double right) {
+    const auto less = [](double left, double right) {
         if (std::isnan(left))
             return false;
         if (std::isnan(right))
@@ -4585,8 +4574,18 @@ template <typename Values> inline Values typed_array_sort(Values values) {
         if (left != right)
             return left < right;
         return std::signbit(left) && !std::signbit(right);
-    });
-    typed_array_store_numbers(values, numbers);
+    };
+    // Contiguous element storage sorts in place; a view over a buffer's bytes
+    // sorts its numbers and writes them back.
+    if constexpr (std::is_same_v<Values, U8Array>) {
+        std::stable_sort(values.data(), values.data() + values.size(), less);
+    } else if (values.owns_elements()) {
+        std::stable_sort(values.begin(), values.end(), less);
+    } else {
+        auto numbers = typed_array_number_list(values);
+        std::stable_sort(numbers.begin(), numbers.end(), less);
+        typed_array_store_numbers(values, numbers);
+    }
     return values;
 }
 

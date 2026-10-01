@@ -4578,11 +4578,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * walk that appends each mapped value to an array of `type`,
      * evaluating the mapper once per element in iteration order.
      * `Array.from` reads `type` from the call; a typed array's `from`
-     * collects numbers and converts them once the walk is done.
+     * (`typedResult`) stores each mapped number into the typed array as it
+     * goes, converted as an element store converts it. The walk maps while
+     * it iterates; the spec's snapshot of an iterable source before mapping
+     * differs only for a mapper that mutates its source.
      */
     private compileArrayFromMapped(
         call: ts.CallExpression,
         type: DataType<"vector">,
+        typedResult?: DataType<TypedArrayKind>,
     ): Value {
         const context = this.context;
         const sourceNode = context.unwrap(argumentAt(call, 0));
@@ -4662,7 +4666,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const storedMapper = this.prepareCallbackValue(mapper, "array_from");
         const result = context.allocateTemporaryCppName("array_from_result");
-        context.emit(`${context.dataTypes.cppType(type)} ${result};`);
+        context.emit(
+            `${typedResult ? `bbl::js::TypedArrayFill<${context.dataTypes.cppType(typedResult)}>` : context.dataTypes.cppType(type)} ${result};`,
+        );
         if (count !== undefined)
             context.emit({
                 kind: "expression",
@@ -4708,8 +4714,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         context.emitCapturedStatements(lines);
         context.decreaseIndent();
         context.emit({ kind: "close", code: "}" });
-        this.registerLocal(result, "owned");
-        return { kind: "data", cpp: result, dataType: type };
+        if (!typedResult) {
+            this.registerLocal(result, "owned");
+            return { kind: "data", cpp: result, dataType: type };
+        }
+        const typed = context.allocateTemporaryCppName("typed_result");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: typed,
+            initializer: `${result}.take()`,
+        });
+        this.registerLocal(typed, "owned");
+        return { kind: "data", cpp: typed, dataType: typedResult };
     }
 
     /**
@@ -4832,8 +4849,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * two differ refuse: `from` reads an ArrayBuffer or a number as an
      * empty array-like where the constructor views or sizes it. `of` is
      * the constructor over the literal of its arguments. A mapper is the
-     * `Array.from` walk collecting numbers, converted once it completes,
-     * as the spec maps every value before storing any.
+     * `Array.from` walk storing each mapped number into the typed array.
      */
     public compileTypedArrayFactory(
         call: ts.CallExpression,
@@ -4864,15 +4880,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         if (call.arguments.length === 2) {
-            const collected = this.compileArrayFromMapped(call, {
-                kind: "vector",
-                element: { kind: "number" },
-            });
-            return {
-                kind: "data",
-                cpp: `bbl::js::${typedArrayStem(kind)}_array_from(${collected.cpp})`,
-                dataType,
-            };
+            return this.compileArrayFromMapped(
+                call,
+                { kind: "vector", element: { kind: "number" } },
+                { kind },
+            );
         }
         if (call.arguments.length !== 1)
             this.context.fail(
@@ -5230,17 +5242,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
-        return method === "indexOf"
-            ? {
-                  kind: "number",
-                  cpp: index,
-                  dataType: { kind: "number" },
-              }
-            : {
-                  kind: "boolean",
-                  cpp: `${index} >= 0.0`,
-                  dataType: { kind: "boolean" },
-              };
+        if (method === "indexOf")
+            return { kind: "number", cpp: index, dataType: { kind: "number" } };
+        // `includes` is SameValueZero, which differs from `indexOf`'s strict
+        // equality only for a NaN needle.
+        return {
+            kind: "boolean",
+            cpp:
+                element.kind === "number"
+                    ? `bbl::js::array_includes(${owner.cpp}, ${value})`
+                    : `${index} >= 0.0`,
+            dataType: { kind: "boolean" },
+        };
     }
 
     /** Snapshot a numeric argument before compiling the next argument's effects. */
