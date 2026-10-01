@@ -4710,7 +4710,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { kind: "data", cpp: result, dataType: type };
     }
 
-    public compileArrayFrom(call: ts.CallExpression): Value | undefined {
+    /**
+     * `Array.from` and `Array.of`. A mapped `from` builds `expectedResult`
+     * when its sink names one (an array literal's spread), else the call's
+     * own or contextual array type.
+     */
+    public compileArrayFrom(
+        call: ts.CallExpression,
+        expectedResult?: DataType<"vector">,
+    ): Value | undefined {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
@@ -4797,7 +4805,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Array.from currently requires an array-like length object and one mapper callback.",
             );
         }
-        const directType = this.dataTypeAt(call);
+        const directType = expectedResult ?? this.dataTypeAt(call);
         const contextualTsType = this.context.checker.getContextualType(call);
         const type =
             directType?.kind === "vector"
@@ -11355,11 +11363,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     }
                     const projected =
                         ts.isCallExpression(expression) &&
-                        ts.isPropertyAccessExpression(expression.expression) &&
-                        ["map", "flatMap"].includes(
-                            expression.expression.name.text,
-                        )
-                            ? this.compileDataMethodCall(expression, dataType)
+                        ts.isPropertyAccessExpression(expression.expression)
+                            ? ["map", "flatMap"].includes(
+                                  expression.expression.name.text,
+                              )
+                                ? this.compileDataMethodCall(
+                                      expression,
+                                      dataType,
+                                  )
+                                : expression.arguments.length === 2
+                                  ? this.compileArrayFrom(expression, dataType)
+                                  : undefined
                             : undefined;
                     const mapRange = projected
                         ? undefined

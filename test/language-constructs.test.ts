@@ -1937,6 +1937,21 @@ check(
 );
 
 check(
+    "contextual-array-from-spreads",
+    `
+    const fields: readonly (readonly [string, "f32" | "vec4<f32>"])[] = [
+        ...Array.from({ length: 2 }, (_, i) => [\`u\${i}\`, "vec4<f32>"] as const),
+        ["s", "f32"],
+    ];
+    interface Option { name: string; size: number }
+    const options: readonly Option[] = [...Array.from({ length: 3 }, (_, i) => ({ name: \`o\${i}\`, size: i * 2 })), { name: "z", size: 9 }];
+    const text = fields.map(([name, type]) => name + ":" + type).join(",");
+    if (text !== "u0:vec4<f32>,u1:vec4<f32>,s:f32") throw new Error("contextual tuples");
+    if (options.map((o) => o.name + o.size).join(",") !== "o00,o12,o24,z9") throw new Error("contextual records");
+`,
+);
+
+check(
     "spread-string-literal-sets",
     `
     const labels = { first: "warm", second: "cool", duplicate: "warm" } as const;
