@@ -491,7 +491,9 @@ export function borrowedPlatformEventKind(
     symbol: ts.Symbol | undefined,
 ): DataType<"borrowed-platform-event">["event"] | undefined {
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
-    if (symbol.name === "Event") return "event";
+    // A TransitionEvent is the base view; its propertyName reads the payload.
+    if (symbol.name === "Event" || symbol.name === "TransitionEvent")
+        return "event";
     if (symbol.name === "MouseEvent") return "mouse";
     if (symbol.name === "KeyboardEvent") return "keyboard";
     if (symbol.name === "ErrorEvent") return "error";

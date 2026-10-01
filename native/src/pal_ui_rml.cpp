@@ -2119,6 +2119,24 @@ private:
     const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
 };
 
+/** Records the transitions RmlUi ends on retained elements; dispatch waits for its update. */
+class UiTransitionListener final : public Rml::EventListener {
+public:
+    UiTransitionListener(std::vector<std::pair<DomEventTarget, std::string>>& ended,
+                         const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets)
+        : ended(ended), event_targets(event_targets) {}
+
+    void ProcessEvent(Rml::Event& event) override {
+        const auto target = event_targets.find(event.GetTargetElement());
+        if (target != event_targets.end())
+            ended.emplace_back(target->second, event.GetParameter<Rml::String>("property", ""));
+    }
+
+private:
+    std::vector<std::pair<DomEventTarget, std::string>>& ended;
+    const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
+};
+
 class UiProjectionScope {
 public:
     explicit UiProjectionScope(bool& projecting)
@@ -5329,6 +5347,31 @@ struct UiRmlRuntime {
         }
     }
 
+    /** Sources transitionend once a listener names it. */
+    void listen_transitions() {
+        if (transition_listener || !document || !engine.dom_input ||
+            !engine.dom_input->event_types.contains("transitionend"))
+            return;
+        transition_listener =
+            std::make_unique<UiTransitionListener>(ended_transitions, event_targets);
+        document->AddEventListener(Rml::EventId::Transitionend, transition_listener.get());
+    }
+
+    /** Transitions the previous update ended, each bubbling from its element. */
+    void dispatch_ended_transitions() {
+        for (auto& [target, property] : std::exchange(ended_transitions, {})) {
+            if (target.element >= engine.ui_elements.size())
+                continue;
+            PlatformTransitionEvent payload;
+            payload.property_name = std::move(property);
+            auto batch = std::make_shared<DomEventBatch>();
+            batch->add(dom_event(std::move(payload), "transitionend",
+                                 dom_ui_path(engine, UiElementHandle{target.element}), true,
+                                 false));
+            dispatch_dom_batch(engine, batch);
+        }
+    }
+
     bool sync_focus() {
         const auto focused = ui_active_element(engine);
         if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused)
@@ -6013,6 +6056,8 @@ struct UiRmlRuntime {
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
     std::uint64_t projected_text_selection_revision = 0;
+    std::vector<std::pair<DomEventTarget, std::string>> ended_transitions;
+    std::unique_ptr<UiTransitionListener> transition_listener;
     std::string css_font_family;
     std::unique_ptr<SystemUiFontEngine> system_fonts;
     std::string css_sans_family;
@@ -6226,6 +6271,7 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     if (cpu.enabled)
         ++cpu.sample.updates;
     runtime.sync_native_focus();
+    runtime.dispatch_ended_transitions();
     UiProjectionScope projection_scope(runtime.projecting);
     const bool dimensions_changed =
         runtime.viewport_width != width || runtime.viewport_height != height;
@@ -6261,6 +6307,7 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         }
     }
     cpu.split(cpu.sample.projection, checkpoint);
+    runtime.listen_transitions();
     runtime.context->Update();
     bool root_font_changed = runtime.sync_root_font_math();
     cpu.split(cpu.sample.context, checkpoint);

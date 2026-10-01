@@ -23,6 +23,7 @@ import {
 import { screenSpaceFacts } from "../pinned-screen-space.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
+import { declaredInDomLibrary } from "./symbols.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
@@ -2101,6 +2102,18 @@ export class PropertyAccessLowerer {
         );
     }
 
+    /** The DOM event interface an expression's checker type names. */
+    private declaredEventInterface(
+        expression: ts.Expression,
+    ): string | undefined {
+        const symbol = this.context.checker
+            .getNonNullableType(
+                this.context.checker.getTypeAtLocation(expression),
+            )
+            .getSymbol();
+        return symbol && declaredInDomLibrary(symbol) ? symbol.name : undefined;
+    }
+
     /** Typed keyboard and mouse event fields. */
     private platformEventProperty(
         owner: Value,
@@ -2720,6 +2733,17 @@ export class PropertyAccessLowerer {
                 };
         }
         if (owner.platformEventBase) {
+            if (
+                property === "propertyName" &&
+                this.declaredEventInterface(ownerExpression) ===
+                    "TransitionEvent"
+            )
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.as<bbl::PlatformTransitionEvent>().property_name`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
             const asserted = this.assertedPlatformEvent(owner, ownerExpression);
             if (!asserted)
                 this.context.fail(

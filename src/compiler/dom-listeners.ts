@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { documentEngine } from "./window-events.js";
 import { compileBooleanOptions } from "./option-helpers.js";
@@ -82,22 +82,27 @@ const serviceNames = new Set([
 
 const keyboardNames = new Set(["keydown", "keyup"]);
 
+/** CSS transition events the UI projection sources. */
+const transitionNames = new Set(["transitionend"]);
+
 /** These names already carry a distinct native payload/service contract. */
 export function isCustomDomEventName(type: string): boolean {
     return (
         !pointerNames.has(type) &&
         !serviceNames.has(type) &&
         !keyboardNames.has(type) &&
+        !transitionNames.has(type) &&
         type !== "pagehide"
     );
 }
 
-type DomListenerFamily = "custom" | "keyboard" | "pointer";
+type DomListenerFamily = "custom" | "keyboard" | "pointer" | "transition";
 
 /** The shared dispatch family a DOM event name joins, if any. */
 function domListenerFamily(type: string): DomListenerFamily | undefined {
     if (keyboardNames.has(type)) return "keyboard";
     if (pointerNames.has(type)) return "pointer";
+    if (transitionNames.has(type)) return "transition";
     return isCustomDomEventName(type) ? "custom" : undefined;
 }
 
@@ -106,7 +111,9 @@ export function elementDomHandlerFamily(
     type: string,
 ): "keyboard" | "pointer" | undefined {
     const family = domListenerFamily(type);
-    return family === "custom" || type === "resize" ? undefined : family;
+    return family === "custom" || family === "transition" || type === "resize"
+        ? undefined
+        : family;
 }
 
 /** Each family's borrowed event view. */
@@ -121,6 +128,11 @@ const DOM_CALLBACK_EVENTS = {
     },
     pointer: {
         cppType: "const bbl::PlatformMouseEvent&",
+        kind: "platform-mouse-event",
+    },
+    // Read through the base Event view; TransitionEvent adds propertyName.
+    transition: {
+        cppType: "const bbl::PlatformTransitionEvent&",
         kind: "platform-mouse-event",
     },
 } as const;
@@ -243,20 +255,27 @@ function compileDomCallback(
         callback,
         { cppType: event.cppType, name },
         [
-            {
-                kind: event.kind,
-                cpp: name,
-                readOnly: true,
-                engineCpp: engine,
-                ...(family === "custom"
-                    ? {
-                          dataType: {
-                              kind: "handle" as const,
-                              handle: "custom-event" as const,
-                          },
-                      }
-                    : {}),
-            },
+            family === "transition"
+                ? valueForKind("platform-mouse-event", {
+                      cpp: `bbl::js::BorrowedEvent(${name})`,
+                      readOnly: true,
+                      engineCpp: engine,
+                      platformEventBase: true,
+                  })
+                : {
+                      kind: event.kind,
+                      cpp: name,
+                      readOnly: true,
+                      engineCpp: engine,
+                      ...(family === "custom"
+                          ? {
+                                dataType: {
+                                    kind: "handle" as const,
+                                    handle: "custom-event" as const,
+                                },
+                            }
+                          : {}),
+                  },
         ],
         undefined,
         true,

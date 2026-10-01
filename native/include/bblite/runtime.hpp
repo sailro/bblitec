@@ -190,6 +190,21 @@ struct PlatformKeyboardEvent {
     void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
+/** The end of a CSS transition on a retained element. */
+struct PlatformTransitionEvent {
+    std::string property_name{};
+    mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+
+    void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default())
+            return;
+        default_prevented = true;
+    }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+};
+
 /** Browser-neutral mouse data delivered by the platform event loop. */
 struct PlatformMouseEvent {
     double button = 0.0;
