@@ -7469,8 +7469,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         });
                         continue;
                     }
+                    const optional =
+                        source.dataType?.kind === "optional" &&
+                        source.dataType.inner.kind === "map" &&
+                        source.dataType.inner.dictionary
+                            ? source.dataType.inner
+                            : undefined;
+                    let presentSource: Value = source;
+                    if (optional) {
+                        const snapshot =
+                            this.context.allocateTemporaryCppName(
+                                "spread_source",
+                            );
+                        this.context.emit({
+                            kind: "declaration",
+                            type: "const auto",
+                            name: snapshot,
+                            initializer: source.cpp,
+                        });
+                        this.context.emit({
+                            kind: "open",
+                            code: `if (${optionalPresentCpp(snapshot)}) {`,
+                        });
+                        this.context.increaseIndent();
+                        presentSource = this.leafValue(
+                            optionalValueCpp(snapshot),
+                            optional,
+                        );
+                    }
                     const value = this.compileKnownValueForSink(
-                        source,
+                        presentSource,
                         dataType,
                         property,
                     );
@@ -7480,6 +7508,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         kind: "expression",
                         code: `for (const auto& ${entry} : ${value}) ${result}.set(${entry}.first, ${entry}.second);`,
                     });
+                    if (optional) {
+                        this.context.decreaseIndent();
+                        this.context.emit({ kind: "close", code: "}" });
+                    }
                     continue;
                 }
                 if (

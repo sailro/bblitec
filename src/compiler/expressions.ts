@@ -4493,12 +4493,18 @@ export class ExpressionLowerer {
                 this.spreadsOptionalOwnKeys(property.expression),
         );
         if (
-            unwrapped.properties.some(
-                (property) =>
-                    ts.isSpreadAssignment(property) &&
-                    this.context.dataLowerer.dataTypeAt(property.expression)
-                        ?.kind === "map",
-            ) ||
+            unwrapped.properties.some((property) => {
+                if (!ts.isSpreadAssignment(property)) return false;
+                const type = this.context.dataLowerer.dataTypeAt(
+                    property.expression,
+                );
+                return (
+                    type?.kind === "map" ||
+                    (type?.kind === "optional" &&
+                        type.inner.kind === "map" &&
+                        type.inner.dictionary)
+                );
+            }) ||
             dynamicSpread ||
             optionalKeysSpread
         ) {
@@ -4628,6 +4634,9 @@ export class ExpressionLowerer {
                     if (
                         allowDictionarySpread &&
                         (spread.dataType?.kind === "map" ||
+                            (spread.dataType?.kind === "optional" &&
+                                spread.dataType.inner.kind === "map" &&
+                                spread.dataType.inner.dictionary) ||
                             isJsonValue(spread) ||
                             spread.kind === "string" ||
                             spread.kind === "number" ||
