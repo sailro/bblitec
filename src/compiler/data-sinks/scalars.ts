@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { nullability } from "../type-facts.js";
 
-import { type DataType } from "../data-types.js";
+import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
@@ -240,6 +240,24 @@ function valueString(
     return undefined;
 }
 
+/** An opaque reference kind: a value of the same data type, as it is. */
+const opaqueSink = {
+    expression: (
+        type: DataType,
+        lowerer: DataSinkHost,
+        _expression: ts.Expression,
+        unwrapped: ts.Expression,
+    ): string => lowerer.requireDataValue(unwrapped, type).cpp,
+    value: (
+        type: DataType,
+        _lowerer: DataSinkHost,
+        value: Value,
+    ): string | undefined =>
+        value.dataType && dataTypesEqual(value.dataType, type)
+            ? value.cpp
+            : undefined,
+};
+
 export const scalarsSinks: DataSinkOperations<
     | "error"
     | "event-target"
@@ -249,6 +267,10 @@ export const scalarsSinks: DataSinkOperations<
     | "storage"
     | "date"
     | "date-time-format"
+    | "text-decoder"
+    | "text-encoder"
+    | "collator"
+    | "weak-ref"
     | "number"
     | "boolean"
     | "string"
@@ -324,18 +346,12 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "storage" ? value.cpp : undefined,
     },
-    "date-time-format": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "date-time-format" ? value.cpp : undefined,
-    },
-    date: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "date" ? value.cpp : undefined,
-    },
+    "date-time-format": opaqueSink,
+    "text-decoder": opaqueSink,
+    "text-encoder": opaqueSink,
+    collator: opaqueSink,
+    "weak-ref": opaqueSink,
+    date: opaqueSink,
     number: { expression: expressionNumber, value: valueNumber },
     boolean: { expression: expressionBoolean, value: valueBoolean },
     string: { expression: expressionString, value: valueString },

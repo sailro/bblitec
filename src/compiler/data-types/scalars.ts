@@ -16,6 +16,11 @@ function leaf(cpp: string, key: string, byReference = false, traced = false) {
     };
 }
 
+/** A reference-backed leaf: copies retain identity and the payload is traced. */
+function opaqueLeaf(cpp: string, key: string) {
+    return { ...leaf(cpp, key, true, true), opaqueReference: true as const };
+}
+
 function typedArray(kind: TypedArrayKind) {
     return leaf(typedArrayCppType(kind), typedArrayStem(kind), true);
 }
@@ -27,6 +32,9 @@ export const scalarKinds: DataKindOperations<
     | "storage"
     | "date"
     | "date-time-format"
+    | "text-decoder"
+    | "text-encoder"
+    | "collator"
     | "number"
     | "boolean"
     | "string"
@@ -42,26 +50,14 @@ export const scalarKinds: DataKindOperations<
 > = {
     error: leaf("bbl::js::Error", "error"),
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
-    "http-response": {
-        ...leaf("bbl::pal::HttpResponse", "http-response", true, true),
-        opaqueReference: true,
-    },
-    "search-params": {
-        ...leaf("bbl::js::SearchParams", "search-params", true, true),
-        opaqueReference: true,
-    },
-    storage: {
-        ...leaf("bbl::js::Storage", "storage", true, true),
-        opaqueReference: true,
-    },
-    date: {
-        ...leaf("bbl::js::Date", "date", true, true),
-        opaqueReference: true,
-    },
-    "date-time-format": {
-        ...leaf("bbl::js::DateTimeFormat", "dateformat", true, true),
-        opaqueReference: true,
-    },
+    "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),
+    "search-params": opaqueLeaf("bbl::js::SearchParams", "search-params"),
+    storage: opaqueLeaf("bbl::js::Storage", "storage"),
+    date: opaqueLeaf("bbl::js::Date", "date"),
+    "date-time-format": opaqueLeaf("bbl::js::DateTimeFormat", "dateformat"),
+    "text-decoder": opaqueLeaf("bbl::js::TextDecoder", "textdecoder"),
+    "text-encoder": opaqueLeaf("bbl::js::TextEncoder", "textencoder"),
+    collator: opaqueLeaf("bbl::pal::Collator", "collator"),
     number: leaf(CPP_SCALAR.number, "n"),
     boolean: leaf(CPP_SCALAR.boolean, "b"),
     string: leaf(CPP_SCALAR.string, "str"),

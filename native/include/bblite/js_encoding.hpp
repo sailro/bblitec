@@ -1,24 +1,35 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace bbl::js {
 
-/** Encoding Standard UTF-8 decoding with replacement, without BOM removal. */
-[[nodiscard]] inline std::string decode_utf8(std::string_view bytes) {
+/**
+ * Encoding Standard UTF-8 decoding, without BOM removal. Well-formed input is
+ * returned as it is; each maximal ill-formed subsequence becomes U+FFFD, or,
+ * when `fatal`, fails the decode (nullopt).
+ */
+[[nodiscard]] inline std::optional<std::string> decode_utf8(std::string_view bytes, bool fatal) {
     std::string result;
-    result.reserve(bytes.size());
+    // The bytes from `copied` to the sequence being read are well-formed and
+    // not yet appended, so valid input is copied once, at the end.
+    std::size_t copied = 0, start = 0;
+    bool replaced = false;
+    const auto replace = [&](std::size_t from, std::size_t resume) {
+        result.append(bytes.substr(copied, from - copied));
+        result += "\xef\xbf\xbd";
+        copied = resume;
+        replaced = true;
+    };
     unsigned needed = 0, seen = 0, lower = 0x80u, upper = 0xbfu;
-    std::size_t start = 0;
     for (std::size_t i = 0; i < bytes.size();) {
         const auto byte = static_cast<unsigned char>(bytes[i]);
         if (!needed) {
             start = i++;
-            if (byte < 0x80u) {
-                result.push_back(static_cast<char>(byte));
+            if (byte < 0x80u)
                 continue;
-            }
             if (byte >= 0xc2u && byte <= 0xdfu)
                 needed = 1;
             else if (byte >= 0xe0u && byte <= 0xefu) {
@@ -33,33 +44,97 @@ namespace bbl::js {
                     lower = 0x90u;
                 if (byte == 0xf4u)
                     upper = 0x8fu;
-            } else
-                result += "\xef\xbf\xbd";
+            } else {
+                if (fatal)
+                    return std::nullopt;
+                replace(start, i);
+            }
         } else if (byte < lower || byte > upper) {
+            if (fatal)
+                return std::nullopt;
             needed = seen = 0;
             lower = 0x80u;
             upper = 0xbfu;
-            result += "\xef\xbf\xbd"; // Reprocess this byte as a lead byte.
+            replace(start, i); // Reprocess this byte as a lead byte.
         } else {
             ++i;
             lower = 0x80u;
             upper = 0xbfu;
-            if (++seen == needed) {
-                result.append(bytes.substr(start, i - start));
+            if (++seen == needed)
                 needed = seen = 0;
-            }
         }
     }
-    if (needed)
-        result += "\xef\xbf\xbd";
+    if (needed) {
+        if (fatal)
+            return std::nullopt;
+        replace(start, bytes.size());
+    }
+    if (!replaced)
+        return std::string(bytes);
+    result.append(bytes.substr(copied));
     return result;
 }
 
+/** UTF-8 decoding with replacement, without BOM removal. */
+[[nodiscard]] inline std::string decode_utf8(std::string_view bytes) {
+    return *decode_utf8(bytes, false);
+}
+
 /** The Encoding Standard's UTF-8 decode: an initial byte order mark is removed. */
-[[nodiscard]] inline std::string decode_utf8_removing_bom(std::string_view bytes) {
+[[nodiscard]] inline std::optional<std::string> decode_utf8_removing_bom(std::string_view bytes,
+                                                                         bool fatal) {
     if (bytes.starts_with("\xef\xbb\xbf"))
         bytes.remove_prefix(3);
-    return decode_utf8(bytes);
+    return decode_utf8(bytes, fatal);
+}
+
+[[nodiscard]] inline std::string decode_utf8_removing_bom(std::string_view bytes) {
+    return *decode_utf8_removing_bom(bytes, false);
+}
+
+/**
+ * The UTF-8 of a WTF-8 string's USVString (Web IDL): a lone surrogate
+ * (ED A0..BF xx) becomes U+FFFD, and a high and low surrogate stored apart
+ * join into their code point. A string without surrogates is copied as is.
+ */
+[[nodiscard]] inline std::string usv_string(std::string_view text) {
+    const auto unit_at = [&](std::size_t index) -> unsigned {
+        if (index + 3 > text.size() || static_cast<unsigned char>(text[index]) != 0xedu ||
+            static_cast<unsigned char>(text[index + 1]) < 0xa0u)
+            return 0u;
+        return 0xd000u | ((static_cast<unsigned char>(text[index + 1]) & 0x3fu) << 6u) |
+               (static_cast<unsigned char>(text[index + 2]) & 0x3fu);
+    };
+    std::string result;
+    std::size_t copied = 0;
+    bool converted = false;
+    for (auto index = text.find('\xed'); index != std::string_view::npos;
+         index = text.find('\xed', index)) {
+        const unsigned high = unit_at(index);
+        if (!high) {
+            ++index;
+            continue;
+        }
+        result.append(text.substr(copied, index - copied));
+        const unsigned low = high <= 0xdbffu ? unit_at(index + 3) : 0u;
+        if (low >= 0xdc00u) {
+            const unsigned code = 0x10000u + ((high - 0xd800u) << 10u) + (low - 0xdc00u);
+            result.push_back(static_cast<char>(0xf0u | (code >> 18u)));
+            result.push_back(static_cast<char>(0x80u | ((code >> 12u) & 0x3fu)));
+            result.push_back(static_cast<char>(0x80u | ((code >> 6u) & 0x3fu)));
+            result.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+            index += 6;
+        } else {
+            result += "\xef\xbf\xbd";
+            index += 3;
+        }
+        copied = index;
+        converted = true;
+    }
+    if (!converted)
+        return std::string(text);
+    result.append(text.substr(copied));
+    return result;
 }
 
 /** UTF-16 code units to UTF-8, a lone surrogate or odd trailing byte as U+FFFD. */

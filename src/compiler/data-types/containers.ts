@@ -2,6 +2,7 @@ import type { DataKindOperations } from "./contracts.js";
 
 export const containerKinds: DataKindOperations<
     | "promise"
+    | "weak-ref"
     | "optional"
     | "union"
     | "vector"
@@ -26,6 +27,15 @@ export const containerKinds: DataKindOperations<
         children: (type) => (type.result ? [type.result] : []),
         byReference: false,
         tracedEdges: "always",
+        opaqueReference: true,
+    },
+    "weak-ref": {
+        cpp: (type, context) => `bbl::js::Ref<${context.cppType(type.target)}>`,
+        key: (type, key) => `weakref(${key(type.target)})`,
+        equal: (left, right, equal) => equal(left.target, right.target),
+        children: (type) => [type.target],
+        byReference: false,
+        tracedEdges: "children",
         opaqueReference: true,
     },
     product: {

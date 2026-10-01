@@ -41,6 +41,8 @@ import {
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
+import { compileTextCodecNew } from "./text-codecs.js";
+import { compileWeakRefNew } from "./weak-refs.js";
 import {
     DynamicBindingStorageRequired,
     requireDynamicBindingStorage,
@@ -4572,26 +4574,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * `Array.from(iterable, (value, index) => mapped)` over a native
-     * range: one walk that appends each mapped value, evaluating the
-     * mapper once per element in iteration order.
+     * `from(iterable, (value, index) => mapped)` over a native range: one
+     * walk that appends each mapped value to an array of `type`,
+     * evaluating the mapper once per element in iteration order.
+     * `Array.from` reads `type` from the call; a typed array's `from`
+     * (`typedResult`) stores each mapped number into the typed array as it
+     * goes, converted as an element store converts it. The walk maps while
+     * it iterates; the spec's snapshot of an iterable source before mapping
+     * differs only for a mapper that mutates its source.
      */
-    private compileArrayFromMapped(call: ts.CallExpression): Value {
+    private compileArrayFromMapped(
+        call: ts.CallExpression,
+        type: DataType<"vector">,
+        typedResult?: DataType<TypedArrayKind>,
+    ): Value {
         const context = this.context;
         const sourceNode = context.unwrap(argumentAt(call, 0));
-        const directType = this.dataTypeAt(call);
-        const contextualTsType = context.checker.getContextualType(call);
-        const type =
-            directType?.kind === "vector"
-                ? directType
-                : contextualTsType
-                  ? context.dataTypes.fromTsType(contextualTsType, call)
-                  : undefined;
-        if (type?.kind !== "vector")
-            return context.fail(
-                call,
-                "Array.from mapper results must belong to the native data model.",
-            );
         const mapper = context.unwrap(argumentAt(call, 1));
         if (
             !ts.isIdentifier(mapper) &&
@@ -4668,7 +4666,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const storedMapper = this.prepareCallbackValue(mapper, "array_from");
         const result = context.allocateTemporaryCppName("array_from_result");
-        context.emit(`${context.dataTypes.cppType(type)} ${result};`);
+        context.emit(
+            `${typedResult ? `bbl::js::TypedArrayFill<${context.dataTypes.cppType(typedResult)}>` : context.dataTypes.cppType(type)} ${result};`,
+        );
         if (count !== undefined)
             context.emit({
                 kind: "expression",
@@ -4714,11 +4714,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         context.emitCapturedStatements(lines);
         context.decreaseIndent();
         context.emit({ kind: "close", code: "}" });
-        this.registerLocal(result, "owned");
-        return { kind: "data", cpp: result, dataType: type };
+        if (!typedResult) {
+            this.registerLocal(result, "owned");
+            return { kind: "data", cpp: result, dataType: type };
+        }
+        const typed = context.allocateTemporaryCppName("typed_result");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: typed,
+            initializer: `${result}.take()`,
+        });
+        this.registerLocal(typed, "owned");
+        return { kind: "data", cpp: typed, dataType: typedResult };
     }
 
-    public compileArrayFrom(call: ts.CallExpression): Value | undefined {
+    /**
+     * `Array.from` and `Array.of`. A mapped `from` builds `expectedResult`
+     * when its sink names one (an array literal's spread), else the call's
+     * own or contextual array type.
+     */
+    public compileArrayFrom(
+        call: ts.CallExpression,
+        expectedResult?: DataType<"vector">,
+    ): Value | undefined {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
@@ -4805,7 +4824,83 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Array.from currently requires an array-like length object and one mapper callback.",
             );
         }
-        return this.compileArrayFromMapped(call);
+        const directType = expectedResult ?? this.dataTypeAt(call);
+        const contextualTsType = this.context.checker.getContextualType(call);
+        const type =
+            directType?.kind === "vector"
+                ? directType
+                : contextualTsType
+                  ? this.context.dataTypes.fromTsType(contextualTsType, call)
+                  : undefined;
+        if (type?.kind !== "vector")
+            this.context.fail(
+                call,
+                "Array.from mapper results must belong to the native data model.",
+            );
+        return this.compileArrayFromMapped(call, type);
+    }
+
+    /**
+     * `TypedArray.from(source[, mapper])` and `TypedArray.of(...items)`.
+     *
+     * Without a mapper, `from` over an array, a numeric tuple or a typed
+     * array iterates the same values the constructor iterates, so it is
+     * `new TypedArray(source)` (`typedArrayFromSource`). Sources where the
+     * two differ refuse: `from` reads an ArrayBuffer or a number as an
+     * empty array-like where the constructor views or sizes it. `of` is
+     * the constructor over the literal of its arguments. A mapper is the
+     * `Array.from` walk storing each mapped number into the typed array.
+     */
+    public compileTypedArrayFactory(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const callee = this.context.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            (callee.name.text !== "from" && callee.name.text !== "of")
+        )
+            return undefined;
+        const name = this.context.libraryGlobal(callee.expression);
+        const kind =
+            name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
+        if (!kind) return undefined;
+        const dataType: DataType = { kind };
+        this.context.reachJsData();
+        if (callee.name.text === "of") {
+            const spread = call.arguments.find(ts.isSpreadElement);
+            if (spread)
+                this.context.fail(
+                    spread,
+                    `${name}.of takes its elements as separate arguments; a spread refuses.`,
+                );
+            return {
+                kind: "data",
+                cpp: this.typedArrayFromNumbers(kind, call.arguments, call),
+                dataType,
+            };
+        }
+        if (call.arguments.length === 2) {
+            return this.compileArrayFromMapped(
+                call,
+                { kind: "vector", element: { kind: "number" } },
+                { kind },
+            );
+        }
+        if (call.arguments.length !== 1)
+            this.context.fail(
+                call,
+                `${name}.from takes a source and an optional mapper; a thisArg refuses.`,
+            );
+        const converted = this.typedArrayFromSource(
+            kind,
+            this.context.unwrap(argumentAt(call, 0)),
+        );
+        if (converted === undefined)
+            this.context.fail(
+                argumentAt(call, 0),
+                `${name}.from expects a numeric sequence: a typed array, a number array or a numeric tuple.`,
+            );
+        return { kind: "data", cpp: converted, dataType };
     }
 
     /**
@@ -5147,17 +5242,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
-        return method === "indexOf"
-            ? {
-                  kind: "number",
-                  cpp: index,
-                  dataType: { kind: "number" },
-              }
-            : {
-                  kind: "boolean",
-                  cpp: `${index} >= 0.0`,
-                  dataType: { kind: "boolean" },
-              };
+        if (method === "indexOf")
+            return { kind: "number", cpp: index, dataType: { kind: "number" } };
+        // `includes` is SameValueZero, which differs from `indexOf`'s strict
+        // equality only for a NaN needle.
+        return {
+            kind: "boolean",
+            cpp:
+                element.kind === "number"
+                    ? `bbl::js::array_includes(${owner.cpp}, ${value})`
+                    : `${index} >= 0.0`,
+            dataType: { kind: "boolean" },
+        };
     }
 
     /** Snapshot a numeric argument before compiling the next argument's effects. */
@@ -5819,6 +5915,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): Value | undefined {
         return (
             compileDateNew(this, expression) ??
+            compileTextCodecNew(this, expression) ??
+            compileWeakRefNew(this, expression) ??
             this.compileNewArray(expression) ??
             this.compileTypedArrayNew(expression) ??
             this.compileArrayBufferNew(expression) ??
@@ -5871,7 +5969,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const contextual = contextualType
             ? this.context.dataTypes.fromTsType(contextualType, expression)
             : undefined;
-        const dataType =
+        const arguments_ = expression.arguments ?? [];
+        const declared =
             expectedType?.kind === "map" || expectedType?.kind === "set"
                 ? expectedType
                 : contextual?.kind === "map" || contextual?.kind === "set"
@@ -5879,6 +5978,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   : direct?.kind === "map" || direct?.kind === "set"
                     ? direct
                     : undefined;
+        // A Set copying a native collection whose element type the checker
+        // widened (an `Array.isArray` guard leaves `any[]`) takes the
+        // element type of the collection it copies.
+        const copiedNode =
+            !declared &&
+            constructedKind === "set" &&
+            arguments_.length === 1 &&
+            !ts.isArrayLiteralExpression(this.context.unwrap(arguments_[0]!))
+                ? this.context.unwrap(arguments_[0]!)
+                : undefined;
+        const copiedValue = copiedNode && this.context.compileValue(copiedNode);
+        const copied =
+            copiedNode && copiedValue?.kind === "tuple"
+                ? (this.materializeKnownTuple(copiedNode, copiedValue) ??
+                  copiedValue)
+                : copiedValue;
+        const copiedType = copied?.dataType;
+        const dataType: DataType<"map" | "set"> | undefined =
+            declared ??
+            (copiedType?.kind === "vector" ||
+            copiedType?.kind === "span" ||
+            copiedType?.kind === "set"
+                ? { kind: "set", element: copiedType.element }
+                : undefined);
         if (!dataType) {
             this.context.fail(
                 expression,
@@ -5891,7 +6014,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Constructor ${constructor} does not match its ${dataType.kind} data type.`,
             );
         }
-        const arguments_ = expression.arguments ?? [];
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(dataType);
         if (dataType.kind === "map") {
@@ -5929,15 +6051,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             };
         }
-        const source = this.context.compileValue(iterable);
-        const values = this.compileKnownValueForSink(
-            source,
-            {
-                kind: "vector",
-                element: dataType.element,
-            },
-            iterable,
-        );
+        const source = copied ?? this.context.compileValue(iterable);
+        // The constructor copies the elements: a borrowed view's are read,
+        // never retained.
+        const values =
+            source.kind === "data" &&
+            source.dataType?.kind === "span" &&
+            dataTypesEqual(source.dataType.element, dataType.element)
+                ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`
+                : this.compileKnownValueForSink(
+                      source,
+                      {
+                          kind: "vector",
+                          element: dataType.element,
+                      },
+                      iterable,
+                  );
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
@@ -6020,13 +6149,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // Resolve that value before selecting the overload. A non-buffer
         // probe must discard emissions so length/sequence arguments run once.
         const source = this.context.probeEmission(() => {
-            const value =
+            const read =
                 (ts.isAwaitExpression(unwrapped)
                     ? this.context.compileValue(unwrapped)
                     : this.compileDataPath(unwrapped, "read")) ??
                 (sourceType?.kind === "arraybuffer"
                     ? this.context.compileValue(unwrapped)
                     : undefined);
+            // A buffer-source union the checker narrowed to its ArrayBuffer.
+            const value =
+                read?.dataType?.kind === "union"
+                    ? this.narrowOptional(read, unwrapped)
+                    : read;
             return value?.dataType?.kind === "arraybuffer" ? value : undefined;
         });
         if (source) {
@@ -6121,22 +6255,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): string | undefined {
         const prefix = typedArrayStem(kind);
         if (ts.isArrayLiteralExpression(unwrapped)) {
-            const elements = unwrapped.elements.map((element) =>
-                this.context.compileNumber(element, "double"),
-            );
-            // Constant-ness is a structural fact of the elements, not of
-            // the emitted text: an element `staticNumberValue` folds is a
-            // generation-known double, and one it cannot fold references
-            // locals and must keep its expression at the use site.
-            const values = unwrapped.elements.map((element) =>
-                staticNumberValue(this.context, element),
-            );
-            return this.typedArrayFromElements(
+            return this.typedArrayFromNumbers(
                 kind,
-                elements,
-                values.every((value): value is number => value !== undefined)
-                    ? values
-                    : undefined,
+                unwrapped.elements,
                 unwrapped,
             );
         }
@@ -6221,6 +6342,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * place.
      */
     private static readonly HOISTED_TYPED_ARRAY_MIN_ELEMENTS = 128;
+
+    /** A typed array of `kind` over number expressions, in source order. */
+    private typedArrayFromNumbers(
+        kind: TypedArrayKind,
+        expressions: readonly ts.Expression[],
+        source: ts.Node,
+    ): string {
+        const elements = expressions.map((element) =>
+            this.context.compileNumber(element, "double"),
+        );
+        // Constant-ness is a structural fact of the elements, not of the
+        // emitted text: an element `staticNumberValue` folds is a
+        // generation-known double, and one it cannot fold references
+        // locals and must keep its expression at the use site.
+        const values = expressions.map((element) =>
+            staticNumberValue(this.context, element),
+        );
+        return this.typedArrayFromElements(
+            kind,
+            elements,
+            values.every((value): value is number => value !== undefined)
+                ? values
+                : undefined,
+            source,
+        );
+    }
 
     /**
      * The conversion expression for a typed-array constructor over
@@ -11274,11 +11421,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     }
                     const projected =
                         ts.isCallExpression(expression) &&
-                        ts.isPropertyAccessExpression(expression.expression) &&
-                        ["map", "flatMap"].includes(
-                            expression.expression.name.text,
-                        )
-                            ? this.compileDataMethodCall(expression, dataType)
+                        ts.isPropertyAccessExpression(expression.expression)
+                            ? ["map", "flatMap"].includes(
+                                  expression.expression.name.text,
+                              )
+                                ? this.compileDataMethodCall(
+                                      expression,
+                                      dataType,
+                                  )
+                                : expression.arguments.length === 2
+                                  ? this.compileArrayFrom(expression, dataType)
+                                  : undefined
                             : undefined;
                     const mapRange = projected
                         ? undefined

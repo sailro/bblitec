@@ -108,6 +108,20 @@ export function isTypedArrayType(
     );
 }
 
+/** An ArrayBuffer, a DataView, an ArrayBufferView or a typed array. */
+export function isBinaryDataType(
+    dataType: DataType | undefined,
+): dataType is DataType<
+    "arraybuffer" | "dataview" | "bufferview" | TypedArrayKind
+> {
+    return (
+        dataType?.kind === "arraybuffer" ||
+        dataType?.kind === "dataview" ||
+        dataType?.kind === "bufferview" ||
+        isTypedArrayType(dataType)
+    );
+}
+
 export function typedArrayStem(kind: TypedArrayKind): string {
     return TYPED_ARRAYS[kind].stem;
 }

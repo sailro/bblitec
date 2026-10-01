@@ -2022,6 +2022,7 @@ export class PropertyAccessLowerer {
             !ts.isPropertyAccessExpression(ownerExpression) &&
             !ts.isElementAccessExpression(ownerExpression) &&
             !ts.isCallExpression(ownerExpression) &&
+            !ts.isNewExpression(ownerExpression) &&
             !ts.isStringLiteralLike(ownerExpression)
         ) {
             this.context.fail(

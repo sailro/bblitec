@@ -94,9 +94,13 @@ interface DataKinds {
     "http-response": { kind: "http-response" };
     "search-params": { kind: "search-params" };
     promise: { kind: "promise"; result?: DataType };
+    "weak-ref": { kind: "weak-ref"; target: DataType };
     storage: { kind: "storage" };
     date: { kind: "date" };
     "date-time-format": { kind: "date-time-format" };
+    "text-decoder": { kind: "text-decoder" };
+    "text-encoder": { kind: "text-encoder" };
+    collator: { kind: "collator" };
     number: {
         kind: "number";
     };

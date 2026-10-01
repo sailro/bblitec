@@ -149,6 +149,14 @@ function uncloneablePosition(
             return refuse("a Storage");
         case "date-time-format":
             return refuse("an Intl.DateTimeFormat");
+        case "text-decoder":
+            return refuse("a TextDecoder");
+        case "text-encoder":
+            return refuse("a TextEncoder");
+        case "collator":
+            return refuse("an Intl.Collator");
+        case "weak-ref":
+            return refuse("a WeakRef");
         case "bufferview":
             return refuse("an ArrayBufferView without its element class");
         case "numberindex":

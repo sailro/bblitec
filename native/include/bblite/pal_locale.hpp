@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -35,5 +36,22 @@ template <typename T>
 [[nodiscard]] std::vector<std::string> collation_locales(const std::optional<T>& locales) {
     return locales ? collation_locales(*locales) : std::vector<std::string>{};
 }
+
+/** An `Intl.Collator`: the ICU collator its locales and options resolved to, opened once. */
+class CollatorState {
+public:
+    explicit CollatorState(std::shared_ptr<void> collator) : collator_(std::move(collator)) {}
+    [[nodiscard]] const void* get() const { return collator_.get(); }
+
+private:
+    std::shared_ptr<void> collator_;
+};
+using Collator = js::Ref<CollatorState>;
+
+/** `new Intl.Collator(locales, options)`; throws where `localeCompare` would. */
+[[nodiscard]] Collator make_collator(const std::vector<std::string>& locales,
+                                     const CollationOptions& options);
+[[nodiscard]] double collator_compare(const Collator& collator, const std::string& left,
+                                      const std::string& right);
 
 } // namespace bbl::pal

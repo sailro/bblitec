@@ -1,6 +1,9 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
-import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import {
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
 import {
     dataTypeCppType,
     dataTypeKey,
@@ -20,6 +23,7 @@ export {
 export {
     TYPED_ARRAY_KINDS,
     BUFFER_VIEW_KINDS,
+    isBinaryDataType,
     isTypedArrayType,
     typedArrayStem,
     typedArrayElement,
@@ -369,6 +373,44 @@ function isSceneGraphNode(type: ts.Type): boolean {
     return (
         type.getProperty("children") !== undefined &&
         type.getProperty("worldMatrix") !== undefined
+    );
+}
+
+/** Library objects held as opaque data values: [symbol, declaring library, data kind]. */
+const LIBRARY_OBJECT_KINDS: readonly (readonly [
+    string,
+    "dom" | "default",
+    (
+        | "storage"
+        | "http-response"
+        | "search-params"
+        | "date"
+        | "date-time-format"
+        | "text-decoder"
+        | "text-encoder"
+        | "collator"
+    ),
+])[] = [
+    ["Storage", "dom", "storage"],
+    ["Response", "dom", "http-response"],
+    ["URLSearchParams", "dom", "search-params"],
+    ["Date", "default", "date"],
+    ["DateTimeFormat", "default", "date-time-format"],
+    ["TextDecoder", "dom", "text-decoder"],
+    ["TextEncoder", "dom", "text-encoder"],
+    ["Collator", "default", "collator"],
+];
+
+/** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
+function binaryLibraryClass(type: ts.Type): boolean {
+    const name = type.symbol?.name;
+    return (
+        (type.flags & ts.TypeFlags.Object) !== 0 &&
+        name !== undefined &&
+        declaredInDefaultLibrary(type.symbol) &&
+        (BUFFER_VIEW_KINDS.has(name) ||
+            TYPED_ARRAY_KINDS.has(name) ||
+            name === "ArrayBufferView")
     );
 }
 
@@ -1041,31 +1083,14 @@ export class DataTypeRegistry {
             declaredInDefaultLibrary(type.symbol)
         )
             return { kind: "error" };
-        if (
-            type.symbol?.name === "Storage" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "storage" };
-        if (
-            type.symbol?.name === "Response" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "http-response" };
-        if (
-            type.symbol?.name === "URLSearchParams" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "search-params" };
-        if (
-            type.symbol?.name === "Date" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
-            return { kind: "date" };
-        if (
-            type.symbol?.name === "DateTimeFormat" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
-            return { kind: "date-time-format" };
+        const libraryObject = LIBRARY_OBJECT_KINDS.find(
+            ([name, library]) =>
+                type.symbol?.name === name &&
+                (library === "dom"
+                    ? declaredInDomLibrary(type.symbol)
+                    : declaredInDefaultLibrary(type.symbol)),
+        );
+        if (libraryObject) return { kind: libraryObject[2] };
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);
@@ -1295,6 +1320,17 @@ export class DataTypeRegistry {
                     value: this.markStoredObjectReferences(value),
                 };
             }
+            if (symbolName === "WeakRef") {
+                const [targetType] = this.checker.getTypeArguments(reference);
+                if (!targetType) return undefined;
+                const target = this.fromStoredTsType(targetType, node);
+                return target
+                    ? {
+                          kind: "weak-ref",
+                          target: this.markStoredObjectReferences(target),
+                      }
+                    : undefined;
+            }
             if (symbolName === "Set" || symbolName === "WeakSet") {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
@@ -1464,6 +1500,10 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        // Library binary classes keep their own storage, which `instanceof`
+        // selects; a common-field record would drop `buffer` and the elements.
+        if (type.types.every(binaryLibraryClass))
+            return this.fromMixedUnion(type, node);
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
@@ -1547,7 +1587,8 @@ export class DataTypeRegistry {
                             ts.TypeFlags.NumberLike |
                             ts.TypeFlags.BooleanLike)) !==
                     0,
-            )
+            ) &&
+            !type.types.every(binaryLibraryClass)
         )
             return undefined;
         if (this.mixedUnionsInProgress.has(type)) return undefined;

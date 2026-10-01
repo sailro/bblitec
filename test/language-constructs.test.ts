@@ -1096,7 +1096,13 @@ function check(
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { location: { search }, URLSearchParams },
+            {
+                location: { search },
+                URLSearchParams,
+                TextDecoder,
+                TextEncoder,
+                WeakRef,
+            },
         );
         const result = compileSource(source, {
             fileName: `${name}.ts`,
@@ -1688,6 +1694,50 @@ check(
 );
 
 check(
+    "set-copies-and-constructed-receivers",
+    `
+    interface Request { readonly clips: readonly string[] }
+    function unique(request: Request): boolean {
+        return Array.isArray(request.clips) && new Set(request.clips).size === request.clips.length;
+    }
+    if (!unique({ clips: ["a", "b"] }) || unique({ clips: ["a", "a"] })) throw new Error("literal requests");
+    const pairs: [string, number][] = [["a", 1], ["b", 2], ["a", 3]];
+    if (new Map(pairs).size !== 2 || new Float32Array([1, 2]).length !== 2) throw new Error("constructed sizes");
+    if (new Uint8Array(new ArrayBuffer(8), 2).byteOffset !== 2) throw new Error("constructed view");
+    const requests: Request[] = [{ clips: ["p"] }, { clips: ["q", "q"] }];
+    if (requests.map(unique).join(",") !== "true,false") throw new Error("stored requests");
+    function distinct(values: readonly number[]): number {
+        const copy = Array.isArray(values) ? new Set(values) : new Set<number>();
+        return copy.size;
+    }
+    if (distinct([1, 2, 2]) !== 2 || distinct([]) !== 0) throw new Error("number copies");
+`,
+);
+
+check(
+    "weak-references",
+    `
+    interface Item { id: number }
+    class Node { constructor(public label: string) {} }
+    const item: Item = { id: 1 };
+    const refs: WeakRef<Item>[] = [new WeakRef(item), new WeakRef({ id: 2 })];
+    const nodeRef = new WeakRef(new Node("a"));
+    const node = nodeRef.deref()!;
+    let total = 0;
+    for (const ref of refs) {
+        const target = ref.deref();
+        if (!target) continue;
+        total += target.id;
+    }
+    refs[0]!.deref()!.id = 5;
+    nodeRef.deref()!.label += "b";
+    if (total !== 3 || item.id !== 5 || node.label !== "ab" || nodeRef.deref() !== node) throw new Error("targets");
+    const twin = new WeakRef(item);
+    if (twin === refs[0] || twin.deref() !== refs[0]!.deref()) throw new Error("reference identity");
+`,
+);
+
+check(
     "destructuring",
     `
     function lanes(xs: number[]): number {
@@ -1825,6 +1875,166 @@ check(
 );
 
 check(
+    "typed-array-from-and-of",
+    `
+    function clamp(value: number): number { return value > 3 ? 3 : value; }
+    const positions: number[] = [0, 1.5, -2];
+    const floats = Float32Array.from(positions);
+    positions[0] = 9;
+    const widened = Float64Array.from(Float32Array.from([0.1]));
+    const words = Uint32Array.from([-1, 2.9]);
+    const pair: [number, number] = [256, -1];
+    const bytes = Uint8Array.from(pair);
+    const copy = Int16Array.from(floats);
+    copy[0] = 5;
+    if (floats[0] !== 0 || floats[2] !== -2 || floats.length !== 3 || copy[1] !== 1) throw new Error("from copies");
+    if (widened[0] !== Math.fround(0.1) || words[0] !== 4294967295 || words[1] !== 2 || bytes[0] !== 0 || bytes[1] !== 255) throw new Error("from converts");
+    const of = Int32Array.of(4, -2.7, positions[1]!);
+    const wrapped = Uint8Array.of(300);
+    if (of.length !== 3 || of[1] !== -2 || of[2] !== 1 || wrapped[0] !== 44 || Float32Array.of().length !== 0) throw new Error("of");
+    let calls = "";
+    const mapped = Uint8Array.from(positions, (value, index) => { calls += index; return clamp(value) * 2; });
+    const named = Uint16Array.from(positions as ArrayLike<number>, clamp);
+    const ranged = Int32Array.from({ length: 4 }, (_, index) => index * -3);
+    const samples = [{ s: 1.25 }, { s: 2 }];
+    const picked = Float32Array.from(samples, (sample) => sample.s);
+    const lanes = Float64Array.from(floats, (value) => value / 2);
+    if (calls !== "012" || mapped[0] !== 6 || mapped[1] !== 3 || mapped[2] !== 252 || named[0] !== 3 || named[2] !== 65534) throw new Error("mapped");
+    if (ranged[3] !== -9 || picked[0] !== 1.25 || picked.length !== 2 || lanes[1] !== 0.75) throw new Error("mapped sources");
+`,
+);
+
+check(
+    "utf8-text-codecs",
+    `
+    const strict = new TextDecoder("UTF-8 ", { fatal: true });
+    const encoder = new TextEncoder();
+    function decodeName(bytes: Uint8Array, start: number, length: number): string {
+        const decoder = new TextDecoder();
+        return decoder.decode(bytes.subarray(start, start + length));
+    }
+    const document = new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x22, 0x6e, 0x22, 0x3a, 0x32, 0x7d]);
+    const parsed = JSON.parse(new TextDecoder().decode(document)) as { n: number };
+    if (parsed.n !== 2) throw new Error("decoded document without its BOM");
+    if (new TextDecoder("utf8", { ignoreBOM: true }).decode(document).length !== 8) throw new Error("kept BOM");
+    if (decodeName(document, 4, 3) !== "\\"n\\"" || new TextDecoder().decode() !== "") throw new Error("views");
+    const broken = new Uint8Array([0x61, 0xff, 0xed, 0xa0, 0x80]);
+    if (new TextDecoder().decode(broken) !== "a\\ufffd\\ufffd\\ufffd\\ufffd") throw new Error("replacement");
+    let name = "";
+    try { strict.decode(broken); } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("fatal decode");
+    const fatal = true;
+    const settings = { fatal, ignoreBOM: false, label: "kept" };
+    let refused = 0;
+    for (const decoder of [new TextDecoder("utf-8", { fatal }), new TextDecoder("utf-8", settings)]) {
+        try { decoder.decode(broken); } catch { refused++; }
+    }
+    if (refused !== 2) throw new Error("shorthand and record options");
+    const encoded = encoder.encode("\\u00e9\\u20ac\\ud800");
+    if (encoded.length !== 8 || encoded[0] !== 0xc3 || encoded[2] !== 0xe2 || encoded[5] !== 0xef || encoded[7] !== 0xbd) throw new Error("encode");
+    if (strict.decode(encoded.buffer) !== "\\u00e9\\u20ac\\ufffd" || encoder.encode().length !== 0) throw new Error("round trip");
+    const view = new DataView(encoded.buffer, 2, 3);
+    if (new TextDecoder().decode(view) !== "\\u20ac") throw new Error("data view");
+`,
+);
+
+check(
+    "typed-array-array-methods",
+    `
+    const bytes = new Uint8Array([32, 32, 0, 7]);
+    const padding = bytes.subarray(0, 2);
+    const floats = new Float32Array([1.5, -2, 3]);
+    const view = new Int16Array(new ArrayBuffer(8), 2, 3);
+    view[0] = -4; view[1] = 9; view[2] = 2;
+    if (padding.some((byte) => byte !== 0x20) || !padding.every((byte) => byte === 0x20)) throw new Error("predicates over a view");
+    if (bytes.find((b) => b < 8) !== 0 || bytes.findIndex((b) => b === 7) !== 3 || bytes.find((b) => b > 99) !== undefined) throw new Error("find");
+    if (floats.indexOf(3) !== 2 || !floats.includes(-2) || floats.lastIndexOf(9) !== -1 || floats.at(-1) !== 3) throw new Error("search");
+    const missing: number[] = [1, NaN];
+    if (!Float32Array.of(NaN).includes(NaN) || !missing.includes(NaN) || missing.indexOf(NaN) !== -1) throw new Error("includes is SameValueZero");
+    if (floats.join("|") !== "1.5|-2|3" || view.join() !== "-4,9,2") throw new Error("join");
+    if (floats.reduce((sum, value) => sum + value, 0) !== 2.5 || view.reduce((max, value) => Math.max(max, value), -99) !== 9) throw new Error("reduce");
+    const doubled = floats.map((value) => value * 2);
+    const wrapped = bytes.map((value) => value * 10);
+    const kept = view.filter((value) => value > 0);
+    if (!(doubled instanceof Float32Array) || doubled[1] !== -4 || wrapped[0] !== 64 || wrapped[3] !== 70) throw new Error("map keeps the kind");
+    if (!(kept instanceof Int16Array) || kept.length !== 2 || kept[1] !== 2) throw new Error("filter keeps the kind");
+    let order = "";
+    floats.forEach((value, index) => { order += index + ":" + value + ";"; if (index === 0) floats[2] = 8; });
+    if (order !== "0:1.5;1:-2;2:8;") throw new Error("forEach reads live elements");
+    const sorted = new Float64Array([3, NaN, -0, 0, -1]);
+    if (sorted.sort() !== sorted || sorted.join() !== "-1,0,0,3,NaN" || !Object.is(sorted[1], -0)) throw new Error("numeric sort");
+    view.sort((a, b) => b - a);
+    if (view.join() !== "9,2,-4" || new Uint8Array(view.buffer)[2] !== 9) throw new Error("comparator sort writes the view");
+`,
+);
+
+test("typed-array from refuses sources it reads differently from the constructor", () => {
+    for (const [source, message] of [
+        [
+            "const b = new ArrayBuffer(8); const t = Float32Array.from(b as unknown as ArrayLike<number>); const unused = t.length;",
+            /Float32Array\.from expects a numeric sequence/,
+        ],
+        [
+            "const n = 4; const t = Uint8Array.from(n as unknown as ArrayLike<number>); const unused = t.length;",
+            /Uint8Array\.from expects a numeric sequence/,
+        ],
+        [
+            "const xs = [1, 2]; const t = Int32Array.of(...xs); const unused = t.length;",
+            /Int32Array\.of takes its elements as separate arguments/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+test("typed-array callbacks refuse the array parameter", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const f = new Float32Array(2); f.forEach((v, i, a) => { a[i] = v + 1; });",
+            ),
+        /typed array's forEach callback takes no array parameter/,
+    );
+});
+
+check(
+    "buffer-source-unions",
+    `
+    function sourceBytes(source: ArrayBuffer | ArrayBufferView): Uint8Array {
+        return source instanceof ArrayBuffer
+            ? new Uint8Array(source)
+            : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    }
+    function magic(source: ArrayBuffer | ArrayBufferView): number {
+        const bytes = sourceBytes(source);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        return view.getUint32(0, true);
+    }
+    const buffer = new ArrayBuffer(12);
+    new DataView(buffer).setUint32(4, 0x46546c67, true);
+    if (magic(buffer) !== 0 || magic(new Uint8Array(buffer, 4)) !== 0x46546c67) throw new Error("buffer and byte view");
+    if (magic(new DataView(buffer, 4, 8)) !== 0x46546c67 || magic(new Uint32Array(buffer, 4, 1)) !== 0x46546c67) throw new Error("other views");
+    const sources: (ArrayBuffer | Uint8Array)[] = [buffer, new Uint8Array(buffer, 8)];
+    let kinds = "";
+    for (const source of sources) kinds += source instanceof ArrayBuffer ? "b" + source.byteLength : "v" + source.length;
+    if (kinds !== "b12v4") throw new Error("stored sources");
+    function text(source: ArrayBuffer | ArrayBufferView): string { return new TextDecoder().decode(source); }
+    if (text(new Uint8Array([104, 105])) !== "hi" || text(new Uint8Array([111, 107]).buffer) !== "ok") throw new Error("decoded sources");
+    function width(indices: Uint16Array | Uint32Array): number { return indices instanceof Uint32Array ? indices.length * 4 : indices.length * 2; }
+    if (width(new Uint16Array(3)) !== 6 || width(new Uint32Array(3)) !== 12) throw new Error("typed-array unions");
+`,
+);
+
+test("instanceof a view class refuses over an ArrayBufferView member", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(s: ArrayBuffer | ArrayBufferView): boolean { return s instanceof Uint8Array; } const unused = f(new ArrayBuffer(1));",
+            ),
+        /instanceof Uint8Array cannot be decided for an ArrayBufferView/,
+    );
+});
+
+check(
     "buffer-view-storage",
     `
     interface Payload { data: ArrayBufferView; read(): ArrayBufferView | null; }
@@ -1873,6 +2083,21 @@ check(
         throw new Error("contextual record fields");
     if (items.filter(item => item.metadata === null).map(item => item.name).join(",") !== "a,b")
         throw new Error("contextual record filtering");
+`,
+);
+
+check(
+    "contextual-array-from-spreads",
+    `
+    const fields: readonly (readonly [string, "f32" | "vec4<f32>"])[] = [
+        ...Array.from({ length: 2 }, (_, i) => [\`u\${i}\`, "vec4<f32>"] as const),
+        ["s", "f32"],
+    ];
+    interface Option { name: string; size: number }
+    const options: readonly Option[] = [...Array.from({ length: 3 }, (_, i) => ({ name: \`o\${i}\`, size: i * 2 })), { name: "z", size: 9 }];
+    const text = fields.map(([name, type]) => name + ":" + type).join(",");
+    if (text !== "u0:vec4<f32>,u1:vec4<f32>,s:f32") throw new Error("contextual tuples");
+    if (options.map((o) => o.name + o.size).join(",") !== "o00,o12,o24,z9") throw new Error("contextual records");
 `,
 );
 

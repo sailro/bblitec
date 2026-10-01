@@ -49,7 +49,7 @@ std::string locale_id(const std::string& locale) {
     return result;
 }
 
-using Collator = std::unique_ptr<UCollator, decltype(&ucol_close)>;
+using IcuCollator = std::unique_ptr<UCollator, decltype(&ucol_close)>;
 using Enumeration = std::unique_ptr<UEnumeration, decltype(&uenum_close)>;
 
 std::string keyword(const std::string& id, const char* key) {
@@ -140,7 +140,8 @@ void validate_collation(const std::string& value) {
         throw std::runtime_error("Invalid collation type.");
 }
 
-Collator make_collator(const std::vector<std::string>& locales, const CollationOptions& options) {
+IcuCollator open_collator(const std::vector<std::string>& locales,
+                          const CollationOptions& options) {
     // Canonicalize every requested tag before selection: an invalid later
     // entry still throws even when an earlier locale is supported.
     std::vector<std::string> requested;
@@ -184,7 +185,7 @@ Collator make_collator(const std::vector<std::string>& locales, const CollationO
     else if (supported_collation(id, collation))
         set_keyword(id, "collation", collation);
     UErrorCode status = U_ZERO_ERROR;
-    Collator collator(ucol_open(id.c_str(), &status), &ucol_close);
+    IcuCollator collator(ucol_open(id.c_str(), &status), &ucol_close);
     check_icu(status);
     const auto sensitivity = options.sensitivity.value_or("variant");
     const auto strength = sensitivity == "base" || sensitivity == "case" ? UCOL_PRIMARY
@@ -222,13 +223,13 @@ UCollator* cached_collator(const std::vector<std::string>& locales,
     struct Entry {
         std::vector<std::string> locales;
         CollationOptions options;
-        Collator collator;
+        IcuCollator collator;
     };
     thread_local std::deque<Entry> cache;
     for (const auto& entry : cache)
         if (entry.locales == locales && entry.options == options)
             return entry.collator.get();
-    auto collator = make_collator(locales, options);
+    auto collator = open_collator(locales, options);
     if (cache.size() == 8)
         cache.pop_front();
     cache.push_back({locales, options, std::move(collator)});
@@ -262,12 +263,32 @@ std::string normalize_string(const std::string& value, const std::string& form) 
     return js::string_from_code_units(output);
 }
 
-double compare_strings(const std::string& left, const std::string& right,
-                       const std::vector<std::string>& locales, const CollationOptions& options) {
-    const auto* collator = cached_collator(locales, options);
+namespace {
+
+double collate(const UCollator* collator, const std::string& left, const std::string& right) {
     const auto a = js::string_code_units(left), b = js::string_code_units(right);
     return static_cast<double>(
         ucol_strcoll(collator, a.data(), icu_length(a.size()), b.data(), icu_length(b.size())));
+}
+
+} // namespace
+
+Collator make_collator(const std::vector<std::string>& locales, const CollationOptions& options) {
+    // The constructor resolves its locale and options, throwing where they
+    // are invalid; the collator it opens serves every compare.
+    auto collator = open_collator(locales, options);
+    return js::make_ref<CollatorState>(std::shared_ptr<void>(
+        collator.release(), [](void* value) { ucol_close(static_cast<UCollator*>(value)); }));
+}
+
+double collator_compare(const Collator& collator, const std::string& left,
+                        const std::string& right) {
+    return collate(static_cast<const UCollator*>(collator->get()), left, right);
+}
+
+double compare_strings(const std::string& left, const std::string& right,
+                       const std::vector<std::string>& locales, const CollationOptions& options) {
+    return collate(cached_collator(locales, options), left, right);
 }
 
 } // namespace bbl::pal
