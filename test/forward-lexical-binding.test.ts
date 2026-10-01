@@ -129,6 +129,45 @@ test("timer callbacks read later bindings through the functions and callbacks th
         { fileName: join(directory, "entry.ts") },
     );
     assert.match(result.cpp, /LexicalBinding<std::string>/);
+    runRealmProgram(result.cpp, directory, t);
+});
+
+test("an imported constant stays in its module when a timer reads it", (t) => {
+    const directory = resolve("artifacts/forward-lexical-binding-import");
+    mkdirSync(directory, { recursive: true });
+    // Offsets in another source file do not order the callback's scope.
+    writeFileSync(
+        join(directory, "constants.ts"),
+        "\n".repeat(512) +
+            `
+        export enum Choice { First = 3, Second = 7, Third = 11 }
+        export const choices: number[] = [Choice.First, Choice.Second, Choice.Third];
+    `,
+    );
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        import { choices } from "./constants.js";
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        const index = new Float32Array([1]);
+        setTimeout(() => {
+            if (choices.length !== 3 || choices[index[0]!] !== 7)
+                throw new Error("imported table");
+            globalThis.close();
+        }, 0);
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /bbl::js::Array<double> v_\w*choices/);
+    runRealmProgram(result.cpp, directory, t);
+});
+
+function runRealmProgram(
+    cpp: string,
+    directory: string,
+    t: test.TestContext,
+): void {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");
@@ -136,7 +175,7 @@ test("timer callbacks read later bindings through the functions and callbacks th
     }
     const source = join(directory, "check.cpp"),
         exe = join(directory, "check.exe");
-    writeFileSync(source, result.cpp);
+    writeFileSync(source, cpp);
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
@@ -152,4 +191,4 @@ test("timer callbacks read later bindings through the functions and callbacks th
         source,
     ]);
     assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
-});
+}

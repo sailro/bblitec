@@ -4070,6 +4070,25 @@ check(
 );
 
 check(
+    "a forward initializer waits for the bindings it reads",
+    `
+    function main(): void {
+        const handlers: Array<() => void> = [];
+        handlers.push(() => {
+            if (total !== 14) throw new Error("later initializer value");
+        });
+        let refused = false;
+        try { handlers[0]!(); } catch { refused = true; }
+        const seed = 7;
+        const total = seed * 2;
+        if (!refused) throw new Error("later initializer ran early");
+        handlers[0]!();
+    }
+    main();
+`,
+);
+
+check(
     "a named function expression calls itself by its own name",
     `
     function countdown(n: number): number[] {
