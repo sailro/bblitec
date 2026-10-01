@@ -265,9 +265,11 @@ inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
 }
 
 /** A dictionary's own property names, in property order. */
-template <typename Map> [[nodiscard]] inline bbl::js::Array<std::string> property_names(const Map& map) {
+template <typename Map>
+[[nodiscard]] inline bbl::js::Array<std::string> property_names(const Map& map) {
     bbl::js::Array<std::string> names;
-    for_each_property_entry(map, [&](const std::string& name, const auto&) { names.push_back(name); });
+    for_each_property_entry(map,
+                            [&](const std::string& name, const auto&) { names.push_back(name); });
     return names;
 }
 
