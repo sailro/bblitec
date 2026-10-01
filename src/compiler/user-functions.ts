@@ -1,4 +1,3 @@
-import { valueContainsPlatformEvent } from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
@@ -835,6 +834,29 @@ function writesSharedBinding(
 }
 
 /**
+ * The function a declaration binds: a function declaration with a body, or a
+ * variable initialized with a function literal.
+ */
+export function functionOfDeclaration(
+    declaration: ts.Declaration,
+):
+    | ts.FunctionDeclaration
+    | ts.ArrowFunction
+    | ts.FunctionExpression
+    | undefined {
+    if (ts.isFunctionDeclaration(declaration) && declaration.body)
+        return declaration;
+    if (
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+    )
+        return declaration.initializer;
+    return undefined;
+}
+
+/**
  * Resolves an identifier to a reachable local function declaration and
  * validates the shared structural constraints (no generators, generics, or
  * rest parameters). Both the inline lowerer and the native data-function
@@ -854,19 +876,8 @@ export function resolveFunctionDeclaration(
     }
     let declaration: SupportedFunction | undefined;
     for (const candidate of target.declarations ?? []) {
-        if (ts.isFunctionDeclaration(candidate) && candidate.body) {
-            declaration = candidate;
-            break;
-        }
-        if (
-            ts.isVariableDeclaration(candidate) &&
-            candidate.initializer &&
-            (ts.isArrowFunction(candidate.initializer) ||
-                ts.isFunctionExpression(candidate.initializer))
-        ) {
-            declaration = candidate.initializer;
-            break;
-        }
+        declaration = functionOfDeclaration(candidate);
+        if (declaration) break;
     }
     if (!declaration) {
         return undefined;
@@ -2995,7 +3006,7 @@ export class UserFunctionLowerer {
             rootEntry.captured.some(
                 (value) =>
                     value !== undefined &&
-                    this.namesPlatformEvent(context, value, new EmissionSet()),
+                    context.bindings.containsPlatformEvent(value),
             )
         )
             throw new SharedCallRequiresInline();
@@ -3232,54 +3243,6 @@ export class UserFunctionLowerer {
             }
             throw error;
         }
-    }
-
-    /**
-     * Whether a captured argument names a borrowed platform event: directly,
-     * through its fields, or through a binding a callback's body reads.
-     */
-    private namesPlatformEvent(
-        context: UserFunctionContext,
-        value: Value,
-        seen: Set<Value>,
-    ): boolean {
-        if (seen.has(value)) return false;
-        seen.add(value);
-        const scopes = value.callbackRecordOwner?.recordScopes;
-        const declaration =
-            value.callbackDeclaration &&
-            ts.isIdentifier(value.callbackDeclaration)
-                ? tryResolveFunctionDeclaration(
-                      this.checker,
-                      value.callbackDeclaration,
-                  )
-                : value.callbackDeclaration;
-        const read = new EmissionSet<ts.Symbol>();
-        if (scopes && declaration?.body)
-            forEachAnalysisNode(declaration.body, (node) => {
-                const symbol = ts.isIdentifier(node)
-                    ? declaredSymbol(this.checker, node)
-                    : undefined;
-                if (symbol) read.add(symbol);
-            });
-        return (
-            valueContainsPlatformEvent(
-                context.dataTypes,
-                { ...value, recordScopes: [] },
-                new EmissionSet(
-                    [value.callbackRecordOwner].filter(
-                        (owner): owner is Value => owner !== undefined,
-                    ),
-                ),
-            ) ||
-            (scopes ?? []).some((scope) =>
-                [...scope].some(
-                    ([symbol, binding]) =>
-                        read.has(symbol) &&
-                        this.namesPlatformEvent(context, binding.value, seen),
-                ),
-            )
-        );
     }
 
     private sharedReturnValue(

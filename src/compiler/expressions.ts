@@ -200,6 +200,7 @@ export interface ExpressionContext
             | "unwrap"
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
+            | "refuseBorrowedPlatformEventEscape"
             | "resolveRecordValue"
             | "expectKind"
             | "expectSameEngine"

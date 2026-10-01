@@ -2,6 +2,7 @@ import ts from "typescript";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { domTargetIdentity } from "./dom-targets.js";
 import { documentEngine } from "./window-events.js";
 
 type Context = Pick<
@@ -285,11 +286,22 @@ export function emitDomEventListener(
             engine = context.requireDefaultEngine(call);
         } else {
             const type = context.dataLowerer.dataTypeAt(callee.expression);
-            if (type?.kind === "event-target") {
-                const value = context.dataLowerer.narrowOptional(
-                    context.compileValue(callee.expression),
+            const value =
+                type?.kind === "event-target"
+                    ? context.dataLowerer.narrowOptional(
+                          context.compileValue(callee.expression),
+                          callee.expression,
+                      )
+                    : undefined;
+            if (value && value.kind !== "data") {
+                // An element, Window, Document or canvas bound to a name
+                // typed `EventTarget` is the target it names.
+                ({ target, engine } = domTargetIdentity(
+                    context,
+                    value,
                     callee.expression,
-                );
+                ));
+            } else if (value) {
                 if (value.dataType?.kind !== "event-target")
                     context.fail(
                         callee.expression,

@@ -289,3 +289,84 @@ test("a stored callback reaching a signature its storage cannot serve refuses in
         /re-enters its own lowering/,
     );
 });
+
+test("a reassigned function local takes storage of its inferred type", (t) =>
+    nativeCheck(
+        "reassigned-function-local",
+        `
+    const pending: Array<() => void> = [];
+    function listen(close: () => void): () => void {
+        pending.push(close);
+        return () => {
+            const index = pending.indexOf(close);
+            if (index >= 0) pending.splice(index, 1);
+        };
+    }
+    let shown = false;
+    let hides = 0;
+    let release = (): void => {};
+    function hide(): void {
+        if (!shown) return;
+        shown = false;
+        hides++;
+        release();
+        release = () => {};
+    }
+    function show(): void {
+        if (shown) return;
+        shown = true;
+        release = listen(hide);
+    }
+    show();
+    if (pending.length !== 1) throw new Error("listener registered");
+    pending[0]!();
+    if (hides !== 1 || pending.length !== 0) throw new Error("released on hide");
+    release();
+    show();
+    hide();
+    if (hides !== 2 || pending.length !== 0) throw new Error("replaced release");
+    `,
+        t,
+    ));
+
+test("a timer schedules the stored function value it is given", (t) =>
+    nativeCheck(
+        "timer-stored-function",
+        `
+    type Scheduler = (callback: () => void, delayMs: number) => void;
+    const schedule: Scheduler = (callback, delayMs) => {
+        setTimeout(callback, delayMs);
+    };
+    let fired = 0;
+    let next = (): void => {
+        fired += 1;
+    };
+    schedule(next, 5);
+    let optional = (count?: number): void => {
+        fired += count ?? 10;
+    };
+    setTimeout(optional, 5);
+    let ticks = 0;
+    let tick = (): void => {
+        ticks += 1;
+    };
+    const interval = setInterval(tick, 5);
+    next = () => {
+        fired += 100;
+    };
+    optional = () => {
+        fired += 1000;
+    };
+    tick = () => {
+        ticks += 100;
+    };
+    await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), 60);
+    });
+    clearInterval(interval);
+    if (fired !== 11) throw new Error("scheduled stored function");
+    if (ticks < 1 || ticks >= 100) throw new Error("interval stored function");
+    `,
+        t,
+        true,
+    ));

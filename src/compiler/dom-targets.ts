@@ -22,6 +22,20 @@ export function eventTargetCpp(
     context.reachFeature("input:dom", node);
     if (value.kind === "data" && value.dataType?.kind === "event-target")
         return value.cpp;
+    const { target, engine } = domTargetIdentity(context, value, node);
+    return `bbl::dom_target_value(${engine}, ${target})`;
+}
+
+/**
+ * The native DOM target a value without event-target storage names (an
+ * element, the Window, the Document or the primary canvas), and the engine
+ * whose document owns it.
+ */
+export function domTargetIdentity(
+    context: Context,
+    value: Value,
+    node: ts.Node,
+): { target: string; engine: string } {
     const engine =
         value.engineCpp ??
         documentEngine(context, node) ??
@@ -32,7 +46,10 @@ export function eventTargetCpp(
             "A native event target requires its owning document.",
         );
     if (value.kind === "ui-element")
-        return `bbl::dom_target_value(${engine}, bbl::DomEventTarget::node(${value.cpp}.value))`;
+        return {
+            target: `bbl::DomEventTarget::node(${value.cpp}.value)`,
+            engine,
+        };
     let target = value.domEventTargetCpp;
     if (!target && ts.isExpression(node)) {
         const global = context.libraryGlobal(node);
@@ -50,7 +67,7 @@ export function eventTargetCpp(
             node,
             "This value has no represented DOM target identity.",
         );
-    return `bbl::dom_target_value(${engine}, ${target})`;
+    return { target, engine };
 }
 
 /** Retained HTML element interfaces follow the element's tag and document identity. */

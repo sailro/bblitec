@@ -587,9 +587,10 @@ export class DeclarationLowerer {
             }
         }
         if (
-            declaration.type &&
-            (ts.isArrowFunction(declaration.initializer) ||
-                ts.isFunctionExpression(declaration.initializer)) &&
+            ((declaration.type &&
+                (ts.isArrowFunction(declaration.initializer) ||
+                    ts.isFunctionExpression(declaration.initializer))) ||
+                this.isReassignedFunctionLiteral(declaration)) &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
@@ -2109,6 +2110,22 @@ export class DeclarationLowerer {
         return true;
     }
 
+    /**
+     * A function literal a later assignment replaces: storage of its type,
+     * whether that type is written or inferred from the initializer.
+     */
+    private isReassignedFunctionLiteral(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        return (
+            declaration.initializer !== undefined &&
+            (ts.isArrowFunction(declaration.initializer) ||
+                ts.isFunctionExpression(declaration.initializer)) &&
+            ts.isIdentifier(declaration.name) &&
+            this.context.sharedClosures.identifierIsRebound(declaration.name)
+        );
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -2268,10 +2285,15 @@ export class DeclarationLowerer {
             mutablePlainObject &&
             (this.context.defaultEngine() !== undefined ||
                 this.context.options.workers !== undefined);
+        const inferredReboundFunction =
+            !declaration.type &&
+            annotated?.kind === "function" &&
+            this.isReassignedFunctionLiteral(declaration);
         if (
             !declaration.type &&
             !inferredMutableArray &&
-            !inferredMutableObject
+            !inferredMutableObject &&
+            !inferredReboundFunction
         ) {
             return false;
         }
