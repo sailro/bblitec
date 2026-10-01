@@ -23,7 +23,8 @@ Check them before adding an implementation. Source rejection does not imply miss
 - An inline module script runs before the entry and must end with a statement `import()` of it, reached on a
   generation-decided path; other dynamic imports refuse.
 - Page elements are present natively: their lookups' null guards fold.
-- Icon links, resource hints and theme-color, description and light color-scheme metadata are inert.
+- Icon links, resource hints and fixed-scale viewport, theme-color, description and light color-scheme metadata are
+  inert.
 - Classic/data scripts, inline handlers, external sheets, foreign markup, quirks mode and other head content refuse,
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.

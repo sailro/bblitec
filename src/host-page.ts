@@ -282,7 +282,8 @@ export function hostPageFromDocument(
             const { charset, name, content = "" } = attributes;
             if (attributeCount === 1 && charset?.toLowerCase() === "utf-8")
                 continue;
-            // The native window is the whole layout viewport at scale one.
+            // The native window is the whole layout viewport at scale one,
+            // which the user cannot zoom.
             if (
                 attributeCount === 2 &&
                 name === "viewport" &&
@@ -290,7 +291,7 @@ export function hostPageFromDocument(
                     .split(",")
                     .map((entry) => entry.trim().replace(/\s*=\s*/, "="))
                     .every((entry) =>
-                        /^(?:width=device-width|initial-scale=1(?:\.0*)?|viewport-fit=(?:auto|cover))$/.test(
+                        /^(?:width=device-width|(?:initial|minimum|maximum)-scale=1(?:\.0*)?|user-scalable=(?:no|0)|viewport-fit=(?:auto|cover))$/.test(
                             entry,
                         ),
                     )
