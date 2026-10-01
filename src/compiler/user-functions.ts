@@ -4138,17 +4138,7 @@ export class UserFunctionLowerer {
             : dataType.result
               ? context.dataTypes.cppType(dataType.result)
               : "void";
-        const ownIdentifier = this.referencesOwnBinding(declaration)
-            ? ts.isFunctionDeclaration(declaration)
-                ? declaration.name
-                : (ts.isArrowFunction(declaration) ||
-                        ts.isFunctionExpression(declaration)) &&
-                    ts.isVariableDeclaration(declaration.parent) &&
-                    declaration.parent.initializer === declaration &&
-                    ts.isIdentifier(declaration.parent.name)
-                  ? declaration.parent.name
-                  : undefined
-            : undefined;
+        const ownIdentifier = this.referencedSelfIdentifier(declaration);
         const selfIdentifier =
             ownIdentifier &&
             !context.bindings.lookupOptional(ownIdentifier)?.sharedStorageCpp
@@ -4396,29 +4386,37 @@ export class UserFunctionLowerer {
         return cppName;
     }
 
-    private referencesOwnBinding(declaration: SupportedFunction): boolean {
-        const identifier = ts.isFunctionDeclaration(declaration)
-            ? declaration.name
-            : (ts.isArrowFunction(declaration) ||
-                    ts.isFunctionExpression(declaration)) &&
-                ts.isVariableDeclaration(declaration.parent) &&
-                declaration.parent.initializer === declaration &&
-                ts.isIdentifier(declaration.parent.name)
-              ? declaration.parent.name
-              : undefined;
-        const valueSymbol = (candidate: ts.Identifier): ts.Symbol | undefined =>
-            resolvedSymbol(this.checker, candidate);
-        const symbol = identifier ? valueSymbol(identifier) : undefined;
-        if (!symbol || !declaration.body) return false;
-
-        const found = someAnalysisNode(declaration.body, (node) => {
-            if (ts.isIdentifier(node) && valueSymbol(node) === symbol) {
-                return true;
-            }
-            return false;
+    private referencedSelfIdentifier(
+        declaration: SupportedFunction,
+    ): ts.Identifier | undefined {
+        const lexicalName =
+            ts.isFunctionDeclaration(declaration) ||
+            ts.isFunctionExpression(declaration)
+                ? declaration.name
+                : undefined;
+        const bindingName =
+            (ts.isArrowFunction(declaration) ||
+                ts.isFunctionExpression(declaration)) &&
+            ts.isVariableDeclaration(declaration.parent) &&
+            declaration.parent.initializer === declaration &&
+            ts.isIdentifier(declaration.parent.name)
+                ? declaration.parent.name
+                : undefined;
+        return [lexicalName, bindingName].find((identifier) => {
+            const symbol = identifier
+                ? resolvedSymbol(this.checker, identifier)
+                : undefined;
+            return (
+                !!symbol &&
+                !!declaration.body &&
+                someAnalysisNode(
+                    declaration.body,
+                    (node) =>
+                        ts.isIdentifier(node) &&
+                        resolvedSymbol(this.checker, node) === symbol,
+                )
+            );
         });
-
-        return found;
     }
 
     /** Invokes an Array predicate with JavaScript truthiness at its return. */

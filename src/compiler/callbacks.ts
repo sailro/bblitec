@@ -675,9 +675,12 @@ export class CallbackLowerer {
             asynchronous ??
             this.context.probeEmission(() => {
                 const value = this.context.compileValue(callback);
+                const expression = this.context.unwrap(callback);
                 if (
                     value.kind === "callback" &&
-                    ts.isCallExpression(this.context.unwrap(callback))
+                    (ts.isCallExpression(expression) ||
+                        (ts.isFunctionExpression(expression) &&
+                            expression.name))
                 ) {
                     const type = this.context.dataLowerer.dataTypeAt(callback);
                     if (type?.kind !== "function")
@@ -872,17 +875,25 @@ export class CallbackLowerer {
                         });
                         return;
                     }
+                    // Keep an owned callable's binding: rebuilding its body
+                    // would give self-removal a different function identity.
                     const declaration =
-                        bound.kind === "callback" &&
-                        bound.callbackDeclaration &&
-                        !ts.isMethodDeclaration(bound.callbackDeclaration)
-                            ? bound.callbackDeclaration
-                            : ts.isPropertyAccessExpression(unwrapped)
-                              ? this.context.fail(
-                                    unwrapped,
-                                    "Platform callback property does not resolve to a function value.",
+                        ts.isIdentifier(unwrapped) &&
+                        bound.nativeCallbackParameterTypes &&
+                        bound.cpp.length > 0
+                            ? unwrapped
+                            : bound.kind === "callback" &&
+                                bound.callbackDeclaration &&
+                                !ts.isMethodDeclaration(
+                                    bound.callbackDeclaration,
                                 )
-                              : unwrapped;
+                              ? bound.callbackDeclaration
+                              : ts.isPropertyAccessExpression(unwrapped)
+                                ? this.context.fail(
+                                      unwrapped,
+                                      "Platform callback property does not resolve to a function value.",
+                                  )
+                                : unwrapped;
                     const compile = () =>
                         this.context.compileCallbackWithValues(
                             declaration,

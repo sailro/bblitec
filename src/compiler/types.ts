@@ -2145,7 +2145,7 @@ export interface ValueFields {
     repeatedCallbackEvaluation?: true;
     /** Distinguishes one statically emitted evaluation of a function expression. */
     callbackEvaluationIdentity?: object;
-    /** One runtime identity per evaluation of a named local function literal. */
+    /** The runtime identity of a function evaluation or its owned callback storage. */
     runtimeCallbackIdentityCpp?: string;
     /** JavaScript function identity retained by a materialized native callback. */
     platformCallbackIdentity?: number;

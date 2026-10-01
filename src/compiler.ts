@@ -5182,6 +5182,7 @@ class Compiler implements LoweringServices {
             return {
                 kind: "callback",
                 cpp: cppName,
+                runtimeCallbackIdentityCpp: `${cppName}.identity()`,
                 nativeCaptures: [
                     this.registerNativeBinding(cppName, false, true, type),
                 ],
@@ -5197,6 +5198,7 @@ class Compiler implements LoweringServices {
         return {
             kind: "callback",
             cpp: `(*${owner})`,
+            runtimeCallbackIdentityCpp: `(*${owner}).identity()`,
             sharedStorageCpp: owner,
             nativeCaptures: [
                 this.registerNativeBinding(
