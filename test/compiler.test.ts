@@ -2392,7 +2392,7 @@ test("does not fold mutable reference-record fields into retained callbacks", ()
 
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_view\}, bblscene::\w+/,
+        /stored_callback\{\d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_view\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /return v_view->x;/);
     assert.doesNotMatch(result.cpp, /return 0\.0;/);
@@ -2527,7 +2527,7 @@ test("coerces missing partial Record numbers to NaN in arithmetic", () => {
     assert.match(result.cpp, /bbl::js::number_from_optional/);
 });
 
-test("materializes constant-expression tuple tables for runtime break", () => {
+test("retains lexical constant-expression tuple arrays for runtime break", () => {
     const result = compileSource(`
         const TILE = 70;
         function launch(): number {
@@ -2545,7 +2545,10 @@ test("materializes constant-expression tuple tables for runtime break", () => {
         const total = launch();
     `);
 
-    assert.match(result.cpp, /inline const std::array/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bbl::js::Tuple<2>> v_fn\d+_shots = bbl::js::Array<bbl::js::Tuple<2>>/,
+    );
     assert.match(result.cpp, /for \([^\n]*auto&& v_bblite_item_/);
 });
 
@@ -2772,7 +2775,7 @@ test("leaves an ordinary numeric expression unfolded", () => {
     assert.match(result.cpp, /\(4\.0 \* 2\.0\)/);
 });
 
-test("materializes static tables under runtime indices only", () => {
+test("retains tuple array storage through fixed and runtime indices", () => {
     const result = compileSource(`
         const WEIGHTS: readonly (readonly [number, number])[] = [
             [1, 2],
@@ -2791,16 +2794,18 @@ test("materializes static tables under runtime indices only", () => {
 
     assert.match(
         result.cpp,
-        /inline const std::array<bbl::js::Tuple<2>, 3>& WEIGHTS\(\) \{\s*static const std::array<bbl::js::Tuple<2>, 3> value = \{\{\{1\.0, 2\.0\}, \{3\.0, 4\.0\}, \{5\.0, 6\.0\}\}\};\s*return value;\s*\}/,
+        /bbl::js::Array<bbl::js::Tuple<2>> v_WEIGHTS = bbl::js::Array<bbl::js::Tuple<2>>\{bbl::js::Tuple<2>\{1\.0, 2\.0\}, bbl::js::Tuple<2>\{3\.0, 4\.0\}, bbl::js::Tuple<2>\{5\.0, 6\.0\}\};/,
     );
-    // The table's own lanes are doubles, and so is the local, so the read
-    // is written at that width rather than at the default float one.
-    assert.match(result.cpp, /double v_staticRead = 3\.0;/);
+    // Identity-bearing tuple rows share lexical storage even at fixed indices.
+    assert.match(
+        result.cpp,
+        /double v_staticRead = bbl::js::array_index_checked\(v_WEIGHTS, 1\.0, "[^"]+"\)\[bbl::js::array_index\(0\.0\)\];/,
+    );
     // The runtime row index is checked; the static in-range lane index
     // keeps the raw fast path.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_checked\(bblscene::WEIGHTS\(\), v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
+        /bbl::js::array_index_checked\(v_WEIGHTS, v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
     );
     assert.match(
         result.cpp,
@@ -2975,7 +2980,7 @@ test("calls a stored class callback field after a source truthiness guard", () =
     assert.match(result.cpp, /bbl::js::Callback<bool\(double\)>/);
     assert.match(
         result.cpp,
-        /!\(static_cast<bool>\(\(\*v_bblite_class_field_predicate_\d+\)\)\) \|\| \(\*v_bblite_class_field_predicate_\d+\)\([^)]+\)/,
+        /if \(!\(static_cast<bool>\(\(\*(v_bblite_class_field_predicate_\d+)\)\)\)\) return true;\s*const auto (\w+) = bbl::js::snapshot_callback\(\(\*\1\)\);\s*return \2\([^)]+\);/,
     );
 });
 
@@ -4358,7 +4363,7 @@ test("shares explicitly typed mutable objects with stored callbacks", () => {
     assert.match(result.cpp, /v_state->count = 1\.0;/);
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_state\}, bblscene::\w+/,
+        /stored_callback\{\d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_state\}, bblscene::\w+/,
     );
 });
 
@@ -4504,8 +4509,9 @@ test("captures the live engine by reference in stored callbacks", () => {
 
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_engine\)\}, bblscene::\w+/,
+        /stored_callback\{\d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_engine\)\}, bblscene::\w+/,
     );
+    assert.match(result.cpp, /std::reference_wrapper<bbl::Engine> capture0;/);
     assert.match(result.cpp, /bbl::create_box\(v_engine,/);
 });
 
@@ -11327,7 +11333,7 @@ test("supplies omitted optional arguments to stored functions", () => {
 
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\([^;]+\.banner\);\s*\1\([^,]+, std::nullopt\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\([^;]+\.banner\);\s*\1\([^,]+, bbl::js::Nullable<std::string>\{std::nullopt\}\)/,
     );
     assert.match(result.cpp, /has_value\(\) \? \*[^:]+ : ""/);
 });
@@ -11543,7 +11549,7 @@ test("reuses a stored callback while compiling its self-referential record", () 
     );
     assert.match(
         result.cpp,
-        /bbl::js::retain_callback\(fn\d+_stored_callback_weak\.lock\(\)\)\(\);/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::retain_callback\(fn\d+_stored_callback_weak\.lock\(\)\)\);\s*\1\(\);/,
     );
     assert.match(
         result.cpp,
