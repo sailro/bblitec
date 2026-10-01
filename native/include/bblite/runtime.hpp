@@ -228,8 +228,8 @@ struct PlatformMouseEvent {
     double screen_x = 0.0;
     double screen_y = 0.0;
     double pressure = 0.0;
-    std::optional<std::string> input_data;
-    std::string input_type;
+    std::optional<std::string> input_data{};
+    std::string input_type{};
     bool is_composing = false;
     DomInputEventKind payload_kind = DomInputEventKind::Pointer;
 

@@ -39,8 +39,6 @@ public:
         return payload_->event;
     }
     [[nodiscard]] const PlatformMouseEvent& mouse() const { return event().mouse_payload(); }
-    [[nodiscard]] const PlatformMouseEvent& input() const { return event().input_payload(); }
-    [[nodiscard]] js::Nullable<std::string> input_data() const { return input_event_data(event()); }
     [[nodiscard]] js::BorrowedEvent borrowed_event() const {
         return js::BorrowedEvent(event()).retaining(payload_);
     }
