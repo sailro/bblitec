@@ -134,7 +134,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
 | URLSearchParams | String constructor, get/has/set/toString, duplicate order, decoding and form encoding; mutation retains object identity and invalidates deployment-query folds | Append/delete/sort, iteration and other constructors refuse |
-| Binary data | ArrayBuffer, DataView getters/setters, Int8/Uint8/Int16/Uint16/Int32/Uint32/Float32/Float64 arrays | Unrepresented element/storage consumers refuse |
+| Binary data | ArrayBuffer, DataView getters/setters, Int8/Uint8/Int16/Uint16/Int32/Uint32/Float32/Float64 arrays; typed-array `of` and `from` over arrays, numeric tuples and typed arrays, with a mapper as `Array.from` takes | Unrepresented element/storage consumers refuse; `from` over other sources (ArrayBuffer, number, Set, string) refuses |
 
 Typed-array buffer views retain bytes, offset, length and identity. Constructors check ToIndex,
 alignment and bounds; set/slice/subarray/fill/copyWithin preserve overlap rules. Raw contiguous

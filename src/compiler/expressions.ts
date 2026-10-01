@@ -5102,7 +5102,9 @@ export class ExpressionLowerer {
         if (math) {
             return math;
         }
-        const arrayFrom = this.context.dataLowerer.compileArrayFrom(call);
+        const arrayFrom =
+            this.context.dataLowerer.compileArrayFrom(call) ??
+            this.context.dataLowerer.compileTypedArrayFactory(call);
         if (arrayFrom) {
             return arrayFrom;
         }

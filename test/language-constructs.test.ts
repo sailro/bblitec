@@ -1825,6 +1825,54 @@ check(
 );
 
 check(
+    "typed-array-from-and-of",
+    `
+    function clamp(value: number): number { return value > 3 ? 3 : value; }
+    const positions: number[] = [0, 1.5, -2];
+    const floats = Float32Array.from(positions);
+    positions[0] = 9;
+    const widened = Float64Array.from(Float32Array.from([0.1]));
+    const words = Uint32Array.from([-1, 2.9]);
+    const pair: [number, number] = [256, -1];
+    const bytes = Uint8Array.from(pair);
+    const copy = Int16Array.from(floats);
+    copy[0] = 5;
+    if (floats[0] !== 0 || floats[2] !== -2 || floats.length !== 3 || copy[1] !== 1 || floats[0] !== 0) throw new Error("from copies");
+    if (widened[0] !== Math.fround(0.1) || words[0] !== 4294967295 || words[1] !== 2 || bytes[0] !== 0 || bytes[1] !== 255) throw new Error("from converts");
+    const of = Int32Array.of(4, -2.7, positions[1]!);
+    const wrapped = Uint8Array.of(300);
+    if (of.length !== 3 || of[1] !== -2 || of[2] !== 1 || wrapped[0] !== 44 || Float32Array.of().length !== 0) throw new Error("of");
+    let calls = "";
+    const mapped = Uint8Array.from(positions, (value, index) => { calls += index; return clamp(value) * 2; });
+    const named = Uint16Array.from(positions as ArrayLike<number>, clamp);
+    const ranged = Int32Array.from({ length: 4 }, (_, index) => index * -3);
+    const samples = [{ s: 1.25 }, { s: 2 }];
+    const picked = Float32Array.from(samples, (sample) => sample.s);
+    const lanes = Float64Array.from(floats, (value) => value / 2);
+    if (calls !== "012" || mapped[0] !== 6 || mapped[1] !== 3 || mapped[2] !== 252 || named[0] !== 3 || named[2] !== 65534) throw new Error("mapped");
+    if (ranged[3] !== -9 || picked[0] !== 1.25 || picked.length !== 2 || lanes[1] !== 0.75) throw new Error("mapped sources");
+`,
+);
+
+test("typed-array from refuses sources it reads differently from the constructor", () => {
+    for (const [source, message] of [
+        [
+            "const b = new ArrayBuffer(8); const t = Float32Array.from(b as unknown as ArrayLike<number>); const unused = t.length;",
+            /Float32Array\.from expects a numeric sequence/,
+        ],
+        [
+            "const n = 4; const t = Uint8Array.from(n as unknown as ArrayLike<number>); const unused = t.length;",
+            /Uint8Array\.from expects a numeric sequence/,
+        ],
+        [
+            "const xs = [1, 2]; const t = Int32Array.of(...xs); const unused = t.length;",
+            /Int32Array\.of takes its elements as separate arguments/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
     "buffer-view-storage",
     `
     interface Payload { data: ArrayBufferView; read(): ArrayBufferView | null; }
