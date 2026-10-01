@@ -10,7 +10,11 @@ import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import { isPresentValue, presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
-import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
+import {
+    documentEngine,
+    requireWindowHost,
+    windowErrorEventValue,
+} from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
@@ -832,7 +836,11 @@ export class PlatformCalls {
             }
             return true;
         }
-        const engine = this.context.requireDefaultEngine(call);
+        // A Window application's document reports its own visibility.
+        const engine =
+            (target === "document" && event === "visibilitychange"
+                ? documentEngine(this.context, call)
+                : undefined) ?? this.context.requireDefaultEngine(call);
         const descriptor = this.platformEventDescriptor(target, event);
         if (!descriptor) return false;
         if (removing) {
@@ -1425,6 +1433,23 @@ export class PlatformCalls {
             return {
                 kind: "void",
                 cpp: whenPresent(element, focus),
+            };
+        }
+        if (
+            element &&
+            callee.name.text === "select" &&
+            ["input", "textarea"].includes(
+                this.ui.declaredUiTag(element, callee.expression) ?? "",
+            )
+        ) {
+            this.context.expectArgumentCount(call, 0, 0);
+            const engine = this.context.requireEngine(element, call);
+            return {
+                kind: "void",
+                cpp: whenPresent(
+                    element,
+                    `bbl::ui_select_text(${engine}, ${element.cpp})`,
+                ),
             };
         }
         if (element && callee.name.text === "blur") {

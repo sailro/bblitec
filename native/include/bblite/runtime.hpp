@@ -4018,6 +4018,8 @@ struct Engine {
     /** Programmatic focus requested by the source render canvas. */
     bool canvas_focused = false;
     PlatformEventListeners<void(bool)> visibility_change_callbacks;
+    /** document.hidden: the window is hidden or minimized. */
+    bool document_hidden = false;
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
     /** The primary 2D canvas, when this engine is only a platform host. */
@@ -4027,6 +4029,9 @@ struct Engine {
     UiElementHandle ui_focused_element{};
     std::uint64_t ui_focus_revision = 0;
     bool ui_focus_visible = true;
+    /** The control whose text select() last selected; the projection applies each revision. */
+    UiElementHandle ui_text_selection{};
+    std::uint64_t ui_text_selection_revision = 0;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
     struct DocumentRoots {
@@ -4266,6 +4271,26 @@ inline bool ui_is_connected(const Engine& engine, UiElementHandle element) {
         if (record.attached_to_root)
             return true;
         element = ui_tree_parent(record);
+    }
+    return false;
+}
+
+/** HTMLElement.isContentEditable: the nearest contenteditable state; an invalid value inherits. */
+inline bool ui_is_content_editable(const Engine& engine, UiElementHandle element) {
+    for (; element.value != invalid_handle;
+         element = ui_tree_parent(handle_at(engine.ui_elements, element))) {
+        const auto& attributes = handle_at(engine.ui_elements, element).attributes;
+        const auto found = attributes.find("contenteditable");
+        if (found == attributes.end())
+            continue;
+        std::string state = found->second;
+        for (char& letter : state)
+            if (letter >= 'A' && letter <= 'Z')
+                letter = static_cast<char>(letter - 'A' + 'a');
+        if (state.empty() || state == "true" || state == "plaintext-only")
+            return true;
+        if (state == "false")
+            return false;
     }
     return false;
 }

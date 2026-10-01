@@ -47,6 +47,11 @@ ui_query_element(Engine& engine, UiElementHandle root,
                  UiQueryMode mode = UiQueryMode::First);
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors);
+/** Element tree reads over retained parents and children; innerHTML content throws. */
+enum class UiTreeRead { Parent, FirstChild, LastChild, PreviousSibling, NextSibling };
+js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
+                                              UiTreeRead read);
+std::string ui_text_content(Engine& engine, UiElementHandle node);
 std::string ui_get_form_value(Engine& engine, UiElementHandle element);
 bool ui_get_checked(Engine& engine, UiElementHandle element);
 void ui_set_checked(Engine& engine, UiElementHandle element, bool checked);
@@ -109,6 +114,8 @@ void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
 /** HTMLElement.blur(): unfocuses the element only while it is the focused element. */
 void ui_blur(Engine& engine, UiElementHandle element);
+/** HTMLInputElement/HTMLTextAreaElement select(): selects the control's whole text. */
+void ui_select_text(Engine& engine, UiElementHandle element);
 /** Records focus without focus or blur events: native focus a Window display resolved. */
 void ui_record_focus(Engine& engine, UiElementHandle element, bool visible);
 bool ui_clear_focus(Engine& engine, UiElementHandle next = {});

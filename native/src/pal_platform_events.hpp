@@ -903,6 +903,23 @@ inline void sync_pointer_lock(SDL_Window* window, Engine& engine) {
     dispatch_pointer_lock_change(engine);
 }
 
+/** The page visibility a window event reports: hidden or minimized, or shown again. */
+inline std::optional<bool> window_visibility(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_WINDOW_HIDDEN || event.type == SDL_EVENT_WINDOW_MINIMIZED)
+        return true;
+    if (event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED)
+        return false;
+    return std::nullopt;
+}
+
+/** Records document.hidden and dispatches visibilitychange when it changed. */
+inline void set_document_hidden(Engine& engine, bool hidden) {
+    if (engine.document_hidden == hidden)
+        return;
+    engine.document_hidden = hidden;
+    engine.visibility_change_callbacks.dispatch(hidden);
+}
+
 inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool include_dom = true) {
     if (event.type == SDL_EVENT_WINDOW_RESIZED ||
         event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
@@ -1004,13 +1021,8 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
         sync_pointer_lock(SDL_GetWindowFromID(event.window.windowID), engine);
         return;
     }
-    const bool hidden =
-        event.type == SDL_EVENT_WINDOW_HIDDEN || event.type == SDL_EVENT_WINDOW_MINIMIZED;
-    const bool visible =
-        event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED;
-    if (hidden || visible) {
-        engine.visibility_change_callbacks.dispatch(hidden);
-    }
+    if (const auto hidden = window_visibility(event))
+        set_document_hidden(engine, *hidden);
 }
 
 inline void append_touch_cancel(Engine& engine, DomEventBatch& batch, DomTouchContact contact) {

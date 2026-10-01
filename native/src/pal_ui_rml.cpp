@@ -20,7 +20,9 @@
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
+#include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
+#include <RmlUi/Core/Elements/ElementFormControlTextArea.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/FontEngineInterface.h>
@@ -461,6 +463,63 @@ UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part) {
         return engine.ui_document_roots.body;
     }
     throw std::runtime_error("Unknown native document root.");
+}
+
+namespace {
+
+/** A node whose children the retained records hold: innerHTML content has no records. */
+const UiElementRecord& ui_traversable(Engine& engine, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle || !record.inner_rml.empty())
+        throw std::runtime_error("DOM tree reads inside innerHTML need an authored markup tree.");
+    return record;
+}
+
+} // namespace
+
+js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
+                                              UiTreeRead read) {
+    const auto element = [&](UiElementHandle candidate) {
+        return ui_element(engine, candidate).tag != "#text";
+    };
+    if (read == UiTreeRead::FirstChild || read == UiTreeRead::LastChild) {
+        const auto& children = ui_traversable(engine, node).children;
+        if (read == UiTreeRead::FirstChild) {
+            const auto found = std::find_if(children.begin(), children.end(), element);
+            return found == children.end() ? js::Nullable<UiElementHandle>{} : *found;
+        }
+        const auto found = std::find_if(children.rbegin(), children.rend(), element);
+        return found == children.rend() ? js::Nullable<UiElementHandle>{} : *found;
+    }
+    // A node appended to the document before its roots existed belongs to the body; asking for it
+    // creates the roots as document.body does.
+    UiElementHandle parent = ui_traversable(engine, node).parent;
+    if (ui_element(engine, node).attached_to_root)
+        parent = engine.ui_document_roots.active() && node == engine.ui_document_roots.html
+                     ? UiElementHandle{}
+                     : ui_document_root(engine, UiDocumentPart::Body);
+    if (parent.value == invalid_handle)
+        return std::nullopt;
+    if (read == UiTreeRead::Parent)
+        return parent;
+    const auto& siblings = ui_element(engine, parent).children;
+    const auto at = std::find(siblings.begin(), siblings.end(), node);
+    if (read == UiTreeRead::NextSibling) {
+        const auto found = std::find_if(std::next(at), siblings.end(), element);
+        return found == siblings.end() ? js::Nullable<UiElementHandle>{} : *found;
+    }
+    const auto found = std::find_if(std::make_reverse_iterator(at), siblings.rend(), element);
+    return found == siblings.rend() ? js::Nullable<UiElementHandle>{} : *found;
+}
+
+std::string ui_text_content(Engine& engine, UiElementHandle node) {
+    const UiElementRecord& record = ui_traversable(engine, node);
+    if (record.tag == "style")
+        throw std::runtime_error("A retained <style> element's text is not represented.");
+    std::string text = record.text;
+    for (const auto child : record.children)
+        text += ui_text_content(engine, child);
+    return text;
 }
 
 UiElementHandle ui_create_text_node(Engine& engine, std::string text) {
@@ -1465,6 +1524,17 @@ void ui_focus(Engine& engine, UiElementHandle element, bool visible) {
         return;
     set_ui_focused_element(engine, element);
     dispatch_ui_focus(engine, element, "focus", previous);
+}
+
+void ui_select_text(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    if (record.tag != "textarea" && record.tag != "input")
+        throw std::runtime_error("select() requires an input or textarea element.");
+    // Input types without selectable text ignore it; RmlUi's do as well.
+    if (record.file_input)
+        return;
+    engine.ui_text_selection = element;
+    ++engine.ui_text_selection_revision;
 }
 
 #if BBLITE_HAS_BROWSER_FILE
@@ -5277,6 +5347,24 @@ struct UiRmlRuntime {
         return true;
     }
 
+    /** Applies the latest select() to its projected text control. */
+    bool sync_text_selection() {
+        if (projected_text_selection_revision == engine.ui_text_selection_revision)
+            return false;
+        projected_text_selection_revision = engine.ui_text_selection_revision;
+        const auto selected = engine.ui_text_selection;
+        if (selected.value >= projected_elements.size())
+            return false;
+        auto* element = handle_at(projected_elements, selected).element;
+        if (auto* input = dynamic_cast<Rml::ElementFormControlInput*>(element))
+            input->Select();
+        else if (auto* area = dynamic_cast<Rml::ElementFormControlTextArea*>(element))
+            area->Select();
+        else
+            return false;
+        return true;
+    }
+
     bool sync_focus_within() {
         if (!observes_focus_within)
             return false;
@@ -5924,6 +6012,7 @@ struct UiRmlRuntime {
     std::uint64_t projected_text_revision = 0;
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
+    std::uint64_t projected_text_selection_revision = 0;
     std::string css_font_family;
     std::unique_ptr<SystemUiFontEngine> system_fonts;
     std::string css_sans_family;
@@ -6178,7 +6267,7 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     if (runtime.sync_text_form_metrics())
         runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
-    if (focus_changed)
+    if (runtime.sync_text_selection() || focus_changed)
         runtime.context->Update();
     if (runtime.sync_focus_within())
         runtime.context->Update();

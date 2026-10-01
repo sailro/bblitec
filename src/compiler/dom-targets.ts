@@ -73,20 +73,23 @@ export function domTargetIdentity(
 /** What an element interface's `instanceof` tests on a native DOM target. */
 type ElementInterfaceTest =
     | { readonly kind: "tag"; readonly tag: string }
-    | { readonly kind: "element"; readonly html: boolean };
+    | { readonly kind: "element"; readonly html: boolean }
+    | { readonly kind: "node" };
 
 type WindowInterface =
     | { readonly kind: "observer" }
     | { readonly kind: "element"; readonly test: ElementInterfaceTest };
 
 /**
- * The Window interfaces native represents: element interfaces `instanceof`
- * answers by tag or namespace, and observers an application realm builds.
+ * The Window interfaces native represents: node and element interfaces
+ * `instanceof` answers by target kind, tag or namespace, and observers an
+ * application realm builds.
  */
 const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
     string,
     WindowInterface
 >([
+    ["Node", { kind: "element", test: { kind: "node" } }],
     ["Element", { kind: "element", test: { kind: "element", html: false } }],
     ["HTMLElement", { kind: "element", test: { kind: "element", html: true } }],
     ...(
@@ -167,7 +170,12 @@ export function compileDomInstanceOf(
         type?.kind === "optional" && type.inner.kind === "event-target"
             ? value.cpp
             : eventTargetCpp(context, value, expression.left);
-    return entry.test.kind === "element"
-        ? `bbl::dom_target_is_element(${target}, ${entry.test.html})`
-        : `bbl::dom_target_has_tag(${target}, ${context.cppString(entry.test.tag)})`;
+    switch (entry.test.kind) {
+        case "node":
+            return `bbl::dom_target_is_node(${target})`;
+        case "element":
+            return `bbl::dom_target_is_element(${target}, ${entry.test.html})`;
+        case "tag":
+            return `bbl::dom_target_has_tag(${target}, ${context.cppString(entry.test.tag)})`;
+    }
 }

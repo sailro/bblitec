@@ -2821,6 +2821,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // names and preventDefault semantics.
             return undefined;
         }
+        if (dataType.kind === "event-target") {
+            const element = this.context.propertyAccess.narrowedTargetProperty(
+                ownerValue,
+                access,
+            );
+            if (element) return element;
+        }
         if (dataType.kind === "json") {
             // A parsed document answers every property, because that is
             // what a document does: a key it does not carry reads as

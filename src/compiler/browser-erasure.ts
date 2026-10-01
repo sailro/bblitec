@@ -29,6 +29,10 @@ import { declaredInDomLibrary } from "./symbols.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
+import {
+    documentVisibilityAvailable,
+    isDocumentVisibilityRead,
+} from "./window-events.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
 
@@ -152,6 +156,7 @@ interface BrowserErasureContext extends Pick<
     | "isNativeHostUiLookup"
     | "isNativeUiValueExpression"
     | "platformDocumentHidden"
+    | "defaultEngine"
     | "referenceSearch"
     | "options"
     | "constantInitializer"
@@ -1201,10 +1206,8 @@ export class BrowserErasure {
         )
             return false;
         if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "hidden" &&
-            this.context.libraryGlobal(unwrapped.expression) === "document" &&
-            this.context.platformDocumentHidden() !== undefined
+            isDocumentVisibilityRead(this.context, unwrapped) &&
+            documentVisibilityAvailable(this.context)
         ) {
             return false;
         }
@@ -1465,6 +1468,13 @@ export class BrowserErasure {
             }
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.bindings.lookupOptional(unwrapped);
+            }
+            if (ts.isConditionalExpression(unwrapped)) {
+                // Either arm is the owner: both must bridge the same kind.
+                const whenTrue = owner(unwrapped.whenTrue);
+                return whenTrue?.kind === owner(unwrapped.whenFalse)?.kind
+                    ? whenTrue
+                    : undefined;
             }
             if (
                 ts.isPropertyAccessExpression(unwrapped) &&

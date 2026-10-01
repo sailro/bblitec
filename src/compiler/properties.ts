@@ -42,7 +42,11 @@ import {
     type CanvasContext,
 } from "./canvas.js";
 import { renderClosure } from "./closure-captures.js";
-import { handleCppType, type DataType } from "./data-types.js";
+import {
+    borrowedPlatformEventKind,
+    handleCppType,
+    type DataType,
+} from "./data-types.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
@@ -73,6 +77,10 @@ import {
     type ValueKind,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
+import {
+    documentHiddenCpp,
+    isDocumentVisibilityRead,
+} from "./window-events.js";
 import type { WindowProperties } from "./window-properties.js";
 
 /** A property the compiled surface deliberately does not serve. */
@@ -1789,7 +1797,9 @@ interface PropertyAccessContext
             LoweringServices,
             | "captureManagedClosureLines"
             | "classLowerer"
+            | "defaultEngine"
             | "handleCollections"
+            | "platformDocumentHidden"
             | "useNativeValue"
         > {
     /** Bound only while lowering a platform visibility callback body. */
@@ -1825,6 +1835,14 @@ const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
     ["clientWidth", "width"],
     ["clientHeight", "height"],
 ]);
+/** Element tree reads and their `bbl::UiTreeRead` arms. */
+const UI_TREE_READS: ReadonlyMap<string, string> = new Map([
+    ["parentElement", "Parent"],
+    ["firstElementChild", "FirstChild"],
+    ["lastElementChild", "LastChild"],
+    ["previousElementSibling", "PreviousSibling"],
+    ["nextElementSibling", "NextSibling"],
+]);
 
 /**
  * A number, boolean, string or enum read from storage: the reads an
@@ -1852,6 +1870,325 @@ function isStoredPrimitiveRead(value: Value): boolean {
 /** Property access on every owner the compiler represents. */
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
+
+    /**
+     * An event target narrowed to an element interface, read through the
+     * element's property lowering.
+     */
+    public narrowedTargetProperty(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const target = this.context.ui.narrowedTarget(
+            owner,
+            expression.expression,
+        );
+        if (target === undefined) return undefined;
+        // The render canvas a page does not retain carries no editing state.
+        if (expression.name.text === "isContentEditable")
+            return {
+                kind: "boolean",
+                cpp: `bbl::dom_target_is_content_editable(${target})`,
+                impure: true,
+            };
+        return this.elementProperty(
+            this.context.ui.targetElement(target),
+            expression.name.text,
+            expression.expression,
+            expression,
+        );
+    }
+
+    /** Element state, tree, form and layout reads. */
+    private elementProperty(
+        owner: Value,
+        property: string,
+        ownerExpression: ts.Expression,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (owner.kind === "ui-element" && !owner.uiDataset) {
+            if (property === "checked") {
+                if (owner.uiTag && owner.uiTag !== "input")
+                    this.context.fail(
+                        expression,
+                        "UI checked requires an input element.",
+                    );
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_get_checked(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            }
+            if (property === "selected") {
+                if (owner.uiTag && owner.uiTag !== "option")
+                    this.context.fail(
+                        expression,
+                        "UI selected requires an option element.",
+                    );
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_get_selected(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            }
+            if (
+                this.context.options.workers &&
+                ["complete", "naturalWidth", "naturalHeight"].includes(property)
+            ) {
+                if (owner.uiTag && owner.uiTag !== "img")
+                    this.context.fail(
+                        expression,
+                        "Image readiness requires an img element.",
+                    );
+                const method =
+                    property === "complete"
+                        ? "complete"
+                        : property === "naturalWidth"
+                          ? "natural_width"
+                          : "natural_height";
+                return this.context.dataLowerer.leafValue(
+                    `bbl::ui_image_${method}(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    { kind: property === "complete" ? "boolean" : "number" },
+                );
+            }
+            if (this.context.options.workers && property === "decode") {
+                if (owner.uiTag && owner.uiTag !== "img")
+                    this.context.fail(
+                        expression,
+                        "Image decoding requires an img element.",
+                    );
+                const engine = this.context.requireEngine(owner, expression);
+                const compiled = this.context.captureManagedClosureLines(() => {
+                    this.context.useNativeValue(owner);
+                    this.context.emit({
+                        kind: "control",
+                        code: `return bbl::ui_decode_image(${engine}, ${owner.cpp});`,
+                        transfer: "return",
+                    });
+                });
+                const type: DataType = {
+                    kind: "function",
+                    parameters: [],
+                    result: { kind: "promise" },
+                };
+                return this.context.dataLowerer.leafValue(
+                    `${this.context.dataTypes.cppType(type)}{${renderClosure(compiled, "")}}`,
+                    type,
+                );
+            }
+            const reflected = this.context.ui.reflectedUiAttribute(
+                owner,
+                property,
+                ownerExpression,
+                expression,
+            );
+            if (reflected?.readable)
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(reflected.attribute)})`,
+                    dataType: { kind: "string" },
+                    freshData: true,
+                };
+            if (property === "isConnected")
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_is_connected(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            if (property === "isContentEditable")
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_is_content_editable(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            const treeRead = UI_TREE_READS.get(property);
+            if (treeRead) {
+                const engine = this.context.requireEngine(owner, expression);
+                // A read the checker narrowed to present is that element.
+                return this.context.dataLowerer.narrowOptional(
+                    {
+                        kind: "data",
+                        cpp: `bbl::ui_tree_element(${engine}, ${owner.cpp}, bbl::UiTreeRead::${treeRead})`,
+                        dataType: {
+                            kind: "optional",
+                            inner: { kind: "handle", handle: "ui-element" },
+                        },
+                        engineCpp: engine,
+                        impure: true,
+                    },
+                    expression,
+                );
+            }
+            if (property === "textContent") {
+                if (owner.uiTag === "style")
+                    this.context.fail(
+                        expression,
+                        "Reading a retained <style> element's textContent is not represented.",
+                    );
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_text_content(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    dataType: { kind: "string" },
+                    freshData: true,
+                    impure: true,
+                };
+            }
+            const layoutExtent = UI_LAYOUT_EXTENTS.get(property);
+            if (layoutExtent)
+                // Whole CSS pixels of the element's box, read as a client
+                // rectangle is: a layout read, so never discarded.
+                return {
+                    kind: "number",
+                    cpp: `std::round(bbl::ui_get_client_rect(${this.context.requireEngine(owner, expression)}, ${owner.cpp}).${layoutExtent})`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
+            const attribute = this.context.ui.booleanAttribute(
+                owner,
+                property,
+                expression,
+            );
+            if (attribute)
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_has_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(attribute)})`,
+                    impure: true,
+                };
+        }
+        if (
+            owner.kind === "ui-element" &&
+            property === "value" &&
+            ["textarea", "input", "select", "option", "output"].includes(
+                this.context.ui.declaredUiTag(owner, ownerExpression) ?? "",
+            ) &&
+            !owner.uiFileInput
+        ) {
+            return {
+                kind: "string",
+                cpp: `bbl::ui_get_form_value(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                dataType: { kind: "string" },
+                freshData: true,
+            };
+        }
+        return undefined;
+    }
+
+    /**
+     * A borrowed base Event asserted to a keyboard or mouse interface: a
+     * checked view of the payload, which throws when the dispatch carried
+     * another one.
+     */
+    private assertedPlatformEvent(
+        owner: Value,
+        ownerExpression: ts.Expression,
+    ): Value | undefined {
+        const event = borrowedPlatformEventKind(
+            this.context.checker
+                .getNonNullableType(
+                    this.context.checker.getTypeAtLocation(ownerExpression),
+                )
+                .getSymbol(),
+        );
+        if (event !== "keyboard" && event !== "mouse") return undefined;
+        return valueForKind(
+            event === "keyboard"
+                ? "platform-keyboard-event"
+                : "platform-mouse-event",
+            {
+                cpp: `${owner.cpp}.as<bbl::Platform${event === "keyboard" ? "Keyboard" : "Mouse"}Event>()`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+            },
+        );
+    }
+
+    /** Typed keyboard and mouse event fields. */
+    private platformEventProperty(
+        owner: Value,
+        property: string,
+        expression: ts.PropertyAccessExpression,
+    ): Value {
+        if (owner.kind === "platform-keyboard-event") {
+            const field = KEY_EVENT_FIELDS.get(property);
+            if (field) {
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.${field}`,
+                };
+            }
+            if (property === "code") {
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.code`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            }
+            if (property === "key") {
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.key`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            }
+            this.context.fail(
+                expression.name,
+                `Platform keyboard events do not expose '${property}'.`,
+            );
+        }
+        if (owner.kind === "platform-mouse-event") {
+            if (property === "pointerType")
+                return { kind: "string", cpp: `${owner.cpp}.pointer_type` };
+            if (property === "isPrimary")
+                return { kind: "boolean", cpp: `${owner.cpp}.is_primary` };
+            const modifier = KEY_EVENT_FIELDS.get(property);
+            if (modifier && property !== "repeat")
+                return { kind: "boolean", cpp: `${owner.cpp}.${modifier}` };
+            if (
+                property === "button" ||
+                property === "buttons" ||
+                property === "clientX" ||
+                property === "clientY" ||
+                property === "offsetX" ||
+                property === "offsetY" ||
+                property === "movementX" ||
+                property === "movementY" ||
+                property === "deltaY" ||
+                property === "pointerId"
+            ) {
+                return {
+                    kind: "number",
+                    cpp:
+                        property === "pointerId"
+                            ? `${owner.cpp}.pointer_id`
+                            : property === "button"
+                              ? `${owner.cpp}.button`
+                              : property === "buttons"
+                                ? `${owner.cpp}.buttons`
+                                : property === "clientX" ||
+                                    property === "offsetX"
+                                  ? `${owner.cpp}.client_x`
+                                  : property === "clientY" ||
+                                      property === "offsetY"
+                                    ? `${owner.cpp}.client_y`
+                                    : property === "movementX"
+                                      ? `${owner.cpp}.movement_x`
+                                      : property === "movementY"
+                                        ? `${owner.cpp}.movement_y`
+                                        : `${owner.cpp}.delta_y`,
+                    dataType: { kind: "number" },
+                };
+            }
+            this.context.fail(
+                expression.name,
+                `Platform mouse events do not expose '${property}'.`,
+            );
+        }
+        this.context.fail(
+            expression.name,
+            `Platform events do not expose '${property}'.`,
+        );
+    }
 
     /** The complete chained property path containing a failed sub-read. */
     private propertyPathForDiagnostic(
@@ -1993,16 +2330,20 @@ export class PropertyAccessLowerer {
         }
         const documentRoot = this.context.ui.documentRootValue(expression);
         if (documentRoot) return documentRoot;
-        if (
-            expression.name.text === "hidden" &&
-            this.context.libraryGlobal(ownerExpression) === "document" &&
-            this.context.platformDocumentHiddenCpp !== undefined
-        ) {
-            return {
-                kind: "boolean",
-                cpp: this.context.platformDocumentHiddenCpp,
-            };
-        }
+        const documentHidden = isDocumentVisibilityRead(
+            this.context,
+            expression,
+        )
+            ? documentHiddenCpp(this.context, expression)
+            : undefined;
+        if (documentHidden !== undefined)
+            return expression.name.text === "hidden"
+                ? { kind: "boolean", cpp: documentHidden }
+                : {
+                      kind: "string",
+                      cpp: `std::string(${documentHidden} ? "hidden" : "visible")`,
+                      dataType: { kind: "string" },
+                  };
         if (
             this.context.libraryGlobal(ownerExpression) === "window" &&
             (expression.name.text === "innerWidth" ||
@@ -2043,7 +2384,8 @@ export class PropertyAccessLowerer {
             !ts.isElementAccessExpression(ownerExpression) &&
             !ts.isCallExpression(ownerExpression) &&
             !ts.isNewExpression(ownerExpression) &&
-            !ts.isStringLiteralLike(ownerExpression)
+            !ts.isStringLiteralLike(ownerExpression) &&
+            !ts.isConditionalExpression(ownerExpression)
         ) {
             this.context.fail(
                 expression,
@@ -2088,6 +2430,8 @@ export class PropertyAccessLowerer {
         const owner =
             this.context.classLowerer.hydrate(rawOwner, ownerExpression) ??
             rawOwner;
+        const targetRead = this.narrowedTargetProperty(owner, expression);
+        if (targetRead) return targetRead;
         const httpProperty = httpResponseProperty(
             this.context.dataLowerer,
             owner,
@@ -2189,131 +2533,14 @@ export class PropertyAccessLowerer {
         if (owner.kind === "ui-element" && property === "style") {
             return { ...owner, uiStyle: true };
         }
-        if (owner.kind === "ui-element" && !owner.uiDataset) {
-            if (property === "checked") {
-                if (owner.uiTag && owner.uiTag !== "input")
-                    this.context.fail(
-                        expression,
-                        "UI checked requires an input element.",
-                    );
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_get_checked(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
-                    impure: true,
-                };
-            }
-            if (property === "selected") {
-                if (owner.uiTag && owner.uiTag !== "option")
-                    this.context.fail(
-                        expression,
-                        "UI selected requires an option element.",
-                    );
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_get_selected(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
-                    impure: true,
-                };
-            }
-            if (
-                this.context.options.workers &&
-                ["complete", "naturalWidth", "naturalHeight"].includes(property)
-            ) {
-                if (owner.uiTag && owner.uiTag !== "img")
-                    this.context.fail(
-                        expression,
-                        "Image readiness requires an img element.",
-                    );
-                const method =
-                    property === "complete"
-                        ? "complete"
-                        : property === "naturalWidth"
-                          ? "natural_width"
-                          : "natural_height";
-                return this.context.dataLowerer.leafValue(
-                    `bbl::ui_image_${method}(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
-                    { kind: property === "complete" ? "boolean" : "number" },
-                );
-            }
-            if (this.context.options.workers && property === "decode") {
-                if (owner.uiTag && owner.uiTag !== "img")
-                    this.context.fail(
-                        expression,
-                        "Image decoding requires an img element.",
-                    );
-                const engine = this.context.requireEngine(owner, expression);
-                const compiled = this.context.captureManagedClosureLines(() => {
-                    this.context.useNativeValue(owner);
-                    this.context.emit({
-                        kind: "control",
-                        code: `return bbl::ui_decode_image(${engine}, ${owner.cpp});`,
-                        transfer: "return",
-                    });
-                });
-                const type: DataType = {
-                    kind: "function",
-                    parameters: [],
-                    result: { kind: "promise" },
-                };
-                return this.context.dataLowerer.leafValue(
-                    `${this.context.dataTypes.cppType(type)}{${renderClosure(compiled, "")}}`,
-                    type,
-                );
-            }
-            const reflected = this.context.ui.reflectedUiAttribute(
+        if (owner.kind === "ui-element") {
+            const element = this.elementProperty(
                 owner,
                 property,
                 ownerExpression,
                 expression,
             );
-            if (reflected?.readable)
-                return {
-                    kind: "string",
-                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(reflected.attribute)})`,
-                    dataType: { kind: "string" },
-                    freshData: true,
-                };
-            if (property === "isConnected")
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_is_connected(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
-                    impure: true,
-                };
-            const layoutExtent = UI_LAYOUT_EXTENTS.get(property);
-            if (layoutExtent)
-                // Whole CSS pixels of the element's box, read as a client
-                // rectangle is: a layout read, so never discarded.
-                return {
-                    kind: "number",
-                    cpp: `std::round(bbl::ui_get_client_rect(${this.context.requireEngine(owner, expression)}, ${owner.cpp}).${layoutExtent})`,
-                    dataType: { kind: "number" },
-                    impure: true,
-                };
-            const attribute = this.context.ui.booleanAttribute(
-                owner,
-                property,
-                expression,
-            );
-            if (attribute)
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_has_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(attribute)})`,
-                    impure: true,
-                };
-        }
-        if (
-            owner.kind === "ui-element" &&
-            property === "value" &&
-            ["textarea", "input", "select", "option", "output"].includes(
-                this.context.ui.declaredUiTag(owner, ownerExpression) ?? "",
-            ) &&
-            !owner.uiFileInput
-        ) {
-            return {
-                kind: "string",
-                cpp: `bbl::ui_get_form_value(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
-                dataType: { kind: "string" },
-                freshData: true,
-            };
+            if (element) return element;
         }
         if (owner.kind === "ui-element" && owner.uiDataset) {
             const dataName = property.replace(
@@ -2493,88 +2720,19 @@ export class PropertyAccessLowerer {
                 };
         }
         if (owner.platformEventBase) {
-            this.context.fail(
-                expression.name,
-                `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
-            );
+            const asserted = this.assertedPlatformEvent(owner, ownerExpression);
+            if (!asserted)
+                this.context.fail(
+                    expression.name,
+                    `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
+                );
+            return this.platformEventProperty(asserted, property, expression);
         }
-        if (owner.kind === "platform-keyboard-event") {
-            const field = KEY_EVENT_FIELDS.get(property);
-            if (field) {
-                return {
-                    kind: "boolean",
-                    cpp: `${owner.cpp}.${field}`,
-                };
-            }
-            if (property === "code") {
-                return {
-                    kind: "data",
-                    cpp: `${owner.cpp}.code`,
-                    dataType: { kind: "string" },
-                    readOnly: true,
-                };
-            }
-            if (property === "key") {
-                return {
-                    kind: "data",
-                    cpp: `${owner.cpp}.key`,
-                    dataType: { kind: "string" },
-                    readOnly: true,
-                };
-            }
-            this.context.fail(
-                expression.name,
-                `Platform keyboard events do not expose '${property}'.`,
-            );
-        }
-        if (owner.kind === "platform-mouse-event") {
-            if (property === "pointerType")
-                return { kind: "string", cpp: `${owner.cpp}.pointer_type` };
-            if (property === "isPrimary")
-                return { kind: "boolean", cpp: `${owner.cpp}.is_primary` };
-            const modifier = KEY_EVENT_FIELDS.get(property);
-            if (modifier && property !== "repeat")
-                return { kind: "boolean", cpp: `${owner.cpp}.${modifier}` };
-            if (
-                property === "button" ||
-                property === "buttons" ||
-                property === "clientX" ||
-                property === "clientY" ||
-                property === "offsetX" ||
-                property === "offsetY" ||
-                property === "movementX" ||
-                property === "movementY" ||
-                property === "deltaY" ||
-                property === "pointerId"
-            ) {
-                return {
-                    kind: "number",
-                    cpp:
-                        property === "pointerId"
-                            ? `${owner.cpp}.pointer_id`
-                            : property === "button"
-                              ? `${owner.cpp}.button`
-                              : property === "buttons"
-                                ? `${owner.cpp}.buttons`
-                                : property === "clientX" ||
-                                    property === "offsetX"
-                                  ? `${owner.cpp}.client_x`
-                                  : property === "clientY" ||
-                                      property === "offsetY"
-                                    ? `${owner.cpp}.client_y`
-                                    : property === "movementX"
-                                      ? `${owner.cpp}.movement_x`
-                                      : property === "movementY"
-                                        ? `${owner.cpp}.movement_y`
-                                        : `${owner.cpp}.delta_y`,
-                    dataType: { kind: "number" },
-                };
-            }
-            this.context.fail(
-                expression.name,
-                `Platform mouse events do not expose '${property}'.`,
-            );
-        }
+        if (
+            owner.kind === "platform-keyboard-event" ||
+            owner.kind === "platform-mouse-event"
+        )
+            return this.platformEventProperty(owner, property, expression);
         if (
             owner.kind === "browser" &&
             owner.browserValue?.kind === "dom-rect" &&

@@ -422,6 +422,26 @@ inline bool dom_target_is_element(const js::Nullable<DomEventTargetValue>& value
     return value.has_value() && dom_target_is_element(*value, html);
 }
 
+/** isContentEditable of an element target; the render canvas a page does not retain has no
+ * contenteditable state. */
+inline bool dom_target_is_content_editable(DomEventTargetValue value) {
+    if (value.target.kind == DomEventTargetKind::Canvas &&
+        dom_target_retained_element(value).value == invalid_handle)
+        return false;
+    return ui_is_content_editable(dom_target_owner(value), dom_target_element(value));
+}
+
+/** `instanceof Node`: the Document, the canvas and retained elements and text, not the Window. */
+inline bool dom_target_is_node(DomEventTargetValue value) {
+    if (value.target.kind != DomEventTargetKind::Element)
+        return value.target.kind != DomEventTargetKind::Window;
+    return value.target.element < dom_target_owner(value).ui_elements.size();
+}
+
+inline bool dom_target_is_node(const js::Nullable<DomEventTargetValue>& value) {
+    return value.has_value() && dom_target_is_node(*value);
+}
+
 inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHandle target) {
     std::vector<DomEventTarget> path;
     for (; target.value != invalid_handle;

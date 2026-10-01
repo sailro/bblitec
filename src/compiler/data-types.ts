@@ -487,7 +487,7 @@ export function platformHandleKind(
     return undefined;
 }
 
-function borrowedPlatformEventKind(
+export function borrowedPlatformEventKind(
     symbol: ts.Symbol | undefined,
 ): DataType<"borrowed-platform-event">["event"] | undefined {
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
