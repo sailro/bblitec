@@ -143,6 +143,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     UtilityLayer: "utility-layer",
     PointerDrag: "pointer-drag",
     SceneContext: "scene",
+    RenderTarget: "render-target",
     SceneNode: "scene-node",
     LightBase: "light",
     HemisphericLight: "light",

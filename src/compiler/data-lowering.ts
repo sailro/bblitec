@@ -3542,7 +3542,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return {
                 ...this.leafValue(
                     `([&](const auto ${keyTemporary}) -> decltype(auto) { ` +
-                        `return ${selected}; })(${key})`,
+                        `return (${selected}); })(${key})`,
                     commonType,
                 ),
                 ...(fields.some((field) => field.uncheckedProperty)
@@ -9011,7 +9011,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return true;
         const target = this.context.probeEmission(() => {
-            const path = this.compileDataPath(left, "write");
+            const type = this.dataTypeAt(left);
+            const stored = type?.kind === "optional" ? type.inner : type;
+            const retainOwner =
+                stored?.kind === "handle" &&
+                stored.handle === "render-target" &&
+                this.context.evaluationOrder.writesStorage(expression.right);
+            const prepared = retainOwner
+                ? (this.preparePropertyAssignmentTarget(left) ??
+                  (ts.isElementAccessExpression(left)
+                      ? this.prepareArrayAssignmentTarget(left)
+                      : undefined))
+                : undefined;
+            const path = prepared ?? this.compileDataPath(left, "write");
             // A getter returning an owning wrapper is not a writable field.
             // Roll its receiver preparation back before the setter owns it.
             return path?.freshData ? undefined : path;
@@ -9142,7 +9154,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             invalidateRootRecordSnapshot();
             return true;
         }
-        if (target.kind === "data" && target.dataType) {
+        if (
+            (target.kind === "data" || target.kind === "render-target") &&
+            target.dataType
+        ) {
             if (operator === "+=" && target.dataType.kind === "string") {
                 emitStringAppend(this.context, target.cpp, expression.right);
                 invalidateRootRecordSnapshot();
@@ -9677,9 +9692,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
     }
 
-    /** A default may replace the last owner of the record being assigned. */
+    /** The right side may replace the last owner of the record being assigned. */
     private preparePropertyAssignmentTarget(
-        access: ts.PropertyAccessExpression,
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): Value | undefined {
         return this.context.probeEmission(() => {
             const owner = this.context.compileValue(access.expression);
@@ -9696,14 +9711,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 name: cpp,
                 initializer: owner.cpp,
             });
-            return this.compilePropertyFromValue(
-                {
-                    ...owner,
-                    cpp,
-                    nativeCaptures: [this.context.registerNativeBinding(cpp)],
-                },
-                access,
-            );
+            const retained = {
+                ...owner,
+                cpp,
+                nativeCaptures: [this.context.registerNativeBinding(cpp)],
+            };
+            if (ts.isPropertyAccessExpression(access))
+                return this.compilePropertyFromValue(retained, access);
+            const field = this.elementRead(retained, access, "write");
+            if (!field) return undefined;
+            const slot = this.context.allocateTemporaryCppName("record_slot");
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: slot,
+                initializer: field.cpp,
+            });
+            return {
+                ...field,
+                cpp: slot,
+                nativeCaptures: [this.context.registerNativeBinding(slot)],
+            };
         });
     }
 
