@@ -958,8 +958,8 @@ export class DataTypeRegistry {
         const set = declarations.some((declaration) =>
             this.setterProperties.has(declaration),
         );
-        // A setter-only property maps as before: only storing a record that
-        // holds one needs a slot, and that refuses where it is stored.
+        // A setter-only property maps as data; a record holding its setter
+        // refuses where it is stored.
         if (!get) return undefined;
         return set ? "get-set" : "get";
     }

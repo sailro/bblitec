@@ -4067,3 +4067,22 @@ test("promise rejection callbacks refuse parameters the rejection cannot supply"
         /declares more parameters than the operation supplies/,
     );
 });
+
+test("a setter-only property maps as data and refuses where its record is stored", () => {
+    compileSource(`
+        let written = 0;
+        const target = { set value(next: number) { written = next; } };
+        target.value = 3;
+        console.log(written);
+    `);
+    assert.throws(
+        () =>
+            compileSource(`
+        let written = 0;
+        const targets = [{ set value(next: number) { written = next; } }];
+        targets[0]!.value = 3;
+        console.log(written, targets.length);
+    `),
+        /has a setter without a getter/,
+    );
+});
