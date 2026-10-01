@@ -166,3 +166,15 @@ test("element tree reads refuse unrepresented owners", () => {
         /retained <style> element's textContent/,
     );
 });
+
+test("prepend refuses element-array spreads explicitly", () => {
+    assert.throws(
+        () =>
+            compileEntry(`
+            const parent = document.createElement("div");
+            const children: HTMLElement[] = [document.createElement("span")];
+            parent.prepend(...children);
+        `),
+        /Prepend requires individual nodes or text/,
+    );
+});

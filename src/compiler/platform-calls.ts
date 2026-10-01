@@ -1868,7 +1868,9 @@ export class PlatformCalls {
                     name: reference,
                     initializer: `bbl::ui_first_child_node(${engine}, ${receiver.cpp}, {${children
                         .flatMap((child) =>
-                            "spread" in child || isStringValue(child) ? [] : [child.cpp],
+                            "spread" in child || isStringValue(child)
+                                ? []
+                                : [child.cpp],
                         )
                         .join(", ")}})`,
                 });
