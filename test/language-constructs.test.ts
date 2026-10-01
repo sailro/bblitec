@@ -2013,6 +2013,10 @@ check(
     let kinds = "";
     for (const source of sources) kinds += source instanceof ArrayBuffer ? "b" + source.byteLength : "v" + source.length;
     if (kinds !== "b12v4") throw new Error("stored sources");
+    function text(source: ArrayBuffer | ArrayBufferView): string { return new TextDecoder().decode(source); }
+    if (text(new Uint8Array([104, 105])) !== "hi" || text(new Uint8Array([111, 107]).buffer) !== "ok") throw new Error("decoded sources");
+    function width(indices: Uint16Array | Uint32Array): number { return indices instanceof Uint32Array ? indices.length * 4 : indices.length * 2; }
+    if (width(new Uint16Array(3)) !== 6 || width(new Uint32Array(3)) !== 12) throw new Error("typed-array unions");
 `,
 );
 

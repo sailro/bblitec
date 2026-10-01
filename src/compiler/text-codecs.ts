@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
-import { isTypedArrayType } from "./data-types.js";
+import { isBinaryDataType } from "./data-types.js";
 import type { Value } from "./types.js";
 
 /** The Encoding Standard's labels of UTF-8, the one encoding lowered. */
@@ -140,14 +140,12 @@ export function compileTextCodecMethod(
     if (!argument)
         return lowerer.leafValue(`std::string{}`, { kind: "string" });
     const source = context.compileValue(argument);
-    const kind = source.dataType?.kind;
+    const type = source.dataType;
     if (
         source.kind !== "data" ||
         !(
-            kind === "arraybuffer" ||
-            kind === "dataview" ||
-            kind === "bufferview" ||
-            isTypedArrayType(source.dataType)
+            isBinaryDataType(type) ||
+            (type?.kind === "union" && type.members.every(isBinaryDataType))
         )
     )
         context.fail(

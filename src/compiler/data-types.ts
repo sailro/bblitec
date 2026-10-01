@@ -1,7 +1,7 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
-    isTypedArrayType,
+    BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
 } from "./data-types/typed-arrays.js";
 import {
@@ -23,6 +23,7 @@ export {
 export {
     TYPED_ARRAY_KINDS,
     BUFFER_VIEW_KINDS,
+    isBinaryDataType,
     isTypedArrayType,
     typedArrayStem,
     typedArrayElement,
@@ -372,6 +373,19 @@ function isSceneGraphNode(type: ts.Type): boolean {
     return (
         type.getProperty("children") !== undefined &&
         type.getProperty("worldMatrix") !== undefined
+    );
+}
+
+/** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
+function binaryLibraryClass(type: ts.Type): boolean {
+    const name = type.symbol?.name;
+    return (
+        (type.flags & ts.TypeFlags.Object) !== 0 &&
+        name !== undefined &&
+        declaredInDefaultLibrary(type.symbol) &&
+        (BUFFER_VIEW_KINDS.has(name) ||
+            TYPED_ARRAY_KINDS.has(name) ||
+            name === "ArrayBufferView")
     );
 }
 
@@ -1495,8 +1509,10 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
-        const bufferSource = this.fromBufferSourceUnion(type, node);
-        if (bufferSource) return bufferSource;
+        // Library binary classes keep their own storage, which `instanceof`
+        // selects; a common-field record would drop `buffer` and the elements.
+        if (type.types.every(binaryLibraryClass))
+            return this.fromMixedUnion(type, node);
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
@@ -1507,52 +1523,6 @@ export class DataTypeRegistry {
             this.fromCommonObjectUnion(type, node) ??
             this.fromMixedUnion(type, node)
         );
-    }
-
-    /**
-     * An ArrayBuffer or one of its views (`ArrayBuffer | ArrayBufferView`,
-     * the platform's BufferSource) keeps each member's own storage, so
-     * `instanceof ArrayBuffer` and the checker's narrowing select the
-     * member the value holds; a common-field record would drop `buffer`.
-     */
-    private fromBufferSourceUnion(
-        type: ts.UnionType,
-        node: ts.Node,
-    ): DataType | undefined {
-        const binary = (source: ts.Type): boolean =>
-            (source.flags & ts.TypeFlags.Object) !== 0 &&
-            declaredInDefaultLibrary(source.symbol) &&
-            (["ArrayBuffer", "ArrayBufferView", "DataView"].includes(
-                source.symbol.name,
-            ) ||
-                TYPED_ARRAY_KINDS.has(source.symbol.name));
-        // Named first, so a union of other objects registers no record here.
-        if (!type.types.every(binary)) return undefined;
-        const members: DataType[] = [];
-        for (const source of type.types) {
-            const mapped = this.fromTsType(source, node);
-            if (
-                !mapped ||
-                !(
-                    mapped.kind === "arraybuffer" ||
-                    mapped.kind === "dataview" ||
-                    mapped.kind === "bufferview" ||
-                    isTypedArrayType(mapped)
-                )
-            )
-                return undefined;
-            if (!members.some((member) => dataTypesEqual(member, mapped)))
-                members.push(mapped);
-        }
-        if (
-            members.length < 2 ||
-            !members.some((member) => member.kind === "arraybuffer")
-        )
-            return undefined;
-        members.sort((left, right) =>
-            this.typeKey(left).localeCompare(this.typeKey(right)),
-        );
-        return { kind: "union", members };
     }
 
     /** Fixed tuple alternatives share lanes where their stored representations agree. */
@@ -1626,7 +1596,8 @@ export class DataTypeRegistry {
                             ts.TypeFlags.NumberLike |
                             ts.TypeFlags.BooleanLike)) !==
                     0,
-            )
+            ) &&
+            !type.types.every(binaryLibraryClass)
         )
             return undefined;
         if (this.mixedUnionsInProgress.has(type)) return undefined;
