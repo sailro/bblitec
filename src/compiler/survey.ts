@@ -19,7 +19,11 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
-import { sourceFunctionName, statementDeclaredNames } from "./syntax.js";
+import {
+    rootExpression,
+    sourceFunctionName,
+    statementDeclaredNames,
+} from "./syntax.js";
 
 interface SurveySite {
     file: string;
@@ -197,18 +201,13 @@ export class SurveyCollector {
         checker: ts.TypeChecker,
         error: CompileError,
     ): SurveySite | undefined {
-        let subject = error.subject;
+        const subject = error.subject;
         if (!subject || attempt.declarations.size === 0) return undefined;
-        while (
-            ts.isPropertyAccessExpression(subject) ||
-            ts.isElementAccessExpression(subject) ||
-            ts.isCallExpression(subject) ||
-            ts.isNonNullExpression(subject) ||
-            ts.isParenthesizedExpression(subject)
-        )
-            subject = subject.expression;
-        if (!ts.isIdentifier(subject)) return undefined;
-        const symbol = declaredSymbol(checker, subject);
+        let root = ts.isExpression(subject) ? rootExpression(subject) : subject;
+        while (ts.isCallExpression(root))
+            root = rootExpression(root.expression);
+        if (!ts.isIdentifier(root)) return undefined;
+        const symbol = declaredSymbol(checker, root);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 
