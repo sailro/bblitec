@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
+import { hostPageCompileOptions, readHostPage } from "../src/host-page.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { sameCompiledValue } from "../src/compiler/types.js";
@@ -381,11 +381,13 @@ test("runtime text values and updates retain live fonts and unchanged textarea c
         later.manifest.textData!.every((row) => row.repertoire),
         "Later owners remain eligible for retained update helpers",
     );
-    const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene181.ts";
-    const result = compileSource(readFileSync(fileName, "utf8"), {
+    const page = readHostPage({
+        path: "corpus/babylon-lite/lab/lite/scene181.html",
+        root: "corpus/babylon-lite/lab",
+    });
+    const result = compileSource(readFileSync(page.entry, "utf8"), {
         ...labDeployment,
-        fileName,
-        nativeHostUi: readNativeHostUi("ui/scene181-host.json"),
+        ...hostPageCompileOptions(page),
     });
     assert(result.manifest.features.includes("text:layout"));
     assert(result.manifest.features.includes("ui:rml"));

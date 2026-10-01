@@ -4,7 +4,7 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { suiteBrowserModule } from "./capture-suite-reference.js";
-import { getScene } from "./scene-registry.js";
+import { getScene, sceneReferencePage } from "./scene-registry.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
@@ -160,7 +160,7 @@ function rewriteExactCorpusManifest(
             readFileSync(resolve(repositoryRoot, row.reference)),
         );
         if (
-            row.referenceHostPage !== parity.referenceHostPage ||
+            row.referenceHostPage !== sceneReferencePage(scene).hostPage ||
             (row.referenceHostPage &&
                 row.referenceHostPageSha256 !==
                     sha256(
@@ -306,8 +306,10 @@ function adoptRecapturedReference(
     if (row === undefined) {
         throw new Error(`${id} has no row in ${MANIFEST_PATH}.`);
     }
-    const parity = getScene(id).parity;
+    const scene = getScene(id);
+    const parity = scene.parity;
     if (!parity) throw new Error(`${id} has no registry parity entry.`);
+    const { hostPage } = sceneReferencePage(scene);
     const corpusSha256 = corpus.scenes.find((entry) => entry.id === id)?.sha256;
     if (corpusSha256 === undefined) {
         throw new Error(`${id} is not in the corpus manifest.`);
@@ -317,7 +319,7 @@ function adoptRecapturedReference(
         corpusSha256,
         moduleSha256: sha256(
             suiteBrowserModule(
-                getScene(id).source,
+                scene.source,
                 undefined,
                 parity.referenceTimeSeconds,
                 parity.referenceAnimationGroups,
@@ -326,15 +328,11 @@ function adoptRecapturedReference(
             ),
         ),
         referenceSearch: parity.referenceSearch,
-        referenceHostPage: parity.referenceHostPage,
+        referenceHostPage: hostPage,
         referenceHostPageSha256:
-            parity.referenceHostPage === undefined
+            hostPage === undefined
                 ? undefined
-                : sha256(
-                      readFileSync(
-                          resolve(repositoryRoot, parity.referenceHostPage),
-                      ),
-                  ),
+                : sha256(readFileSync(resolve(repositoryRoot, hostPage))),
         goldenSha256: sha256(readFileSync(golden)),
         goldenWrittenAt: statSync(golden).mtime.toISOString(),
     });

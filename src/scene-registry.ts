@@ -2922,9 +2922,11 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 180 - Standalone Text Renderer",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
         title: "Babylon Lite Native - Standalone Text Renderer",
-        nativeHostUi: "ui/scene180-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/scene180.html",
+            root: "corpus/babylon-lite/lab",
+        },
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/scene180.html",
             canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             maxFullMad: 0.025,
             maxForegroundMad: 0.49,
@@ -2937,9 +2939,11 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 181 - Live Text Editor",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene181.ts",
         title: "Babylon Lite Native - Live Text Editor",
-        nativeHostUi: "ui/scene181-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/scene181.html",
+            root: "corpus/babylon-lite/lab",
+        },
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/scene181.html",
             canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             maxFullMad: 0.025,
             maxForegroundMad: 0.45,
