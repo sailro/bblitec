@@ -328,3 +328,28 @@ test("a reassigned function local takes storage of its inferred type", (t) =>
     `,
         t,
     ));
+
+test("a timer schedules the stored function value it is given", (t) =>
+    nativeCheck(
+        "timer-stored-function",
+        `
+    type Scheduler = (callback: () => void, delayMs: number) => void;
+    const schedule: Scheduler = (callback, delayMs) => {
+        setTimeout(callback, delayMs);
+    };
+    let fired = 0;
+    let next = (): void => {
+        fired += 1;
+    };
+    schedule(next, 5);
+    next = () => {
+        fired += 100;
+    };
+    await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), 40);
+    });
+    if (fired !== 1) throw new Error("scheduled stored function");
+    `,
+        t,
+        true,
+    ));

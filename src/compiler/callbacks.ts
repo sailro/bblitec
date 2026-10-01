@@ -198,9 +198,14 @@ export class CallbackLowerer {
                         [],
                     );
                 }
+                // A stored zero-argument function is called through the
+                // value it holds when the timer is scheduled.
                 if (
-                    this.context.options.workers &&
-                    (bound?.kind === "callback" || !bound)
+                    (this.context.options.workers &&
+                        (bound?.kind === "callback" || !bound)) ||
+                    (bound?.kind === "data" &&
+                        bound.dataType?.kind === "function" &&
+                        bound.dataType.parameters.length === 0)
                 ) {
                     return this.compilePlatformCallback(
                         unwrapped,
