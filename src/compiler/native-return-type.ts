@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { libraryGlobal } from "./symbols.js";
+import { nullability } from "./type-facts.js";
 
 interface NativeReturnTypeOptions {
     /** Leave promises opaque while still recognizing a declared Promise<void>. */
@@ -23,6 +24,27 @@ export function nativeReturnTsType(
         declaredReturn.typeArguments[0]!.kind === ts.SyntaxKind.VoidKeyword
     ) {
         return undefined;
+    }
+    if (
+        (type.flags & ts.TypeFlags.Undefined) !== 0 &&
+        declaration &&
+        (ts.isArrowFunction(declaration) ||
+            ts.isFunctionExpression(declaration))
+    ) {
+        // A pure undefined supplier still returns a value to an optional
+        // callback sink. Keep that sink's storage instead of lowering it as void.
+        const contextual = checker.getContextualType(declaration);
+        const signatures = contextual
+            ? checker.getNonNullableType(contextual).getCallSignatures()
+            : [];
+        const result =
+            signatures.length === 1
+                ? checker.getReturnTypeOfSignature(signatures[0]!)
+                : undefined;
+        if (result?.isUnion()) {
+            const absent = nullability(result);
+            if (absent.undefined && !absent.void) type = result;
+        }
     }
     if ((type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0)
         return undefined;

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -27,7 +28,9 @@ function nativeCheck(
         workers ? workerRealm + source + "\nglobalThis.close();" : source,
         { fileName: join(directory, "entry.ts") },
     );
-    const native = optionalNativeFixtureTools(false);
+    const native = optionalNativeFixtureTools(
+        compiled.manifest.features.includes("data:json"),
+    );
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
         return;
@@ -45,6 +48,7 @@ function nativeCheck(
         ...(workers ? ["/DBBLITE_WORKERS=1"] : []),
         "/I",
         "native/include",
+        `/I${join(nativeFixtureVcpkgRoot, "include")}`,
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         cpp,
@@ -78,6 +82,38 @@ test("Math function values preserve defaults, storage, identity and fixed signat
     if(values.filter(Math.abs).join(",")!=="-2,3,-4") throw new Error("numeric predicate");
     function local(){const Math={floor:(x:number)=>x+10};return Math.floor(2);}
     if(local()!==12) throw new Error("lexical shadow");
+`,
+        t,
+    ));
+
+test("undefined suppliers preserve contextual optional results and callback effects", (t) =>
+    nativeCheck(
+        "optional-suppliers",
+        `
+    function sample(read:()=>number|undefined):number|undefined{return read();}
+    function forward(read:()=>number|undefined):number|undefined{return sample(read);}
+    const absent=sample(()=>undefined);
+    if(absent!==undefined||sample(()=>undefined)!==undefined) throw new Error("direct absence");
+    if(forward(()=>undefined)!==undefined||sample(()=>7)!==7) throw new Error("forwarded values");
+    const stored:()=>number|undefined=()=>undefined;
+    const record:{read:()=>number|undefined}={read:()=>undefined};
+    const readers:Array<()=>number|undefined>=[()=>undefined,()=>9];
+    if(stored()!==undefined||sample(stored)!==undefined||record.read()!==undefined||readers[0]()!==undefined||readers[1]()!==9) throw new Error("stored values");
+    if(sample(function empty(){return undefined;})!==undefined) throw new Error("named supplier");
+    function text(read:()=>string|undefined):string|undefined{return read();}
+    function object(read:()=>{value:number}|undefined):{value:number}|undefined{return read();}
+    if(text(()=>undefined)!==undefined||text(()=>"present")!=="present"||object(()=>undefined)!==undefined||object(()=>({value:5}))!.value!==5) throw new Error("optional result types");
+    function nullable(read:()=>number|null|undefined):number|null|undefined{return read();}
+    if(nullable(()=>undefined)!==undefined||nullable(()=>null)!==null||nullable(()=>2)!==2) throw new Error("null distinction");
+    let calls=0;
+    const effect=sample(()=>{calls++;return undefined;});
+    if(effect!==undefined||calls!==1) throw new Error("supplier effect");
+    function effectOnly(run:()=>void):void{run();}
+    effectOnly(()=>{calls++;return undefined;});
+    effectOnly(()=>{calls++;return 12;});
+    const storedEffect:()=>void=()=>{calls++;return undefined;};
+    storedEffect();
+    if(calls!==4) throw new Error("void effects");
 `,
         t,
     ));
