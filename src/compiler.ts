@@ -907,10 +907,7 @@ class Compiler implements LoweringServices {
         this.registerNativeBinding("bbl_audio_session");
         if (this.options.workers)
             this.reachFeature("platform:workers", this.sourceFile);
-        this.dataTypes.registerPartialRecords(this.program.getSourceFiles());
-        this.dataTypes.registerAccessorProperties(
-            this.program.getSourceFiles(),
-        );
+        this.dataTypes.registerRecordFacts(this.program.getSourceFiles());
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
@@ -6771,44 +6768,28 @@ class Compiler implements LoweringServices {
             const parameterName = accessor.parameters[0]?.name;
             if (!parameterName || !ts.isIdentifier(parameterName))
                 this.fail(accessor, "A setter takes one named parameter.");
-            const statements = accessor.body?.statements ?? [];
-            const early = firstReturn(statements);
-            if (early)
-                this.fail(
-                    early,
-                    "A stored setter with returns requires a represented result flow.",
-                );
-            this.withRecordScopes(owner, () => {
-                const previousThis = this.activeThis();
-                this.defineThis(owner);
-                try {
-                    this.bindings.withBoundParameters(
-                        [
-                            {
-                                name: parameterName,
-                                compileTime: true,
-                                value: {
-                                    ...this.dataLowerer.leafValue(
-                                        argument,
-                                        valueType,
-                                    ),
-                                    nativeCaptures: [
-                                        this.registerNativeBinding(
-                                            argument,
-                                            false,
-                                            false,
-                                            valueCpp,
-                                        ),
-                                    ],
-                                },
-                            },
-                        ],
-                        () => emitReachableStatements(this, statements),
-                    );
-                } finally {
-                    this.defineThis(previousThis);
-                }
-            });
+            const argumentValue: Value = {
+                ...this.dataLowerer.leafValue(argument, valueType),
+                nativeCaptures: [
+                    this.registerNativeBinding(
+                        argument,
+                        false,
+                        false,
+                        valueCpp,
+                    ),
+                ],
+            };
+            this.withRecordScopes(
+                owner,
+                () =>
+                    this.classLowerer.compileSetter(
+                        owner,
+                        accessor,
+                        parameterName,
+                        argumentValue,
+                    ),
+                accessor,
+            );
         });
         this.reachJsData();
         return getter

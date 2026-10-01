@@ -1119,35 +1119,59 @@ export class DataLowerer {
         left: ts.PropertyAccessExpression,
         right: ts.Expression,
     ): boolean {
-        if (!this.context.dataTypes.isAccessorPropertyName(left.name.text))
+        const property = this.context.checker.getSymbolAtLocation(left.name);
+        if (
+            !property ||
+            !this.context.dataTypes.isAccessorProperty(
+                property,
+                this.context.checker.getTypeAtLocation(left.expression),
+            )
+        )
             return false;
-        const probed = this.context.probeEmission(() =>
-            this.compileDataPath(left.expression, "read"),
-        );
-        if (!probed || !this.accessorField(probed, left.name.text, left))
-            return false;
-        const path = this.compileDataPath(left.expression, "read");
-        const owner = path && this.narrowOptional(path, left.expression);
+        // One evaluation of the receiver, kept when it stores the property
+        // in an accessor slot.
+        const accessorOwner = (owner: Value | undefined): boolean =>
+            owner !== undefined &&
+            this.accessorField(owner, left.name.text, left) !== undefined;
+        const owner = this.context.probeEmission(() => {
+            const path = this.compileDataPath(left.expression, "read");
+            return path && this.narrowOptional(path, left.expression);
+        }, accessorOwner);
         const type = owner?.dataType;
         const field = owner && this.accessorField(owner, left.name.text, left);
-        if (!owner || type?.kind !== "struct" || !field)
-            this.context.fail(
-                left,
-                `Accessor property '${left.name.text}' has no native record owner here.`,
-            );
-        const pinned = this.context.bindings.pinValueToTemporary(
-            owner,
-            "accessor_owner",
-            left.expression,
-        );
+        if (!owner || type?.kind !== "struct" || !field) return false;
+        // A shared record is pinned before the value is evaluated; a record
+        // stored inline is written in place.
+        const reference = this.context.dataTypes.isReferenceStruct(type.name);
+        const target = reference
+            ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
+            : `${owner.cpp}.`;
         const value = this.compileForSink(right, field.type);
         this.context.emit({
             kind: "expression",
-            code: `${pinned.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}.set(${value});`,
+            code: `${target}${field.name}.set(${value});`,
         });
         if (owner.recordProperties)
             delete writable(owner.recordProperties)[left.name.text];
         return true;
+    }
+
+    /**
+     * A read of an accessor slot runs its getter on every read; a write
+     * reaches it only through `=` on a named property, which runs the setter.
+     */
+    private accessorRead(
+        slot: string,
+        type: DataType,
+        mode: "read" | "write",
+        node: ts.Node,
+    ): Value {
+        if (mode === "write")
+            this.context.fail(
+                node,
+                "An accessor property takes a plain assignment to a named property, which runs its setter.",
+            );
+        return { ...this.leafValue(`${slot}.get()`, type), impure: true };
     }
 
     /** The accessor-backed field a native record value stores under `property`. */
@@ -3283,12 +3307,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType.name,
                     name,
                     access,
+                    "accessors",
                 );
                 const arrow = this.context.dataTypes.isReferenceStruct(
                     dataType.name,
                 )
                     ? "->"
                     : ".";
+                if (field.accessor)
+                    return this.accessorRead(
+                        `${owner.cpp}${arrow}${field.name}`,
+                        field.type,
+                        mode,
+                        access,
+                    );
                 return withNativeMetadata(
                     {
                         ...this.leafValue(
@@ -3323,11 +3355,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType.name,
                     member,
                     access,
+                    "accessors",
                 ),
             );
-            const fieldType = fields[0]!.type;
+            const commonType = fields[0]!.type;
+            if (mode === "write" && fields.some((field) => field.accessor))
+                this.accessorRead("", commonType, mode, access);
             if (
-                fields.some((field) => !dataTypesEqual(field.type, fieldType))
+                fields.some((field) => !dataTypesEqual(field.type, commonType))
             ) {
                 this.context.fail(
                     access,
@@ -3345,7 +3380,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
                 ? "->"
                 : ".";
-            let selected = `${owner.cpp}${arrow}${fields.at(-1)!.name}`;
+            // An accessor slot answers its getter's value.
+            const read = (field: DataStructField): string =>
+                `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
+            let selected = read(fields.at(-1)!);
             for (let index = members.length - 2; index >= 0; --index) {
                 const member = members[index]!;
                 const memberCpp = this.context.dataTypes.enumMemberCpp(
@@ -3355,13 +3393,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 selected =
                     `(${keyTemporary} == ${memberCpp} ? ` +
-                    `${owner.cpp}${arrow}${fields[index]!.name} : ${selected})`;
+                    `${read(fields[index]!)} : ${selected})`;
             }
             return {
                 ...this.leafValue(
                     `([&](const auto ${keyTemporary}) -> decltype(auto) { ` +
                         `return ${selected}; })(${key})`,
-                    fieldType,
+                    commonType,
                 ),
                 ...(fields.some((field) => field.uncheckedProperty)
                     ? { preserveUncheckedLookup: true as const }
@@ -7435,9 +7473,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       ? "std::nullopt"
                       : undefined;
                 if (absent !== undefined)
-                    return field.accessor
-                        ? `bbl::js::data_accessor<${this.context.dataTypes.cppType(field.type)}>(${absent})`
-                        : absent;
+                    return this.context.dataTypes.structFieldInitializerCpp(
+                        field,
+                        absent,
+                    );
                 this.context.fail(
                     literal,
                     `Struct literal is missing field '${field.sourceName}'.`,
@@ -7456,10 +7495,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field.type,
                 );
             }
-            const stored = this.compileForSink(initializer, field.type);
-            return field.accessor
-                ? `bbl::js::data_accessor<${this.context.dataTypes.cppType(field.type)}>(${stored})`
-                : stored;
+            return this.context.dataTypes.structFieldInitializerCpp(
+                field,
+                this.compileForSink(initializer, field.type),
+            );
         });
         if (provided.size > 0) {
             this.context.fail(

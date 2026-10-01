@@ -151,13 +151,6 @@ function expressionEnummap(
     if (ts.isObjectLiteralExpression(unwrapped)) {
         return lowerer.enumMapLiteral(unwrapped, dataType);
     }
-    // An open string record the program asserts closed (`as Record<Union, V>`).
-    if (lowerer.dataTypeAt(unwrapped)?.kind === "map")
-        return lowerer.compileKnownValueForSink(
-            lowerer.context.compileValue(unwrapped),
-            dataType,
-            unwrapped,
-        );
     const value = lowerer.requireDataValue(unwrapped, dataType);
     lowerer.markEscaped(value);
     return value.cpp;
@@ -291,16 +284,12 @@ function valueStruct(
             node,
             "accessors",
         );
-        const record = value;
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
-                if (field.accessor)
-                    return accessorSlot(lowerer, field, record, node);
-                if (value.recordGetters?.[field.sourceName])
-                    lowerer.context.fail(
-                        node,
-                        `Property '${field.sourceName}' is an accessor; the native record '${dataType.name}' stores it as data.`,
-                    );
+                const getter = value.recordGetters?.[field.sourceName];
+                const setter = value.recordSetters?.[field.sourceName];
+                if (getter || setter)
+                    return accessorSlot(lowerer, field, value, node);
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -318,22 +307,23 @@ function valueStruct(
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
-                if (!property) {
-                    if (field.defaultWhenMissing) {
-                        return "{}";
-                    }
-                    if (field.type.kind === "optional") {
-                        return "std::nullopt";
-                    }
-                    lowerer.context.fail(
-                        node,
-                        `Compile-time record is missing required field '${field.sourceName}'.`,
-                    );
-                }
-                return lowerer.compileKnownValueForSink(
-                    property,
-                    field.type,
-                    node,
+                const stored = property
+                    ? lowerer.compileKnownValueForSink(
+                          property,
+                          field.type,
+                          node,
+                      )
+                    : field.defaultWhenMissing
+                      ? "{}"
+                      : field.type.kind === "optional"
+                        ? "std::nullopt"
+                        : lowerer.context.fail(
+                              node,
+                              `Compile-time record is missing required field '${field.sourceName}'.`,
+                          );
+                return lowerer.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    stored,
                 );
             })
             .join(", ")}}`;
@@ -405,24 +395,27 @@ function valueStruct(
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
+            "accessors",
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const key = lowerer.context.cppString(field.sourceName);
-                if (
+                const optional =
                     field.type.kind === "optional" &&
-                    dataTypesEqual(sourceMap.value, field.type.inner)
+                    dataTypesEqual(sourceMap.value, field.type.inner);
+                // A closed record asserted from the open one is a view of
+                // it: reads and writes reach its entries, and a read of an
+                // absent entry refuses there, as an asserted read does.
+                if (
+                    field.accessor &&
+                    (optional || dataTypesEqual(sourceMap.value, field.type))
                 )
+                    return `bbl::js::${optional ? "optional_entry_accessor" : "entry_accessor"}<${lowerer.context.dataTypes.cppType(field.type)}>(${value.cpp}, ${key})`;
+                if (!field.accessor && optional)
                     return `${value.cpp}.get(${key})`;
-                // A required field is the program's assertion that the
-                // key is present (`as Record<Closed, V>`); an absent key
-                // refuses at run time, as an asserted `pop()!` of an
-                // empty array does.
-                if (dataTypesEqual(sourceMap.value, field.type))
-                    return `${value.cpp}.at(${key})`;
                 return lowerer.context.fail(
                     node,
-                    `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must have the record's value type.`,
+                    `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must be compatible optionals.`,
                 );
             })
             .join(", ")}}`;
@@ -433,51 +426,29 @@ function valueStruct(
     return undefined;
 }
 
-/**
- * A record's accessor-backed field: its getter (and setter), or the plain
- * value it stores, behind a getter and a setter over one cell.
- */
+/** A record's accessor property: its getter and setter in the field's accessor slot. */
 function accessorSlot(
     lowerer: DataSinkHost,
     field: DataStructField,
     record: Value,
     node: ts.Node,
 ): string {
-    const slot = lowerer.context.dataTypes.structFieldCppType(field);
     const getter = record.recordGetters?.[field.sourceName];
     const setter = record.recordSetters?.[field.sourceName];
-    if (getter) {
-        const parts = [
-            lowerer.context.compileStoredAccessor(record, getter, field.type),
-            ...(setter
-                ? [
-                      lowerer.context.compileStoredAccessor(
-                          record,
-                          setter,
-                          field.type,
-                      ),
-                  ]
-                : []),
-        ];
-        return `${slot}(${parts.join(", ")})`;
-    }
-    if (setter)
+    if (!field.accessor)
+        lowerer.context.fail(
+            node,
+            `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
+        );
+    if (!getter)
         lowerer.context.fail(
             node,
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
         );
-    const property = record.recordProperties?.[field.sourceName];
-    const stored = property
-        ? lowerer.compileKnownValueForSink(property, field.type, node)
-        : field.defaultWhenMissing
-          ? "{}"
-          : field.type.kind === "optional"
-            ? "std::nullopt"
-            : lowerer.context.fail(
-                  node,
-                  `Compile-time record is missing required field '${field.sourceName}'.`,
-              );
-    return `bbl::js::data_accessor<${lowerer.context.dataTypes.cppType(field.type)}>(${stored})`;
+    const set = setter
+        ? lowerer.context.compileStoredAccessor(record, setter, field.type)
+        : "{}";
+    return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(record, getter, field.type)}, ${set})`;
 }
 
 function valueEnummap(
@@ -541,23 +512,6 @@ function valueEnummap(
     }
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
-    }
-    // An open string record asserted as the closed record (`as Record<Union,
-    // V>`): every member is a key it must hold, as for a struct projection.
-    if (
-        value.kind === "data" &&
-        value.dataType?.kind === "map" &&
-        value.dataType.key.kind === "string" &&
-        dataTypesEqual(value.dataType.value, dataType.element)
-    ) {
-        lowerer.context.reachJsData();
-        return `${lowerer.context.dataTypes.cppType(dataType)}{${lowerer.context.dataTypes
-            .enumMembers(dataType.enumName)
-            .map(
-                (member) =>
-                    `${value.cpp}.at(${lowerer.context.cppString(member)})`,
-            )
-            .join(", ")}}`;
     }
     return undefined;
 }

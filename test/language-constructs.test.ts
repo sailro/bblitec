@@ -1047,16 +1047,26 @@ check(
     function drop(code: Drop): void { tally[DROP_INDEX[code]]!++; }
     drop("gesture-end"); drop("gesture-end"); drop("seat-changed");
     if (tally.join(",") !== "1,2") throw new Error("asserted closed record");
-    type Action = "jump" | "run";
-    const DEFINITIONS: readonly { action: Action; key: string }[] = [{ action: "jump", key: "Space" }, { action: "run", key: "Shift" }];
-    function profileFromDefaults(): Record<Action, string> {
-        return Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.key])) as Record<Action, string>;
-    }
-    const profile = profileFromDefaults();
-    if (profile.jump !== "Space" || profile.run !== "Shift") throw new Error("asserted closed record return");
+    type Action = "jump" | "run" | "crouch";
     type Profile = Record<Action, string>;
-    const named = Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.key + "!"])) as Profile;
-    if (named.jump !== "Space!" || named.run !== "Shift!") throw new Error("asserted named closed record");
+    const DEFINITIONS: readonly { action: Action; key: string }[] = [{ action: "jump", key: "Space" }, { action: "run", key: "Shift" }];
+    function profileFromDefaults(): Profile {
+        return Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.key])) as Profile;
+    }
+    // "crouch" is never read, so its absence never refuses.
+    const profile = profileFromDefaults();
+    if (profile.jump !== "Space" || profile.run !== "Shift") throw new Error("asserted closed record");
+    const entries: Record<string, string> = {};
+    const view: Profile = entries as Profile;
+    entries["jump"] = "J";
+    view.run = "R";
+    if (view.jump !== "J" || entries["run"] !== "R") throw new Error("the view and its record share entries");
+    const alias = entries as Profile;
+    entries["crouch"] = "C";
+    if (alias.crouch !== "C" || view.crouch !== "C") throw new Error("a later entry reads through the view");
+    const partial: Partial<Profile> = entries as Partial<Profile>;
+    partial.run = undefined;
+    if (partial.jump !== "J" || partial.run !== undefined || entries["run"] !== undefined) throw new Error("optional view");
 `,
 );
 
@@ -1121,9 +1131,13 @@ check(
     const readCurrent = (): number => current.count;
     current = createCounter(20);
     if (readCurrent() !== 20 || byName.get("a")!.count !== 6) throw new Error("rebound accessor record");
+    interface Sized { size: number; }
+    let side = 3;
+    const sizes: Sized[] = [{ get size() { return side; } }];
     let threw = false;
-    try { (counters[0] as { count: number }).count = 4; } catch (error) { threw = error instanceof TypeError; }
-    if (!threw || counters[0]!.count !== 3) throw new Error("getter-only write");
+    try { sizes[0]!.size = 4; } catch (error) { threw = error instanceof TypeError; }
+    side = 5;
+    if (!threw || sizes[0]!.size !== 5) throw new Error("getter-only write");
 
     interface Reading { readonly count: number; name: string; }
     function createReading(): Reading {
