@@ -522,138 +522,280 @@ test("inlined class parameters keep borrowed event wrappers alive", () => {
     }
 });
 
-test("refuses borrowed payloads at retained storage and capture sites", () => {
-    const cases = [
+test("refuses every store of a borrowed event at the store", () => {
+    interface StoreCase {
+        name: string;
+        /** Module-scope statements the store targets. */
+        declarations: readonly string[];
+        /** The one listener line that stores (or captures) the event. */
+        body: string;
+        /** A later timer reading the module binding, were the store admitted. */
+        read?: string;
+        /** The line the refusal names, when it is not the body's. */
+        at?: string;
+        pattern: RegExp;
+    }
+    const rows: StoreCase[] = [
         {
             name: "array",
-            declarations: "const saved: Payload[] = [];",
+            declarations: ["const saved: Payload[] = [];"],
             body: "saved.push(payload);",
+            read: "reads += saved.length;",
             pattern: /through Array\.push/,
         },
         {
             name: "set",
-            declarations: "const saved = new Set<Payload>();",
+            declarations: ["const saved = new Set<Payload>();"],
             body: "saved.add(payload);",
+            read: "reads += saved.size;",
             pattern: /through Set\.add/,
         },
         {
             name: "map",
-            declarations: "const saved = new Map<string, Payload>();",
+            declarations: ["const saved = new Map<string, Payload>();"],
             body: 'saved.set("event", payload);',
+            read: "reads += saved.size;",
             pattern: /through Map\.set value/,
         },
         {
             name: "array-map",
-            declarations: "const source: number[] = [1];",
-            body: "const saved = source.map(() => payload);",
+            declarations: ["const source: number[] = [1];"],
+            body: "const mapped = source.map(() => payload);",
             pattern: /through Array\.map result/,
         },
         {
             name: "class-field",
-            declarations: `
-                class Keeper {
-                    private saved: Payload | null = null;
-                    keep(payload: Payload): void { this.saved = payload; }
-                }
-                const keeper = new Keeper();
-            `,
+            declarations: [
+                "class Keeper {",
+                "    private saved: Payload | null = null;",
+                "    keep(payload: Payload): void { this.saved = payload; }",
+                "}",
+                "const keeper = new Keeper();",
+            ],
             body: "keeper.keep(payload);",
+            at: "this.saved = payload;",
             pattern: /through (?:class field assignment|a reassigned local)/,
         },
         {
             name: "outer-record-field",
-            declarations: `
-                interface Holder { saved: Payload | null; }
-                const holder: Holder = { saved: null };
-            `,
+            declarations: [
+                "interface Holder { saved: Payload | null; }",
+                "const holder: Holder = { saved: null };",
+            ],
             body: "holder.saved = payload;",
+            read: "if (holder.saved) reads += 1;",
             pattern: /through data field assignment/,
         },
         {
             name: "object-assign",
-            declarations: `
-                interface Holder { saved: Payload | null; }
-                const holder: Holder = { saved: null };
-            `,
+            declarations: [
+                "interface Holder { saved: Payload | null; }",
+                "const holder: Holder = { saved: null };",
+            ],
             body: "Object.assign(holder, { saved: payload });",
+            read: "if (holder.saved) reads += 1;",
             pattern: /through Object\.assign/,
         },
         {
+            name: "property-alias",
+            declarations: [
+                "const holder: { last: MouseEvent | null } = { last: null };",
+            ],
+            body: "const alias = holder; alias.last = event;",
+            read: "if (holder.last) reads += 1;",
+            pattern: /through data field assignment/,
+        },
+        {
+            name: "module-let",
+            declarations: ["let saved: MouseEvent | null = null;"],
+            body: "saved = event;",
+            read: "if (saved) reads += 1;",
+            pattern: /through a reassigned local/,
+        },
+        ...(
+            [
+                ["nullish", "??="],
+                ["or", "||="],
+                ["and", "&&="],
+            ] as const
+        ).map(([kind, operator]) => ({
+            name: `logical-${kind}`,
+            declarations: ["let saved: MouseEvent | null = null;"],
+            body: `saved ${operator} event;`,
+            read: "if (saved) reads += 1;",
+            pattern: /through logical assignment/,
+        })),
+        {
+            name: "array-destructuring",
+            declarations: [
+                "let saved: MouseEvent | null = null;",
+                "let other = 0;",
+            ],
+            body: "[saved, other] = [event, 1];",
+            read: "if (saved) reads += other;",
+            pattern: /through a destructuring source/,
+        },
+        {
+            // Object destructuring into existing bindings refuses whole.
+            name: "object-destructuring",
+            declarations: ["let saved: MouseEvent | null = null;"],
+            body: "({ saved } = { saved: event });",
+            read: "if (saved) reads += 1;",
+            pattern: /Only property assignments are supported/,
+        },
+        {
+            name: "element-assignment",
+            declarations: ["const saved: MouseEvent[] = [];"],
+            body: "saved[0] = event;",
+            read: "reads += saved.length;",
+            pattern: /through container element assignment/,
+        },
+        ...(
+            [
+                ["unshift", "saved.unshift(event);"],
+                ["splice", "saved.splice(0, 0, event);"],
+                ["fill", "saved.fill(event);"],
+            ] as const
+        ).map(([method, body]) => ({
+            name: method,
+            declarations: ["const saved: MouseEvent[] = [];"],
+            body,
+            read: "reads += saved.length;",
+            pattern: new RegExp(`through Array\\.${method}`),
+        })),
+        {
+            name: "weakset",
+            declarations: ["const saved = new WeakSet<Event>();"],
+            body: "saved.add(event);",
+            read: "if (saved) reads += 1;",
+            pattern: /through Set\.add/,
+        },
+        {
+            name: "weakmap-key",
+            declarations: ["const saved = new WeakMap<Event, number>();"],
+            body: "saved.set(event, 1);",
+            read: "if (saved) reads += 1;",
+            pattern: /through Map\.set key/,
+        },
+        {
+            name: "map-key",
+            declarations: ["const saved = new Map<MouseEvent, number>();"],
+            body: "saved.set(event, 1);",
+            read: "reads += saved.size;",
+            pattern: /through Map\.set key/,
+        },
+        {
+            name: "record-entry",
+            declarations: ["const saved: Record<string, MouseEvent> = {};"],
+            body: 'saved["latest"] = event;',
+            read: 'if (saved["latest"]) reads += 1;',
+            pattern: /through Map value assignment/,
+        },
+        {
+            name: "static-field",
+            declarations: [
+                "class Keeper { static saved: MouseEvent | null = null; }",
+            ],
+            body: "Keeper.saved = event;",
+            read: "if (Keeper.saved) reads += 1;",
+            pattern: /through data field assignment/,
+        },
+        {
+            name: "later-closure",
+            declarations: ["let saved = (): void => {};"],
+            body: "saved = () => { event.preventDefault(); };",
+            read: "saved();",
+            pattern:
+                /escaping callback cannot capture platform event value 'event'/,
+        },
+        {
             name: "timer",
-            declarations: "",
+            declarations: [],
             body: "setTimeout(() => payload.domEvent.preventDefault(), 0);",
             pattern:
                 /escaping callback cannot capture platform event value 'payload'/,
         },
         {
             name: "listener",
-            declarations: "",
-            body: `
-                window.addEventListener("mouseup", () => {
-                    payload.domEvent.preventDefault();
-                });
-            `,
+            declarations: [],
+            body: 'window.addEventListener("mouseup", () => { payload.domEvent.preventDefault(); });',
             pattern:
                 /escaping callback cannot capture platform event value 'payload'/,
         },
         {
             name: "stored-closure",
-            declarations: "const saved = new Set<() => void>();",
-            body: `
-                const later = (): void => {
-                    payload.domEvent.preventDefault();
-                };
-                saved.add(later);
-            `,
+            declarations: ["const saved = new Set<() => void>();"],
+            body: "const later = (): void => { payload.domEvent.preventDefault(); }; saved.add(later);",
             pattern:
                 /escaping callback cannot capture platform event value '(?:payload|later)'/,
         },
         {
             name: "nested-record-array",
-            declarations: `
-                interface Envelope { nested: { payload: Payload }; }
-                const saved: Envelope[] = [];
-            `,
-            body: `
-                const envelope: Envelope = { nested: { payload } };
-                saved.push(envelope);
-            `,
+            declarations: [
+                "interface Envelope { nested: { payload: Payload }; }",
+                "const saved: Envelope[] = [];",
+            ],
+            body: "const envelope: Envelope = { nested: { payload } }; saved.push(envelope);",
             pattern: /through Array\.push/,
+        },
+        {
+            // A closure carries the event a function it names reads.
+            name: "declaration-value",
+            declarations: ["const saved = new Set<() => void>();"],
+            body: "saved.add(capture);",
+            at: "function capture",
+            pattern:
+                /escaping callback cannot capture platform event value 'payload'/,
+        },
+        {
+            name: "declaration-call",
+            declarations: ["const saved = new Set<() => void>();"],
+            body: "const later = (): void => capture(); saved.add(later);",
+            pattern:
+                /escaping callback cannot capture platform event value 'later'/,
+        },
+        {
+            name: "arrow-listener",
+            declarations: [],
+            body: 'const later = (): void => { payload.domEvent.preventDefault(); }; window.addEventListener("mouseup", later);',
+            pattern:
+                /escaping callback cannot capture platform event value 'later'/,
         },
     ];
 
-    for (const escape of cases) {
+    for (const row of rows) {
+        const lines = [
+            'import { createEngine } from "@babylonjs/lite";',
+            "interface Payload { domEvent: MouseEvent; consumed: boolean; }",
+            ...row.declarations,
+            "let reads = 0;",
+            'const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;',
+            "await createEngine(canvas);",
+            'canvas.addEventListener("mousedown", (event) => {',
+            "    const payload: Payload = { domEvent: event, consumed: false };",
+            "    function capture(): void { payload.domEvent.preventDefault(); }",
+            `    ${row.body}`,
+            ...(row.read ? [`    setTimeout(() => { ${row.read} }, 0);`] : []),
+            "});",
+        ];
+        const at = row.at ?? row.body;
+        const line = lines.findIndex((text) => text.includes(at)) + 1;
         assert.throws(
             () =>
-                compileSource(
-                    `
-                        import { createEngine } from "@babylonjs/lite";
-                        interface Payload {
-                            domEvent: MouseEvent;
-                            consumed: boolean;
-                        }
-                        ${escape.declarations}
-                        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-                        await createEngine(canvas);
-                        canvas.addEventListener("mousedown", (event) => {
-                            const payload: Payload = {
-                                domEvent: event,
-                                consumed: false,
-                            };
-                            ${escape.body}
-                        });
-                    `,
-                    { fileName: `test/borrow-${escape.name}.ts` },
-                ),
+                compileSource(lines.join("\n"), {
+                    fileName: `test/borrow-${row.name}.ts`,
+                }),
             (error: unknown) => {
                 assert.ok(error instanceof CompileError);
                 assert.match(
                     error.message,
-                    new RegExp(`^test/borrow-${escape.name}\\.ts:\\d+:\\d+:`),
+                    new RegExp(`^test/borrow-${row.name}\\.ts:${line}:\\d+:`),
+                    row.name,
                 );
-                assert.match(error.message, escape.pattern);
+                assert.match(error.message, row.pattern, row.name);
                 return true;
             },
+            row.name,
         );
     }
 });
@@ -742,7 +884,7 @@ test("follows helper call graphs when checking borrowed callback captures", () =
     }
 });
 
-test("classifies a retained closure by the frame bindings its code reads", () => {
+test("a retained closure carries only the bindings its code reads", () => {
     // A module container typed with events holds none (each store of one
     // refuses), and closures that read only owned locals escape freely, even
     // where an enclosing listener's event is in scope.
@@ -778,47 +920,6 @@ test("classifies a retained closure by the frame bindings its code reads", () =>
             });
         `),
     );
-
-    // A closure still carries the event a function it names reads.
-    const cases = [
-        { name: "declaration-value", body: "saved.add(capture);" },
-        {
-            name: "declaration-call",
-            body: "const later = (): void => capture(); saved.add(later);",
-        },
-        {
-            name: "arrow-listener",
-            body: `
-                const later = (): void => {
-                    payload.domEvent.preventDefault();
-                };
-                window.addEventListener("mouseup", later);
-            `,
-        },
-    ];
-    for (const entry of cases) {
-        assert.throws(
-            () =>
-                compileSource(
-                    `
-                        import { createEngine } from "@babylonjs/lite";
-                        interface Payload { domEvent: MouseEvent; }
-                        const saved = new Set<() => void>();
-                        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-                        await createEngine(canvas);
-                        canvas.addEventListener("mousedown", (event) => {
-                            const payload: Payload = { domEvent: event };
-                            function capture(): void {
-                                payload.domEvent.preventDefault();
-                            }
-                            ${entry.body}
-                        });
-                    `,
-                    { fileName: `test/borrow-closure-${entry.name}.ts` },
-                ),
-            /escaping callback cannot capture platform event value '(?:payload|later)'/,
-        );
-    }
 });
 
 test("refuses unrelated DOM records and unknown MouseEvent provenance", () => {

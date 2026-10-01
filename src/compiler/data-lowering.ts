@@ -7961,9 +7961,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             `!${entry.owner.cpp}.has(${key})`,
         );
         this.emitGuardedStore(guard, () => {
-            const value = this.compileForSink(
+            const value = this.compileForRetainedSink(
                 expression.right,
                 entry.dataType.value,
+                "logical assignment",
             );
             this.context.emit({
                 kind: "expression",
@@ -8174,7 +8175,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               { kind: "string" },
                               expression.right,
                           )
-                        : this.compileForSink(expression.right, targetType!);
+                        : this.compileForRetainedSink(
+                              expression.right,
+                              targetType!,
+                              "logical assignment",
+                          );
             this.context.emit({
                 kind: "expression",
                 code: `${target.cpp} = ${value};`,
