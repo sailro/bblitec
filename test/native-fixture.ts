@@ -386,6 +386,11 @@ export function runGeneratedProgram(
     tools: WindowsBuildTools,
     name: string,
     cpp: string,
+    options: {
+        defines?: readonly string[];
+        timeoutMs?: number;
+        expectedOutput?: string;
+    } = {},
 ): void {
     const directory = resolve("artifacts", name);
     mkdirSync(directory, { recursive: true });
@@ -402,6 +407,7 @@ export function runGeneratedProgram(
         "/MD",
         "/fp:precise",
         "/utf-8",
+        ...(options.defines ?? []).map((define) => `/D${define}`),
         "/I",
         "native/include",
         "/I",
@@ -410,7 +416,13 @@ export function runGeneratedProgram(
         `/Fe:${executable}`,
         source,
     ]);
-    execFileSync(executable, { stdio: "pipe", windowsHide: true });
+    const output = execFileSync(executable, {
+        stdio: "pipe",
+        windowsHide: true,
+        timeout: options.timeoutMs ?? 0,
+    });
+    if (options.expectedOutput !== undefined)
+        assert.equal(output.toString("utf8"), options.expectedOutput);
 }
 
 /** Preserve object paths when distinct source folders contain equal basenames. */
