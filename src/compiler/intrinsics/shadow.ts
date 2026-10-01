@@ -5,8 +5,10 @@ import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
+    discardOption,
     staticNumberValue,
     validateObjectProperties,
+    type DiscardOptionContext,
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
@@ -16,6 +18,7 @@ export interface ShadowIntrinsicContext
         IntrinsicCallContext,
         ObjectValidationContext,
         PositiveIntegerContext,
+        DiscardOptionContext,
         Pick<
             LoweringServices,
             | "admissions"
@@ -24,7 +27,6 @@ export interface ShadowIntrinsicContext
             | "callbacks"
             | "allocateTemporaryCppName"
             | "emit"
-            | "emitDiscardedValue"
             | "expectObjectLiteral"
             | "objectProperty"
             | "handleCollections"
@@ -157,7 +159,7 @@ interface ShadowGeneratorFactory {
     article: string;
     options: readonly string[];
     /** Declared options the pinned factory never reads; evaluated, then dropped. */
-    unread: readonly string[];
+    unread?: readonly string[];
     /** The struct's field order, which the ESM extends with its ordinal. */
     emitted: readonly string[];
     defaults: Readonly<Record<string, string>>;
@@ -173,7 +175,7 @@ interface ShadowGeneratorFactory {
      * record: a run-time value is admitted, checked as the positive integer
      * the GPU texture size and the pinned `1 / mapSize` lane agree on.
      */
-    runtimeExtents: readonly string[];
+    runtimeExtents?: readonly string[];
     factory: string;
     optionsStruct: string;
     features: readonly Feature[];
@@ -238,7 +240,6 @@ const shadowGeneratorFactories: Readonly<
         lightKind: "directional",
         article: "A CSM directional shadow generator",
         options: csmDirectionalOptions,
-        unread: [],
         emitted: csmDirectionalOptions,
         defaults: {
             mapSize: "bbl::upstream::csm_default_map_size",
@@ -260,7 +261,6 @@ const shadowGeneratorFactories: Readonly<
         },
         // The two that size the layered map: its extent and its layer count.
         generationResolved: ["mapSize", "numCascades"],
-        runtimeExtents: [],
         factory: "bbl::create_csm_directional_shadow_generator",
         optionsStruct: "bbl::CsmDirectionalShadowOptions",
         features: ["shadow:pcf", "shadow:csm"],
@@ -270,7 +270,6 @@ const shadowGeneratorFactories: Readonly<
         lightKind: "directional",
         article: "An ESM directional shadow generator",
         options: esmDirectionalOptions,
-        unread: [],
         emitted: esmDirectionalEmitted,
         defaults: {
             mapSize: "bbl::upstream::esm_default_map_size",
@@ -290,7 +289,6 @@ const shadowGeneratorFactories: Readonly<
         // These three decide the blur shader's own text and the four
         // textures' extents.
         generationResolved: ["mapSize", "blurKernel", "blurScale"],
-        runtimeExtents: [],
         factory: "bbl::create_esm_directional_shadow_generator",
         optionsStruct: "bbl::EsmDirectionalShadowOptions",
         features: ["shadow:esm"],
@@ -329,16 +327,12 @@ function compileShadowGeneratorFactory(
         validateObjectProperties(
             context,
             options,
-            [...spec.options, ...spec.unread],
+            [...spec.options, ...(spec.unread ?? [])],
             `${spec.article} options`,
         );
-        for (const name of spec.unread) {
+        for (const name of spec.unread ?? []) {
             const expression = context.objectProperty(options, name);
-            if (!expression) continue;
-            const value = context.compileValue(expression);
-            if (value.staticNumber === undefined) {
-                context.emitDiscardedValue(value);
-            }
+            if (expression) discardOption(context, options, expression);
         }
         for (const name of spec.options) {
             const expression = context.objectProperty(options, name);
@@ -365,10 +359,11 @@ function compileShadowGeneratorFactory(
                 resolved[name] = fixed ? "true" : "false";
                 continue;
             }
-            if (spec.runtimeExtents.includes(name)) {
+            if (spec.runtimeExtents?.includes(name)) {
+                // A run-time extent takes WebGPU's own size conversion.
                 resolved[name] =
                     staticNumberValue(context, expression) === undefined
-                        ? `bbl::shadow_map_extent(${context.compileNumber(expression, "double")})`
+                        ? `bbl::gpu_u32(bbl::gpu_size(${context.compileNumber(expression, "double")}))`
                         : compilePositiveInteger(context, expression);
                 continue;
             }

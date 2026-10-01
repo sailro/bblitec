@@ -54,7 +54,7 @@ test("checks a run-time PCF mapSize where the native factory sizes its target", 
     const runtime = compileSource(shadowScene("mapSize: Math.round(size)"));
     assert.match(
         runtime.cpp,
-        /PcfDirectionalShadowOptions\{bbl::shadow_map_extent\(bbl::js::round_js\(/,
+        /PcfDirectionalShadowOptions\{bbl::gpu_u32\(bbl::gpu_size\(bbl::js::round_js\(/,
     );
     const literal = compileSource(shadowScene("mapSize: 2048"));
     assert.match(literal.cpp, /PcfDirectionalShadowOptions\{2048u,/);

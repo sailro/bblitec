@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
 
 /** The pinned module that declares the error helper. */
 const liteErrorModule = "src/lite-error.ts";
@@ -167,6 +168,66 @@ export function pinnedErrorMessage(
             `Expected pinned error ${code} to be a fixed message.`,
         );
     return message.text;
+}
+
+/**
+ * The message the pin's error table decodes for `code` with `args`, as a C++
+ * `std::string` expression: a generation-known argument is spelled as
+ * JavaScript's template conversion spells it, a run-time one is a C++
+ * expression already converted to `std::string`.
+ */
+export function pinnedErrorMessageCpp(
+    context: LoweringContext,
+    code: number,
+    args: readonly (string | number | { readonly cpp: string })[],
+): string {
+    const { file, table } = pinnedErrorTable(context);
+    const decoder = table.elements[code];
+    const template =
+        decoder && ts.isArrowFunction(decoder) && !ts.isBlock(decoder.body)
+            ? context.unwrapExpression(decoder.body)
+            : undefined;
+    if (
+        !decoder ||
+        !ts.isArrowFunction(decoder) ||
+        !template ||
+        !ts.isTemplateExpression(template) ||
+        decoder.parameters.length !== args.length ||
+        !template.templateSpans.every(
+            (span) =>
+                ts.isIdentifier(span.expression) &&
+                decoder.parameters.some(
+                    (parameter) =>
+                        parameter.name.getText(file) ===
+                        span.expression.getText(file),
+                ),
+        )
+    ) {
+        return context.contractError(
+            decoder ?? table,
+            `Expected pinned error ${code} to interpolate its ${args.length} argument(s).`,
+        );
+    }
+    const pieces: string[] = [];
+    let literal = template.head.text;
+    for (const span of template.templateSpans) {
+        const index = decoder.parameters.findIndex(
+            (parameter) =>
+                parameter.name.getText(file) === span.expression.getText(file),
+        );
+        const value = args[index]!;
+        if (typeof value === "object") {
+            pieces.push(cppStringLiteral(literal), value.cpp);
+            literal = span.literal.text;
+        } else {
+            literal += String(value) + span.literal.text;
+        }
+    }
+    pieces.push(cppStringLiteral(literal));
+    return `(std::string(${pieces[0]})${pieces
+        .slice(1)
+        .map((piece) => ` + ${piece}`)
+        .join("")})`;
 }
 
 /** The diagnostic table belongs to the pin; numeric error IDs are build outputs. */

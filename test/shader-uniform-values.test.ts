@@ -33,7 +33,7 @@ test("writes a typed-array uniform value lane by lane after the pinned length ch
     const { cpp } = compileSource(source);
     assert.match(
         cpp,
-        /if \(v_state\.size\(\) != 4u\) throw std::runtime_error\("ShaderMaterial: uniform expects 4 value\(s\), got " \+ std::to_string\(v_state\.size\(\)\) \+ "\."\);/,
+        /if \(v_state\.size\(\) != 4u\) throw std::runtime_error\(\(std::string\("ShaderMaterial: uniform \\"uTint\\" of type vec4<f32> expects 4 value\(s\), got "\) \+ std::to_string\(v_state\.size\(\)\) \+ "\."\)\);/,
     );
     assert.match(
         cpp,

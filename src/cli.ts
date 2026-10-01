@@ -1587,11 +1587,6 @@ async function main(): Promise<void> {
         pinnedSkeletonPalette,
         ...(meshProfiles ? { meshProfiles } : {}),
         ...(runtimeMeshFeatures !== undefined ? { runtimeMeshFeatures } : {}),
-        ...(result.manifest.scenePbrMaterials.some(
-            (material) => material.hasNormalTexture,
-        )
-            ? { pbrNormalTextures: true }
-            : {}),
         iridescence: composedArms.iridescence,
         specularGlossiness: composedArms.specularGlossiness,
         dispersion: composedArms.dispersion,

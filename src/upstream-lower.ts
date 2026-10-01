@@ -405,8 +405,6 @@ export interface UpstreamEmitOptions {
         composed: ComposedScreenSpaceTask;
     }[];
     gpuDeformation: boolean;
-    /** A created PBR material binds a loaded normal texture. */
-    pbrNormalTextures?: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
     /** Any loaded glTF carries packaged Gaussian-splat clouds. */
@@ -1493,9 +1491,7 @@ class GeneratedSourceWriter {
             factories.lowerStandardMaterialFactory(),
         );
         emitReached("upstream/src/material_pbr.cpp", () =>
-            factories.lowerPbrMaterialFactory(
-                options.pbrNormalTextures === true,
-            ),
+            factories.lowerPbrMaterialFactory(),
         );
         emitReached("upstream/src/local_cubemap.cpp", () =>
             lowerLocalCubemap(context),

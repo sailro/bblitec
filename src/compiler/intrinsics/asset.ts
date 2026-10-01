@@ -240,33 +240,35 @@ function fetchedGltfSource(
     context: AssetIntrinsicContext,
     expression: ts.Expression,
 ): string | undefined {
-    const bytes = context.unwrap(expression);
-    const fetched =
-        ts.isCallExpression(bytes) &&
-        ts.isPropertyAccessExpression(bytes.expression) &&
-        bytes.expression.name.text === "arrayBuffer" &&
-        bytes.arguments.length === 0
-            ? context.compileValue(bytes.expression.expression)
+    const type = context.checker.getTypeAtLocation(expression);
+    if ((type.flags & ts.TypeFlags.StringLike) !== 0) return undefined;
+    // The bytes' own carrier, read in a probe that leaves no trace: the
+    // loader packages the file itself, not the response's opaque copy.
+    const bytes = context.probeEmission(
+        () => context.compileValue(expression),
+        () => false,
+    );
+    let read = context.unwrap(expression);
+    while (ts.isAwaitExpression(read)) read = context.unwrap(read.expression);
+    const sources =
+        bytes.fetchedBytes?.expression === read
+            ? bytes.fetchedBytes.sources
             : undefined;
-    if (fetched?.kind !== "static-fetch-response") {
-        const type = context.checker.getTypeAtLocation(expression);
-        if ((type.flags & ts.TypeFlags.StringLike) !== 0) return undefined;
+    if (!sources) {
         context.fail(
             expression,
             "loadGltf raw data must be the arrayBuffer() of a generation-time fetch response.",
         );
     }
-    if (
-        fetched.staticString === undefined ||
-        fetched.dynamicAssetPathCpp !== undefined
-    ) {
+    const [source, ...others] = sources;
+    if (source === undefined || others.length > 0) {
         context.fail(
             expression,
             "loadGltf raw data must come from one packaged fetch URL.",
         );
     }
     const external = externalGltfResourceUri(
-        readAssetBytesSync(fetched.staticString, context.options.fileName),
+        readAssetBytesSync(source, context.options.fileName),
     );
     if (external !== undefined) {
         context.fail(
@@ -275,7 +277,7 @@ function fetchedGltfSource(
                 "the asset must be a GLB or use data: URIs.",
         );
     }
-    return fetched.staticString;
+    return source;
 }
 
 function compileLoadGltf(

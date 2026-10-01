@@ -232,9 +232,8 @@ aliases retain identity; multiple engines in one entry and rebinding refuse.
 
 Runtime `msaaSamples` selects one sample for numeric 1, four otherwise, evaluated once. Engine reads,
 default scene targets and effect/frame-graph targets share this selection. Explicit numeric constants
-other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliary surfaces and
-`resizeEngine` admits engines; native loops own extent refresh. `enableShaderMaterialUniformCaching` is
-accepted: native shader uniform writers are planned at generation.
+other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliary surfaces; native loops
+own extent refresh. `resizeEngine` and `enableShaderMaterialUniformCaching` are native no-ops.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As

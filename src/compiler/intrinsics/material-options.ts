@@ -29,11 +29,13 @@ import type {
 } from "../types.js";
 import {
     compileOptionalStaticBoolean,
+    discardOption,
     staticNumberPair,
     staticNumberValue,
     selectedStaticNumberValue,
     staticTupleElements,
     validateObjectProperties,
+    type DiscardOptionContext,
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
@@ -68,6 +70,7 @@ export interface MaterialOptionContext
     extends
         ObjectValidationContext,
         PositiveIntegerContext,
+        DiscardOptionContext,
         Pick<
             LoweringServices,
             | "sceneManifest"
@@ -85,7 +88,6 @@ export interface MaterialOptionContext
             | "compileColor4"
             | "compileVec3"
             | "evaluator"
-            | "emitDiscardedValue"
         > {}
 
 /**
@@ -110,9 +112,8 @@ export interface CompiledPbrMaterialOptions {
     hasBaseColorTexture: boolean;
     sourceBaseColorFactor: string;
     orm: Value;
-    /** The authored `normalTexture`; absent composes no normal-map arm. */
-    normal?: Value;
-    normalTextureScale: string;
+    /** The authored `normalTexture` and its scale; absent composes no normal-map arm. */
+    normal?: { texture: Value; scale: string };
     metallicFactor: string;
     roughnessFactor: string;
     directIntensity: string;
@@ -499,11 +500,11 @@ export function compilePbrMaterialOptions(
         context.expectKind(orm, "texture", ormExpression);
     }
     const normalExpression = context.objectProperty(object, "normalTexture");
-    const normal = normalExpression
+    const normalTexture = normalExpression
         ? context.compileValue(normalExpression)
         : undefined;
-    if (normal && normalExpression) {
-        context.expectKind(normal, "texture", normalExpression);
+    if (normalTexture && normalExpression) {
+        context.expectKind(normalTexture, "texture", normalExpression);
     }
     // A UBO lane (`normalTextureScale ?? 1.0` in `_writeMaterialData`) only
     // the normal-map arm reads, so a run-time value is admitted and, without
@@ -512,16 +513,16 @@ export function compilePbrMaterialOptions(
         object,
         "normalTextureScale",
     );
-    const normalTextureScale = pbrUniformNumber(
-        context,
-        normal ? normalScaleExpression : undefined,
-        pinnedDefaultNumber("pbrNormalTextureScale"),
-    );
+    const normal = normalTexture && {
+        texture: normalTexture,
+        scale: pbrUniformNumber(
+            context,
+            normalScaleExpression,
+            pinnedDefaultNumber("pbrNormalTextureScale"),
+        ).cpp,
+    };
     if (!normal && normalScaleExpression) {
-        const dropped = context.compileValue(normalScaleExpression);
-        if (dropped.staticNumber === undefined) {
-            context.emitDiscardedValue(dropped);
-        }
+        discardOption(context, object, normalScaleExpression);
     }
     const baseColorFactor = baseColorFactorExpression
         ? compilePbrBaseColorFactor(context, baseColorFactorExpression)
@@ -718,7 +719,6 @@ export function compilePbrMaterialOptions(
             baseColorFactor?.cpp ?? "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
         orm,
         ...(normal ? { normal } : {}),
-        normalTextureScale: normalTextureScale.cpp,
         metallicFactor: metallicOption.cpp,
         roughnessFactor: roughnessOption.cpp,
         directIntensity: directOption.cpp,

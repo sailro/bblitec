@@ -184,6 +184,53 @@ export function compileBooleanOptions<N extends string>(
     return result;
 }
 
+/** What evaluating an option the pin never reads needs. */
+export interface DiscardOptionContext extends Pick<
+    LoweringServices,
+    | "evaluationOrder"
+    | "objectProperties"
+    | "compileValue"
+    | "emitDiscardedValue"
+    | "fail"
+> {}
+
+/**
+ * Evaluates `option`, a property of `object` the pin never reads, for its
+ * effects alone. A pure value has none and is dropped. An effectful one runs
+ * before the call that reads its siblings, which keeps source order only
+ * while no sibling written before it shares state with a later one; that
+ * case refuses.
+ */
+export function discardOption(
+    context: DiscardOptionContext,
+    object: ts.ObjectLiteralExpression,
+    option: ts.Expression,
+): void {
+    if (context.evaluationOrder.isPureExpression(option)) return;
+    const siblings = context
+        .objectProperties(object)
+        .flatMap((property) =>
+            ts.isPropertyAssignment(property)
+                ? [property.initializer]
+                : ts.isShorthandPropertyAssignment(property)
+                  ? [property.name]
+                  : [],
+        );
+    const index = siblings.indexOf(option);
+    if (
+        context.evaluationOrder
+            .operandsToPin(siblings)
+            .slice(0, index)
+            .some(Boolean)
+    ) {
+        context.fail(
+            option,
+            "An unread option with effects cannot keep its source order: an option written before it shares state with a later one.",
+        );
+    }
+    context.emitDiscardedValue(context.compileValue(option));
+}
+
 /** What the static folds read, as a lowering context carries it. */
 export interface PositiveIntegerContext extends Pick<
     LoweringServices,

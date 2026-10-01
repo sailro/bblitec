@@ -73,6 +73,7 @@ import {
     resolveShaderTextureSlot,
     resolveShaderUniform,
     type ShaderMaterialContext,
+    type ShaderUniformSlot,
 } from "./shader-material.js";
 import type { GeometryOutputTaskManifest, Value } from "./types.js";
 
@@ -260,7 +261,7 @@ export class IntrinsicOptions {
         material: Value,
         nameExpression: ts.Expression,
         expectedCounts: number[],
-    ): { offset: number; count: number } {
+    ): ShaderUniformSlot {
         return resolveShaderUniform(
             this.context,
             material,
@@ -289,9 +290,15 @@ export class IntrinsicOptions {
 
     public compileShaderUniformComponents(
         expression: ts.Expression,
-        count: number,
+        uniform: ShaderUniformSlot,
+        lengthError: 399 | 401,
     ): string[] {
-        return compileShaderUniformComponents(this.context, expression, count);
+        return compileShaderUniformComponents(
+            this.context,
+            expression,
+            uniform,
+            lengthError,
+        );
     }
 
     public compilePropertyAnimationClip(

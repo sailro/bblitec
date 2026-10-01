@@ -20,7 +20,9 @@ import type { LoweringServices } from "./lowering-services.js";
 // of the reached program.
 import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
-import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
+import { cppIdentifierPattern } from "../cpp-literals.js";
+import { sharedPinnedContext } from "../lowering/context.js";
+import { pinnedErrorMessageCpp } from "../lowering/pinned-error.js";
 import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
@@ -673,7 +675,12 @@ function compileShaderUniformSignatures(
                     components: compileShaderUniformComponents(
                         context,
                         defaultExpression,
-                        componentCount,
+                        {
+                            count: componentCount,
+                            name: uniformName,
+                            type: uniformType,
+                        },
+                        399,
                     ),
                 });
             }
@@ -757,7 +764,7 @@ export function resolveShaderUniform(
     material: Value,
     nameExpression: ts.Expression,
     expectedCounts: number[],
-): { offset: number; count: number } {
+): ShaderUniformSlot {
     if (!material.shaderVariant) {
         context.fail(
             nameExpression,
@@ -782,7 +789,22 @@ export function resolveShaderUniform(
             `Shader uniform '${name}' has ${entry.count} component(s); this setter expects ${expectedCounts.join(" or ")}.`,
         );
     }
-    return entry;
+    const signature = program.uniforms.find((uniform) =>
+        uniform.startsWith(`${name}:`),
+    );
+    return {
+        ...entry,
+        name,
+        type: signature ? signature.slice(name.length + 1) : "",
+    };
+}
+
+/** A custom uniform's layout entry with the declaration the pin reports. */
+export interface ShaderUniformSlot {
+    readonly offset: number;
+    readonly count: number;
+    readonly name: string;
+    readonly type: string;
 }
 
 /**
@@ -848,8 +870,11 @@ export function resolveShaderStorageBufferSlot(
 export function compileShaderUniformComponents(
     context: ShaderMaterialContext,
     expression: ts.Expression,
-    count: number,
+    uniform: Pick<ShaderUniformSlot, "count" | "name" | "type">,
+    /** The pin's length error: 401 for `setShaderUniform`, 399 for a default. */
+    lengthError: 399 | 401,
 ): string[] {
+    const { count } = uniform;
     if (count === 1) {
         return [context.compileNumber(expression)];
     }
@@ -888,12 +913,19 @@ export function compileShaderUniformComponents(
             value,
             "uniform_values",
         ).cpp;
+        const message = pinnedErrorMessageCpp(
+            sharedPinnedContext(),
+            lengthError,
+            [
+                uniform.name,
+                uniform.type,
+                count,
+                { cpp: `std::to_string(${array}.size())` },
+            ],
+        );
         context.emit({
             kind: "expression",
-            code:
-                `if (${array}.size() != ${count}u) throw std::runtime_error(` +
-                `${stringLiteral(`ShaderMaterial: uniform expects ${count} value(s), got `)} + ` +
-                `std::to_string(${array}.size()) + ".");`,
+            code: `if (${array}.size() != ${count}u) throw std::runtime_error(${message});`,
         });
         const float = value.dataType.kind === "f32array";
         return Array.from({ length: count }, (_, index) =>
