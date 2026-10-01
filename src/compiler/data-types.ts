@@ -1634,7 +1634,11 @@ export class DataTypeRegistry {
                       }
                     : undefined;
             }
-            if (symbolName === "Set" || symbolName === "WeakSet") {
+            if (
+                symbolName === "Set" ||
+                symbolName === "ReadonlySet" ||
+                symbolName === "WeakSet"
+            ) {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
                 const element = this.fromStoredTsType(elementType, node);

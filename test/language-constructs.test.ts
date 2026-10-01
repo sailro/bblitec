@@ -1996,6 +1996,59 @@ check(
 );
 
 check(
+    "readonly-sets-retain-container-identity-and-live-iteration",
+    `
+    interface State { members: ReadonlySet<string>; }
+    function borrow(members: ReadonlySet<string>): ReadonlySet<string> { return members; }
+    const source = new Set<string>(["alpha", "beta"]);
+    const state: State = {members: source};
+    const groups = new Map<string, ReadonlySet<string>>([["saved", borrow(state.members)]]);
+    const saved = groups.get("saved")!;
+    const copy = new Set(saved);
+    const mutableCopy = new Set(source);
+    source.add("gamma");
+    if (saved !== source || saved !== state.members || saved.size !== 3 ||
+        copy.size !== 2 || mutableCopy.size !== 2 || copy === mutableCopy || copy === source)
+        throw new Error("readonly set aliases");
+    let visited = "";
+    saved.forEach((value, key, owner) => {
+        if (value !== key || owner !== source) throw new Error("forEach identity");
+        visited += value + ",";
+        if (value === "gamma") source.add("delta");
+    });
+    if (visited !== "alpha,beta,gamma,delta," || !saved.has("delta"))
+        throw new Error("live readonly iteration");
+    const spread = [...saved];
+    if (spread.join(",") !== "alpha,beta,gamma,delta" ||
+        Array.from(saved.values()).join(",") !== "alpha,beta,gamma,delta")
+        throw new Error("readonly iterable order");
+    source.delete("beta");
+    if (state.members.has("beta") || !copy.has("beta")) throw new Error("copy and alias");
+`,
+);
+
+check(
+    "readonly-sets-in-stored-catalogue-callbacks",
+    `
+    interface World { guests: ReadonlySet<string>; }
+    interface Rule { id: string; when?: (world: World) => boolean; }
+    const rules: Rule[] = [
+        {id: "open"},
+        {id: "gated", when: world => world.guests.has("entry")},
+    ];
+    const byId = new Map(rules.map(rule => [rule.id, rule]));
+    const guests = new Set<string>();
+    const world: World = {guests};
+    const selected = byId.get("gated");
+    if (!selected?.when || selected.when(world)) throw new Error("stored predicate");
+    guests.add("entry");
+    if (!selected.when(world) || byId.get("open")?.when !== undefined)
+        throw new Error("nested readonly set signature");
+    if (selected !== rules[1]) throw new Error("catalogue record identity");
+`,
+);
+
+check(
     "set-copies-and-constructed-receivers",
     `
     interface Request { readonly clips: readonly string[] }
