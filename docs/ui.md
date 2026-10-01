@@ -59,14 +59,14 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 
 | Area | Supported | Limits |
 | --- | --- | --- |
-| Construction | Static tags, appendChild, mixed text/element append, remove, retained roots | No general DOM implementation |
+| Construction | Static tags, appendChild, mixed text/element append and replaceChildren, spreads of element arrays, remove, retained roots | No general DOM implementation |
 | Content | textContent/innerText, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute | Compound text writes; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
 | Handler properties | Element `on<event>` for represented pointer, keyboard and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
-| Focus/forms | Focus/blur, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
+| Focus/forms | Focus/blur, focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
@@ -103,9 +103,9 @@ Attribute names use HTML ASCII casing. Removal updates retained/rendered state; 
 removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
 across the Window mailbox; structural and special text changes rebuild projection.
 Dataset reads distinguish missing (`undefined`) and empty attributes.
-Source append arguments finish before insertion. Canvas backing dimensions are drawable pixels; client
-dimensions and bounding rectangles are CSS pixels; element offset/client sizes are rounded CSS pixels.
-Rectangle and size reads flush pending layout.
+Source append and replaceChildren arguments finish before replacement and insertion. Canvas backing
+dimensions are drawable pixels; client dimensions and bounding rectangles are CSS pixels; element
+offset/client sizes are rounded CSS pixels. Rectangle and size reads flush pending layout.
 Pixel ratio, viewport size and input capabilities read host state without flushing pending DOM or canvas writes.
 
 ### File transfer controls

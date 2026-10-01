@@ -65,7 +65,9 @@ run initializers. `declare` creates no runtime value; bare `typeof` of an absent
 A module executed at generation may import its relative siblings without an extension.
 
 Generation-known positions (option records, shader lists) read through `const` literals, settled
-conditionals and spreads, and parameterless module functions whose body returns a literal.
+conditionals and spreads, and parameterless module functions whose body returns a literal. Shader text
+and static iterations run a module `const` they cannot fold at generation; a run reaching the host, the
+clock, `Math.random`, the host locale or a constant the program writes through refuses.
 
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,
 `SSR=false`. `BASE_URL` follows deployment. Custom string fields use `--env NAME=value` or
@@ -163,8 +165,9 @@ Unsupported dynamic URLs and percent-encoded asset bodies refuse.
 
 ### Runtime HTTP
 
-Async `fetch(url, options)` uses absolute HTTP(S) URLs with specialized method, string headers and body.
-Known one-argument asset fetches use packaged responses. Responses expose ok/status/url/bodyUsed and
+Async `fetch(url, options)` uses absolute HTTP(S) URLs with specialized method, string headers, body and
+a static cache mode (no HTTP cache; only-if-cached refuses). Known asset fetches without options or with
+only a cache mode use packaged responses. Responses expose ok/status/url/bodyUsed and
 text/json/arrayBuffer reads; bodies consume once. HTTP errors fulfill; transport/missing-file errors reject.
 Request objects, streaming and wider options/methods refuse. Transport limits are in [fidelity](fidelity.md).
 
@@ -234,7 +237,8 @@ aliases retain identity; multiple engines in one entry and rebinding refuse.
 Runtime `msaaSamples` selects one sample for numeric 1, four otherwise, evaluated once. Engine reads,
 default scene targets and effect/frame-graph targets share this selection. Explicit numeric constants
 other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliary surfaces; native loops
-own extent refresh. `resizeEngine` and `enableShaderMaterialUniformCaching` are native no-ops.
+own extent refresh. `resizeEngine` and `enableShaderMaterialUniformCaching` are native no-ops;
+`invalidateRenderBundles` moves the visibility epoch and each scene's renderable version.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As
@@ -270,7 +274,8 @@ on Dawn and patched SDL D3D12/Vulkan/Metal; other SDL drivers refuse this combin
 
 ## Cameras and input
 
-ArcRotate/Free cameras, framing, orthographic projection, viewports and supported SDL controls are live.
+ArcRotate/Free cameras, framing, orthographic projection, viewports and supported SDL controls are live;
+ArcRotate `wheelPrecision`, `angularSensibility` and `panningSensibility` writes reach attached controls.
 Orthographic options admit halfHeight and optional left/right/bottom/top planes; later plane writes refuse.
 World matrices admit copied typed-array reads and constant indices 0–15. Tracked transforms and
 configurable FreeCamera controls retain worldMatrixVersion; mutable matrix aliases refuse.
@@ -371,8 +376,9 @@ Shader materials admit bounded 2D/array samplers, float/depth/comparison samplin
 selected uniform/system matrices; uniform writes take arrays, tuples and typed arrays. Wider descriptors,
 pipeline state and live composition profiles refuse.
 A source, template text or plugin `getCustomCode` a scene builds with a function is run at generation
-over generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a
-runtime value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.
+over generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this`, the
+clock, `Math.random`, the host locale or a runtime value refuses. Alpha to coverage reaches shader
+materials; Standard and PBR targets refuse.
 
 ### Node materials
 
