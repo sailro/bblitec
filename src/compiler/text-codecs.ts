@@ -77,10 +77,18 @@ export function compileTextCodecNew(
                     property,
                     "TextDecoder options take the fatal and ignoreBOM properties.",
                 );
-            // A dictionary boolean member is ToBoolean of its value.
-            flags[key] = context.conditions.compileCondition(
-                property.initializer,
-            );
+            // A dictionary boolean member is ToBoolean of its value, read
+            // in source order.
+            const flag = context.allocateTemporaryCppName("decoder_flag");
+            context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: flag,
+                initializer: context.conditions.compileCondition(
+                    property.initializer,
+                ),
+            });
+            flags[key] = flag;
         }
     }
     return {
