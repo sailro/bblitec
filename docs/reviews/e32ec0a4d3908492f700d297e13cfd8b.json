@@ -1,0 +1,21 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Owned event properties reuse the shared checked payload projection.",
+      "applied": true
+    },
+    {
+      "summary": "Form events skip DOM path allocation when no shared input registry exists.",
+      "applied": true
+    },
+    {
+      "summary": "Unused owned-event input accessors are removed.",
+      "applied": true
+    },
+    {
+      "summary": "Callable family tests reuse the shared native compiler and execution helper.",
+      "applied": true
+    }
+  ]
+}
