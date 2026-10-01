@@ -12,6 +12,7 @@ interface CharacterOptionsContext extends Pick<
     | "compileNumber"
     | "fail"
     | "propertyName"
+    | "staticSpreadObject"
 > {}
 
 export interface CharacterIntrinsicContext

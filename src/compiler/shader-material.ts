@@ -80,6 +80,7 @@ export interface ShaderMaterialContext
             | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
+            | "expectStaticArrayElements"
             | "objectProperty"
             | "compileValue"
             | "compileNumber"
@@ -367,8 +368,7 @@ function compileShaderSamplers(
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
-    for (const element of context.expectStaticArrayLiteral(expression)
-        .elements) {
+    for (const element of context.expectStaticArrayElements(expression)) {
         // A typed `ShaderSamplerDecl` names its own sample type, view
         // dimension and comparison mode. Everything else goes through the
         // same static-string resolution `attributes` and `uniforms` take, so
@@ -470,8 +470,8 @@ function compileShaderStorageBuffers(
 ): CompiledShaderStorageBuffer[] {
     if (!expression) return [];
     const buffers = context
-        .expectStaticArrayLiteral(expression)
-        .elements.map((element): CompiledShaderStorageBuffer => {
+        .expectStaticArrayElements(expression)
+        .map((element): CompiledShaderStorageBuffer => {
             const resolved = context.resolveStaticExpression(element);
             if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
@@ -592,13 +592,13 @@ function compileShaderUniformSignatures(
     defaults: CompiledShaderUniformDefault[];
     dynamicDefaults: Array<{ name: string; components: string[] }>;
 } {
-    const array = context.expectStaticArrayLiteral(expression);
+    const elements = context.expectStaticArrayElements(expression);
     const defaults: CompiledShaderUniformDefault[] = [];
     const dynamicDefaults: Array<{
         name: string;
         components: string[];
     }> = [];
-    const signatures = array.elements.map((element) => {
+    const signatures = elements.map((element) => {
         const resolved = context.resolveStaticExpression(element);
         if (
             ts.isStringLiteral(resolved) ||
@@ -886,8 +886,8 @@ function compileStaticStringArray(
     expression: ts.Expression,
 ): string[] {
     return context
-        .expectStaticArrayLiteral(expression)
-        .elements.map((element) => context.compileStaticString(element));
+        .expectStaticArrayElements(expression)
+        .map((element) => context.compileStaticString(element));
 }
 
 function expectStaticNumber(

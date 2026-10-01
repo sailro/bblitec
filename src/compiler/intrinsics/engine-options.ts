@@ -45,6 +45,7 @@ export interface EngineOptionContext
             | "sceneManifest"
             | "unwrap"
             | "propertyName"
+            | "staticSpreadObject"
             | "compileValue"
             | "expectKind"
             | "expectSameEngine"

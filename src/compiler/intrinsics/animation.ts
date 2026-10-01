@@ -29,6 +29,7 @@ export interface AnimationIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
+            | "staticSpreadObject"
             | "handleCollections"
             | "symbols"
         > {}

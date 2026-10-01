@@ -61,7 +61,9 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
 Local JavaScript implementations take precedence over companion declarations. Type-only imports do not
-run initializers. `declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
+run initializers. Generation-known positions (option records, shader lists) read through `const` literals,
+settled conditionals and spreads, and parameterless module functions whose body returns a literal.
+`declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
 A module executed at generation may import its relative siblings without an extension.
 
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,

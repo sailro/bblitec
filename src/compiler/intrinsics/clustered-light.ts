@@ -36,6 +36,7 @@ export interface ClusteredLightIntrinsicContext
             LoweringServices,
             | "fail"
             | "propertyName"
+            | "staticSpreadObject"
             | "expectObjectLiteral"
             | "objectProperty"
             | "compileVec3"

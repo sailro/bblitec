@@ -63,6 +63,7 @@ export interface SpriteIntrinsicContext
             | "sceneManifest"
             | "emit"
             | "propertyName"
+            | "staticSpreadObject"
             | "fail"
         > {}
 

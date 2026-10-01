@@ -338,8 +338,10 @@ export function propertyNameText(name: ts.PropertyName): string | undefined {
 
 /**
  * The initializer an object literal gives a named property, or the
- * shorthand identifier that stands for one. A spread, a method or an
- * accessor carries no initializer to read and is skipped.
+ * shorthand identifier that stands for one. A method or an accessor carries
+ * no initializer to read and is skipped; so is a spread, unless
+ * `spreadObject` names the record it contributes, whose property then
+ * replaces an earlier one as the spread does.
  *
  * `propertyName` says what a key spells: the literal text by default, and
  * the compiler's own resolver where a computed key folded at generation
@@ -351,22 +353,31 @@ export function objectProperty(
     propertyName: (
         name: ts.PropertyName,
     ) => string | undefined = propertyNameText,
+    spreadObject?: (
+        spread: ts.SpreadAssignment,
+    ) => ts.ObjectLiteralExpression | undefined,
 ): ts.Expression | undefined {
+    let found: ts.Expression | undefined;
     for (const property of object.properties) {
         if (
             ts.isPropertyAssignment(property) &&
             propertyName(property.name) === name
         ) {
-            return property.initializer;
-        }
-        if (
+            found = property.initializer;
+        } else if (
             ts.isShorthandPropertyAssignment(property) &&
             property.name.text === name
         ) {
-            return property.name;
+            found = property.name;
+        } else if (ts.isSpreadAssignment(property)) {
+            const spread = spreadObject?.(property);
+            const value =
+                spread &&
+                objectProperty(spread, name, propertyName, spreadObject);
+            if (value) found = value;
         }
     }
-    return undefined;
+    return found;
 }
 
 /**

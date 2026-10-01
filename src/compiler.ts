@@ -873,6 +873,7 @@ class Compiler implements LoweringServices {
                 armExpression: (node, lines, cpp, type) =>
                     this.dataLowerer.armExpression(node, lines, cpp, type),
             },
+            (expression) => this.generationText(expression),
         );
     }
 
@@ -2664,6 +2665,18 @@ class Compiler implements LoweringServices {
         return this.evaluator.expectStaticArrayLiteral(expression);
     }
 
+    public expectStaticArrayElements(
+        expression: ts.Expression,
+    ): ts.Expression[] {
+        return this.evaluator
+            .expectStaticArrayLiteral(expression)
+            .elements.flatMap((element) =>
+                ts.isSpreadElement(element)
+                    ? this.expectStaticArrayElements(element.expression)
+                    : [element],
+            );
+    }
+
     public referenceSearch(): string {
         return this.options.search;
     }
@@ -2823,7 +2836,7 @@ class Compiler implements LoweringServices {
     public expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression {
-        const resolved = this.evaluator.resolveStaticExpression(expression);
+        const resolved = this.evaluator.resolveStaticLiteral(expression);
         if (!ts.isObjectLiteralExpression(resolved)) {
             this.fail(resolved, "Expected an object literal.");
         }
@@ -2834,7 +2847,31 @@ class Compiler implements LoweringServices {
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined {
-        return objectProperty(object, name, (key) => this.propertyName(key));
+        return objectProperty(
+            object,
+            name,
+            (key) => this.propertyName(key),
+            (spread) => this.staticSpreadObject(spread),
+        );
+    }
+
+    public staticSpreadObject(
+        spread: ts.SpreadAssignment,
+    ): ts.ObjectLiteralExpression | undefined {
+        // A probe: a spread generation cannot settle leaves no trace.
+        return this.probeEmission(() => {
+            const selected = selectedStaticExpression(
+                {
+                    conditions: this.conditions,
+                    resolveStaticExpression: (node) =>
+                        this.evaluator.resolveStaticLiteral(node),
+                },
+                spread.expression,
+            );
+            return selected && ts.isObjectLiteralExpression(selected)
+                ? selected
+                : undefined;
+        });
     }
 
     public propertyName(name: ts.PropertyName): string | undefined {
@@ -3678,6 +3715,60 @@ class Compiler implements LoweringServices {
                 },
             ],
         };
+    }
+
+    /**
+     * The text a required-text position reads from an expression: the
+     * string or number its value carries at generation, or what a source
+     * function returns when run there over generation-known scalar arguments
+     * (an omitted one takes the function's own default as it runs). Only a
+     * position that would otherwise refuse asks, so a function that cannot
+     * run refuses with its own reason.
+     */
+    private generationText(expression: ts.Expression): string | undefined {
+        const carried = this.probeEmission(() => {
+            const value = this.compileValue(expression);
+            return (
+                value.staticString ??
+                (value.staticNumber === undefined
+                    ? undefined
+                    : String(value.staticNumber))
+            );
+        });
+        if (carried !== undefined) return carried;
+        if (!ts.isCallExpression(expression)) return undefined;
+        const call = expression;
+        const callee = this.unwrap(call.expression);
+        if (!ts.isIdentifier(callee)) return undefined;
+        const declaration = resolveFunctionDeclaration(
+            this.checker,
+            callee,
+            (node, message) => this.fail(node, message),
+        );
+        if (!declaration?.body || declaration.getSourceFile().isDeclarationFile)
+            return undefined;
+        const args: ExecutedScalar[] = [];
+        for (const argument of call.arguments) {
+            const value = ts.isSpreadElement(argument)
+                ? undefined
+                : this.staticScalar(argument);
+            if (value === undefined) return undefined;
+            args.push(value);
+        }
+        const label = `Text builder '${callee.text}'`;
+        const text = executeApplicationFunction(
+            {
+                checker: this.checker,
+                fail: (node, message) => this.fail(node, message),
+                foldEnclosing: (identifier) => this.staticScalar(identifier),
+            },
+            declaration,
+            args,
+            label,
+        );
+        if (typeof text === "string") return text;
+        if (typeof text === "number") return String(text);
+        return this.fail(call, `${label} returned ${typeof text}, not text.`);
     }
 
     /** The generation-known scalar an expression folds to, if any. */

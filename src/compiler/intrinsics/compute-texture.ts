@@ -23,6 +23,7 @@ export interface ComputeTextureIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
+            | "staticSpreadObject"
             | "compileStringLiteral"
             | "compileNumber"
             | "compileBoolean"

@@ -24,6 +24,7 @@ export interface WorkerLoweringContext extends Pick<
     | "allocateTemporaryCppName"
     | "cppString"
     | "propertyName"
+    | "staticSpreadObject"
     | "fail"
 > {}
 

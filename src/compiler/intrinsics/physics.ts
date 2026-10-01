@@ -1742,10 +1742,16 @@ function compileShapeProximity(
     );
     const fields = new EmissionMap<string, string>();
     for (const property of argument.properties) {
+        if (
+            !ts.isPropertyAssignment(property) &&
+            !ts.isShorthandPropertyAssignment(property)
+        ) {
+            context.fail(property, "Unsupported physics shape query option.");
+        }
         const expression = ts.isPropertyAssignment(property)
             ? property.initializer
-            : (property as ts.ShorthandPropertyAssignment).name;
-        const name = context.propertyName(property.name!)!;
+            : property.name;
+        const name = context.propertyName(property.name)!;
         if (name === "shape" || name === "ignoreBody") {
             const value = context.compileValue(expression);
             context.expectKind(
@@ -1901,10 +1907,19 @@ function compilePhysicsRaycast(
         // mutation. Object property order is observable independently of the
         // positional order of the generated native query's filter arguments.
         for (const property of options.properties) {
+            if (
+                !ts.isPropertyAssignment(property) &&
+                !ts.isShorthandPropertyAssignment(property)
+            ) {
+                context.fail(
+                    property,
+                    "A physics raycast option outside the reached filter slice.",
+                );
+            }
             const expression = ts.isPropertyAssignment(property)
                 ? property.initializer
-                : (property as ts.ShorthandPropertyAssignment).name;
-            const name = context.propertyName(property.name!);
+                : property.name;
+            const name = context.propertyName(property.name);
             const kind = name === "shouldHitTriggers" ? "boolean" : "number";
             let cpp: string;
             if (captured) {

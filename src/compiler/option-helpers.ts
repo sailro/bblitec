@@ -29,7 +29,7 @@ import {
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
-    "propertyName" | "fail"
+    "propertyName" | "fail" | "staticSpreadObject"
 > {}
 
 export function validateObjectProperties(
@@ -40,6 +40,16 @@ export function validateObjectProperties(
 ): void {
     const supportedNames = new EmissionSet(supported);
     for (const property of object.properties) {
+        // A spread generation settles to a record contributes its own
+        // properties, which `objectProperty` reads in source order.
+        const spread = ts.isSpreadAssignment(property)
+            ? context.staticSpreadObject(property)
+            : undefined;
+        if (spread) {
+            validateObjectProperties(context, spread, supported, message);
+            traceSourceNode(property);
+            continue;
+        }
         const name =
             ts.isPropertyAssignment(property) ||
             ts.isShorthandPropertyAssignment(property)

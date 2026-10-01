@@ -27,6 +27,7 @@ export interface CameraDeferralContext extends Pick<
     | "expectObjectLiteral"
     | "objectProperty"
     | "propertyName"
+    | "staticSpreadObject"
     | "fail"
 > {}
 

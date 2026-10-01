@@ -42,6 +42,7 @@ export interface EngineIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
+            | "staticSpreadObject"
             | "callbacks"
         > {}
 

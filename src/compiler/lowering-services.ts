@@ -178,6 +178,11 @@ export interface LoweringServices {
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
+    /**
+     * A static list's elements, a spread of a list generation settles
+     * (`...decls()`, `...(flag ? [a] : [])`) contributing its own.
+     */
+    expectStaticArrayElements(expression: ts.Expression): ts.Expression[];
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
@@ -230,6 +235,13 @@ export interface LoweringServices {
     allocateUserFunctionPrefix(): string;
     allocateBlockPrefix(): string;
     compileStaticString(expression: ts.Expression): string;
+    /**
+     * The object literal a spread contributes when generation settles it
+     * (`...(flag ? { a } : {})` behind a folded condition); undefined otherwise.
+     */
+    staticSpreadObject(
+        spread: ts.SpreadAssignment,
+    ): ts.ObjectLiteralExpression | undefined;
     compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{
