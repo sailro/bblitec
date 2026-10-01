@@ -15,13 +15,11 @@ namespace bbl::js {
     std::string result;
     // The bytes from `copied` to the sequence being read are well-formed and
     // not yet appended, so valid input is copied once, at the end.
+    // A replacement always appends U+FFFD, so an empty result means none.
     std::size_t copied = 0, start = 0;
-    bool replaced = false;
-    const auto replace = [&](std::size_t from, std::size_t resume) {
+    const auto replace = [&](std::size_t from) {
         result.append(bytes.substr(copied, from - copied));
         result += "\xef\xbf\xbd";
-        copied = resume;
-        replaced = true;
     };
     unsigned needed = 0, seen = 0, lower = 0x80u, upper = 0xbfu;
     for (std::size_t i = 0; i < bytes.size();) {
@@ -47,7 +45,8 @@ namespace bbl::js {
             } else {
                 if (fatal)
                     return std::nullopt;
-                replace(start, i);
+                replace(start);
+                copied = i;
             }
         } else if (byte < lower || byte > upper) {
             if (fatal)
@@ -55,7 +54,8 @@ namespace bbl::js {
             needed = seen = 0;
             lower = 0x80u;
             upper = 0xbfu;
-            replace(start, i); // Reprocess this byte as a lead byte.
+            replace(start);
+            copied = i; // Reprocess this byte as a lead byte.
         } else {
             ++i;
             lower = 0x80u;
@@ -67,9 +67,11 @@ namespace bbl::js {
     if (needed) {
         if (fatal)
             return std::nullopt;
-        replace(start, bytes.size());
+        // The truncated sequence runs to the end: nothing follows it.
+        replace(start);
+        return result;
     }
-    if (!replaced)
+    if (result.empty())
         return std::string(bytes);
     result.append(bytes.substr(copied));
     return result;
