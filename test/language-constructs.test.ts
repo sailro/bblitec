@@ -4045,6 +4045,31 @@ check(
 );
 
 check(
+    "a stored closure reads later bindings through the functions it reaches",
+    `
+    function main(): void {
+        const handlers: Array<() => void> = [];
+        handlers.push(() => markCommitted());
+        let edits = 0;
+        let admitted = false;
+        const log: string[] = [];
+        const label = "edit" + log.length;
+        const markEdited = (): void => {
+            if (admitted) return;
+            edits += 1;
+            log.push(label + ":" + edits);
+        };
+        const markCommitted = (): void => markEdited();
+        for (const handler of handlers) handler();
+        admitted = true;
+        for (const handler of handlers) handler();
+        if (edits !== 1 || log.join() !== "edit0:1") throw new Error("stored callback " + log.join());
+    }
+    main();
+`,
+);
+
+check(
     "a named function expression calls itself by its own name",
     `
     function countdown(n: number): number[] {

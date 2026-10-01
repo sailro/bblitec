@@ -561,7 +561,7 @@ export class CallbackLowerer {
      * declaration and is walked rather than hoisted, and only the callback's
      * own reads run an untyped effectful initializer ahead of it.
      */
-    public hoistForwardCallbackBindings(callback: ts.Expression): void {
+    public hoistForwardCallbackBindings(callback: ts.Node): void {
         const forward: {
             declaration: ForwardDeclaration;
             symbol: ts.Symbol;

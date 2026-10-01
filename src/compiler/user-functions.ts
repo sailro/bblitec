@@ -1217,6 +1217,7 @@ export interface UserFunctionContext
         Pick<
             LoweringServices,
             | "classLowerer"
+            | "callbacks"
             | "evaluationOrder"
             | "cppString"
             | "options"
@@ -4051,6 +4052,8 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
+        // Its body lowers here, into a native function value.
+        context.callbacks.hoistForwardCallbackBindings(declaration);
         this.loweringStoredDataFunctions.add(declaration);
         try {
             return this.lowerStoredDataFunction(
