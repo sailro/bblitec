@@ -18231,25 +18231,22 @@ test("parks a continuation behind a promise a scene callback resolves", () => {
     assert.doesNotMatch(result.cpp, /__bblite_start_continuation_until__/);
 });
 
-test("refuses a promise executor that does more than let resolve escape", () => {
+test("a promise executor that does more than let resolve escape compiles in the application realm", () => {
     // The narrowness is the point: an executor that also schedules or
     // calls `resolve` is a different claim about WHEN the wait ends, and
-    // falls through to the constructor refusal the other shapes leave in
-    // place.
-    assert.throws(
-        () =>
-            compileSource(
-                escapingResolveScene(
-                    `(resolve) => {
+    // falls through to the constructor the application realm keeps pending.
+    const result = compileSource(
+        escapingResolveScene(
+            `(resolve) => {
         resolveReady = resolve;
         resolve();
     }`,
-                    "    await ready;",
-                ),
-                frameYieldFile,
-            ),
-        /no pending promise value to store/,
+            "    await ready;",
+        ),
+        frameYieldFile,
     );
+    assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+    assert.match(result.cpp, /bbl::js::Promise<bbl::js::PromiseVoid>/);
 });
 
 test("still erases a frame yield before the loop exists", () => {
