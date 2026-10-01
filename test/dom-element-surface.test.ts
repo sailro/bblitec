@@ -230,15 +230,79 @@ test("replaceChildren and append insert nodes, text and spread element lists in 
     });
 });
 
-test("focus options refuse what native focus cannot represent", () => {
+test("focus options retain absent dictionaries, stored flags and evaluation order", (t) => {
+    const output = resolve("artifacts/dom-focus-options");
+    mkdirSync(output, { recursive: true });
+    const { cpp } = compileSource(`
+        interface Options extends FocusOptions { focusVisible?: boolean; }
+        const input = document.createElement("input");
+        input.id = "target";
+        document.body.appendChild(input);
+        function focus(options?: Options): void { input.blur(); input.focus(options); }
+        focus();
+        const stored: Options = { focusVisible: false, preventScroll: true };
+        focus(stored);
+        stored.focusVisible = true;
+        focus(stored);
+        stored.focusVisible = undefined;
+        focus(stored);
+        let effects = 0;
+        function absent(): undefined { effects++; return undefined; }
+        focus(absent());
+        const choices = new Map<string, Options>();
+        choices.set("hidden", { focusVisible: false });
+        focus(choices.get("missing"));
+        focus(choices.get("hidden"));
+        let visible = input.isConnected;
+        function change(): boolean { effects++; visible = false; return true; }
+        focus({ focusVisible: visible, preventScroll: change() });
+        focus({ focusVisible: absent() });
+        focus({ ignored: change(), focusVisible: false } as Options);
+        if (effects !== 4) throw new Error("option effects");
+        const missing = document.querySelector("#missing");
+        missing?.focus(absent());
+        if (effects !== 4) throw new Error("absent receiver evaluated options");
+        function stringFlag(value: string | undefined): void {
+            input.blur();
+            input.focus({ focusVisible: value });
+        }
+        stringFlag(undefined);
+        stringFlag("");
+        stringFlag("visible");
+        globalThis.close();
+    `);
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-focus-options", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
+test("focus options refuse unrepresented getters and non-record values", () => {
     assert.throws(
         () =>
             compileEntry(`
                 const input = document.createElement("input");
                 document.body.appendChild(input);
-                input.focus({ preventScroll: true, scrollIntoView: true } as FocusOptions);
+                input.focus({ get focusVisible() { return true; } } as FocusOptions);
                 globalThis.close();
             `),
-        /focus options represent preventScroll and focusVisible only/,
+        /Focus options require named data properties/,
+    );
+    assert.throws(
+        () =>
+            compileEntry(`
+            const input = document.createElement("input");
+            let reads = 0;
+            const options = { get focusVisible() { reads++; return false; } };
+            input.focus(options);
+        `),
+        /Focus options require named data properties/,
+    );
+    assert.throws(
+        () =>
+            compileEntry(
+                `const input = document.createElement("input"); input.focus(3 as FocusOptions);`,
+            ),
+        /Focus options require a represented options record/,
     );
 });
