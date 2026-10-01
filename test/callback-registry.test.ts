@@ -742,6 +742,85 @@ test("follows helper call graphs when checking borrowed callback captures", () =
     }
 });
 
+test("classifies a retained closure by the frame bindings its code reads", () => {
+    // A module container typed with events holds none (each store of one
+    // refuses), and closures that read only owned locals escape freely, even
+    // where an enclosing listener's event is in scope.
+    assert.doesNotThrow(() =>
+        compileSource(`
+            import { createEngine } from "@babylonjs/lite";
+            const translated = new WeakSet<Event>();
+            const listeners = new Set<() => void>();
+            let lastLabel = "";
+            function localize(apply: () => void): () => void {
+                apply();
+                listeners.add(apply);
+                return () => listeners.delete(apply);
+            }
+            function createCaption(text: string): void {
+                const caption = document.createElement("div");
+                const render = (): void => {
+                    caption.textContent = text;
+                };
+                localize(render);
+                window.addEventListener("resize", render);
+            }
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            await createEngine(canvas);
+            canvas.addEventListener("mousedown", (event) => {
+                if (translated.has(event)) return;
+                const label = event.button === 0 ? "primary" : "other";
+                const later = (): void => {
+                    lastLabel = label;
+                };
+                listeners.add(later);
+                createCaption(label);
+            });
+        `),
+    );
+
+    // A closure still carries the event a function it names reads.
+    const cases = [
+        { name: "declaration-value", body: "saved.add(capture);" },
+        {
+            name: "declaration-call",
+            body: "const later = (): void => capture(); saved.add(later);",
+        },
+        {
+            name: "arrow-listener",
+            body: `
+                const later = (): void => {
+                    payload.domEvent.preventDefault();
+                };
+                window.addEventListener("mouseup", later);
+            `,
+        },
+    ];
+    for (const entry of cases) {
+        assert.throws(
+            () =>
+                compileSource(
+                    `
+                        import { createEngine } from "@babylonjs/lite";
+                        interface Payload { domEvent: MouseEvent; }
+                        const saved = new Set<() => void>();
+                        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                        await createEngine(canvas);
+                        canvas.addEventListener("mousedown", (event) => {
+                            const payload: Payload = { domEvent: event };
+                            function capture(): void {
+                                payload.domEvent.preventDefault();
+                            }
+                            ${entry.body}
+                        });
+                    `,
+                    { fileName: `test/borrow-closure-${entry.name}.ts` },
+                ),
+            /escaping callback cannot capture platform event value '(?:payload|later)'/,
+        );
+    }
+});
+
 test("refuses unrelated DOM records and unknown MouseEvent provenance", () => {
     assert.throws(
         () =>

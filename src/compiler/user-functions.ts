@@ -1,4 +1,3 @@
-import { valueContainsPlatformEvent } from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
@@ -2995,7 +2994,7 @@ export class UserFunctionLowerer {
             rootEntry.captured.some(
                 (value) =>
                     value !== undefined &&
-                    this.namesPlatformEvent(context, value, new EmissionSet()),
+                    context.bindings.containsPlatformEvent(value),
             )
         )
             throw new SharedCallRequiresInline();
@@ -3232,54 +3231,6 @@ export class UserFunctionLowerer {
             }
             throw error;
         }
-    }
-
-    /**
-     * Whether a captured argument names a borrowed platform event: directly,
-     * through its fields, or through a binding a callback's body reads.
-     */
-    private namesPlatformEvent(
-        context: UserFunctionContext,
-        value: Value,
-        seen: Set<Value>,
-    ): boolean {
-        if (seen.has(value)) return false;
-        seen.add(value);
-        const scopes = value.callbackRecordOwner?.recordScopes;
-        const declaration =
-            value.callbackDeclaration &&
-            ts.isIdentifier(value.callbackDeclaration)
-                ? tryResolveFunctionDeclaration(
-                      this.checker,
-                      value.callbackDeclaration,
-                  )
-                : value.callbackDeclaration;
-        const read = new EmissionSet<ts.Symbol>();
-        if (scopes && declaration?.body)
-            forEachAnalysisNode(declaration.body, (node) => {
-                const symbol = ts.isIdentifier(node)
-                    ? declaredSymbol(this.checker, node)
-                    : undefined;
-                if (symbol) read.add(symbol);
-            });
-        return (
-            valueContainsPlatformEvent(
-                context.dataTypes,
-                { ...value, recordScopes: [] },
-                new EmissionSet(
-                    [value.callbackRecordOwner].filter(
-                        (owner): owner is Value => owner !== undefined,
-                    ),
-                ),
-            ) ||
-            (scopes ?? []).some((scope) =>
-                [...scope].some(
-                    ([symbol, binding]) =>
-                        read.has(symbol) &&
-                        this.namesPlatformEvent(context, binding.value, seen),
-                ),
-            )
-        );
     }
 
     private sharedReturnValue(

@@ -265,10 +265,7 @@ import {
     SceneManifestRecorder,
     type ResourceConstructionState,
 } from "./compiler/scene-manifest.js";
-import {
-    BindingScopes,
-    valueContainsPlatformEvent,
-} from "./compiler/binding-scopes.js";
+import { BindingScopes } from "./compiler/binding-scopes.js";
 import { ConditionLowerer } from "./compiler/conditions.js";
 import { DeclarationLowerer } from "./compiler/declarations.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
@@ -6176,7 +6173,7 @@ class Compiler implements LoweringServices {
         node: ts.Node,
         destination: string,
     ): void {
-        if (!valueContainsPlatformEvent(this.dataTypes, value)) return;
+        if (!this.bindings.containsPlatformEvent(value)) return;
         this.fail(
             node,
             `A borrowed platform event cannot escape its synchronous dispatch frame through ${destination}. Copy only owned scalar/string fields needed later.`,

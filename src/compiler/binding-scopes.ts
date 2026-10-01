@@ -11,7 +11,10 @@ import {
 import { CPP_SCALAR } from "../lowering/cpp-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { syntaxKindName } from "../source-location.js";
-import { findAnalysisNodeWithState } from "./analysis-walk.js";
+import {
+    findAnalysisNodeWithState,
+    forEachAnalysisNode,
+} from "./analysis-walk.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     isHandleKind,
@@ -21,7 +24,6 @@ import {
     propertyIsReadOnly,
     resourceValueCppType,
     type DataType,
-    type DataTypeRegistry,
 } from "./data-types.js";
 import {
     emissionArray,
@@ -87,44 +89,54 @@ interface BindingScopesContext extends Pick<
 /** The name lookups a static fold reads, which a fold may narrow. */
 export type BindingLookup = Pick<BindingScopes, "lookup" | "lookupOptional">;
 
-/** Whether a value, or any value it carries, is a borrowed platform event. */
-export function valueContainsPlatformEvent(
-    dataTypes: DataTypeRegistry,
-    value: Value,
-    seen = new EmissionSet<Value>(),
-): boolean {
-    if (seen.has(value)) return false;
-    seen.add(value);
-    if (
-        value.kind === "platform-keyboard-event" ||
-        value.kind === "platform-mouse-event" ||
-        value.nativeErrorEvent
-    ) {
-        return true;
-    }
-    if (
-        value.dataType &&
-        dataTypes.carriesBorrowedPlatformEvent(value.dataType)
-    ) {
-        return true;
-    }
-    const nested: Value[] = [
-        ...Object.values(value.recordProperties ?? {}),
-        ...(value.tupleElements ?? []),
-        ...(value.staticElements ?? []),
-        ...(value.nativeCallbackStaticArguments ?? []).filter(
-            (candidate): candidate is Value => candidate !== undefined,
-        ),
-    ];
-    if (value.staticElementsOwner) nested.push(value.staticElementsOwner);
-    if (value.callbackRecordOwner) nested.push(value.callbackRecordOwner);
-    if (value.sceneCamera) nested.push(value.sceneCamera);
-    for (const scope of value.recordScopes ?? []) {
-        for (const binding of scope.values()) nested.push(binding.value);
-    }
-    return nested.some((candidate) =>
-        valueContainsPlatformEvent(dataTypes, candidate, seen),
+/** The names one piece of code reads, and the nested functions it names. */
+interface CodeReads {
+    readonly symbols: readonly ts.Symbol[];
+    readonly functions: readonly ts.Node[];
+}
+
+const codeReads = new WeakMap<ts.Node, CodeReads>();
+
+/**
+ * The value names `code` reads, and the functions declared inside a function
+ * body that it names (their bodies close over the same scopes).
+ */
+function directCodeReads(
+    symbols: BindingScopesContext["symbols"],
+    code: ts.Node,
+): CodeReads {
+    const cached = codeReads.get(code);
+    if (cached) return cached;
+    const read = new Set<ts.Symbol>();
+    const functions = new Set<ts.Node>();
+    forEachAnalysisNode(
+        code,
+        (node) => {
+            if (!ts.isIdentifier(node)) return;
+            const symbol = symbols.valueSymbol(node);
+            if (!symbol) return;
+            read.add(symbol);
+            for (const declaration of symbol.declarations ?? []) {
+                const body =
+                    ts.isFunctionDeclaration(declaration) && declaration.body
+                        ? declaration
+                        : ts.isVariableDeclaration(declaration) &&
+                            declaration.initializer &&
+                            (ts.isArrowFunction(declaration.initializer) ||
+                                ts.isFunctionExpression(
+                                    declaration.initializer,
+                                ))
+                          ? declaration.initializer
+                          : undefined;
+                if (body && ts.findAncestor(body.parent, ts.isFunctionLike))
+                    functions.add(body);
+            }
+        },
+        { types: "skip", memberNames: "skip" },
     );
+    const reads = { symbols: [...read], functions: [...functions] };
+    codeReads.set(code, reads);
+    return reads;
 }
 
 export class BindingScopes {
@@ -133,6 +145,12 @@ export class BindingScopes {
     >();
     public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> =
         emissionArray([new EmissionMap()]);
+    /**
+     * Module and entry statements bind here, before any dispatch, so no
+     * borrowed event is live where these bindings are made; a later store of
+     * one into them refuses where the store happens.
+     */
+    private readonly rootScope = this.variableScopes[0]!;
     private readonly cppNamePrefixes: string[] = emissionArray([""]);
 
     /**
@@ -368,6 +386,83 @@ export class BindingScopes {
         }
     }
 
+    /**
+     * Whether a value, or any value it carries, is a borrowed platform event.
+     *
+     * A closure carries the bindings its code reads, through the functions
+     * declared in a function body that it names -- not every binding of the
+     * scope chain it closed over. A root-scope binding holds no borrowed
+     * event (see `rootScope`).
+     */
+    public containsPlatformEvent(
+        value: Value,
+        seen = new EmissionSet<Value>(),
+    ): boolean {
+        if (seen.has(value)) return false;
+        seen.add(value);
+        if (
+            value.kind === "platform-keyboard-event" ||
+            value.kind === "platform-mouse-event" ||
+            value.nativeErrorEvent
+        ) {
+            return true;
+        }
+        if (
+            value.dataType &&
+            this.context.dataTypes.carriesBorrowedPlatformEvent(value.dataType)
+        ) {
+            return true;
+        }
+        const nested: Value[] = [
+            ...Object.values(value.recordProperties ?? {}),
+            ...(value.tupleElements ?? []),
+            ...(value.staticElements ?? []),
+            ...(value.nativeCallbackStaticArguments ?? []).filter(
+                (candidate): candidate is Value => candidate !== undefined,
+            ),
+            ...this.capturedValues(value),
+        ];
+        if (value.staticElementsOwner) nested.push(value.staticElementsOwner);
+        if (value.callbackRecordOwner) nested.push(value.callbackRecordOwner);
+        if (value.sceneCamera) nested.push(value.sceneCamera);
+        return nested.some((candidate) =>
+            this.containsPlatformEvent(candidate, seen),
+        );
+    }
+
+    /** The non-root bindings a closure's code reads from its scopes. */
+    private capturedValues(value: Value): Value[] {
+        const scopes =
+            value.recordScopes ?? value.callbackRecordOwner?.recordScopes;
+        if (!scopes) return [];
+        const pending: ts.Node[] = [
+            ...(value.callbackDeclaration ? [value.callbackDeclaration] : []),
+            ...Object.values(value.recordMethods ?? {}),
+            ...Object.values(value.recordGetters ?? {}),
+            ...Object.values(value.recordSetters ?? {}),
+        ];
+        const visited = new Set<ts.Node>();
+        const read = new Set<ts.Symbol>();
+        for (let code = pending.pop(); code; code = pending.pop()) {
+            if (visited.has(code)) continue;
+            visited.add(code);
+            const reads = directCodeReads(this.context.symbols, code);
+            for (const symbol of reads.symbols) read.add(symbol);
+            pending.push(...reads.functions);
+        }
+        const captured: Value[] = [];
+        for (const symbol of read) {
+            for (let index = scopes.length - 1; index >= 0; index -= 1) {
+                const binding = scopes[index]!.get(symbol);
+                if (!binding) continue;
+                if (scopes[index] !== this.rootScope)
+                    captured.push(binding.value);
+                break;
+            }
+        }
+        return captured;
+    }
+
     private refuseEscapingPlatformEventCapture(
         identifier: ts.MemberName,
         scopeIndex: number,
@@ -377,7 +472,8 @@ export class BindingScopes {
         if (
             floor !== undefined &&
             scopeIndex < floor &&
-            valueContainsPlatformEvent(this.context.dataTypes, value)
+            this.variableScopes[scopeIndex] !== this.rootScope &&
+            this.containsPlatformEvent(value)
         ) {
             this.context.fail(
                 identifier,
