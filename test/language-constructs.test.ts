@@ -1145,6 +1145,62 @@ check(
 );
 
 check(
+    "kept-callbacks-through-wrappers-share-caller-bindings",
+    `
+    const kept: Array<() => void> = [];
+    function keep(cb: () => void): void { kept.push(cb); }
+    let ready = true;
+    const noop = (): void => {};
+    let viaAs = 0, viaSatisfies = 0, viaParens = 0, viaArm = 0, viaCoalesce = 0, viaLocal = 0, viaCalled = 0;
+    keep((() => { viaAs++; }) as () => void);
+    keep((() => { viaSatisfies++; }) satisfies () => void);
+    keep((() => { viaParens++; }));
+    keep(ready ? () => { viaArm++; } : noop);
+    const missing: (() => void) | undefined = ready ? undefined : noop;
+    keep(missing ?? (() => { viaCoalesce++; }));
+    const local = ready ? () => { viaLocal++; } : noop;
+    keep(local);
+    const chosen = missing ?? (() => { viaCalled++; });
+    chosen();
+    for (const cb of kept) cb();
+    ready = false;
+    if (viaAs !== 1 || viaSatisfies !== 1 || viaParens !== 1) throw new Error("wrapped argument");
+    if (viaArm !== 1 || viaCoalesce !== 1 || viaLocal !== 1) throw new Error("selected argument");
+    if (viaCalled !== 1) throw new Error("selected callback called in place");
+`,
+);
+
+check(
+    "kept-callbacks-through-cycles-and-awaits",
+    `
+    class Relay {
+        private kept: Array<() => void> = [];
+        a(cb: () => void, depth: number): void {
+            if (depth > 0) this.b(() => cb(), depth - 1);
+            else this.kept.push(cb);
+        }
+        b(cb: () => void, depth: number): void { this.a(() => cb(), depth); }
+        fire(): void { for (const cb of this.kept) cb(); }
+    }
+    async function later(cb: () => void): Promise<void> {
+        await Promise.resolve(0);
+        cb();
+    }
+    async function main(): Promise<void> {
+        let viaA = 0, viaB = 0, viaAwait = 0;
+        const relay = new Relay();
+        relay.a(() => { viaA++; }, 2);
+        relay.b(() => { viaB++; }, 2);
+        relay.fire();
+        if (viaA !== 1 || viaB !== 1) throw new Error("mutual recursion");
+        await later(() => { viaAwait++; });
+        if (viaAwait !== 1) throw new Error("callback after an await");
+    }
+    void main();
+`,
+);
+
+check(
     "factory-records-share-their-frame-and-keep-callbacks",
     `
     interface Batch {

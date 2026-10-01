@@ -465,6 +465,24 @@ export class ClassHierarchy {
         ];
     }
 
+    /**
+     * The bodies a call of `method` runs: every implementation a class
+     * method dispatches to, or the method itself outside a local class
+     * body; undefined when one of them has no body.
+     */
+    public dispatchBodies(
+        method: ts.MethodDeclaration,
+    ): readonly ts.MethodDeclaration[] | undefined {
+        const implementations = this.implementations(method) ?? [method];
+        return implementations.length > 0 &&
+            implementations.every(
+                (implementation): implementation is ts.MethodDeclaration =>
+                    implementation?.body !== undefined,
+            )
+            ? implementations
+            : undefined;
+    }
+
     /** The run-time tag of a concrete class within its hierarchy. */
     public tag(declaration: ts.ClassDeclaration): number {
         return this.concreteClasses(this.root(declaration)).indexOf(

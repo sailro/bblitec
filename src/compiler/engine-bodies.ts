@@ -111,15 +111,7 @@ function createEngineBodies(): EngineBodies {
                     declaration.name.text,
                 );
                 if (!method?.body) return undefined;
-                const implementations = classes().implementations(method) ?? [
-                    method,
-                ];
-                return implementations.every(
-                    (implementation): implementation is ts.MethodDeclaration =>
-                        implementation?.body !== undefined,
-                )
-                    ? implementations
-                    : undefined;
+                return classes().dispatchBodies(method);
             }
             return undefined;
         },
