@@ -1039,6 +1039,28 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Engine calls and computed source shapes: render-bundle
+        // invalidation, ArcRotate sensibility writes, a shader stage composed
+        // from a module constant run at generation and a cache-mode fetch.
+        id: "regression-engine-calls",
+        name: "Regression - Engine Calls",
+        source: "examples/regression-engine-calls.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Engine Calls",
+        buildDirectory: "native/build-regression-engine-calls-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-engine-calls/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-engine-calls",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
+            backgroundColor: [15, 18, 26],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-no-camera-floating-origin",
         name: "Regression - No Camera Floating Origin",
         source: "examples/regression-no-camera-floating-origin.ts",

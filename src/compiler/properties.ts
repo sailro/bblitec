@@ -855,6 +855,18 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "camera",
+        property: "panningSensibility",
+        value: "number",
+        record: ["cameras", "panning_sensibility"],
+    },
+    {
+        owner: "camera",
+        property: "angularSensibility",
+        value: "number",
+        record: ["cameras", "angular_sensibility"],
+    },
+    {
+        owner: "camera",
         property: "fov",
         value: "number",
         record: ["cameras", "fov"],

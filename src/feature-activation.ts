@@ -775,6 +775,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/mesh/mesh-factories.ts (resizeMeshGeometry, resizeSharedMeshGeometry)",
         consumers: CMAKE,
     },
+    "mesh:render-bundle-invalidation": {
+        provenance: "src/mesh/mesh-factories.ts (invalidateRenderBundles)",
+        consumers: CMAKE,
+    },
     "mesh:update-attributes": {
         provenance:
             "src/mesh/mesh-factories.ts (updateMeshPositions, updateMeshUvs)",

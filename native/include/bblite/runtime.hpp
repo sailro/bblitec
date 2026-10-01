@@ -5712,6 +5712,7 @@ void update_mesh_positions(Engine& engine, MeshHandle mesh, const std::vector<fl
 void update_mesh_uvs(Engine& engine, MeshHandle mesh, const std::vector<float>& uvs,
                      double vertex_offset, std::optional<double> vertex_count,
                      double source_vertex_offset);
+void invalidate_render_bundles(Engine& engine);
 void resize_mesh_geometry(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
                           const std::vector<float>& normals,
                           const std::vector<std::uint32_t>& indices,

@@ -5,11 +5,40 @@ import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { retainedMeshResizeWrappers } from "./mesh-cpu-streams.js";
 
-/** Source ownership and invalidation over native retained geometry slots. */
-export function lowerMeshGeometryResize(context: LoweringContext): string {
-    const module = "src/mesh/mesh-factories.ts";
+const module = "src/mesh/mesh-factories.ts";
+
+/**
+ * The pinned `invalidateRenderBundles` over native records: the visibility
+ * epoch and each registered scene's renderable version, which native draw
+ * lists and bundles rematch against.
+ */
+export function lowerRenderBundleInvalidation(
+    context: LoweringContext,
+): string {
+    return `
+// ${context.provenance(module, "invalidateRenderBundles")}
+void invalidate_render_bundles(Engine& engine) {
+${lowerMeshFactoryFunction(context, "invalidateRenderBundles", "invalidate_render_bundles(engine)")}
+}
+`;
+}
+
+/**
+ * Source ownership and invalidation over native retained geometry slots.
+ * `sharedInvalidation` names the reached `invalidate_render_bundles`; the
+ * resize otherwise keeps its own copy.
+ */
+export function lowerMeshGeometryResize(
+    context: LoweringContext,
+    sharedInvalidation: boolean,
+): string {
     const parameters =
         "const std::vector<float>& positions, const std::vector<float>& normals, const std::vector<std::uint32_t>& indices, const std::vector<float>& uvs, const std::vector<float>& uvs2, const std::vector<float>& tangents, const std::vector<float>& colors";
+    const invalidation = sharedInvalidation
+        ? "invalidate_render_bundles(engine)"
+        : "invalidate_mesh_geometry_bundles(engine)";
+    const lower = (name: string) =>
+        lowerMeshFactoryFunction(context, name, invalidation);
     const refCount = (name: "retain" | "release") => {
         const { file, declaration } = context.functionDeclaration(
             "src/resource/ref-count.ts",
@@ -60,208 +89,12 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
             },
         });
     };
-    const lower = (name: string) => {
-        const { file, declaration } = context.functionDeclaration(module, name);
-        const bindings = new Map<string, PinnedBinding>();
-        const bind = (
-            key: string,
-            cpp: string,
-            type: PinnedBinding["type"] = "opaque",
-            absentCpp?: string,
-        ) =>
-            bindings.set(key, {
-                cpp,
-                type,
-                ...(absentCpp ? { absentCpp } : {}),
-            });
-        for (const arg of [
-            "engine",
-            "mesh",
-            "meshes",
-            "positions",
-            "normals",
-            "indices",
-            "uvs",
-            "uvs2",
-            "tangents",
-            "colors",
-            "old",
-            "replacement",
-            "first",
-            "owners",
-        ])
-            bind(arg, arg);
-        for (const owner of ["mesh", "first"]) {
-            bind(owner, owner, "opaque", `${owner}.value == invalid_handle`);
-            bind(
-                `${owner}._gpu`,
-                `${recordAt("engine.meshes", owner)}.geometry`,
-            );
-            bind(
-                `${owner}._disposed`,
-                `${recordAt("engine.meshes", owner)}.retired`,
-                "bool",
-            );
-            bind(`${owner}.name`, `${recordAt("engine.meshes", owner)}.name`);
-        }
-        bind(
-            "old._vbLayout",
-            "!engine.geometries.at(old).owned_packed_geometry",
-            "bool",
-        );
-        bind(
-            "old._ownsVertexBuffers",
-            "engine.geometries.at(old).owned_packed_geometry",
-            "bool",
-        );
-        bind("meshes.length", "static_cast<double>(meshes.size())", "scalar");
-        bind(
-            "sc._renderableVersion",
-            "ctx->render_topology_version",
-            "scalar",
-            "false",
-        );
-        const calls = new Map<string, (args: readonly string[]) => string>([
-            [
-                "invalidateRenderBundles",
-                () => "invalidate_mesh_geometry_bundles(engine)",
-            ],
-            ["bumpVisibilityEpoch", () => "(++engine.draw_list_epoch)"],
-            [
-                "uploadMeshToGPU",
-                (args) => `upload_mesh_geometry_data(${args.join(",")})`,
-            ],
-            [
-                "retainMeshGeometry",
-                (args) =>
-                    `retain_replacement_geometry_bounds(engine,mesh,${args[2]}.size()>=3)`,
-            ],
-            [
-                "_markWorldMatrixDirty",
-                (args) => `mark_mesh_dirty(engine,${args[0]})`,
-            ],
-            [
-                "release",
-                (args) =>
-                    `release_mesh_geometry_owner(engine.geometries.at(${args[0]}))`,
-            ],
-            [
-                "retain",
-                (args) =>
-                    `retain_mesh_geometry_owner(engine.geometries.at(${args[0]}))`,
-            ],
-            [
-                "retireMeshGeometryBuffers",
-                (args) => `release_unowned_geometry(engine,${args[1]})`,
-            ],
-            [
-                "resizeMeshGeometry",
-                (args) => `resize_mesh_geometry(${args.join(",")})`,
-            ],
-            ["owners.has", (args) => `owners.contains(${args[0]}.value)`],
-            ["owners.add", (args) => `owners.insert(${args[0]}.value)`],
-        ]);
-        return lowerPinnedBody(file, declaration.body!.statements, {
-            bindings,
-            calls,
-
-            foldConditions: false,
-            callShapes: new Map([
-                ["release", "bool"],
-                ["owners.has", "bool"],
-            ]),
-            forOf(iterated, element) {
-                const range =
-                    iterated === "meshes"
-                        ? "meshes"
-                        : iterated === "engine._renderingContexts"
-                          ? "engine.scenes()"
-                          : undefined;
-                return range
-                    ? {
-                          range,
-                          bindings: new Map([
-                              ...[...bindings].filter(([name]) =>
-                                  name.startsWith(`${element}.`),
-                              ),
-                              [
-                                  element,
-                                  {
-                                      cpp: element,
-                                      type: "opaque",
-                                      ...(element === "mesh"
-                                          ? {
-                                                absentCpp:
-                                                    "mesh.value == invalid_handle",
-                                            }
-                                          : {}),
-                                  },
-                              ],
-                          ]),
-                      }
-                    : undefined;
-            },
-            expression(node, lowerer) {
-                if (
-                    ts.isElementAccessExpression(node) &&
-                    node.expression.getText(file) === "meshes"
-                )
-                    return `(static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)}) < meshes.size() ? meshes[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})] : MeshHandle{})`;
-                return undefined;
-            },
-            statement(node, lowerer, indent) {
-                if (
-                    ts.isVariableStatement(node) &&
-                    node.declarationList.declarations.length === 1
-                ) {
-                    const declaration = node.declarationList.declarations[0]!;
-                    if (
-                        !ts.isIdentifier(declaration.name) ||
-                        !declaration.initializer
-                    )
-                        return undefined;
-                    const id = declaration.name.text;
-                    if (id === "sc") {
-                        context.assertExpressionShape(
-                            unwrapExpression(declaration.initializer),
-                            "ctx",
-                            "Registered rendering context is a native Scene",
-                        );
-                        return [];
-                    }
-                    if (id === "owners") {
-                        context.assertExpressionShape(
-                            declaration.initializer,
-                            "new Set<Mesh>()",
-                            "Shared geometry owner identity set",
-                        );
-                        return [`${indent}std::set<std::uint32_t> owners;`];
-                    }
-                    if (["old", "replacement", "first", "mesh"].includes(id)) {
-                        lowerer.bindPorts(
-                            [...bindings].filter(
-                                ([name]) =>
-                                    name === id || name.startsWith(`${id}.`),
-                            ),
-                            declaration,
-                        );
-                        return [
-                            `${indent}const auto ${id} = ${lowerer.expression(declaration.initializer)};`,
-                        ];
-                    }
-                }
-                if (
-                    ts.isExpressionStatement(node) &&
-                    ts.isBinaryExpression(node.expression) &&
-                    node.expression.left.getText(file) === "mesh._gpu"
-                )
-                    return [
-                        `${indent}${recordAt("engine.meshes", "mesh")}.geometry=${lowerer.expression(node.expression.right)};`,
-                    ];
-                return undefined;
-            },
-        });
-    };
+    const ownInvalidation = sharedInvalidation
+        ? ""
+        : `static void invalidate_mesh_geometry_bundles(Engine& engine) {
+${lower("invalidateRenderBundles")}
+}
+`;
     return `
 static void retain_mesh_geometry_owner(ModelGeometry& geometry) {
 ${refCount("retain")}
@@ -269,10 +102,7 @@ ${refCount("retain")}
 static bool release_mesh_geometry_owner(ModelGeometry& geometry) {
 ${refCount("release")}
 }
-static void invalidate_mesh_geometry_bundles(Engine& engine) {
-${lower("invalidateRenderBundles")}
-}
-// CPU attributes/bounds are retained by upload_mesh_geometry_data. Native GPU
+${ownInvalidation}// CPU attributes/bounds are retained by upload_mesh_geometry_data. Native GPU
 // generations own submitted buffers until topology rematching releases them.
 // retainMeshGeometry rewrites boundMin/boundMax from the new positions,
 // present when they fold a finite box.
@@ -293,4 +123,209 @@ ${lower("resizeSharedMeshGeometry")}
 }
 ${retainedMeshResizeWrappers()}
 `;
+}
+
+/**
+ * A pinned mesh-factory function body over native engine, mesh and geometry
+ * records; `invalidation` spells its `invalidateRenderBundles` call.
+ */
+function lowerMeshFactoryFunction(
+    context: LoweringContext,
+    name: string,
+    invalidation: string,
+): string {
+    const { file, declaration } = context.functionDeclaration(module, name);
+    const bindings = new Map<string, PinnedBinding>();
+    const bind = (
+        key: string,
+        cpp: string,
+        type: PinnedBinding["type"] = "opaque",
+        absentCpp?: string,
+    ) =>
+        bindings.set(key, {
+            cpp,
+            type,
+            ...(absentCpp ? { absentCpp } : {}),
+        });
+    for (const arg of [
+        "engine",
+        "mesh",
+        "meshes",
+        "positions",
+        "normals",
+        "indices",
+        "uvs",
+        "uvs2",
+        "tangents",
+        "colors",
+        "old",
+        "replacement",
+        "first",
+        "owners",
+    ])
+        bind(arg, arg);
+    for (const owner of ["mesh", "first"]) {
+        bind(owner, owner, "opaque", `${owner}.value == invalid_handle`);
+        bind(`${owner}._gpu`, `${recordAt("engine.meshes", owner)}.geometry`);
+        bind(
+            `${owner}._disposed`,
+            `${recordAt("engine.meshes", owner)}.retired`,
+            "bool",
+        );
+        bind(`${owner}.name`, `${recordAt("engine.meshes", owner)}.name`);
+    }
+    bind(
+        "old._vbLayout",
+        "!engine.geometries.at(old).owned_packed_geometry",
+        "bool",
+    );
+    bind(
+        "old._ownsVertexBuffers",
+        "engine.geometries.at(old).owned_packed_geometry",
+        "bool",
+    );
+    bind("meshes.length", "static_cast<double>(meshes.size())", "scalar");
+    bind(
+        "sc._renderableVersion",
+        "ctx->render_topology_version",
+        "scalar",
+        "false",
+    );
+    const calls = new Map<string, (args: readonly string[]) => string>([
+        ["invalidateRenderBundles", () => invalidation],
+        ["bumpVisibilityEpoch", () => "(++engine.draw_list_epoch)"],
+        [
+            "uploadMeshToGPU",
+            (args) => `upload_mesh_geometry_data(${args.join(",")})`,
+        ],
+        [
+            "retainMeshGeometry",
+            (args) =>
+                `retain_replacement_geometry_bounds(engine,mesh,${args[2]}.size()>=3)`,
+        ],
+        [
+            "_markWorldMatrixDirty",
+            (args) => `mark_mesh_dirty(engine,${args[0]})`,
+        ],
+        [
+            "release",
+            (args) =>
+                `release_mesh_geometry_owner(engine.geometries.at(${args[0]}))`,
+        ],
+        [
+            "retain",
+            (args) =>
+                `retain_mesh_geometry_owner(engine.geometries.at(${args[0]}))`,
+        ],
+        [
+            "retireMeshGeometryBuffers",
+            (args) => `release_unowned_geometry(engine,${args[1]})`,
+        ],
+        [
+            "resizeMeshGeometry",
+            (args) => `resize_mesh_geometry(${args.join(",")})`,
+        ],
+        ["owners.has", (args) => `owners.contains(${args[0]}.value)`],
+        ["owners.add", (args) => `owners.insert(${args[0]}.value)`],
+    ]);
+    return lowerPinnedBody(file, declaration.body!.statements, {
+        bindings,
+        calls,
+
+        foldConditions: false,
+        callShapes: new Map([
+            ["release", "bool"],
+            ["owners.has", "bool"],
+        ]),
+        forOf(iterated, element) {
+            const range =
+                iterated === "meshes"
+                    ? "meshes"
+                    : iterated === "engine._renderingContexts"
+                      ? "engine.scenes()"
+                      : undefined;
+            return range
+                ? {
+                      range,
+                      bindings: new Map([
+                          ...[...bindings].filter(([name]) =>
+                              name.startsWith(`${element}.`),
+                          ),
+                          [
+                              element,
+                              {
+                                  cpp: element,
+                                  type: "opaque",
+                                  ...(element === "mesh"
+                                      ? {
+                                            absentCpp:
+                                                "mesh.value == invalid_handle",
+                                        }
+                                      : {}),
+                              },
+                          ],
+                      ]),
+                  }
+                : undefined;
+        },
+        expression(node, lowerer) {
+            if (
+                ts.isElementAccessExpression(node) &&
+                node.expression.getText(file) === "meshes"
+            )
+                return `(static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)}) < meshes.size() ? meshes[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})] : MeshHandle{})`;
+            return undefined;
+        },
+        statement(node, lowerer, indent) {
+            if (
+                ts.isVariableStatement(node) &&
+                node.declarationList.declarations.length === 1
+            ) {
+                const declaration = node.declarationList.declarations[0]!;
+                if (
+                    !ts.isIdentifier(declaration.name) ||
+                    !declaration.initializer
+                )
+                    return undefined;
+                const id = declaration.name.text;
+                if (id === "sc") {
+                    context.assertExpressionShape(
+                        unwrapExpression(declaration.initializer),
+                        "ctx",
+                        "Registered rendering context is a native Scene",
+                    );
+                    return [];
+                }
+                if (id === "owners") {
+                    context.assertExpressionShape(
+                        declaration.initializer,
+                        "new Set<Mesh>()",
+                        "Shared geometry owner identity set",
+                    );
+                    return [`${indent}std::set<std::uint32_t> owners;`];
+                }
+                if (["old", "replacement", "first", "mesh"].includes(id)) {
+                    lowerer.bindPorts(
+                        [...bindings].filter(
+                            ([name]) =>
+                                name === id || name.startsWith(`${id}.`),
+                        ),
+                        declaration,
+                    );
+                    return [
+                        `${indent}const auto ${id} = ${lowerer.expression(declaration.initializer)};`,
+                    ];
+                }
+            }
+            if (
+                ts.isExpressionStatement(node) &&
+                ts.isBinaryExpression(node.expression) &&
+                node.expression.left.getText(file) === "mesh._gpu"
+            )
+                return [
+                    `${indent}${recordAt("engine.meshes", "mesh")}.geometry=${lowerer.expression(node.expression.right)};`,
+                ];
+            return undefined;
+        },
+    });
 }

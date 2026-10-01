@@ -372,6 +372,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:from-data",
             "mesh:update-attributes",
             "mesh:resize-geometry",
+            "mesh:render-bundle-invalidation",
             "mesh:ground",
             "mesh:ground-heightmap",
             "mesh:morph-targets",
