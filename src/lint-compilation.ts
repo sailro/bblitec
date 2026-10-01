@@ -92,6 +92,24 @@ export function lintCompilationKey(
     )
         return undefined;
     const normalized: string[] = [compiler];
+    const pchInputs: number[] = [];
+    const inputOptions = [
+        "-isystem",
+        "-iquote",
+        "-idirafter",
+        "-include",
+        "-imacros",
+        "-isysroot",
+        "--sysroot=",
+        "-resource-dir=",
+        "-imsvc",
+        "-I",
+        ...(cl ? ["/external:I", "-external:I", "/FI", "-FI", "/I"] : []),
+    ];
+    const common =
+        /^(?:-c|-g(?:\d|line-tables-only)?|-O[0-3szg]|-std=[A-Za-z0-9+]+|-W[\w=-]+|-m(?:32|64)|-pthread|-f(?:no-)?(?:exceptions|rtti|PIC|PIE|strict-aliasing)|-fno-pch-timestamp)$/;
+    const clangCl =
+        /^[/-](?:nologo|T[CP]|EHsc|O[12]|Ob[012]|[M][DT]d?|W[0-4]|WX|permissive-|bigobj|external:W[0-4]|we\d+|Gw|Zc:inline|FS|std:c\+\+\w+)$/;
     let source = false;
     for (let index = 1; index < args.length; ++index) {
         const argument = args[index]!;
@@ -125,7 +143,8 @@ export function lintCompilationKey(
         if (argument === "-include-pch") {
             const path = args[++index];
             if (!path || !absoluteInput(path)) return undefined;
-            normalized.push(argument, pchDigest(path));
+            normalized.push(argument, path);
+            pchInputs.push(normalized.length - 1);
             continue;
         }
         if (argument === "-Xclang") {
@@ -134,25 +153,16 @@ export function lintCompilationKey(
                 if (args[++index] !== "-Xclang") return undefined;
                 const path = args[++index];
                 if (!path || !absoluteInput(path)) return undefined;
-                normalized.push(argument, option, "-Xclang", pchDigest(path));
+                normalized.push(argument, option, "-Xclang", path);
+                pchInputs.push(normalized.length - 1);
             } else if (option === "-fno-pch-timestamp")
                 normalized.push(argument, option);
             else return undefined;
             continue;
         }
-        const input = [
-            "-isystem",
-            "-iquote",
-            "-idirafter",
-            "-include",
-            "-imacros",
-            "-isysroot",
-            "--sysroot=",
-            "-resource-dir=",
-            "-imsvc",
-            "-I",
-            ...(cl ? ["/external:I", "-external:I", "/FI", "-FI", "/I"] : []),
-        ].find((option) => argument.startsWith(option));
+        const input = inputOptions.find((option) =>
+            argument.startsWith(option),
+        );
         if (input) {
             const path = argument.slice(input.length) || args[++index];
             if (!path || !absoluteInput(path)) return undefined;
@@ -181,10 +191,6 @@ export function lintCompilationKey(
             normalized.push(argument, language);
             continue;
         }
-        const common =
-            /^(?:-c|-g(?:\d|line-tables-only)?|-O[0-3szg]|-std=[A-Za-z0-9+]+|-W[\w=-]+|-m(?:32|64)|-pthread|-f(?:no-)?(?:exceptions|rtti|PIC|PIE|strict-aliasing)|-fno-pch-timestamp)$/;
-        const clangCl =
-            /^[/-](?:nologo|T[CP]|EHsc|O[12]|Ob[012]|[M][DT]d?|W[0-4]|WX|permissive-|bigobj|external:W[0-4]|we\d+|Gw|Zc:inline|FS|std:c\+\+\w+)$/;
         if (
             common.test(argument) ||
             (cl && clangCl.test(argument)) ||
@@ -195,7 +201,11 @@ export function lintCompilationKey(
         }
         return undefined;
     }
-    return source ? JSON.stringify([entry.file, normalized]) : undefined;
+    if (!source) return undefined;
+    // PCHs are large; unknown contexts must not read them just to refuse sharing.
+    for (const index of pchInputs)
+        normalized[index] = pchDigest(normalized[index]!);
+    return JSON.stringify([entry.file, normalized]);
 }
 
 /** Indices retain every original build context, including commands we cannot compare. */

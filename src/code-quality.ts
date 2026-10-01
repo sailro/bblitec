@@ -617,7 +617,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             member.fixes = primary.fixes;
         }
         return {
-            ...primary,
+            primary,
             members,
             headerFilter: nativeHeaderFilter(
                 members.flatMap((unit) => unit.headerRoots),
@@ -631,16 +631,16 @@ async function lintCommand(args: readonly string[]): Promise<void> {
         await runConcurrently(
             work,
             jobs,
-            ({ build, file }) =>
+            ({ primary: { build, file } }) =>
                 `${relative(root, build)}: ${relative(root, file)}`,
             async (item) => {
-                const { database, file, log, fixes, headerFilter } = item;
+                const { database, file, log, fixes } = item.primary;
                 const code = await runLoggedProcess(
                     tool,
                     [
                         "--quiet",
                         `--config-file=${join(root, ".clang-tidy")}`,
-                        `--header-filter=${headerFilter}`,
+                        `--header-filter=${item.headerFilter}`,
                         `--export-fixes=${fixes}`,
                         "-p",
                         database,

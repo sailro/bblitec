@@ -121,7 +121,12 @@ test("lint keys refuse ambiguous or working-directory-dependent commands", () =>
         changed("-fno-pch-timestamp", "-ivfsoverlay"),
         changed(source, resolve(root, "different.cpp")),
     ])
-        assert.equal(lintCompilationKey(entry, digest), undefined);
+        assert.equal(
+            lintCompilationKey(entry, () => {
+                assert.fail("An ineligible command must not read its PCH.");
+            }),
+            undefined,
+        );
     const first = command("first"),
         second = command("second");
     assert.deepEqual(
