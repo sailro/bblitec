@@ -32,6 +32,16 @@ test("generic nullable strings narrow inside returned callbacks", (t) => {
         const number = reader<number>(7);
         const text = reader<string>("word");
         if (number.read() !== 7 || text.read() !== "word") throw new Error("generic method record");
+        function writer<Item>(target: {value: Item}): {write(value: Item): void} {
+            return {write: value => { target.value = value; }};
+        }
+        const numeric = {value: 1};
+        const textual = {value: "first"};
+        const writeNumber = writer<number>(numeric);
+        const writeText = writer<string>(textual);
+        writeNumber.write(4);
+        writeText.write("last");
+        if (numeric.value !== 4 || textual.value !== "last") throw new Error("generic method parameters");
     `);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
