@@ -1,4 +1,5 @@
 import {
+    contextCanvas,
     isStringValue,
     optionalPresentCpp,
     presenceFlagCpp,
@@ -67,6 +68,7 @@ import {
     type UiStyleSelectorShape,
     type UiStyleSelectorKind,
 } from "../ui-style-rule.js";
+import { nativeHostUiElements } from "../native-host-ui.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
@@ -77,11 +79,15 @@ import {
 } from "./dom-listeners.js";
 import { elementInterfaceTag } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
-import { engineCanvasIds, primaryCanvasIds } from "./browser-erasure.js";
+import {
+    canvasContextIds,
+    engineCanvasIds,
+    primaryCanvasIds,
+} from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
-import type { NativeHostUiNode, Value } from "./types.js";
+import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
@@ -160,6 +166,7 @@ interface UiProjectionContext extends Pick<
     | "assets"
     | "assetOutputs"
     | "assetPayloads"
+    | "attributeRefusalsTo"
     | "allocateTemporaryCppName"
     | "sourceFile"
     | "sourceFiles"
@@ -454,17 +461,11 @@ export class UiProjection {
         ) {
             return asElement(this.context.resolveThisField(owner.name.text));
         }
-        // A retained Canvas2D context's `canvas` is the element it draws on.
-        if (
-            ts.isPropertyAccessExpression(owner) &&
-            owner.name.text === "canvas"
-        ) {
-            const drawing = this.uiElementValue(owner.expression);
-            if (drawing?.uiCanvasContext) {
-                const { uiCanvasContext: _drawing, ...canvas } = drawing;
-                return canvas;
-            }
-        }
+        const drawn =
+            ts.isPropertyAccessExpression(owner) && owner.name.text === "canvas"
+                ? contextCanvas(this.uiElementValue(owner.expression))
+                : undefined;
+        if (drawn) return drawn;
         if (
             ts.isPropertyAccessExpression(owner) ||
             ts.isElementAccessExpression(owner)
@@ -1615,25 +1616,40 @@ export class UiProjection {
     /** Mints `uiCanvasId` for each created retained canvas element. */
     @journaled public accessor uiCanvasIds = 0;
 
-    private readonly hostCanvasIds = new EmissionMap<string, number>();
+    /** Retained canvases by element id: the primary canvas and host canvases. */
+    private readonly retainedCanvasIds = new EmissionMap<string, number>();
 
-    /**
-     * The retained-canvas identity of the host canvas with `id`, shared by
-     * every lookup of it. A canvas the program hands to createEngine
-     * presents the engine instead.
-     */
-    public hostCanvasId(id: string, site: ts.Node): number {
-        if (engineCanvasIds(this.context).has(id))
-            this.context.fail(
-                site,
-                `The host canvas '${id}' belongs to a Babylon engine; it cannot also acquire a Canvas2D context.`,
-            );
-        let canvasId = this.hostCanvasIds.get(id);
+    private retainedCanvasId(id: string): number {
+        let canvasId = this.retainedCanvasIds.get(id);
         if (canvasId === undefined) {
             canvasId = this.uiCanvasIds++;
-            this.hostCanvasIds.set(id, canvasId);
+            this.retainedCanvasIds.set(id, canvasId);
         }
         return canvasId;
+    }
+
+    public refuseEngineCanvasContext(site: ts.Node): never {
+        return this.context.fail(
+            site,
+            "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.",
+        );
+    }
+
+    /**
+     * A host lookup of a canvas the program asks for a 2D context finds a
+     * retained canvas, one per id; a canvas handed to createEngine cannot be
+     * drawn on as well.
+     */
+    public hostCanvas(
+        id: string,
+        tag: string | undefined,
+        site: ts.Node,
+    ): Pick<Value, "uiCanvas" | "uiCanvasId"> {
+        if (tag !== "canvas" || !canvasContextIds(this.context).has(id))
+            return {};
+        if (engineCanvasIds(this.context).has(id))
+            this.refuseEngineCanvasContext(site);
+        return { uiCanvas: true, uiCanvasId: this.retainedCanvasId(id) };
     }
 
     private uiStyleRefusal(
@@ -2699,8 +2715,12 @@ export class UiProjection {
      * percentage blocks must not reach the rule parser. Mirrors the PAL's
      * brace-depth walk.
      */
-    private static stripUiKeyframesBlocks(source: string): string {
-        let result = "";
+    private static splitUiKeyframesBlocks(source: string): {
+        rules: string;
+        keyframes: string;
+    } {
+        let rules = "";
+        let keyframes = "";
         let cursor = 0;
         let depth = 0;
         for (const index of uiCssSyntaxIndices(source)) {
@@ -2714,12 +2734,13 @@ export class UiProjection {
                 if (opening === undefined) break;
                 const end = uiCssBlockEnd(source, opening);
                 if (end === undefined) break;
-                result += source.slice(cursor, index);
+                rules += source.slice(cursor, index);
+                keyframes += source.slice(index, end);
                 cursor = end;
             } else if (source[index] === "{") depth++;
             else if (source[index] === "}") depth--;
         }
-        return result + source.slice(cursor);
+        return { rules: rules + source.slice(cursor), keyframes };
     }
 
     /**
@@ -2811,6 +2832,7 @@ export class UiProjection {
         sheet: string,
         site?: ts.Node,
         ownerId?: number,
+        origin?: RefusalSite,
     ): string[] {
         const statements = [
             `bbl::ui_clear_style_rules(${engine}, ${styleElement});`,
@@ -2819,6 +2841,7 @@ export class UiProjection {
             sheet,
             site,
             ownerId,
+            origin,
         )) {
             statements.push(
                 (rule.kind === "class" || rule.kind === "id") &&
@@ -2852,8 +2875,27 @@ export class UiProjection {
         value: string,
         site?: ts.Node,
         ownerId?: number,
+        origin?: RefusalSite,
     ): LoweredUiStyleRule[] {
         const rules: LoweredUiStyleRule[] = [];
+        // A host file's sheet: refusals point at the line of the rule being
+        // lowered, found in the sheet as written.
+        const at = origin && { ...origin };
+        let searched = 0;
+        const enter = (header: string): void => {
+            if (!at || !origin) return;
+            // The header as written, followed by its block's brace.
+            let offset = value.indexOf(header, searched);
+            while (
+                offset >= 0 &&
+                !/^\s*\{/.test(value.slice(offset + header.length))
+            )
+                offset = value.indexOf(header, offset + 1);
+            if (offset < 0) return;
+            searched = offset + header.length;
+            at.line =
+                origin.line + value.slice(0, offset).split("\n").length - 1;
+        };
         const refuseSelector = (selector: string): never => {
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
@@ -2864,9 +2906,9 @@ export class UiProjection {
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
-        const source = UiProjection.stripUiKeyframesBlocks(
+        const source = UiProjection.splitUiKeyframesBlocks(
             stripUiCssComments(value),
-        );
+        ).rules;
 
         const parseBlocks = (
             text: string,
@@ -2885,6 +2927,7 @@ export class UiProjection {
                     findUiCssSyntax(text, "{", cursor) ??
                     refuseSelector(text.slice(cursor).trim());
                 const header = text.slice(cursor, opening).trim();
+                enter(header);
                 const end =
                     uiCssBlockEnd(text, opening) ?? refuseSelector(header);
                 const body = text.slice(opening + 1, end - 1);
@@ -3059,7 +3102,8 @@ export class UiProjection {
                 }
             }
         };
-        parseBlocks(source);
+        if (at) this.context.attributeRefusalsTo(at, () => parseBlocks(source));
+        else parseBlocks(source);
         return rules;
     }
 
@@ -4644,7 +4688,7 @@ export class UiProjection {
                 uiTag: "canvas",
                 uiCanvas: true,
                 uiPrimaryCanvas: true,
-                uiCanvasId: this.uiCanvasIds++,
+                uiCanvasId: this.retainedCanvasId(ids[0]!),
                 truthinessCpp: "true",
             };
         }
@@ -4711,15 +4755,11 @@ export class UiProjection {
     public nativeHostUiTags(): ReadonlyMap<string, string> {
         if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;
         const tags = new EmissionMap<string, string>();
-        const visit = (element: NativeHostUiNode): void => {
-            if (element.tag === undefined) return;
+        for (const element of nativeHostUiElements(
+            this.context.options.nativeHostUi?.elements ?? [],
+        )) {
             const id = element.attributes?.id;
             if (id !== undefined) tags.set(id, element.tag.toLowerCase());
-            for (const child of element.children ?? []) visit(child);
-        };
-        for (const element of this.context.options.nativeHostUi?.elements ??
-            []) {
-            visit(element);
         }
         this.nativeHostUiTagsCache = tags;
         return tags;
@@ -4829,20 +4869,7 @@ export class UiProjection {
     }
 
     public compileHostUi(): string[] {
-        const host = this.context.options.nativeHostUi;
-        // A page with nothing but its document language has no document to
-        // project: the language has no native rendering of its own.
-        const hostUi =
-            host &&
-            (host.elements.length > 0 ||
-                (host.styleSheets?.length ?? 0) > 0 ||
-                nativeHostUiStyleRules(host).length > 0 ||
-                Object.keys(host.bodyAttributes ?? {}).length > 0 ||
-                Object.keys(host.htmlAttributes ?? {}).some(
-                    (name) => name !== "lang",
-                ))
-                ? host
-                : undefined;
+        const hostUi = this.context.options.nativeHostUi;
         const primaryIds =
             this.context.options.workers &&
             !this.context.options.workers.namespace &&
@@ -5006,15 +5033,34 @@ export class UiProjection {
         }
 
         // The document's own sheets precede its markup, as a page's head does.
-        for (const sheet of hostUi?.styleSheets ?? []) {
+        // Its rules are lowered here; the PAL reads only its keyframes.
+        const sheets = hostUi
+            ? (hostUi.styleSheets ?? []).map((sheet) => ({
+                  text: sheet.text,
+                  origin: { file: hostUi.sourcePath, line: sheet.line },
+              }))
+            : [];
+        for (const { text, origin } of sheets) {
             const handle =
                 this.context.allocateTemporaryCppName("host_ui_style");
+            const { keyframes } = UiProjection.splitUiKeyframesBlocks(
+                stripUiCssComments(text),
+            );
             emitted.push(
                 `${indent}const auto ${handle} = bbl::ui_create_element(${engine}, "style");`,
-                ...this.uiStyleSheetRuleStatements(engine, handle, sheet).map(
-                    (statement) => indent + statement,
-                ),
-                `${indent}bbl::ui_set_text(${engine}, ${handle}, ${this.context.cppString(sheet)});`,
+                ...this.uiStyleSheetRuleStatements(
+                    engine,
+                    handle,
+                    text,
+                    undefined,
+                    undefined,
+                    origin,
+                ).map((statement) => indent + statement),
+                ...(keyframes
+                    ? [
+                          `${indent}bbl::ui_set_text(${engine}, ${handle}, ${this.context.cppString(keyframes)});`,
+                      ]
+                    : []),
                 `${indent}bbl::ui_append_child(${engine}, bbl::ui_document_root(${engine}, bbl::UiDocumentPart::Head), ${handle});`,
             );
         }

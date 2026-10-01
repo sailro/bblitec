@@ -8,7 +8,7 @@ import {
 } from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
-import { presenceFlagCpp, type Value } from "./types.js";
+import { isPresentValue, presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
@@ -565,11 +565,7 @@ export class PlatformCalls {
                 type.inner.handle === "ui-element"
             ) {
                 const owner = this.context.compileValue(callee.expression);
-                if (
-                    owner.kind === "ui-element" &&
-                    owner.dataType?.kind !== "optional" &&
-                    presenceFlagCpp(owner) === undefined
-                )
+                if (owner.kind === "ui-element" && isPresentValue(owner))
                     return this.emitPlatformEventListener(call, owner);
                 const result = this.context.dataLowerer.optionalAccess(
                     owner,
@@ -884,14 +880,8 @@ export class PlatformCalls {
                 type.inner.kind === "handle" &&
                 type.inner.handle === "ui-element"
             ) {
-                const receiver =
-                    stored ?? this.context.compileValue(callee.expression);
-                // An element the host page holds is present: the chain
-                // cannot short-circuit, whatever the checker's type says.
-                if (receiver.kind === "ui-element" && receiver.uiHostId)
-                    return this.compileUiCall(call, callee, receiver);
                 return this.context.dataLowerer.optionalAccess(
-                    receiver,
+                    stored ?? this.context.compileValue(callee.expression),
                     call,
                     (element) => this.compileUiCall(call, callee, element),
                 );
@@ -958,12 +948,8 @@ export class PlatformCalls {
             if (
                 this.context.defaultEngine() &&
                 !this.context.hasPresentationHost()
-            ) {
-                this.context.fail(
-                    call,
-                    "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.",
-                );
-            }
+            )
+                this.ui.refuseEngineCanvasContext(call);
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
@@ -986,11 +972,13 @@ export class PlatformCalls {
                 id !== undefined
                     ? this.ui.nativeHostUiTags().get(id)
                     : undefined;
+            // A chain on the lookup itself asks again: the program may have
+            // removed the element since.
             const optionalReceiver =
                 ts.isPropertyAccessExpression(call.parent) &&
                 call.parent.expression === call &&
                 !!call.parent.questionDotToken;
-            if (!tag || optionalReceiver)
+            if (!tag || id === undefined || optionalReceiver)
                 return {
                     kind: "data",
                     cpp: `bbl::ui_find_element_by_id(${engine}, ${byId ? this.ui.uiStringCpp(argumentAt(call, 0), "element id") : this.context.cppString(id!)})`,
@@ -1004,11 +992,12 @@ export class PlatformCalls {
                 kind: "ui-element",
                 cpp:
                     `bbl::ui_get_element_by_id(${engine}, ` +
-                    `${this.context.cppString(id!)})`,
+                    `${this.context.cppString(id)})`,
                 engineCpp: engine,
-                uiHostId: id!,
+                uiHostId: id,
                 uiTag: tag,
                 truthinessCpp: "true",
+                ...this.ui.hostCanvas(id, tag, call),
             };
         }
         if (
@@ -1083,28 +1072,6 @@ export class PlatformCalls {
         if (element?.uiTag === "image-bitmap" && callee.name.text === "close") {
             this.context.expectArgumentCount(call, 0, 0);
             return { kind: "void", cpp: "" };
-        }
-        // A host page's canvas is a retained canvas once the program draws
-        // on it; one handed to createEngine belongs to the engine instead.
-        if (
-            element?.kind === "ui-element" &&
-            element.uiTag === "canvas" &&
-            element.uiHostId !== undefined &&
-            !element.uiCanvas &&
-            callee.name.text === "getContext"
-        ) {
-            this.context.expectArgumentCount(call, 1, 1);
-            if (this.context.compileStringLiteral(argumentAt(call, 0)) !== "2d")
-                this.context.fail(
-                    argumentAt(call, 0),
-                    "Retained native canvas only supports the '2d' context.",
-                );
-            return {
-                ...element,
-                uiCanvas: true,
-                uiCanvasId: this.ui.hostCanvasId(element.uiHostId, call),
-                uiCanvasContext: true,
-            };
         }
         if (
             element?.uiCanvas &&

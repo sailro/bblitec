@@ -37,7 +37,11 @@ import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import { composeComposite, composePostProcess } from "./pinned-post-process.js";
 import { composeScreenSpaceTask } from "./pinned-screen-space.js";
 import { readNativeHostUi } from "./native-host-ui.js";
-import { hostPageCompileOptions, readHostPage } from "./host-page.js";
+import {
+    hostPageCompileOptions,
+    isHostPagePath,
+    readHostPage,
+} from "./host-page.js";
 import {
     featureActivationPath,
     featureActivationRows,
@@ -133,6 +137,7 @@ interface CliOptions {
     siteUrl?: string;
     environment: Record<string, string>;
     hostUi?: string;
+    siteRoot?: string;
     idDiagnostics: boolean;
     sourceProfile?: string[];
 }
@@ -157,6 +162,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--site-url", value: "<url>" },
     { flag: "--env", value: "<NAME=value>" },
     { flag: "--host-ui", value: "<json>" },
+    { flag: "--site-root", value: "<directory>" },
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
 ];
@@ -199,6 +205,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let siteUrl: string | undefined;
     const environment = new Map<string, string>();
     let hostUi: string | undefined;
+    let siteRoot: string | undefined;
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
 
@@ -242,6 +249,11 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--host-ui":
                 if (!value) usage();
                 hostUi = value;
+                index += 1;
+                break;
+            case "--site-root":
+                if (!value) usage();
+                siteRoot = value;
                 index += 1;
                 break;
             case "--public-dir":
@@ -311,6 +323,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(publicUrl ? { publicUrl } : {}),
         ...(siteUrl ? { siteUrl } : {}),
         ...(hostUi ? { hostUi } : {}),
+        ...(siteRoot ? { siteRoot } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
     };
 }
@@ -827,13 +840,18 @@ async function main(): Promise<void> {
     // nothing here.
     holdDistLock(`generate ${options.input}`);
     // An HTML page names its entry and is that entry's host UI.
-    const page = /\.html?$/i.test(options.input)
-        ? readHostPage(options.input)
+    const page = isHostPagePath(options.input)
+        ? readHostPage({
+              path: options.input,
+              ...(options.siteRoot ? { root: options.siteRoot } : {}),
+          })
         : undefined;
     if (page && options.hostUi)
         throw new Error(
             "--host-ui describes a TypeScript entry's host; an HTML page is its own host.",
         );
+    if (!page && options.siteRoot)
+        throw new Error("--site-root applies to an HTML page input.");
     const inputPath = resolve(page?.entry ?? options.input);
     const source = readFileSync(inputPath, "utf8");
     const compileOptions: CompileOptions = {

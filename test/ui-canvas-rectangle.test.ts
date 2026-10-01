@@ -85,8 +85,28 @@ test("a host canvas draws through its 2D context, sized by its attributes", () =
             `,
                 { nativeHostUi },
             ),
-        /host canvas 'view' belongs to a Babylon engine/,
+        /primary canvas already belongs to a Babylon engine/,
     );
+    // A chained lookup draws on the same element, and a host canvas under
+    // the primary canvas's id is that element: no second canvas appears.
+    for (const id of ["view", "renderCanvas"]) {
+        const chained = compileSource(
+            `document.getElementById("${id}")!.getContext("2d")!.fillRect(0, 0, 4, 4);`,
+            {
+                nativeHostUi: {
+                    sourcePath: "host.json",
+                    elements: [{ tag: "canvas", attributes: { id } }],
+                },
+            },
+        ).cpp;
+        assert.match(
+            chained,
+            new RegExp(
+                `ui_canvas_fill_rect\\([^;]*ui_get_element_by_id\\([^;]*"${id}"`,
+            ),
+        );
+        assert.doesNotMatch(chained, /ui_primary_canvas/);
+    }
 });
 
 const nativeTools = optionalNativeFixtureTools(false);

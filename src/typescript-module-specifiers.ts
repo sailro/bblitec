@@ -13,6 +13,19 @@ export function isRelativeSpecifier(specifier: string): boolean {
     );
 }
 
+/** The literal specifier of an `import("...")` call. */
+export function dynamicImportSpecifier(
+    node: ts.Node,
+): ts.StringLiteralLike | undefined {
+    const [specifier] = ts.isCallExpression(node) ? node.arguments : [];
+    return ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        specifier !== undefined &&
+        ts.isStringLiteralLike(specifier)
+        ? specifier
+        : undefined;
+}
+
 /** Every static import/export and dynamic-import specifier in a module. */
 export function moduleSpecifiers(file: ts.SourceFile): ts.StringLiteralLike[] {
     const found: ts.StringLiteralLike[] = [];
@@ -24,14 +37,8 @@ export function moduleSpecifiers(file: ts.SourceFile): ts.StringLiteralLike[] {
         ) {
             found.push(node.moduleSpecifier);
         }
-        if (
-            ts.isCallExpression(node) &&
-            node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-            node.arguments.length > 0 &&
-            ts.isStringLiteralLike(node.arguments[0]!)
-        ) {
-            found.push(node.arguments[0]);
-        }
+        const dynamic = dynamicImportSpecifier(node);
+        if (dynamic) found.push(dynamic);
         ts.forEachChild(node, visit);
     };
     visit(file);

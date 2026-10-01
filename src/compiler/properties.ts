@@ -62,6 +62,7 @@ import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import {
+    contextCanvas,
     optionalPresentCpp,
     presenceFlagCpp,
     valueForKind,
@@ -2094,15 +2095,8 @@ export class PropertyAccessLowerer {
             };
         }
         const property = expression.name.text;
-        // A retained Canvas2D context's `canvas` is the element it draws on.
-        if (
-            owner.kind === "ui-element" &&
-            owner.uiCanvasContext &&
-            property === "canvas"
-        ) {
-            const { uiCanvasContext: _drawing, ...canvas } = owner;
-            return canvas;
-        }
+        const drawn = property === "canvas" ? contextCanvas(owner) : undefined;
+        if (drawn) return drawn;
         if (owner.kind === "physics-viewer" && property === "scene") {
             return {
                 kind: "scene",

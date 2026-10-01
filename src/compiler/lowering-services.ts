@@ -18,6 +18,7 @@ import type {
     CompileAsset,
     DefaultRenderTaskEmission,
     Feature,
+    RefusalSite,
     ResolvedCompileOptions,
     Value,
     ValueKind,
@@ -81,6 +82,7 @@ export interface LoweringServices {
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
     failAtFile(message: string): never;
+    attributeRefusalsTo<T>(site: RefusalSite, materialize: () => T): T;
     readonly sourceFile: ts.SourceFile;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;

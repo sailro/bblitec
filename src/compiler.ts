@@ -247,6 +247,7 @@ import type {
     CompileResult,
     DefaultRenderTaskEmission,
     Feature,
+    RefusalSite,
     ResolvedCompileOptions,
     Value,
     ValueKind,
@@ -501,8 +502,13 @@ function compileSourceApplication(
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
                 : {}),
-            ...(options.hostPage?.loader && !workers?.namespace
-                ? { pageLoader: options.hostPage.loader }
+            ...(input.loaderFile && options.hostPage?.loader
+                ? {
+                      pageLoader: {
+                          sourceFile: input.loaderFile,
+                          specifier: options.hostPage.loader.specifier,
+                      },
+                  }
                 : {}),
             ...(options.sourceProfile?.length
                 ? { sourceProfile: options.sourceProfile }
@@ -838,17 +844,9 @@ class Compiler implements LoweringServices {
         );
         this.nativeFunctions = new NativeFunctionLowerer(this);
         this.browserErasure = new BrowserErasure(this);
-        const loader = options.pageLoader;
-        const loaderFile =
-            loader && program.getSourceFile(resolve(loader.fileName));
-        if (loader && !loaderFile)
-            throw new Error(
-                `The page's inline module script '${loader.fileName}' is missing from the program.`,
-            );
-        this.pageLoader =
-            loader && loaderFile
-                ? new PageLoader(this, loader, loaderFile)
-                : undefined;
+        this.pageLoader = options.pageLoader
+            ? new PageLoader(this, options.pageLoader)
+            : undefined;
         this.expressions = new ExpressionLowerer(this);
         this.evaluator = new StaticEvaluator(
             this.staticConstants,
@@ -1028,7 +1026,7 @@ class Compiler implements LoweringServices {
     private emitNativeHostUi(): void {
         const host = this.options.nativeHostUi;
         const emitted = host
-            ? this.attributeRefusalsTo(host.sourcePath, () =>
+            ? this.attributeRefusalsTo({ file: host.sourcePath, line: 1 }, () =>
                   this.ui.compileHostUi(),
               )
             : this.ui.compileHostUi();
@@ -7599,25 +7597,27 @@ class Compiler implements LoweringServices {
     }
 
     public failAtFile(message: string): never {
-        throw new CompileError(
-            this.failureFile ?? this.options.fileName,
-            1,
-            1,
-            message,
-        );
+        const site = this.failureSite ?? {
+            file: this.options.fileName,
+            line: 1,
+        };
+        throw new CompileError(site.file, site.line, 1, message);
     }
 
-    /** The file a refusal without a source site names: the entry otherwise. */
-    @journaled private accessor failureFile: string | undefined;
+    /** Where a refusal without a source node points: the entry otherwise. */
+    @journaled private accessor failureSite: RefusalSite | undefined;
 
-    /** Run `materialize` with refusals that have no source site naming `file`. */
-    public attributeRefusalsTo<T>(file: string, materialize: () => T): T {
-        const previous = this.failureFile;
-        this.failureFile = file;
+    /**
+     * Run `materialize` with refusals that have no source node pointing at
+     * `site`, whose line the caller may advance as it walks a host file.
+     */
+    public attributeRefusalsTo<T>(site: RefusalSite, materialize: () => T): T {
+        const previous = this.failureSite;
+        this.failureSite = site;
         try {
             return materialize();
         } finally {
-            this.failureFile = previous;
+            this.failureSite = previous;
         }
     }
 }

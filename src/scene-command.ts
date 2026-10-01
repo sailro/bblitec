@@ -2675,9 +2675,11 @@ async function runSurvey(entry: string): Promise<boolean> {
         console.error(`survey: census incomplete: ${(error as Error).message}`);
     }
     const { writeProjectApiReport } = await import("./api-command.js");
-    // A page's readiness is its entry's.
-    const apiEntry = /\.html?$/i.test(entryPath)
-        ? (await import("./host-page.js")).readHostPage(entryPath).entry
+    // A page's readiness is its entry's, whatever the page holds.
+    const { isHostPagePath, readHostPageEntry } =
+        await import("./host-page.js");
+    const apiEntry = isHostPagePath(entryPath)
+        ? readHostPageEntry({ path: entryPath })
         : entryPath;
     await writeProjectApiReport(apiEntry, join(directory, "api"));
     console.log(`Survey: ${directory}`);

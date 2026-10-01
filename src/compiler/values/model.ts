@@ -118,6 +118,24 @@ export function presenceCpp(value: Value): string | undefined {
     );
 }
 
+/** The element a retained Canvas2D context draws on: its `canvas`. */
+export function contextCanvas(value: Value | undefined): Value | undefined {
+    if (!value?.uiCanvasContext) return undefined;
+    const { uiCanvasContext: _context, ...canvas } = value;
+    return canvas;
+}
+
+/**
+ * A value that cannot be absent: an element the host holds, whatever storage
+ * it was kept in, or a value with no presence to test that is not `null`.
+ */
+export function isPresentValue(value: Value): boolean {
+    return (
+        value.uiHostId !== undefined ||
+        (value.kind !== "json-null" && presenceCpp(value) === undefined)
+    );
+}
+
 /**
  * The JavaScript truthiness a value states where it differs from its
  * presence: an object that is always truthy (`"true"`), or one whose

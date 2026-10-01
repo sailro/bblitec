@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import type { HostPageProgram } from "./types.js";
+import { hostPageModulePath, hostPageRoot } from "../host-page.js";
 import { sharedPinnedContext } from "../lowering/context.js";
 import {
     isLibraryTyping,
@@ -154,6 +155,8 @@ export interface CompilerProgram {
      * building the program again.
      */
     localFiles: string[];
+    /** The host page's inline module script, a second root. */
+    loaderFile?: ts.SourceFile;
 }
 
 export function createCompilerProgram(
@@ -163,12 +166,15 @@ export function createCompilerProgram(
 ): CompilerProgram {
     const rootName = resolve(fileName);
     const loaderName = page?.loader ? resolve(page.loader.fileName) : undefined;
-    const virtualSource = (path: string): string | undefined =>
-        resolve(path) === rootName
+    const pageRoot = page ? hostPageRoot(page) : undefined;
+    const virtualSource = (path: string): string | undefined => {
+        const absolute = resolve(path);
+        return absolute === rootName
             ? source
-            : resolve(path) === loaderName
+            : absolute === loaderName
               ? page?.loader?.source
               : undefined;
+    };
     const repositoryRoot = findRepositoryRoot(
         dirname(fileURLToPath(import.meta.url)),
     );
@@ -259,11 +265,10 @@ export function createCompilerProgram(
                 // A page's bundler serves its directory at "/", so a
                 // root-relative specifier names a file beneath it.
                 const moduleName =
-                    page &&
-                    moduleLiteral.text.startsWith("/") &&
-                    !moduleLiteral.text.startsWith("//")
-                        ? resolve(page.moduleRoot, `.${moduleLiteral.text}`)
-                        : moduleLiteral.text;
+                    (pageRoot !== undefined &&
+                        moduleLiteral.text.startsWith("/") &&
+                        hostPageModulePath(moduleLiteral.text, pageRoot)) ||
+                    moduleLiteral.text;
                 if (isBabylonModule(moduleName)) {
                     return {
                         resolvedModule: {
@@ -339,24 +344,22 @@ export function createCompilerProgram(
     }
     const nodeModules = `${sep}node_modules${sep}`;
     // The page itself is read in place of its synthesized loader module.
-    const localFiles = [
-        ...new Set([
-            ...program
-                .getSourceFiles()
-                .map((file) =>
-                    resolve(rawTextSourcePath(file.fileName) ?? file.fileName),
-                )
-                .filter((path) => path !== loaderName),
-            ...(page ? [resolve(page.path)] : []),
-        ]),
-    ]
+    const localFiles = program
+        .getSourceFiles()
+        .map((file) =>
+            resolve(rawTextSourcePath(file.fileName) ?? file.fileName),
+        )
+        .filter((path) => path !== loaderName)
+        .concat(page ? [resolve(page.path)] : [])
         .filter((path) => !path.includes(nodeModules))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
         .sort();
+    const loaderFile = loaderName && program.getSourceFile(loaderName);
     return {
         program,
         checker: program.getTypeChecker(),
         sourceFile,
         localFiles,
+        ...(loaderFile ? { loaderFile } : {}),
     };
 }

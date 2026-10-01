@@ -9,6 +9,8 @@ export {
     objectTruthinessCpp,
     optionalPresentCpp,
     optionalValueCpp,
+    contextCanvas,
+    isPresentValue,
     presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
@@ -77,12 +79,18 @@ export interface NativeHostUi extends NativeHostUiStyleSource {
      * call in its own source, so the attribution must name this file.
      */
     sourcePath: string;
-    /** Attributes of the document's `<html>` and `<body>` elements. */
+    /** A page's `<html>` and `<body>` attributes. */
     htmlAttributes?: Record<string, string>;
     bodyAttributes?: Record<string, string>;
-    /** Document `<style>` sheets in order, projected into the document head. */
-    styleSheets?: string[];
+    /** A page's `<style>` sheets in order, projected into the document head. */
+    styleSheets?: NativeHostUiStyleSheet[];
     elements: NativeHostUiNode[];
+}
+
+export interface NativeHostUiStyleSheet {
+    text: string;
+    /** The source line the text starts on, where refusals point. */
+    line: number;
 }
 
 /**
@@ -97,12 +105,24 @@ export interface PageLoaderModule {
     specifier: string;
 }
 
+/** A page loader as the program checked it. */
+export interface PageLoaderProgram {
+    sourceFile: ts.SourceFile;
+    specifier: string;
+}
+
 /** The HTML page that hosts the entry. */
 export interface HostPageProgram {
     path: string;
-    /** Module specifiers starting with "/" resolve beneath this directory. */
-    moduleRoot: string;
+    /** The site root "/" names; the page's own directory by default. */
+    root?: string;
     loader?: PageLoaderModule;
+}
+
+/** A host file line a refusal points at when no source node does. */
+export interface RefusalSite {
+    file: string;
+    line: number;
 }
 
 export interface CompileOptions extends DeploymentOptions {
@@ -3017,7 +3037,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     /** A reached constructed promise can end a synchronous activation at its await. */
     pendingActivations?: boolean;
     fileName: string;
-    pageLoader?: PageLoaderModule;
+    /** The page's inline module script in the program, and the import of the entry it ends with. */
+    pageLoader?: PageLoaderProgram;
     title: string;
     width: number;
     height: number;

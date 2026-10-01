@@ -5161,7 +5161,10 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     if (
         !existsSync(absoluteSource) ||
         !statSync(absoluteSource).isFile() ||
-        ![".ts", ".html"].includes(extname(absoluteSource).toLowerCase())
+        !(
+            extname(absoluteSource).toLowerCase() === ".ts" ||
+            isHostPagePath(absoluteSource)
+        )
     ) {
         throw new Error(
             `Unknown scene, TypeScript source or HTML page '${idOrSource}'. Registered scenes: ` +
@@ -5212,6 +5215,7 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     };
 }
 import { existsSync, statSync } from "node:fs";
+import { isHostPagePath } from "./host-page.js";
 import {
     adHocCaptureEnvironment,
     fixedCaptureEnvironment,

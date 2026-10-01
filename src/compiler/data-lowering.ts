@@ -1,4 +1,5 @@
 import {
+    isPresentValue,
     isStringValue,
     nativeDataMetadata,
     objectTruthinessCpp,
@@ -1161,6 +1162,16 @@ export class DataLowerer {
         // The presence moves into the chain's own test, so the owner read
         // inside it carries neither the flag nor the optional storage.
         const { optionalFoundCpp, optionalStorageCpp, ...plainOwner } = owner;
+        // An owner that cannot be absent is read as it is. Stored objects
+        // encode absence as an empty shared pointer instead (below).
+        if (
+            isPresentValue(owner) &&
+            !(
+                owner.dataType?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(owner.dataType.name)
+            )
+        )
+            return read(plainOwner);
         const ownerFound = presenceFlagCpp(owner);
         let present: string;
         let presentOwner: Value;
@@ -2204,9 +2215,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return left;
         }
         const leftFound = presenceFlagCpp(left);
-        // A retained element without a presence flag is present: a host
+        // A retained element that cannot be absent is the result: a host
         // element, or a 2D context drawing on one.
-        if (left.kind === "ui-element" && leftFound === undefined) return left;
+        if (left.kind === "ui-element" && isPresentValue(left)) return left;
         if (left.kind === "data" && left.dataType?.kind === "function") {
             const type = left.dataType;
             const value =

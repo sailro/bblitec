@@ -16,13 +16,16 @@ Check them before adding an implementation. Source rejection does not imply miss
 
 ## Integration
 
-- TypeScript owns live controls; reviewed `ui/*.json` companions or an HTML page entry describe static host chrome.
-- An HTML page (`bblitec page.html`) is read with Chromium's parser: markup, text, attributes and `<style>` sheets
-  form the host; its one module script names the entry (root-relative paths resolve beneath the page), and an inline
-  one runs up to its last statement, a dynamic `import()` of the entry on a generation-decided path. Page elements
-  are present natively, so their lookups' null guards fold. Icon links, resource hints and theme-color, description
-  and light color-scheme metadata are inert. Classic/data scripts, inline handlers, external sheets, foreign markup,
-  quirks mode and other head content refuse, listed together.
+- TypeScript owns live controls; reviewed `ui/*.json` companions or an HTML page describe static host chrome.
+- An HTML page (`bblitec page.html [--site-root <dir>]`) is parsed by Chromium; its markup, text, attributes and
+  `<style>` sheets are the host, and its one module script names the entry. `/` paths resolve beneath the site root
+  (the page's directory by default).
+- An inline module script runs before the entry and must end with a statement `import()` of it, reached on a
+  generation-decided path; other dynamic imports refuse.
+- Page elements are present natively: their lookups' null guards fold.
+- Icon links, resource hints and theme-color, description and light color-scheme metadata are inert.
+- Classic/data scripts, inline handlers, external sheets, foreign markup, quirks mode and other head content refuse,
+  listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
@@ -236,7 +239,7 @@ Canvas-only capture excludes UI filters.
   when the PAL checks that property and is otherwise stored as written, where CSSOM ignores it. A box-shadow
   naming an unknown color keyword passes the check and refuses.
 - A layer composite copies its source region before filtering, including composites without filters.
-- A canvas has no intrinsic layout size: CSS must size it. Host-page sheets refuse at their first unrepresented rule.
+- A canvas has no intrinsic layout size: CSS must size it.
 - An image regenerates its quad when its absolute offset's sub-pixel fraction changes.
 
 Parity measures the [full page](fidelity.md#what-is-measured-the-full-page).

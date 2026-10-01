@@ -120,7 +120,10 @@ interface DeclarationContext
     readonly pendingHostUiLookups: Value[];
     /** Module constants the static evaluator still folds. */
     readonly staticConstants: Map<ts.Symbol, ts.Expression>;
-    readonly ui: Pick<UiProjection, "nativeHostUiTags" | "lookupElementId">;
+    readonly ui: Pick<
+        UiProjection,
+        "nativeHostUiTags" | "lookupElementId" | "hostCanvas"
+    >;
     hasStableNativeBinding(value: Value): boolean;
     importedCall(
         expression: ts.Expression,
@@ -688,12 +691,14 @@ export class DeclarationLowerer {
                 ? this.context.ui.lookupElementId(hostLookup)
                 : undefined;
         if (id !== undefined) {
+            const tag = this.context.ui.nativeHostUiTags().get(id)!;
             const value: Value = {
                 kind: "ui-element",
                 cpp: cppName,
                 uiHostId: id,
-                uiTag: this.context.ui.nativeHostUiTags().get(id)!,
+                uiTag: tag,
                 truthinessCpp: "true",
+                ...this.context.ui.hostCanvas(id, tag, hostLookup),
             };
             this.context.pendingHostUiLookups.push(value);
             this.context.bindings.defineVariable(declaration.name, value);
