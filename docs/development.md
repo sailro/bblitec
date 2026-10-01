@@ -185,7 +185,8 @@ folders by stem and have diagnostic-only comparisons without configured threshol
 too: generation reads its markup and the browser reference is captured from the page itself. An ad-hoc source
 may lie outside the repository: `--site-root <dir>` and `--public-dir <dir>` (on compile, build, process and the
 measuring commands) name where its `/` URLs resolve, at generation and in the reference capture, which serves a
-page outside the repository from its site root.
+page outside the repository from its site root. A program that neither starts an engine nor writes a canvas's
+`dataset.ready` is captured once its entry module evaluates.
 
 ## Integrating a curated parity scene
 
