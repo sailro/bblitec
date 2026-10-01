@@ -1688,6 +1688,18 @@ check(
 );
 
 check(
+    "constructed-receiver-properties",
+    `
+    interface Request { readonly clips: readonly string[] }
+    function unique(request: Request): boolean { return new Set(request.clips).size === request.clips.length; }
+    const pairs: [string, number][] = [["a", 1], ["b", 2], ["a", 3]];
+    if (!unique({ clips: ["p", "q"] }) || unique({ clips: ["p", "p"] })) throw new Error("set size");
+    if (new Map(pairs).size !== 2 || new Float32Array([1, 2]).length !== 2) throw new Error("constructed sizes");
+    if (new Uint8Array(new ArrayBuffer(8), 2).byteOffset !== 2) throw new Error("constructed view");
+`,
+);
+
+check(
     "destructuring",
     `
     function lanes(xs: number[]): number {
