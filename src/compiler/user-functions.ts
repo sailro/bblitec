@@ -834,6 +834,29 @@ function writesSharedBinding(
 }
 
 /**
+ * The function a declaration binds: a function declaration with a body, or a
+ * variable initialized with a function literal.
+ */
+export function functionOfDeclaration(
+    declaration: ts.Declaration,
+):
+    | ts.FunctionDeclaration
+    | ts.ArrowFunction
+    | ts.FunctionExpression
+    | undefined {
+    if (ts.isFunctionDeclaration(declaration) && declaration.body)
+        return declaration;
+    if (
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+    )
+        return declaration.initializer;
+    return undefined;
+}
+
+/**
  * Resolves an identifier to a reachable local function declaration and
  * validates the shared structural constraints (no generators, generics, or
  * rest parameters). Both the inline lowerer and the native data-function
@@ -853,19 +876,8 @@ export function resolveFunctionDeclaration(
     }
     let declaration: SupportedFunction | undefined;
     for (const candidate of target.declarations ?? []) {
-        if (ts.isFunctionDeclaration(candidate) && candidate.body) {
-            declaration = candidate;
-            break;
-        }
-        if (
-            ts.isVariableDeclaration(candidate) &&
-            candidate.initializer &&
-            (ts.isArrowFunction(candidate.initializer) ||
-                ts.isFunctionExpression(candidate.initializer))
-        ) {
-            declaration = candidate.initializer;
-            break;
-        }
+        declaration = functionOfDeclaration(candidate);
+        if (declaration) break;
     }
     if (!declaration) {
         return undefined;
