@@ -16,6 +16,10 @@
     {
       "summary": "Array storage admission reuses the JSON initializer transaction without repeating speculative compilation.",
       "applied": true
+    },
+    {
+      "summary": "Array callback ownership uses consumed snapshot expressions without eager reads, duplicate string copies or copies in intrinsic Boolean predicates.",
+      "applied": true
     }
   ]
 }
