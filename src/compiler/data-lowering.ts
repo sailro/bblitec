@@ -1191,13 +1191,23 @@ export class DataLowerer {
             field.accessor
                 ? `${target}${field.name}.set(${value});`
                 : `${target}${field.name} = ${value};`;
-        const keyType = this.context.checker.getTypeAtLocation(
-            left.argumentExpression,
-        );
-        if (keyType.isStringLiteral()) {
+        // A key generation knows (a literal, or an expanded loop's element)
+        // selects its field here.
+        const staticName = this.context.probeEmission(() => {
+            const key = this.context.compileValue(left.argumentExpression);
+            const keyType = this.context.checker.getTypeAtLocation(
+                left.argumentExpression,
+            );
+            const name =
+                key.staticString ??
+                (keyType.isStringLiteral() ? keyType.value : undefined);
+            if (name !== undefined) this.context.emitDiscardedValue(key);
+            return name;
+        });
+        if (staticName !== undefined) {
             const field = this.context.dataTypes.structField(
                 type.name,
-                keyType.value,
+                staticName,
                 left,
                 "accessors",
             );
@@ -1231,6 +1241,24 @@ export class DataLowerer {
                 left,
                 "Dynamic struct keys must select fields with one common data type.",
             );
+        const slot = this.context.dataTypes.keyedSlotMember(
+            type.name,
+            keyData,
+            left,
+        );
+        if (slot) {
+            // The selection is evaluated before the value: C++ sequences a
+            // call's postfix expression before its arguments.
+            const keyCpp = this.compileEnumIndex(
+                left.argumentExpression,
+                keyData.name,
+            );
+            this.context.emit({
+                kind: "expression",
+                code: `${target}${slot}(${keyCpp}).set(${this.compileForSink(right, commonType)});`,
+            });
+            return true;
+        }
         const key = this.context.allocateTemporaryCppName("property_key");
         this.context.emit({
             kind: "declaration",
@@ -3473,13 +3501,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access.argumentExpression,
                 keyType.name,
             );
-            const keyTemporary =
-                this.context.allocateTemporaryCppName("property_key");
             const arrow = this.context.dataTypes.isReferenceStruct(
                 dataType.name,
             )
                 ? "->"
                 : ".";
+            const slot = fields.some((field) => field.accessor)
+                ? this.context.dataTypes.keyedSlotMember(
+                      dataType.name,
+                      keyType,
+                      access,
+                  )
+                : undefined;
+            if (slot)
+                return this.accessorRead(
+                    `${owner.cpp}${arrow}${slot}(${key})`,
+                    commonType,
+                    mode,
+                    access,
+                );
+            const keyTemporary =
+                this.context.allocateTemporaryCppName("property_key");
             // An accessor slot answers its getter's value.
             const read = (field: DataStructField): string =>
                 `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;

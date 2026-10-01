@@ -876,6 +876,59 @@ export class DataTypeRegistry {
         );
     }
 
+    /** Records whose accessor slots a run-time key selects, by struct name. */
+    private readonly keyedSlots = new EmissionMap<
+        string,
+        { key: DataType<"enum">; node: ts.Node }
+    >();
+
+    /**
+     * The member a run-time key of `key` selects a record's accessor slot
+     * with, when every member names an accessor slot of one type: one
+     * switch in the record, rather than one per keyed read or write.
+     */
+    public keyedSlotMember(
+        structName: string,
+        key: DataType<"enum">,
+        node: ts.Node,
+    ): string | undefined {
+        const fields = this.enumMembers(key.name).map((member) =>
+            this.structField(structName, member, node, "accessors"),
+        );
+        const [first] = fields;
+        if (
+            !first ||
+            fields.some(
+                (field) =>
+                    !field.accessor || !dataTypesEqual(field.type, first.type),
+            )
+        )
+            return undefined;
+        const known = this.keyedSlots.get(structName);
+        if (known && known.key.name !== key.name) return undefined;
+        if (!known) this.keyedSlots.set(structName, { key, node });
+        return "slot_at";
+    }
+
+    private renderKeyedSlot(definition: DataStructDefinition): string[] {
+        const keyed = this.keyedSlots.get(definition.name);
+        if (!keyed) return [];
+        const members = this.enumMembers(keyed.key.name);
+        const field = (member: string): DataStructField =>
+            this.structField(definition.name, member, keyed.node, "accessors");
+        return [
+            `    ${this.structFieldCppType(field(members[0]!))}& slot_at(${this.cppType(keyed.key)} key) {`,
+            "        switch (key) {",
+            ...members.map(
+                (member) =>
+                    `        case ${this.enumMemberCpp(keyed.key, member, keyed.node)}: return ${field(member).name};`,
+            ),
+            "        }",
+            '        throw std::out_of_range("Record key is not a member of its key union.");',
+            "    }",
+        ];
+    }
+
     /** Whether a record type stores a field in an accessor slot. */
     public isAccessorRecordType(type: ts.Type): boolean {
         const record = this.checker.getNonNullableType(type);
@@ -4130,6 +4183,7 @@ export class DataTypeRegistry {
                 ...(definition.classTag
                     ? [`    int ${classTagMember}{};`]
                     : []),
+                ...this.renderKeyedSlot(definition),
                 // Only a record that can own a traced edge joins cycle
                 // collection, and it visits only the fields that can.
                 ...(traceCondition === false

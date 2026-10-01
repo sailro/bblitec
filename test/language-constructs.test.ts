@@ -1149,6 +1149,8 @@ check(
     put(mixed[0]!, Date.now() > 0 ? "a" : "b", 5);
     put(mixed[0]!, Date.now() > 0 ? "b" : "a", 6);
     if (mixed[0]!.a !== 5 || backing !== 6 || mixed[0]!["b"] !== 6) throw new Error("keyed accessor writes");
+    function read(record: Mixed, key: "a" | "b"): number { return record[key]; }
+    if (read(mixed[0]!, Date.now() > 0 ? "b" : "a") !== 6) throw new Error("keyed accessor read");
 
     interface Reading { readonly count: number; name: string; }
     function createReading(): Reading {
