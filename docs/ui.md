@@ -142,9 +142,9 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
-| Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures clip to viewport size |
+| Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables; outer shadows blur before the border-box clip; a single box larger than the viewport renders its shadow with a stretched band; a runtime assignment is checked against the CSS grammar itself, so an invalid value is ignored as CSSOM does while a valid one RmlUi cannot represent refuses | Omitted/currentColor, non-pixel lengths; a multi-box (inline) shadow texture clips to viewport size |
 | Raster border images | Packaged stretch slices, number/percentage slices, live widths | Outset, center fill, repeat, SVG, longhands, runtime-generated declarations |
-| Images | Centered fill/contain/cover/none/scale-down; content-box clipping | object-position; Canvas2D supports fill only |
+| Images | Centered fill/contain/cover/none/scale-down; content-box clipping; the image and content box snap to whole pixels as Blink's image painter does | object-position; Canvas2D supports fill only |
 | Raster backgrounds | Single packaged image, explicit inheritance, centered contain/cover, natural-size repeat and zero sizing | Sized repetition, arbitrary sizes/positions and multiple layers |
 | Gradient backgrounds | Ordered linear/radial/conic layers in the background shorthand; no-repeat layers with independent length/percentage sizes and keyword/length/percentage positions | Sized repetition, gradient longhands, layers extending outside their paint box or requiring rounded clipping |
 | Transforms/clipping | Uniform nonnegative scale composed before transform; empty rectangular clips retain layout/focus | Nonuniform scale longhand and nonempty clip rectangles |
@@ -203,8 +203,12 @@ The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in
 Each backend composites premultiplied UI through one compositor: scene drivers render each segment into a
 transparent layer at scene sample count; sprite and Window drivers blend into their single-sample targets.
 Canvas overlays precede DOM chrome.
-Backdrop blur snapshots preceding UI into FP16 scratch. Filters retain nested layers and ordered color
-adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only capture excludes UI filters.
+Backdrop blur snapshots preceding UI into FP16 scratch. An element with a backdrop filter is a backdrop root:
+when a descendant also has one, the element and its descendants paint into their own layer, so that backdrop
+reads only what the root painted before it, and draws its filtered backdrop over the same content, compounding a
+translucent root as Chromium does.
+Filters retain nested layers and ordered color adjustments, pixel blur and explicit-color drop-shadow chains.
+Canvas-only capture excludes UI filters.
 
 ## Limits
 
@@ -214,5 +218,15 @@ adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only captu
 - element.animate remains a no-op; listener removal outside shared input dispatch refuses.
 - CSS easing/steps, font variants and rasterization have approximations.
 - Retained UI is unavailable under standalone effect/frame-graph drivers.
+- Only backdrop-filter, filter and mask elements are backdrop roots: RmlUi applies opacity per vertex and has no
+  group layer for opacity below 1, clip-path or mix-blend-mode, which Chromium also treats as roots.
+- An element with a filter or mask and a backdrop filter keeps RmlUi's order: its filtered backdrop paints inside
+  the filter layer, so the filter applies to it and a descendant's backdrop reads it.
+- A backdrop blur samples beyond the element's border box where Chromium mirrors at its edge.
+- Only box-shadow assignments are checked against the CSS grammar; an invalid value for another property refuses
+  when the PAL checks that property and is otherwise stored as written, where CSSOM ignores it. A box-shadow
+  naming an unknown color keyword passes the check and refuses.
+- A layer composite copies its source region before filtering, including composites without filters.
+- An image regenerates its quad when its absolute offset's sub-pixel fraction changes.
 
 Parity measures the [full page](fidelity.md#what-is-measured-the-full-page).

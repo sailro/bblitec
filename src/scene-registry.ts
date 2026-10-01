@@ -4606,10 +4606,10 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Platformer",
         parity: {
             referenceFrame: 180,
-            // Measured 0.803 / 0.803 on both backends; the residual is
-            // text rasterization (docs/ui.md).
-            maxFullMad: 1.05,
-            maxForegroundMad: 1.05,
+            // Measured 0.664 / 0.664 on both backends; the residual is
+            // text rasterization and the title's clipped gradient (docs/ui.md).
+            maxFullMad: 0.8,
+            maxForegroundMad: 0.8,
             // Canvas-only lane: pixel-perfect on both backends
             // (docs/status.md row note); the sprite HUD's effect clock
             // carries the exact double delta.
@@ -4668,11 +4668,11 @@ const sceneInputs: readonly SceneInput[] = [
             // Dynamic thin-instance uploads are visible on the browser's next
             // draw; the native renderer consumes them in the same frame.
             nativeFrameOffset: 1,
-            // Measured 3.504 full / 3.569 foreground across both backends. The residual
-            // is retained text rasterization and unsupported outer shadows; the
-            // canvas-only lane below isolates the renderer at 0.028 / 0.029.
-            maxFullMad: 4.2,
-            maxForegroundMad: 4.3,
+            // Measured 2.393 full / 2.437 foreground on both backends. The residual
+            // is retained text rasterization; the canvas-only lane below
+            // isolates the renderer.
+            maxFullMad: 2.8,
+            maxForegroundMad: 2.85,
             canvasThresholds: {
                 maxFullMad: 0.05,
                 maxForegroundMad: 0.05,
@@ -4796,12 +4796,12 @@ const sceneInputs: readonly SceneInput[] = [
             referenceHostPage:
                 "corpus/babylon-lite/lab/lite/demo-playroom.html",
             referenceFrame: 180,
-            // Not qualified (TODO.md): the canvas itself differs at the
+            // Not qualified: the canvas itself differs at the
             // reference frame (docs/status.md row). The gates sit just above
-            // that published measurement, so they catch a regression;
-            // qualifying the scene brings every pair under 0.5.
-            maxFullMad: 0.85,
-            maxForegroundMad: 0.9,
+            // that published measurement (0.204 / 0.223), so they catch a
+            // regression.
+            maxFullMad: 0.3,
+            maxForegroundMad: 0.35,
             canvasThresholds: { maxFullMad: 1.2, maxForegroundMad: 1.3 },
             backgroundColor: [46, 46, 51],
             backgroundThreshold: 30,

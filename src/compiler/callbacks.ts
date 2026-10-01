@@ -13,6 +13,7 @@ import type {
     ClosureCaptures,
     NativeCaptureBinding,
 } from "./closure-captures.js";
+import type { ForwardDeclaration } from "./declarations.js";
 import type { PlatformCalls } from "./platform-calls.js";
 import type {
     FrameCallbackSignature,
@@ -552,19 +553,16 @@ export class CallbackLowerer {
         );
     }
 
-    public readonly hoistedCallbackBindings = new EmissionSet<ts.Symbol>();
-
     /**
      * JavaScript closures may name a `const` declared later in the same
      * function. Native callback lambdas need that storage to exist before
-     * registration, so materialize such locals just ahead of the listener
-     * and skip their original declaration when the source walk reaches it.
+     * registration (DeclarationLowerer.hoistForwardBinding).
      */
     public hoistForwardCallbackBindings(
         callback: ts.Expression,
         before: number,
     ): void {
-        const candidates = new EmissionMap<ts.Symbol, ts.VariableDeclaration>();
+        const candidates = new EmissionMap<ts.Symbol, ForwardDeclaration>();
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (node) => {
                 if (ts.isIdentifier(node)) {
@@ -580,15 +578,16 @@ export class CallbackLowerer {
                         !isDeclaredInside(declaration, callback) &&
                         !this.context.bindings.lookupOptional(declaration.name)
                     ) {
-                        candidates.set(symbol, declaration);
+                        candidates.set(
+                            symbol,
+                            declaration as ForwardDeclaration,
+                        );
                     }
                 }
             });
         visit(callback);
-        for (const [symbol, declaration] of candidates) {
-            this.context.declarations.emitVariableDeclaration(declaration);
-            this.hoistedCallbackBindings.add(symbol);
-        }
+        for (const [symbol, declaration] of candidates)
+            this.context.declarations.hoistForwardBinding(declaration, symbol);
     }
 
     /**

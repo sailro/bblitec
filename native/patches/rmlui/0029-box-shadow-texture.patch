@@ -1,0 +1,166 @@
+Paint box shadows as CSS does. An outer shadow is blurred whole and kept off the border box only when
+composited: rendering it through the inverse border-box clip before the blur let the hole bleed into
+the shadow, leaving it too light along the edges. A texture that would exceed the viewport is kept
+whole: saved layers are viewport-sized, so the shadow below a tall panel was cut before blurring. A
+single box's straight edges are constant along their length away from its corners, borders, spread,
+offsets and blur, so the texture renders the box shortened inside that band and the quad stretches the
+band's first texel back over the removed length, as Skia draws a large blurred rectangle as a
+nine-patch.
+
+diff --git a/Source/Core/BoxShadowCache.cpp b/Source/Core/BoxShadowCache.cpp
+index a82af95..195baab 100644
+--- a/Source/Core/BoxShadowCache.cpp
++++ b/Source/Core/BoxShadowCache.cpp
+@@ -56,5 +56,21 @@ static SharedPtr<BoxShadowRenderable> GetOrCreateBoxShadow(RenderManager& render
+ 	Mesh mesh;
+ 	const byte alpha = byte(info.opacity * 255.f);
+-	MeshUtilities::GenerateQuad(mesh, -info.element_offset_in_texture, Vector2f(info.texture_dimensions), ColourbPremultiplied(alpha, alpha));
++	// Per axis: the texture before a stretched band, the band's first texel over its drawn length, and the rest.
++	struct Slice {
++		float position, length, texture_start, texture_end;
++	};
++	const Vector2f texture_size(info.texture_dimensions);
++	const auto slices = [&](int axis) {
++		const float size = texture_size[axis], cut = info.stretch_offset[axis], removed = info.stretch_size[axis];
++		if (removed <= 0.f)
++			return Vector<Slice>{{0.f, size, 0.f, 1.f}};
++		const float texel = (cut + 0.5f) / size;
++		return Vector<Slice>{{0.f, cut, 0.f, cut / size}, {cut, removed, texel, texel}, {cut + removed, size - cut, cut / size, 1.f}};
++	};
++	const Vector<Slice> columns = slices(0);
++	for (const Slice& y : slices(1))
++		for (const Slice& x : columns)
++			MeshUtilities::GenerateQuad(mesh, -info.element_offset_in_texture + Vector2f(x.position, y.position), Vector2f(x.length, y.length),
++				ColourbPremultiplied(alpha, alpha), Vector2f(x.texture_start, y.texture_start), Vector2f(x.texture_end, y.texture_end));
+ 	shadow_handle->geometry = render_manager.MakeGeometry(std::move(mesh));
+ 
+diff --git a/Source/Core/GeometryBoxShadow.cpp b/Source/Core/GeometryBoxShadow.cpp
+index 888d5e2..e5b4cda 100644
+--- a/Source/Core/GeometryBoxShadow.cpp
++++ b/Source/Core/GeometryBoxShadow.cpp
+@@ -21,4 +21,5 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 	Vector2f element_offset_in_texture;
+ 	Vector2i texture_dimensions;
++	Vector2f stretch_offset, stretch_size;
+ 
+ 	const Property* p_box_shadow = element->GetStyle()->GetLocalPropertyWithResolvedVariables(PropertyId::BoxShadow);
+@@ -26,5 +27,6 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 	BoxShadowList shadow_list = p_box_shadow->value.Get<BoxShadowList>();
+ 
+-	// Resolve all lengths to px units.
++	// Resolve all lengths to px units, and how far any shadow reaches past or into the box edges.
++	float shadow_margin = 0.f;
+ 	for (BoxShadow& shadow : shadow_list)
+ 	{
+@@ -33,4 +35,7 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 		shadow.offset_x = NumericValue(element->ResolveLength(shadow.offset_x), Unit::PX);
+ 		shadow.offset_y = NumericValue(element->ResolveLength(shadow.offset_y), Unit::PX);
++		shadow_margin = Math::Max(shadow_margin,
++			1.5f * shadow.blur_radius.number + Math::Absolute(shadow.spread_distance.number) +
++				Math::Max(Math::Absolute(shadow.offset_x.number), Math::Absolute(shadow.offset_y.number)));
+ 	}
+ 
+@@ -64,8 +69,32 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 
+ 		element_offset_in_texture = -texture_region.TopLeft();
+-		// The render manager clips saved layers to its viewport. Use the same
+-		// dimensions for the cache key and quad so clipped pixels keep their
++
++		// Saved layers are clipped to the viewport. Away from its corners, borders and shadows a single box is constant
++		// along each axis, so an oversized texture renders that band shortened and its first texel is stretched back
++		// over it when drawn, as Skia draws a large blurred rectangle as a nine-patch.
++		const Vector2i viewport = element->GetRenderManager()->GetViewport();
++		if (element->GetNumBoxes() == 1)
++		{
++			const RenderBox box = element->GetRenderBox(BoxArea::Border, 0);
++			float margin = 0.f;
++			for (const Vector2f& corner : box.GetBorderRadius())
++				margin = Math::Max(margin, Math::Max(corner.x, corner.y));
++			for (const float width : box.GetBorderWidths())
++				margin = Math::Max(margin, width);
++			margin = Math::RoundUp(margin + shadow_margin) + 1.f;
++			for (int axis = 0; axis < 2; axis++)
++			{
++				const float overflow = Math::RoundUp(texture_region.Size()[axis] - float(viewport[axis]));
++				if (overflow > 0.f && box.GetFillSize()[axis] - 2.f * margin > overflow)
++				{
++					stretch_offset[axis] = element_offset_in_texture[axis] + box.GetBorderOffset()[axis] + margin;
++					stretch_size[axis] = overflow;
++				}
++			}
++		}
++
++		// Use the clipped dimensions for the cache key and quad so clipped pixels keep their
+ 		// original size instead of stretching across the requested shadow area.
+-		texture_dimensions = Math::Min(Vector2i(texture_region.Size()), element->GetRenderManager()->GetViewport());
++		texture_dimensions = Math::Min(Vector2i(texture_region.Size() - stretch_size), viewport);
+ 	}
+ 
+@@ -79,4 +108,6 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 		padding_render_boxes.push_back(element->GetRenderBox(BoxArea::Padding, i));
+ 		border_render_boxes.push_back(element->GetRenderBox(BoxArea::Border, i));
++		for (RenderBox* box : {&padding_render_boxes.back(), &border_render_boxes.back()})
++			box->SetFillSize(box->GetFillSize() - stretch_size);
+ 	}
+ 
+@@ -91,4 +122,6 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 	geometry_info.shadow_list = std::move(shadow_list);
+ 	geometry_info.opacity = opacity;
++	geometry_info.stretch_offset = stretch_offset;
++	geometry_info.stretch_size = stretch_size;
+ 	return geometry_info;
+ }
+@@ -139,4 +172,7 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+ 				MeshUtilities::GenerateBackground(mesh_padding_border, info.border_render_boxes[i], white);
+ 		}
++		Geometry geometry_padding_border;
++		if (has_outer_shadow)
++			geometry_padding_border = render_manager.MakeGeometry(std::move(mesh_padding_border));
+ 
+ 		const RenderState initial_render_state = render_manager.GetState();
+@@ -172,5 +208,4 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+ 			const float blur_radius = shadow.blur_radius.number;
+ 
+-
+ 			Mesh mesh_shadow;
+ 
+@@ -226,7 +261,10 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+ 			else
+ 			{
+-				Mesh mesh = mesh_padding_border;
+-				Geometry geometry_padding_border = render_manager.MakeGeometry(std::move(mesh));
+-				render_manager.SetClipMask(ClipMaskOperation::SetInverse, &geometry_padding_border, info.element_offset_in_texture);
++				// An outer shadow is blurred whole and only then kept off the border box, as CSS paints it:
++				// clipping before the blur would let the hole bleed into the shadow along the edges.
++				if (blur)
++					render_manager.DisableClipMask();
++				else
++					render_manager.SetClipMask(ClipMaskOperation::SetInverse, &geometry_padding_border, info.element_offset_in_texture);
+ 				geometry_shadow.Render(shadow_offset + info.element_offset_in_texture);
+ 			}
+@@ -234,4 +272,6 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+ 			if (blur)
+ 			{
++				if (!inset)
++					render_manager.SetClipMask(ClipMaskOperation::SetInverse, &geometry_padding_border, info.element_offset_in_texture);
+ 				FilterHandleList filters;
+ 				blur.AddHandleTo(filters);
+diff --git a/Source/Core/GeometryBoxShadow.h b/Source/Core/GeometryBoxShadow.h
+index 20c6beb..cfc3dcb 100644
+--- a/Source/Core/GeometryBoxShadow.h
++++ b/Source/Core/GeometryBoxShadow.h
+@@ -16,4 +16,7 @@ struct BoxShadowGeometryInfo {
+ 	BoxShadowList shadow_list;
+ 	float opacity;
++	// Texture position and drawn length per axis of a band rendered one texel long and stretched when drawn.
++	Vector2f stretch_offset;
++	Vector2f stretch_size;
+ };
+ inline bool operator==(const BoxShadowGeometryInfo& a, const BoxShadowGeometryInfo& b)
+@@ -22,5 +25,5 @@ inline bool operator==(const BoxShadowGeometryInfo& a, const BoxShadowGeometryIn
+ 		a.texture_dimensions == b.texture_dimensions && a.element_offset_in_texture == b.element_offset_in_texture &&
+ 		a.padding_render_boxes == b.padding_render_boxes && a.border_render_boxes == b.border_render_boxes && a.shadow_list == b.shadow_list &&
+-		a.opacity == b.opacity;
++		a.opacity == b.opacity && a.stretch_offset == b.stretch_offset && a.stretch_size == b.stretch_size;
+ }
+ inline bool operator!=(const BoxShadowGeometryInfo& a, const BoxShadowGeometryInfo& b)

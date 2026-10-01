@@ -787,7 +787,7 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
         ? "        bbl::js::seed_random(1u);\n"
         : "";
     const workerInclude = projection.workers
-        ? "#include <bblite/pal_worker.hpp>\n#include <bblite/js_promise_all.hpp>\n#include <bblite/js_binding.hpp>\n#include <bblite/pal_canvas.hpp>\n" +
+        ? "#include <bblite/pal_worker.hpp>\n#include <bblite/js_promise_all.hpp>\n#include <bblite/pal_canvas.hpp>\n" +
           (features.includes("platform:window")
               ? "#include <bblite/pal_window_realm.hpp>\n"
               : "") +

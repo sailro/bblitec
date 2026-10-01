@@ -219,6 +219,21 @@ export class EvaluationOrder {
     }
 
     /**
+     * `isPure`'s rule for an expression: evaluating `node` earlier or later
+     * gives the same value and no effect. It touches no storage, and each
+     * call it makes, with everything that call reaches, answers from its
+     * arguments.
+     */
+    public isPureExpression(node: ts.Node): boolean {
+        return (
+            !this.touchesStorage(node) &&
+            this.callsAnswer([node], (units) =>
+                units.every((unit) => this.answersFromArguments(unit)),
+            )
+        );
+    }
+
+    /**
      * Whether every call `unit` makes, with the functions and accessors it
      * reaches, answers from its arguments. The storage model above treats a
      * library call on a global (`Date.now()`, `performance.now()`,
@@ -262,17 +277,30 @@ export class EvaluationOrder {
                   ),
                   ...(unit.body ? [unit.body] : []),
               ];
+        // A unit's own calls are checked where `answersFromArguments`
+        // reaches it.
+        return this.callsAnswer(roots, () => true);
+    }
+
+    /**
+     * Whether each call or construction under `roots` answers from its
+     * arguments: a library call one `answersFromArguments` trusts, a call
+     * into code the analysis follows as `units` judges its callees.
+     */
+    private callsAnswer(
+        roots: readonly ts.Node[],
+        units: (callees: readonly Unit[]) => boolean,
+    ): boolean {
         let answers = true;
         const visit = (current: ts.Node): "skip" | void => {
             if (!answers) return "skip";
             if (!ts.isCallExpression(current) && !ts.isNewExpression(current))
                 return;
-            // A unit's own calls are checked where `answersFromArguments`
-            // reaches it; a library call must answer from its arguments.
-            const units = this.callees(current);
-            if (units === "library")
-                answers = this.libraryAnswersFromArguments(current);
-            else if (!units) answers = false;
+            const callees = this.callees(current);
+            answers =
+                callees === "library"
+                    ? this.libraryAnswersFromArguments(current)
+                    : !!callees && units(callees);
         };
         roots.forEach((root) =>
             forEachAnalysisNode(root, visit, {

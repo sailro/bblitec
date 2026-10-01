@@ -1,0 +1,22 @@
+End a colour function at its closing parenthesis: CSS rejects a value with anything after it, as in
+`rgb(1,2,3)55`, which RmlUi read as the colour and silently ignored the rest of.
+
+diff --git a/Source/Core/PropertyParserColour.cpp b/Source/Core/PropertyParserColour.cpp
+index 30c0328..2f46ead 100644
+--- a/Source/Core/PropertyParserColour.cpp
++++ b/Source/Core/PropertyParserColour.cpp
+@@ -535,10 +535,12 @@ bool PropertyParserColour::GetColourFunctionValues(StringList& values, const Str
+ {
+ 	size_t find = value.find('(');
+-	if (find == String::npos)
++	// A colour function ends at its closing parenthesis: CSS rejects anything after it, as in `rgb(1,2,3)55`.
++	const size_t end = value.find_last_not_of(" \t\r\n");
++	if (find == String::npos || end == String::npos || value[end] != ')')
+ 		return false;
+ 
+ 	size_t begin_values = find + 1;
+ 
+-	StringUtilities::ExpandString(values, value.substr(begin_values, value.rfind(')') - begin_values), is_comma_separated ? ',' : ' ',
++	StringUtilities::ExpandString(values, value.substr(begin_values, end - begin_values), is_comma_separated ? ',' : ' ',
+ 		!is_comma_separated);
+ 
