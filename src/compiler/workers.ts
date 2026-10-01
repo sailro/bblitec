@@ -7,6 +7,7 @@ import {
 } from "./option-helpers.js";
 import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
+import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 
 export interface WorkerLoweringContext
     extends
@@ -224,8 +225,9 @@ export function isNativeWorkerExpression(
     context: WorkerLoweringContext,
     expression: ts.Expression,
 ): boolean {
-    if (!context.options.workers) return false;
     let node = context.unwrap(expression);
+    if (resolvedBuiltinConstructor(context, node)) return true;
+    if (!context.options.workers) return false;
     if (context.libraryGlobal(node) === "fetch") return true;
     if (
         !context.options.workers.namespace &&
@@ -283,7 +285,7 @@ export function isNativeWorkerExpression(
     const root = rootIdentifier(node, (inner) => context.unwrap(inner));
     if (!root) return false;
     const bound = context.bindings.lookupOptional(root);
-    if (bound?.hostFunction) return true;
+    if (bound?.hostFunction || bound?.builtinConstructor) return true;
     if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas")
         return true;
     return (

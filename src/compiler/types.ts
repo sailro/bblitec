@@ -2158,6 +2158,8 @@ export interface ValueFields {
     classCandidates?: readonly ts.ClassDeclaration[];
     /** The class whose static fields this record holds: the value of a class name. */
     classStatics?: ts.ClassDeclaration;
+    /** A resolved builtin constructor retained through generation-known aliases. */
+    builtinConstructor?: "ResizeObserver" | "MutationObserver";
     /**
      * What the class's own type parameters stand for on this instance.
      *
