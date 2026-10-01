@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Page scene canvas</title>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #2f4a3a; }
+      #banner { height: 40px; margin: 0 0 -20px; background: #c9a227; }
+      #sceneCanvas { display: block; width: 640px; height: 360px; margin: 0 0 0 80px; background: #ff00ff; }
+      #label { position: absolute; left: 100px; top: 340px; padding: 4px 8px; background: #102018; color: #e8e4d8; font: 13px/18px sans-serif; }
+      .swatch { display: inline-block; width: 10px; height: 10px; margin: 0 6px 0 0; background: #e0a24a; vertical-align: middle; }
+      #aside { margin: 16px 0 0 80px; background: #5a6b4f; }
+      #note { margin: 8px 80px; color: #e8e4d8; font: 13px/18px sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div id="banner"></div>
+    <canvas id="sceneCanvas"></canvas>
+    <div id="label"><span class="swatch"></span>drawn over the scene</div>
+    <canvas id="aside" width="120" height="60"></canvas>
+    <p id="note">The canvas above takes its <code>width</code> and <code>height</code> attributes as its size.</p>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

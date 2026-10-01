@@ -182,7 +182,11 @@ edits before concurrent builds. Logs belong in ignored `artifacts/`.
 
 `npm run sweep` is `validate all`; tests are separate. Ad-hoc sources use generated/build/reference
 folders by stem and have diagnostic-only comparisons without configured thresholds. An HTML page is a source
-too: generation reads its markup and the browser reference is captured from the page itself.
+too: generation reads its markup and the browser reference is captured from the page itself. An ad-hoc source
+may lie outside the repository: `--site-root <dir>` and `--public-dir <dir>` (on compile, build, process and the
+measuring commands) name where its `/` URLs resolve, at generation and in the reference capture, which serves a
+page outside the repository from its site root. Capture uses reached engine features and canvas readiness
+in the manifest; a program with neither is captured once its entry module evaluates.
 
 ## Integrating a curated parity scene
 

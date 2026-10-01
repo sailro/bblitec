@@ -3930,6 +3930,93 @@ check(
 `,
 );
 
+check(
+    "Array.sort takes a class field, property or stored function comparator",
+    `
+    class Store {
+        private readonly depth: number[] = [3, 1, 2, 0];
+        private readonly topoLess = (a: number, b: number): number => (this.depth[a]! - this.depth[b]!) || (a - b);
+        order(slots: number[]): string {
+            slots.sort(this.topoLess);
+            return slots.join(",");
+        }
+    }
+    function main(): void {
+        if (new Store().order([0, 1, 2, 3]) !== "3,1,2,0") throw new Error("class field comparator");
+        const holder = { compare: (a: number, b: number): number => b - a };
+        const values = [1, 3, 2];
+        values.sort(holder.compare);
+        if (values.join(",") !== "3,2,1") throw new Error("property comparator");
+        let picked = 0;
+        const descending = (a: number, b: number): number => b - a;
+        const ascending = (a: number, b: number): number => a - b;
+        const choose = (down: boolean): ((a: number, b: number) => number) => {
+            picked++;
+            return down ? descending : ascending;
+        };
+        const numbers = [2, 9, 4];
+        numbers.sort(choose(numbers.length > 2));
+        if (numbers.join(",") !== "9,4,2" || picked !== 1) throw new Error("evaluated once " + picked);
+        let receiver = [3, 1];
+        const original = receiver;
+        const rebind = (): ((a: number, b: number) => number) => {
+            receiver = [8, 9];
+            return ascending;
+        };
+        receiver.sort(rebind());
+        if (original.join(",") !== "1,3" || receiver.join(",") !== "8,9") throw new Error("receiver before comparator");
+    }
+    main();
+`,
+);
+
+check(
+    "Uint8Array.set copies a source into the view at an offset",
+    `
+    function grow(source: Uint8Array, length: number): Uint8Array {
+        const next = new Uint8Array(length);
+        next.set(source, 0);
+        return next;
+    }
+    function main(): void {
+        const grown = grow(new Uint8Array([7, 8, 9]), 5);
+        if (grown.join(",") !== "7,8,9,0,0") throw new Error("same-kind set " + grown.join(","));
+        const view = grown.subarray(1, 5);
+        view.set([1, 2], 2);
+        if (grown.join(",") !== "7,8,9,1,2") throw new Error("array set through a subarray " + grown.join(","));
+        let refused = false;
+        const longer = new Uint8Array(3);
+        try { view.set(longer, 2); } catch { refused = true; }
+        if (!refused) throw new Error("a run past the end refuses");
+    }
+    main();
+`,
+);
+
+test("dense arrays refuse sparse length growth", { skip: !native }, () => {
+    const result = compileSource(`
+    function main(): void {
+        const counts: Array<number | undefined> = [1];
+        let refused = false;
+        try { counts.length = 3; } catch { refused = true; }
+        if (!refused || counts.length !== 1) throw new Error("optional sparse growth must refuse without mutation");
+        const objects: Array<{ id: number } | null> = [{ id: 2 }];
+        refused = false;
+        try { objects.length = 3; } catch { refused = true; }
+        if (!refused || objects.length !== 1) throw new Error("object sparse growth must refuse without mutation");
+        counts.length = 0;
+        objects.length = 0;
+        if (counts.length !== 0 || objects.length !== 0) throw new Error("truncation");
+    }
+    main();
+`);
+    runGeneratedProgram(
+        native!,
+        "language-constructs/sparse-length-refusal",
+        result.cpp,
+    );
+});
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).

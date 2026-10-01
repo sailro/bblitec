@@ -84,6 +84,7 @@ type SceneManifestRecords = Omit<
     | "source"
     | "inputs"
     | "features"
+    | "canvasReadyGate"
     | "engineMsaaSamples"
     | "featureSites"
     | "runtimeSources"

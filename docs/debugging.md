@@ -141,7 +141,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
 | `BBLITE_SCREENSHOT_FRAMES` | Window only: ascending comma-separated frames before the final screenshot, counted as it counts them (presented frames, or at least that many engine frames under `BBLITE_CAPTURE_ENGINE_FRAME`), written as `<stem>.frame-<n>.png` with build stamps |
-| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing; realm engine startup gives subsequent timers the fixed RAF clock, while pre-start timers retain wall time |
+| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing; engine-less Window entries start with the fixed RAF clock. Engine startup selects it for subsequent timers; pre-start timers retain wall time |
 | `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample/canvas-only diagnosis |
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Event tape/state trace |
 | `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAME` | Worker presentation trace/per-engine frame |

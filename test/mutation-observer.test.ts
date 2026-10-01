@@ -112,6 +112,7 @@ test("Window capture readiness activates only for reached canvas readiness write
         `const canvas = document.createElement("canvas"); setTimeout(() => { canvas.dataset.ready = "true"; }, 0);`,
     );
     assert.match(reached.cpp, /window_defer_capture_until_canvas_ready\(\)/);
+    assert.equal(reached.manifest.canvasReadyGate, true);
     assert.ok(
         reached.cpp.indexOf("window_defer_capture_until_canvas_ready()") <
             reached.cpp.indexOf("ui_create_element("),
@@ -119,9 +120,13 @@ test("Window capture readiness activates only for reached canvas readiness write
     for (const body of [
         `element.dataset.ready = "true";`,
         `function unused(canvas: HTMLCanvasElement): void { canvas.dataset.ready = "true"; }`,
-    ])
+        `// startEngine(engine); canvas.dataset.ready = "true";`,
+    ]) {
+        const result = compile(body);
         assert.doesNotMatch(
-            compile(body).cpp,
+            result.cpp,
             /window_defer_capture_until_canvas_ready/,
         );
+        assert.equal(result.manifest.canvasReadyGate, undefined);
+    }
 });

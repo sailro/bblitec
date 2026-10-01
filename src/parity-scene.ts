@@ -83,6 +83,15 @@ function manifestUsesSeededRandom(manifest: CompiledSceneManifest): boolean {
     return manifest.adaptations.includes("deterministic-seeded-random");
 }
 
+/** Whether reached engine or canvas readiness requires waiting past entry. */
+export function manifestReadyAfterEntry(
+    manifest: CompiledSceneManifest,
+): boolean {
+    return (
+        !manifest.features.includes("backend:sdl") && !manifest.canvasReadyGate
+    );
+}
+
 export function usesSeededRandom(scene: SceneDefinition): boolean {
     return manifestUsesSeededRandom(
         readCompiledSceneManifest(scene.output, scene.id),
@@ -1009,6 +1018,9 @@ async function runSceneParity(
     // toggles) would otherwise throw before the scene starts.
     const sharedCaptureOptions = {
         seededRandom: manifestUsesSeededRandom(compiledManifest),
+        ...(manifestReadyAfterEntry(compiledManifest)
+            ? { readyAfterEntry: true }
+            : {}),
         showScrollbars: config.referenceScrollbars ?? false,
         ...(config.independentEngines === undefined
             ? {}

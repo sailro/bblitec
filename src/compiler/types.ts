@@ -154,6 +154,8 @@ export interface CompileManifest {
      */
     inputs: string[];
     features: string[];
+    /** Reached canvas readiness writes gate capture beyond module evaluation. */
+    canvasReadyGate?: true;
     /** The explicit surface sample count, absent when the pin's default applies. */
     engineMsaaSamples?: 1 | 4;
     /**

@@ -81,7 +81,10 @@ import {
 } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
 import { compileDateTimeFormat } from "./dates.js";
-import { compileCollatorConstruction } from "./locale.js";
+import {
+    compileCollatorConstruction,
+    compileNumberLocaleString,
+} from "./locale.js";
 import { compileSearchParams } from "./search-params.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
@@ -4933,6 +4936,23 @@ export class ExpressionLowerer {
                           : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
                 dataType: { kind: "string" },
             };
+        }
+        if (
+            callee.name.text === "toLocaleString" &&
+            this.context.checker.getTypeAtLocation(callee.expression).flags &
+                ts.TypeFlags.NumberLike
+        ) {
+            const owner = this.compileValue(callee.expression);
+            if (owner.kind !== "number")
+                this.context.fail(
+                    call,
+                    "Number.toLocaleString requires a number receiver.",
+                );
+            return compileNumberLocaleString(
+                this.context.dataLowerer,
+                call,
+                owner,
+            );
         }
         if (callee.name.text === "toString") {
             const owner = this.compileValue(callee.expression);

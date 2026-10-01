@@ -1405,6 +1405,7 @@ export class UiProjection {
             "transform",
             "transform-origin",
             "transition",
+            "vertical-align",
             "visibility",
             "white-space",
             "word-break",
@@ -1425,6 +1426,19 @@ export class UiProjection {
         readonly string[]
     > = new Map([
         ["visibility", ["visible", "hidden"]],
+        [
+            "vertical-align",
+            [
+                "baseline",
+                "middle",
+                "sub",
+                "super",
+                "text-top",
+                "text-bottom",
+                "top",
+                "bottom",
+            ],
+        ],
         ["-webkit-tap-highlight-color", ["transparent"]],
         ["text-transform", ["none", "uppercase", "lowercase", "capitalize"]],
         ["text-overflow", ["clip", "ellipsis"]],

@@ -46,6 +46,7 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_COMPUTE_FRAME_GRAPH", anyOf: ["compute:frame-graph"] },
     { macro: "BBLITE_STORAGE_READBACK", anyOf: ["compute:storage-readback"] },
     { macro: "BBLITE_COMPUTE_BINDINGS", anyOf: ["compute:bindings"] },
+    { macro: "BBLITE_HAS_ENGINE", anyOf: ["backend:sdl"] },
     { macro: "BBLITE_WORKERS", anyOf: ["platform:workers"] },
     { macro: "BBLITE_OFFSCREEN_SURFACES", anyOf: ["platform:window"] },
     {

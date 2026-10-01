@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
@@ -11,13 +12,41 @@ import {
     pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
 import { gotoScenePage } from "../src/browser-harness.js";
-import { goldenFixedFrame } from "../src/parity-scene.js";
+import {
+    goldenFixedFrame,
+    manifestReadyAfterEntry,
+} from "../src/parity-scene.js";
 import type { SceneDefinition } from "../src/scene-registry.js";
+import {
+    configureAdHocScenes,
+    resolveScene,
+    sceneReferencePage,
+} from "../src/scene-registry.js";
 
 test("captures full page UI unless canvas-only attribution is requested", () => {
     assert.equal(captureUiEnabled({}), true);
     assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "1" }), true);
     assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "0" }), false);
+});
+
+test("entry readiness follows reached manifest facts", () => {
+    for (const features of [
+        [],
+        ["ui:rml"],
+        ["backend:sdl"],
+        ["backend:sdl", "ui:rml"],
+    ]) {
+        for (const canvasReadyGate of [undefined, true] as const) {
+            assert.equal(
+                manifestReadyAfterEntry({
+                    features,
+                    adaptations: [],
+                    ...(canvasReadyGate ? { canvasReadyGate } : {}),
+                }),
+                !features.includes("backend:sdl") && !canvasReadyGate,
+            );
+        }
+    }
 });
 
 test("device-local capture sizes the host without changing canonical viewport defaults", async () => {
@@ -208,6 +237,109 @@ test("a host page's inline loader imports the served scene module", async () => 
         assert.match(html, /location\.protocol === "file:"/);
     } finally {
         await new Promise<void>((done) => server.close(() => done()));
+    }
+});
+
+test("a page outside the repository is served from its site root and public directory", async () => {
+    const site = mkdtempSync(resolve(tmpdir(), "bblite-site-"));
+    mkdirSync(resolve(site, "src"), { recursive: true });
+    mkdirSync(resolve(site, "public/assets"), { recursive: true });
+    mkdirSync(resolve(site, "assets"), { recursive: true });
+    writeFileSync(
+        resolve(site, "page.html"),
+        '<!doctype html><html><head></head><body><canvas id="c"></canvas><script type="module">await import("/src/main.ts");</script></body></html>\n',
+    );
+    writeFileSync(resolve(site, "src/main.ts"), 'import "./dep";\n');
+    writeFileSync(
+        resolve(site, "src/dep.ts"),
+        "export const value: number = 1;\n",
+    );
+    writeFileSync(resolve(site, "public/assets/data.txt"), "public bytes");
+    writeFileSync(resolve(site, "assets/data.txt"), "site bytes");
+    writeFileSync(resolve(site, "public/README.md"), "public readme");
+    const server = createSuiteSceneServer("export {};\n", {
+        sourcePath: resolve(site, "src/main.ts"),
+        hostPage: resolve(site, "page.html"),
+        siteRoot: site,
+        publicDir: resolve(site, "public"),
+    });
+    try {
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+        const address = server.address();
+        assert.ok(address && typeof address !== "string");
+        const origin = `http://127.0.0.1:${address.port}`;
+        const html = await (await fetch(`${origin}/scene.html`)).text();
+        assert.match(html, /await import\("\/src\/main\.js"\);/);
+        const dependency = await (await fetch(`${origin}/src/dep`)).text();
+        assert.match(dependency, /export const value = 1;/);
+        assert.equal(
+            await (await fetch(`${origin}/assets/data.txt`)).text(),
+            "public bytes",
+        );
+        assert.equal(
+            await (await fetch(`${origin}/README.md`)).text(),
+            "public readme",
+        );
+        // The repository still serves the pinned package beneath the site.
+        assert.equal(
+            (await fetch(`${origin}/node_modules/@babylonjs/lite/lib/index.js`))
+                .status,
+            200,
+        );
+    } finally {
+        await new Promise<void>((done) => server.close(() => done()));
+        rmSync(site, { recursive: true, force: true });
+    }
+});
+
+test("external TypeScript entries and relative imports use the effective source root", async () => {
+    const site = mkdtempSync(resolve(tmpdir(), "bblite-source-"));
+    mkdirSync(resolve(site, "src"));
+    const source = resolve(site, "src/main.ts");
+    writeFileSync(source, 'import "./dep.js";');
+    writeFileSync(
+        resolve(site, "src/dep.ts"),
+        "export const value: number = 2;",
+    );
+    try {
+        for (const siteRoot of [undefined, site]) {
+            configureAdHocScenes(siteRoot ? { siteRoot } : {});
+            const scene = resolveScene(source);
+            const server = createSuiteSceneServer(
+                'import "./dep.js"; export const entry = true;',
+                {
+                    sourcePath: scene.source,
+                    ...sceneReferencePage(scene),
+                },
+            );
+            try {
+                await new Promise<void>((done) =>
+                    server.listen(0, "127.0.0.1", done),
+                );
+                const address = server.address();
+                assert.ok(address && typeof address !== "string");
+                const origin = `http://127.0.0.1:${address.port}`;
+                const html = await (await fetch(`${origin}/scene.html`)).text();
+                const entry = /<script type="module" src="([^"]+)"/.exec(
+                    html,
+                )?.[1];
+                assert.equal(entry, siteRoot ? "/src/main.js" : "/main.js");
+                assert.match(
+                    await (await fetch(new URL(entry, origin))).text(),
+                    /export const entry = true/,
+                );
+                const dependency = new URL("./dep.js", new URL(entry, origin));
+                assert.match(
+                    await (await fetch(dependency)).text(),
+                    /export const value = 2;/,
+                );
+            } finally {
+                await new Promise<void>((done) => server.close(() => done()));
+            }
+        }
+    } finally {
+        configureAdHocScenes({});
+        rmSync(site, { recursive: true, force: true });
     }
 });
 
