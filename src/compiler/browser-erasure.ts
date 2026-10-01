@@ -1,4 +1,5 @@
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { compileHttpFunction } from "./http.js";
 import {
     emissionArray,
     EmissionSet,
@@ -1147,6 +1148,8 @@ export class BrowserErasure {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (devicePixelRatioValue(this.context, unwrapped)) return false;
+        // A retained fetch alias selects its realm when called.
+        if (compileHttpFunction(this.context, unwrapped)) return false;
         if (
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
