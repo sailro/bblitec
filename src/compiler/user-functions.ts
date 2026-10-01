@@ -2502,11 +2502,20 @@ export class UserFunctionLowerer {
     /** Finds the strongly connected call-graph component containing root. */
     private recursiveGroup(
         root: SupportedFunction,
+        represented?: (declaration: SupportedFunction) => boolean,
     ): readonly SupportedFunction[] | undefined {
-        const cached = this.recursiveGroupCache.get(root);
+        const cached = represented
+            ? undefined
+            : this.recursiveGroupCache.get(root);
         if (cached !== undefined) return cached ?? undefined;
         const direct = (declaration: SupportedFunction) =>
-            this.directCalls(declaration);
+            represented
+                ? new Set(
+                      [...this.directCalls(declaration)].filter(
+                          (callee) => !represented(callee),
+                      ),
+                  )
+                : this.directCalls(declaration);
         const reachable = new EmissionSet<SupportedFunction>();
         const collect = (declaration: SupportedFunction): void => {
             if (reachable.has(declaration)) return;
@@ -2540,14 +2549,14 @@ export class UserFunctionLowerer {
             reachesRoot.has(declaration),
         );
         if (group.length === 1 && !direct(root).has(root)) {
-            this.recursiveGroupCache.set(root, null);
+            if (!represented) this.recursiveGroupCache.set(root, null);
             return undefined;
         }
         const ordered = [
             root,
             ...group.filter((declaration) => declaration !== root),
         ];
-        this.recursiveGroupCache.set(root, ordered);
+        if (!represented) this.recursiveGroupCache.set(root, ordered);
         return ordered;
     }
 
@@ -2607,10 +2616,13 @@ export class UserFunctionLowerer {
         const root = declarations[0]!;
         const cached = this.groupEscapeCache.get(root);
         if (cached !== undefined) return cached;
+        // This source-only cache must not depend on which siblings already
+        // have storage at one call site.
+        const group = this.recursiveGroup(root) ?? declarations;
         const escapes = recursiveStorageEscapes(
             this.checker,
-            new EmissionSet(declarations),
-            declarations.flatMap((declaration) =>
+            new EmissionSet(group),
+            group.flatMap((declaration) =>
                 declaration.body ? [declaration.body] : [],
             ),
         );
@@ -2662,6 +2674,31 @@ export class UserFunctionLowerer {
         recursive = true,
         pinArguments = true,
     ): Value {
+        // Calls through an existing sibling's storage no longer need a shared
+        // recursive group. Recompute the cycle without crossing those bindings,
+        // keeping their captures and the identities of nonrecursive siblings.
+        const represented = (declaration: SupportedFunction): boolean => {
+            if (declaration === root.declaration) return false;
+            const symbol = declaredSymbol(
+                this.checker,
+                this.declarationIdentifier(declaration),
+            );
+            const bound = symbol
+                ? context.bindings.peekBinding(symbol)?.value
+                : undefined;
+            return !!(
+                bound?.cpp &&
+                ((bound.kind === "callback" &&
+                    bound.nativeCallbackParameterTypes) ||
+                    (bound.kind === "data" &&
+                        bound.dataType?.kind === "function"))
+            );
+        };
+        if (recursive && declarations.some(represented)) {
+            const group = this.recursiveGroup(root.declaration, represented);
+            declarations = group ?? [root.declaration];
+            recursive = group !== undefined;
+        }
         if (
             recursive &&
             context.options.workers &&

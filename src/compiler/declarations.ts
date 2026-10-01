@@ -2011,6 +2011,7 @@ export class DeclarationLowerer {
             nativeCallbackStaticArguments: parameters.map(() => undefined),
             ...(returnType ? { nativeCallbackReturnType: returnType } : {}),
         });
+        this.context.callbacks.hoistForwardCallbackBindings(callback);
         let parameterDeclarations: string[] = [];
         const emitCallbackBody = (): void => {
             const captured = captureDataFunctionBody(

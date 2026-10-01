@@ -2,6 +2,7 @@ import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { emitReachableStatements } from "./loop-control.js";
 import {
+    bindingIsOnlyCalledDirectly,
     functionOfDeclaration,
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
@@ -557,9 +558,10 @@ export class CallbackLowerer {
      * such binding still pending in a
      * block being lowered is made to exist first, in that block's scope
      * (DeclarationLowerer.hoistForwardBinding), when emission stands at that
-     * block's level. A function the callback reaches resolves by its
-     * declaration and is walked rather than hoisted, and only the callback's
-     * own reads run an untyped effectful initializer ahead of it.
+     * block's level. Functions used only as direct callees are walked;
+     * a later function value uses declaration-time storage to keep its
+     * identity. Only the callback's own reads run an untyped effectful
+     * initializer ahead of it.
      */
     public hoistForwardCallbackBindings(
         callback: ts.Node,
@@ -569,15 +571,27 @@ export class CallbackLowerer {
             declaration: ForwardDeclaration;
             symbol: ts.Symbol;
             direct: boolean;
+            functionValue: boolean;
             owner: LoweringStatement;
         }[] = [];
         const reads = this.context.bindings.unboundClosureReads(callback);
         for (const [symbol, { direct }] of reads) {
             const pending = this.pendingDeclaration(symbol);
+            const functionValue =
+                pending !== undefined &&
+                ts.isIdentifier(pending.declaration.name) &&
+                functionOfDeclaration(pending.declaration) !== undefined &&
+                !bindingIsOnlyCalledDirectly(
+                    this.context.checker,
+                    pending.declaration.name,
+                    pending.declaration.parent.parent.parent,
+                );
             if (
                 !pending ||
                 !pending.declaration.initializer ||
-                (!direct && functionOfDeclaration(pending.declaration)) ||
+                (!direct &&
+                    functionOfDeclaration(pending.declaration) &&
+                    !functionValue) ||
                 !this.context.emitsAtLevelOf(pending.owner)
             )
                 continue;
@@ -585,26 +599,35 @@ export class CallbackLowerer {
                 declaration: pending.declaration as ForwardDeclaration,
                 symbol,
                 direct,
+                functionValue,
                 owner: pending.owner,
             });
         }
         forward.sort(
             (left, right) => left.declaration.pos - right.declaration.pos,
         );
-        for (const { declaration, symbol, direct, owner } of forward) {
+        for (const {
+            declaration,
+            symbol,
+            direct,
+            functionValue,
+            owner,
+        } of forward) {
             if (this.context.bindings.peekBinding(symbol)) continue;
-            const initialization = preserveTemporalDeadZone
-                ? "temporal-dead-zone"
-                : [
-                        ...this.context.bindings.readNames(
-                            declaration.initializer,
-                        ),
-                    ].some(
-                        (read) =>
-                            this.pendingDeclaration(read, true) !== undefined,
-                    )
-                  ? "declaration"
-                  : "early";
+            const initialization =
+                preserveTemporalDeadZone || functionValue
+                    ? "temporal-dead-zone"
+                    : [
+                            ...this.context.bindings.readNames(
+                                declaration.initializer,
+                            ),
+                        ].some(
+                            (read) =>
+                                this.pendingDeclaration(read, true) !==
+                                undefined,
+                        )
+                      ? "declaration"
+                      : "early";
             this.context.bindings.withScopeDepth(owner.scopeDepth, () =>
                 this.context.declarations.hoistForwardBinding(
                     declaration,
