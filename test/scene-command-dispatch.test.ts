@@ -157,7 +157,7 @@ test("refuses flag combinations across the consolidated readings", () => {
             ["parity", "scene1", "--differential"],
             /Unknown parity argument '--differential'/,
         ],
-        [["survey", "no-such-entry.ts"], /survey: no TypeScript entry at /],
+        [["survey", "no-such-entry.ts"], /survey: no TypeScript entry or HTML page at /],
     ];
     for (const [invocation, message] of refusals) {
         const result = sceneCommand(...invocation);

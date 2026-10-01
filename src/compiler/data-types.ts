@@ -57,6 +57,7 @@ import {
     declaredInDomLibrary,
     declaredSymbol,
     libraryGlobal,
+    resolvedSymbol,
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -806,9 +807,7 @@ export class DataTypeRegistry {
         if (name === "Record") return true;
         if (["Readonly", "Partial", "Required"].includes(name) && argument)
             return this.spellsRecordType(argument, depth + 1);
-        let symbol = this.checker.getSymbolAtLocation(node.typeName);
-        if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
-            symbol = this.checker.getAliasedSymbol(symbol);
+        const symbol = resolvedSymbol(this.checker, node.typeName);
         const alias = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
         return (
             alias !== undefined && this.spellsRecordType(alias.type, depth + 1)
@@ -949,7 +948,6 @@ export class DataTypeRegistry {
     /** The accessors a struct field of this property holds, if any. */
     private propertyAccessor(
         property: ts.Symbol,
-        node: ts.Node,
         view: boolean,
     ): StructFieldAccessor | undefined {
         if (view) return "get-set";
@@ -960,12 +958,9 @@ export class DataTypeRegistry {
         const set = declarations.some((declaration) =>
             this.setterProperties.has(declaration),
         );
-        if (!get && !set) return undefined;
-        if (!get)
-            this.fail(
-                node,
-                `Property '${property.name}' has a setter without a getter; a native record reads every property it stores.`,
-            );
+        // A setter-only property maps as before: only storing a record that
+        // holds one needs a slot, and that refuses where it is stored.
+        if (!get) return undefined;
         return set ? "get-set" : "get";
     }
 
@@ -2594,7 +2589,7 @@ export class DataTypeRegistry {
             const mapped: DataType = this.markStoredObjectReferences(
                 optional ? this.nullableType(mappedValue) : mappedValue,
             );
-            const accessor = this.propertyAccessor(property, node, view);
+            const accessor = this.propertyAccessor(property, view);
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),

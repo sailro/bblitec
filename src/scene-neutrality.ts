@@ -81,6 +81,8 @@ const imageCells = new Set([
  * | 231 | Dawn | differ under concurrent captures, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | Dawn | differ under mixed GPU load, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | SDL_GPU | differ under mixed GPU load, worst MAD 0.000012, max 1 | byte-identical |
+ * | ocean | both | full/foreground 0.302--0.306 / 0.297--0.300 over six runs of one generated tree; canvas-only fixed at 0.005: the live GPU timing text in the retained UI | n/a |
+ * | playroom | both | full/foreground 0.202--0.206 / 0.221--0.226 over five runs; canvas-only fixed at 1.102: the retained UI layer | n/a |
  *
  * The wobble is per scene AND per backend, not a property of either
  * alone: scene 9 is measured bit-stable on SDL_GPU and scene 14 on Dawn.
@@ -108,6 +110,8 @@ const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene226", new Set(["dawn", "sdl_gpu"])],
     ["scene231", new Set(["dawn", "sdl_gpu"])],
     ["scene302", new Set(["dawn", "sdl_gpu"])],
+    ["ocean", new Set(["dawn", "sdl_gpu"])],
+    ["playroom", new Set(["dawn", "sdl_gpu"])],
 ]);
 
 /**

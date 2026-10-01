@@ -1161,7 +1161,7 @@ test(
             loop.run([&] {
                 for (unsigned index : {0u, 1u, 2u, 5u}) {
                     const auto& callbacks = target.ui_elements[index].event_callbacks.at(index == 5 ? "toggle" : "input");
-                    for (const auto& callback : callbacks) callback(PlatformMouseEvent{});
+                    callbacks->dispatch(PlatformMouseEvent{});
                 }
                 target.ui_elements[0].checked = true;
                 target.ui_elements[1].attributes["value"] = "99";

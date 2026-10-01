@@ -1119,7 +1119,7 @@ export class DataLowerer {
         left: ts.PropertyAccessExpression,
         right: ts.Expression,
     ): boolean {
-        const property = this.context.checker.getSymbolAtLocation(left.name);
+        const property = declaredSymbol(this.context.checker, left.name);
         if (
             !property ||
             !this.context.dataTypes.isAccessorProperty(

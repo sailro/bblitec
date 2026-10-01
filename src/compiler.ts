@@ -3748,8 +3748,15 @@ class Compiler implements LoweringServices {
      * builder call returns when run there (`runGenerationBuilder`).
      */
     private generationText(expression: ts.Expression): string | undefined {
+        // Folding keeps a value and drops the evaluation: an expression
+        // whose lowering emits statements has effects and keeps its
+        // ordinary lowering (the declined probe rolls them back).
         const carried = this.probeEmission(() => {
-            const value = this.compileValue(expression);
+            let value: Value | undefined;
+            const effects = this.captureEmittedStatements(() => {
+                value = this.compileValue(expression);
+            });
+            if (!value || effects.length > 0) return undefined;
             return (
                 value.staticString ??
                 (value.staticNumber === undefined

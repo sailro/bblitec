@@ -435,15 +435,15 @@ function accessorSlot(
 ): string {
     const getter = record.recordGetters?.[field.sourceName];
     const setter = record.recordSetters?.[field.sourceName];
-    if (!field.accessor)
-        lowerer.context.fail(
-            node,
-            `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
-        );
     if (!getter)
         lowerer.context.fail(
             node,
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
+        );
+    if (!field.accessor)
+        lowerer.context.fail(
+            node,
+            `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
         );
     const set = setter
         ? lowerer.context.compileStoredAccessor(record, setter, field.type)
