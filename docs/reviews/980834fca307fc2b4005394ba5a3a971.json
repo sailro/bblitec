@@ -1,0 +1,21 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Invocation groups retain their primary unit instead of copying stale status and unused fields.",
+      "applied": true
+    },
+    {
+      "summary": "PCH content reads occur only after the complete compilation context is eligible for sharing.",
+      "applied": true
+    },
+    {
+      "summary": "Argument classification constants are allocated once per command instead of once per token.",
+      "applied": true
+    },
+    {
+      "summary": "Array storage admission reuses the JSON initializer transaction without repeating speculative compilation.",
+      "applied": true
+    }
+  ]
+}
