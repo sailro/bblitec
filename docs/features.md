@@ -365,7 +365,8 @@ versions. Public glTF albedo reads exclude material extensions, transforms and B
 environment rotation and wider metallic-reflectance fields remain limited.
 
 Shader materials admit bounded 2D/array samplers, float/depth/comparison sampling, storage buffers and
-selected uniform/system matrices. Wider descriptors, pipeline state and live composition profiles refuse.
+selected uniform/system matrices; uniform writes take arrays, tuples and typed arrays. Wider descriptors,
+pipeline state and live composition profiles refuse.
 A source or plugin `getCustomCode` a scene builds with a function is run at generation over
 generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a runtime
 value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.

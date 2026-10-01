@@ -20,7 +20,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // of the reached program.
 import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
@@ -45,7 +45,7 @@ import type {
     SceneMeshManifest,
     Value,
 } from "./types.js";
-import { tupleComponents } from "./data-types.js";
+import { isTypedArrayType, tupleComponents } from "./data-types.js";
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -88,6 +88,8 @@ export interface ShaderMaterialContext
             | "castNumber"
             | "compileShaderSource"
             | "compileStringLiteral"
+            | "bindings"
+            | "emit"
         > {}
 
 export function compileShaderMaterialOptions(
@@ -877,6 +879,28 @@ export function compileShaderUniformComponents(
         value.dataType.arity === count
     ) {
         return tupleComponents(value.cpp, count);
+    }
+    if (value.kind === "data" && isTypedArrayType(value.dataType)) {
+        // The pin's setter takes any ArrayLike: a length other than the
+        // declared count throws (LiteError 401), then each lane is stored
+        // through Math.fround.
+        const array = context.bindings.pinValueToTemporary(
+            value,
+            "uniform_values",
+        ).cpp;
+        context.emit({
+            kind: "expression",
+            code:
+                `if (${array}.size() != ${count}u) throw std::runtime_error(` +
+                `${stringLiteral(`ShaderMaterial: uniform expects ${count} value(s), got `)} + ` +
+                `std::to_string(${array}.size()) + ".");`,
+        });
+        const float = value.dataType.kind === "f32array";
+        return Array.from({ length: count }, (_, index) =>
+            float
+                ? `${array}.load(${index}u)`
+                : `static_cast<float>(${array}.load(${index}u))`,
+        );
     }
     context.fail(expression, `Expected a ${count}-component array value.`);
 }
