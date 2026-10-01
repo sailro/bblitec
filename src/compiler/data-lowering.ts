@@ -5954,7 +5954,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const contextual = contextualType
             ? this.context.dataTypes.fromTsType(contextualType, expression)
             : undefined;
-        const dataType =
+        const arguments_ = expression.arguments ?? [];
+        const declared =
             expectedType?.kind === "map" || expectedType?.kind === "set"
                 ? expectedType
                 : contextual?.kind === "map" || contextual?.kind === "set"
@@ -5962,6 +5963,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   : direct?.kind === "map" || direct?.kind === "set"
                     ? direct
                     : undefined;
+        // A Set copying a native collection whose element type the checker
+        // widened (an `Array.isArray` guard leaves `any[]`) takes the
+        // element type of the collection it copies.
+        const copiedNode =
+            !declared &&
+            constructedKind === "set" &&
+            arguments_.length === 1 &&
+            !ts.isArrayLiteralExpression(this.context.unwrap(arguments_[0]!))
+                ? this.context.unwrap(arguments_[0]!)
+                : undefined;
+        const copiedValue = copiedNode && this.context.compileValue(copiedNode);
+        const copied =
+            copiedNode && copiedValue?.kind === "tuple"
+                ? (this.materializeKnownTuple(copiedNode, copiedValue) ??
+                  copiedValue)
+                : copiedValue;
+        const copiedType = copied?.dataType;
+        const dataType: DataType<"map" | "set"> | undefined =
+            declared ??
+            (copiedType?.kind === "vector" ||
+            copiedType?.kind === "span" ||
+            copiedType?.kind === "set"
+                ? { kind: "set", element: copiedType.element }
+                : undefined);
         if (!dataType) {
             this.context.fail(
                 expression,
@@ -5974,7 +5999,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Constructor ${constructor} does not match its ${dataType.kind} data type.`,
             );
         }
-        const arguments_ = expression.arguments ?? [];
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(dataType);
         if (dataType.kind === "map") {
@@ -6012,15 +6036,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             };
         }
-        const source = this.context.compileValue(iterable);
-        const values = this.compileKnownValueForSink(
-            source,
-            {
-                kind: "vector",
-                element: dataType.element,
-            },
-            iterable,
-        );
+        const source = copied ?? this.context.compileValue(iterable);
+        // The constructor copies the elements: a borrowed view's are read,
+        // never retained.
+        const values =
+            source.kind === "data" &&
+            source.dataType?.kind === "span" &&
+            dataTypesEqual(source.dataType.element, dataType.element)
+                ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`
+                : this.compileKnownValueForSink(
+                      source,
+                      {
+                          kind: "vector",
+                          element: dataType.element,
+                      },
+                      iterable,
+                  );
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,

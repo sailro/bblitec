@@ -1700,6 +1700,24 @@ check(
 );
 
 check(
+    "set-copies-take-the-copied-element-type",
+    `
+    interface Request { readonly clips: readonly string[] }
+    function unique(request: Request): boolean {
+        return Array.isArray(request.clips) && new Set(request.clips).size === request.clips.length;
+    }
+    if (!unique({ clips: ["a", "b"] }) || unique({ clips: ["a", "a"] })) throw new Error("literal requests");
+    const requests: Request[] = [{ clips: ["p"] }, { clips: ["q", "q"] }];
+    if (requests.map(unique).join(",") !== "true,false") throw new Error("stored requests");
+    function distinct(values: readonly number[]): number {
+        const copy = Array.isArray(values) ? new Set(values) : new Set<number>();
+        return copy.size;
+    }
+    if (distinct([1, 2, 2]) !== 2 || distinct([]) !== 0) throw new Error("number copies");
+`,
+);
+
+check(
     "destructuring",
     `
     function lanes(xs: number[]): number {
