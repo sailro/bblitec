@@ -147,6 +147,74 @@ export class PlatformCalls {
         private readonly ui: UiProjection,
     ) {}
 
+    /**
+     * A spread of a retained element list, snapshotted before the call, as
+     * JavaScript spreads it before inserting.
+     */
+    private uiElementSpread(argument: ts.SpreadElement): { spread: string } {
+        const list = this.context.compileValue(argument.expression);
+        const type = list.dataType;
+        if (
+            list.kind !== "data" ||
+            type?.kind !== "vector" ||
+            type.element.kind !== "handle" ||
+            type.element.handle !== "ui-element"
+        )
+            this.context.fail(
+                argument,
+                "A spread of retained UI nodes requires an element array.",
+            );
+        return {
+            spread: this.context.bindings.pinValueToTemporary(
+                list,
+                "append_spread",
+                argument.expression,
+            ).cpp,
+        };
+    }
+
+    /**
+     * The focus-visible flag `focus(options)` passes: `focusVisible` when
+     * given, else the default. Native focus never scrolls, which is what
+     * `preventScroll: true` asks and what a plain native `focus()` does.
+     */
+    private focusVisibleOption(
+        options: ts.Expression | undefined,
+    ): string | undefined {
+        if (!options) return undefined;
+        const object = this.context.unwrap(options);
+        if (!ts.isObjectLiteralExpression(object))
+            return this.context.fail(
+                options,
+                "focus options require an object literal.",
+            );
+        let visible: string | undefined;
+        for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.context.propertyName(property.name)
+                    : undefined;
+            const value = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : ts.isShorthandPropertyAssignment(property)
+                  ? property.name
+                  : undefined;
+            if (!value || (name !== "preventScroll" && name !== "focusVisible"))
+                return this.context.fail(
+                    property,
+                    "focus options represent preventScroll and focusVisible only.",
+                );
+            if (name === "focusVisible")
+                visible = this.context.conditions.compileCondition(value);
+            else
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(value),
+                );
+        }
+        return visible;
+    }
+
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         if (this.emitPlatformEventListener(call))
@@ -1339,9 +1407,10 @@ export class PlatformCalls {
             };
         }
         if (element && callee.name.text === "focus") {
-            this.context.expectArgumentCount(call, 0, 0);
+            this.context.expectArgumentCount(call, 0, 1);
+            const visible = this.focusVisibleOption(call.arguments[0]);
             const engine = this.context.requireEngine(element, call);
-            const focus = `bbl::ui_focus(${engine}, ${element.cpp})`;
+            const focus = `bbl::ui_focus(${engine}, ${element.cpp}${visible === undefined ? "" : `, ${visible}`})`;
             return {
                 kind: "void",
                 cpp: whenPresent(element, focus),
@@ -1683,7 +1752,12 @@ export class PlatformCalls {
                 engineCpp: engine,
             };
         }
-        if (element && callee.name.text === "append") {
+        if (
+            element &&
+            (callee.name.text === "append" ||
+                (callee.name.text === "replaceChildren" &&
+                    call.arguments.length > 0))
+        ) {
             // Even named handles need a snapshot: later arguments may rebind
             // the receiver or an earlier argument before insertion begins.
             const snapshot = (
@@ -1698,10 +1772,18 @@ export class PlatformCalls {
                     node,
                 );
             };
+            const replace = callee.name.text === "replaceChildren";
+            if (replace && element.uiRoot)
+                this.context.fail(
+                    call,
+                    "Replacing the document root children is not supported.",
+                );
             const receiver = element.uiRoot
                 ? element
                 : snapshot(element, "append_receiver", callee.expression);
             const children = call.arguments.map((argument) => {
+                if (ts.isSpreadElement(argument))
+                    return this.uiElementSpread(argument);
                 const child = this.context.compileValue(argument);
                 if (child.kind !== "string")
                     this.context.expectKind(child, "ui-element", argument);
@@ -1713,7 +1795,7 @@ export class PlatformCalls {
             const engine = receiver.uiRoot
                 ? this.ui.documentEngine(call)
                 : this.context.requireEngine(receiver, call);
-            const appends = children.map((value) => {
+            const insertion = (value: Value): string => {
                 const child: Value =
                     value.kind === "string"
                         ? {
@@ -1741,8 +1823,35 @@ export class PlatformCalls {
                 if (value.kind === "string")
                     return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
                 return `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child.cpp})`;
-            });
-            return { kind: "void", cpp: appends.join(", ") };
+            };
+            const operations: string[] = [];
+            if (replace) {
+                this.ui.recordUiStaticReplaceChildren(receiver);
+                operations.push(
+                    `bbl::ui_replace_children(${engine}, ${receiver.cpp})`,
+                );
+            }
+            for (const value of children) {
+                if (!("spread" in value)) {
+                    operations.push(insertion(value));
+                    continue;
+                }
+                // The static model cannot name a spread's elements.
+                this.ui.recordUiStaticAppend(receiver, {
+                    kind: "ui-element",
+                    cpp: "",
+                });
+                const child = this.context.allocateTemporaryCppName(
+                    "append_spread_child",
+                );
+                const append = receiver.uiRoot
+                    ? `bbl::ui_append_to_root(${engine}, ${child})`
+                    : `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child})`;
+                operations.push(
+                    `[&] { for (const auto& ${child} : ${value.spread}) static_cast<void>(${append}); }()`,
+                );
+            }
+            return { kind: "void", cpp: operations.join(", ") };
         }
         if (element && callee.name.text === "replaceChildren") {
             this.context.expectArgumentCount(call, 0, 0);

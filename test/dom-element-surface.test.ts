@@ -169,3 +169,67 @@ test("Window observer presence guards select the constructed observer", () => {
     assert.match(cpp, /->observe\(/);
     assert.match(cpp, /bbl::pal::create_mutation_observer\(/);
 });
+
+test("replaceChildren and append insert nodes, text and spread element lists in order", (t) => {
+    const output = resolve("artifacts/dom-child-replacement");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const { cpp } = compileSource(
+        `${realm}
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.appendChild(log);
+        let steps = "";
+        function record(value: string): void { steps += (steps ? "|" : "") + value; log.textContent = steps; }
+        const list = document.createElement("div");
+        list.id = "list";
+        document.body.appendChild(list);
+        const items: HTMLElement[] = [];
+        const rest: HTMLElement[] = [];
+        for (const name of ["a", "b", "c"]) {
+            const item = document.createElement("span");
+            item.id = name;
+            items.push(item);
+            if (name !== "a") rest.push(item);
+        }
+        const first = items[0]!;
+        list.append(...items);
+        record(list.contains(items[2]!) ? "3" : "0");
+        list.replaceChildren(first, "x", ...rest);
+        record(list.contains(first) && list.contains(rest[1]!) ? "1x3" : "0");
+        const icon = document.createElement("span");
+        icon.id = "icon";
+        list.replaceChildren(icon);
+        record(!list.contains(first) && list.contains(icon) ? "1" : "0");
+        list.replaceChildren(...items, icon);
+        record(list.contains(first) && list.contains(icon) ? "4" : "0");
+        const input = document.createElement("input");
+        input.id = "input";
+        document.body.appendChild(input);
+        input.focus({ preventScroll: true });
+        record(document.activeElement === input ? "F" : "f");
+        input.blur();
+        input.focus({ focusVisible: false });
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    assert.match(cpp, /bbl::ui_focus\([^;]+, false\)/);
+    runRmlUiFixture(t, "dom-child-replacement", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
+test("focus options refuse what native focus cannot represent", () => {
+    assert.throws(
+        () =>
+            compileEntry(`
+                const input = document.createElement("input");
+                document.body.appendChild(input);
+                input.focus({ preventScroll: true, scrollIntoView: true } as FocusOptions);
+                globalThis.close();
+            `),
+        /focus options represent preventScroll and focusVisible only/,
+    );
+});
