@@ -4094,6 +4094,22 @@ check(
 `,
 );
 
+test("stored closures refuse later bindings without temporal-dead-zone storage", () => {
+    for (const read of ["options.read()", "readOptions()"]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                const readers: Array<() => number> = [];
+                readers.push(() => ${read});
+                readers[0]!();
+                const options = { read: () => 7 };
+                function readOptions(): number { return options.read(); }
+            `),
+            /stored closure reading a later binding requires an owned data type to preserve its temporal dead zone/,
+        );
+    }
+});
+
 check(
     "a named function expression calls itself by its own name",
     `

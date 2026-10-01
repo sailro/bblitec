@@ -345,17 +345,19 @@ export class DeclarationLowerer {
      * initialization, the binding is temporal-dead-zone storage its
      * initializer fills where the source declares it; otherwise the
      * declaration is materialized here and skipped when the walk reaches it.
-     * Without an owned data type such an initializer runs here too, unless
-     * `initializeAhead` is false: then nothing is hoisted.
+     * A stored closure requires represented temporal-dead-zone storage.
+     * A native callback without an owned data type initializes here too,
+     * unless `initializeAhead` is false: then nothing is hoisted.
      */
     public hoistForwardBinding(
         declaration: ForwardDeclaration,
         symbol: ts.Symbol,
         initializeAhead = true,
-        initializeAtDeclaration = false,
+        initialization:
+            "early" | "declaration" | "temporal-dead-zone" = "early",
     ): void {
         const pure =
-            !initializeAtDeclaration &&
+            initialization === "early" &&
             this.context.evaluationOrder.isPureExpression(
                 declaration.initializer,
             );
@@ -376,6 +378,11 @@ export class DeclarationLowerer {
             });
             return;
         }
+        if (initialization === "temporal-dead-zone")
+            this.context.fail(
+                declaration,
+                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
+            );
         if (!pure && !initializeAhead) return;
         this.emitVariableDeclaration(declaration);
         this.forwardBindings.set(symbol, "hoisted");

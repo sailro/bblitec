@@ -593,19 +593,24 @@ export class CallbackLowerer {
         );
         for (const { declaration, symbol, direct, owner } of forward) {
             if (this.context.bindings.peekBinding(symbol)) continue;
-            const initializeAtDeclaration =
-                preserveTemporalDeadZone ||
-                [
-                    ...this.context.bindings.readNames(declaration.initializer),
-                ].some(
-                    (read) => this.pendingDeclaration(read, true) !== undefined,
-                );
+            const initialization = preserveTemporalDeadZone
+                ? "temporal-dead-zone"
+                : [
+                        ...this.context.bindings.readNames(
+                            declaration.initializer,
+                        ),
+                    ].some(
+                        (read) =>
+                            this.pendingDeclaration(read, true) !== undefined,
+                    )
+                  ? "declaration"
+                  : "early";
             this.context.bindings.withScopeDepth(owner.scopeDepth, () =>
                 this.context.declarations.hoistForwardBinding(
                     declaration,
                     symbol,
                     direct,
-                    initializeAtDeclaration,
+                    initialization,
                 ),
             );
         }
