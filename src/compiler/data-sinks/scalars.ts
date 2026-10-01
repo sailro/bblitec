@@ -240,6 +240,24 @@ function valueString(
     return undefined;
 }
 
+/** An opaque reference kind: a value of the same data type, as it is. */
+const opaqueSink = {
+    expression: (
+        type: DataType,
+        lowerer: DataSinkHost,
+        _expression: ts.Expression,
+        unwrapped: ts.Expression,
+    ): string => lowerer.requireDataValue(unwrapped, type).cpp,
+    value: (
+        type: DataType,
+        _lowerer: DataSinkHost,
+        value: Value,
+    ): string | undefined =>
+        value.dataType && dataTypesEqual(value.dataType, type)
+            ? value.cpp
+            : undefined,
+};
+
 export const scalarsSinks: DataSinkOperations<
     | "error"
     | "event-target"
@@ -328,44 +346,12 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "storage" ? value.cpp : undefined,
     },
-    "date-time-format": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "date-time-format" ? value.cpp : undefined,
-    },
-    "text-decoder": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "text-decoder" ? value.cpp : undefined,
-    },
-    "text-encoder": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "text-encoder" ? value.cpp : undefined,
-    },
-    collator: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "collator" ? value.cpp : undefined,
-    },
-    "weak-ref": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (type, _lowerer, value) =>
-            value.dataType && dataTypesEqual(value.dataType, type)
-                ? value.cpp
-                : undefined,
-    },
-    date: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "date" ? value.cpp : undefined,
-    },
+    "date-time-format": opaqueSink,
+    "text-decoder": opaqueSink,
+    "text-encoder": opaqueSink,
+    collator: opaqueSink,
+    "weak-ref": opaqueSink,
+    date: opaqueSink,
     number: { expression: expressionNumber, value: valueNumber },
     boolean: { expression: expressionBoolean, value: valueBoolean },
     string: { expression: expressionString, value: valueString },

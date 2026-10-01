@@ -263,18 +263,32 @@ std::string normalize_string(const std::string& value, const std::string& form) 
     return js::string_from_code_units(output);
 }
 
-Collator make_collator(std::vector<std::string> locales, CollationOptions options) {
-    // The constructor resolves its locale and options, throwing where they are invalid.
-    static_cast<void>(cached_collator(locales, options));
-    return js::make_ref<CollatorState>(CollatorState{std::move(locales), std::move(options)});
+namespace {
+
+double collate(const UCollator* collator, const std::string& left, const std::string& right) {
+    const auto a = js::string_code_units(left), b = js::string_code_units(right);
+    return static_cast<double>(
+        ucol_strcoll(collator, a.data(), icu_length(a.size()), b.data(), icu_length(b.size())));
+}
+
+} // namespace
+
+Collator make_collator(const std::vector<std::string>& locales, const CollationOptions& options) {
+    // The constructor resolves its locale and options, throwing where they
+    // are invalid; the collator it opens serves every compare.
+    auto collator = open_collator(locales, options);
+    return js::make_ref<CollatorState>(std::shared_ptr<void>(
+        collator.release(), [](void* value) { ucol_close(static_cast<UCollator*>(value)); }));
+}
+
+double collator_compare(const Collator& collator, const std::string& left,
+                        const std::string& right) {
+    return collate(static_cast<const UCollator*>(collator->get()), left, right);
 }
 
 double compare_strings(const std::string& left, const std::string& right,
                        const std::vector<std::string>& locales, const CollationOptions& options) {
-    const auto* collator = cached_collator(locales, options);
-    const auto a = js::string_code_units(left), b = js::string_code_units(right);
-    return static_cast<double>(
-        ucol_strcoll(collator, a.data(), icu_length(a.size()), b.data(), icu_length(b.size())));
+    return collate(cached_collator(locales, options), left, right);
 }
 
 } // namespace bbl::pal

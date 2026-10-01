@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
+import { argumentAt, expressionMayRunCode } from "./syntax.js";
 
 const collationOptionNames = [
     "numeric",
@@ -67,7 +68,6 @@ function compileCollation(
     site: ts.Node,
 ): { locales: string; options: string } {
     const context = lowerer.context;
-    context.reachFeature("data:locale", site);
     const localeValue = localeNode
         ? context.compileValue(localeNode)
         : undefined;
@@ -242,6 +242,7 @@ export function compileCollatorConstruction(
     if (arguments_.length > 2)
         context.fail(expression, "Intl.Collator takes locales and options.");
     context.reachJsData();
+    context.reachFeature("data:locale", expression);
     const { locales, options } = compileCollation(
         lowerer,
         "Intl.Collator",
@@ -272,14 +273,28 @@ export function compileCollatorMethod(
         owner,
         "collator_receiver",
     );
-    const [left, right] = call.arguments.map((argument, index) =>
-        snapshot(
-            lowerer,
-            context.compileValue(argument),
-            { kind: "string" },
-            argument,
-            index === 0 ? "collation_left" : "collation_right",
-        ),
+    const leftNode = argumentAt(call, 0);
+    const rightNode = argumentAt(call, 1);
+    // The left string is kept before the right one runs only when the
+    // right one can run code; plain reads pass straight through.
+    const leftValue = context.compileValue(leftNode);
+    const left = expressionMayRunCode(rightNode)
+        ? snapshot(
+              lowerer,
+              leftValue,
+              { kind: "string" },
+              leftNode,
+              "collation_left",
+          )
+        : lowerer.compileKnownValueForSink(
+              leftValue,
+              { kind: "string" },
+              leftNode,
+          );
+    const right = lowerer.compileKnownValueForSink(
+        context.compileValue(rightNode),
+        { kind: "string" },
+        rightNode,
     );
     return lowerer.leafValue(
         `bbl::pal::collator_compare(${collator.cpp}, ${left}, ${right})`,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,18 +37,21 @@ template <typename T>
     return locales ? collation_locales(*locales) : std::vector<std::string>{};
 }
 
-/** An `Intl.Collator`: the locales and options each `compare` passes to `compare_strings`. */
-struct CollatorState {
-    std::vector<std::string> locales;
-    CollationOptions options;
+/** An `Intl.Collator`: the ICU collator its locales and options resolved to, opened once. */
+class CollatorState {
+public:
+    explicit CollatorState(std::shared_ptr<void> collator) : collator_(std::move(collator)) {}
+    [[nodiscard]] const void* get() const { return collator_.get(); }
+
+private:
+    std::shared_ptr<void> collator_;
 };
 using Collator = js::Ref<CollatorState>;
 
 /** `new Intl.Collator(locales, options)`; throws where `localeCompare` would. */
-[[nodiscard]] Collator make_collator(std::vector<std::string> locales, CollationOptions options);
-[[nodiscard]] inline double collator_compare(const Collator& collator, const std::string& left,
-                                             const std::string& right) {
-    return compare_strings(left, right, collator->locales, collator->options);
-}
+[[nodiscard]] Collator make_collator(const std::vector<std::string>& locales,
+                                     const CollationOptions& options);
+[[nodiscard]] double collator_compare(const Collator& collator, const std::string& left,
+                                      const std::string& right);
 
 } // namespace bbl::pal

@@ -94,7 +94,6 @@ interface DataKinds {
     "http-response": { kind: "http-response" };
     "search-params": { kind: "search-params" };
     promise: { kind: "promise"; result?: DataType };
-    /** A WeakRef; its target is retained strongly (fidelity: weak collections). */
     "weak-ref": { kind: "weak-ref"; target: DataType };
     storage: { kind: "storage" };
     date: { kind: "date" };

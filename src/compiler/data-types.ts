@@ -376,6 +376,31 @@ function isSceneGraphNode(type: ts.Type): boolean {
     );
 }
 
+/** Library objects held as opaque data values: [symbol, declaring library, data kind]. */
+const LIBRARY_OBJECT_KINDS: readonly (readonly [
+    string,
+    "dom" | "default",
+    (
+        | "storage"
+        | "http-response"
+        | "search-params"
+        | "date"
+        | "date-time-format"
+        | "text-decoder"
+        | "text-encoder"
+        | "collator"
+    ),
+])[] = [
+    ["Storage", "dom", "storage"],
+    ["Response", "dom", "http-response"],
+    ["URLSearchParams", "dom", "search-params"],
+    ["Date", "default", "date"],
+    ["DateTimeFormat", "default", "date-time-format"],
+    ["TextDecoder", "dom", "text-decoder"],
+    ["TextEncoder", "dom", "text-encoder"],
+    ["Collator", "default", "collator"],
+];
+
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
 function binaryLibraryClass(type: ts.Type): boolean {
     const name = type.symbol?.name;
@@ -1058,46 +1083,14 @@ export class DataTypeRegistry {
             declaredInDefaultLibrary(type.symbol)
         )
             return { kind: "error" };
-        if (
-            type.symbol?.name === "Storage" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "storage" };
-        if (
-            type.symbol?.name === "Response" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "http-response" };
-        if (
-            type.symbol?.name === "URLSearchParams" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "search-params" };
-        if (
-            type.symbol?.name === "Date" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
-            return { kind: "date" };
-        if (
-            type.symbol?.name === "DateTimeFormat" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
-            return { kind: "date-time-format" };
-        if (
-            type.symbol?.name === "TextDecoder" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "text-decoder" };
-        if (
-            type.symbol?.name === "TextEncoder" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return { kind: "text-encoder" };
-        if (
-            type.symbol?.name === "Collator" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
-            return { kind: "collator" };
+        const libraryObject = LIBRARY_OBJECT_KINDS.find(
+            ([name, library]) =>
+                type.symbol?.name === name &&
+                (library === "dom"
+                    ? declaredInDomLibrary(type.symbol)
+                    : declaredInDefaultLibrary(type.symbol)),
+        );
+        if (libraryObject) return { kind: libraryObject[2] };
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);
@@ -1327,8 +1320,6 @@ export class DataTypeRegistry {
                     value: this.markStoredObjectReferences(value),
                 };
             }
-            // A WeakRef retains its target as the weak collections retain
-            // their keys: never collecting it is a conforming WeakRef.
             if (symbolName === "WeakRef") {
                 const [targetType] = this.checker.getTypeArguments(reference);
                 if (!targetType) return undefined;
