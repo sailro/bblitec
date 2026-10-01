@@ -285,11 +285,21 @@ export function emitDomEventListener(
             engine = context.requireDefaultEngine(call);
         } else {
             const type = context.dataLowerer.dataTypeAt(callee.expression);
-            if (type?.kind === "event-target") {
-                const value = context.dataLowerer.narrowOptional(
-                    context.compileValue(callee.expression),
-                    callee.expression,
-                );
+            const value =
+                type?.kind === "event-target"
+                    ? context.dataLowerer.narrowOptional(
+                          context.compileValue(callee.expression),
+                          callee.expression,
+                      )
+                    : undefined;
+            if (value?.domEventTargetCpp) {
+                // The Window or Document identity, bound to a name typed
+                // `EventTarget`, is the global target itself.
+                target = value.domEventTargetCpp;
+                engine =
+                    documentEngine(context, call) ??
+                    context.requireDefaultEngine(call);
+            } else if (value) {
                 if (value.dataType?.kind !== "event-target")
                     context.fail(
                         callee.expression,

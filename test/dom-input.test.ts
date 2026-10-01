@@ -103,3 +103,39 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         },
     });
 });
+
+test("Window and Document listen through EventTarget-typed names", () => {
+    const directory = resolve("artifacts/dom-input-event-target");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const { cpp } = compileSource(
+        `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        let blocked = 0;
+        function intercept(target: EventTarget): () => void {
+            const onDown = (event: Event): void => {
+                blocked++;
+                event.preventDefault();
+            };
+            target.addEventListener("pointerdown", onDown, { capture: true });
+            return () => target.removeEventListener("pointerdown", onDown, { capture: true });
+        }
+        const releaseWindow = intercept(window);
+        const releaseDocument = intercept(document);
+        releaseWindow();
+        releaseDocument();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    for (const target of ["window", "document"]) {
+        for (const call of ["on", "off"]) {
+            assert.ok(
+                cpp.includes(
+                    `bbl::${call}_dom_pointer(bbl::pal::window_document_engine(), bbl::DomEventTarget::${target}(), "pointerdown"`,
+                ),
+                `${call} ${target}`,
+            );
+        }
+    }
+});
