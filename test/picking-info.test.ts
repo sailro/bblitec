@@ -94,7 +94,10 @@ test("nullable picking results reuse data returns and preserve the unchanged sce
     const result = compileSource(program());
     assert(!result.manifest.features.includes("platform:window"));
     assert.match(result.cpp, /Nullable<bbl::PickingInfo>/);
-    assert.match(result.cpp, /return std::nullopt/);
+    assert.match(
+        result.cpp,
+        /return bbl::js::Nullable<bbl::PickingInfo>\{std::nullopt\}/,
+    );
     assert.match(result.cpp, /picked_normal\([^,]+, false\)/);
     assert.equal(result.cpp.match(/bbl::gpu_pick\(/g)?.length, 5);
     assert.equal(result.cpp.match(/for \(;/g)?.length, 8);

@@ -1573,11 +1573,14 @@ export class BindingScopes {
                 ? "double"
                 : value.kind === "boolean" && value.staticBoolean === undefined
                   ? "bool"
-                  : (value.kind === "string" ||
-                          value.dataType?.kind === "string") &&
+                  : value.dataType?.kind === "enum" &&
                       value.staticString === undefined
-                    ? "std::string"
-                    : undefined;
+                    ? this.context.dataTypes.cppType(value.dataType)
+                    : (value.kind === "string" ||
+                            value.dataType?.kind === "string") &&
+                        value.staticString === undefined
+                      ? "std::string"
+                      : undefined;
         if (!cppType) return value;
         const cppName = this.context.allocateTemporaryCppName(label);
         const snapshot = cppType === "std::string" && readsNativeStorage(value);
