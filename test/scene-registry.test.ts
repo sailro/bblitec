@@ -598,6 +598,19 @@ test("an HTML page is a scene source hosting the entry it names", () => {
     assert.deepEqual(sceneReferencePage(registered), {
         hostPage: registered.page?.path,
     });
+    assert.deepEqual(
+        sceneReferencePage({
+            ...registered,
+            page: {
+                path: registered.page!.path,
+                root: "examples/regression-host-page",
+            },
+        }),
+        {
+            hostPage: registered.page?.path,
+            siteRoot: resolve("examples/regression-host-page"),
+        },
+    );
     const page = ".cache/adhoc-page.html";
     mkdirSync(".cache", { recursive: true });
     writeFileSync(".cache/adhoc-page.ts", "export {};\n");

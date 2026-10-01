@@ -699,6 +699,18 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             return;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+        const publicPath =
+            publicDir === undefined ? undefined : resolve(publicDir, relative);
+        if (
+            publicPath !== undefined &&
+            publicPath.startsWith(`${publicDir}${sep}`) &&
+            existsSync(publicPath) &&
+            statSync(publicPath).isFile()
+        ) {
+            response.writeHead(200, { "Content-Type": mimeType(publicPath) });
+            response.end(readFileSync(publicPath));
+            return;
+        }
         for (const servedRoot of servedRoots) {
             const path = resolve(servedRoot, relative);
             // Local TypeScript modules transpile on demand. Corpus scenes
@@ -754,18 +766,6 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 response.end(readFileSync(path));
                 return;
             }
-        }
-        const publicPath =
-            publicDir === undefined ? undefined : resolve(publicDir, relative);
-        if (
-            publicPath !== undefined &&
-            publicPath.startsWith(`${publicDir}${sep}`) &&
-            existsSync(publicPath) &&
-            statSync(publicPath).isFile()
-        ) {
-            response.writeHead(200, { "Content-Type": mimeType(publicPath) });
-            response.end(readFileSync(publicPath));
-            return;
         }
         const bundledRelative = bundledDemoAssetPath(relative);
         const bundledPath =

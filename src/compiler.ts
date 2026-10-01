@@ -1051,6 +1051,10 @@ class Compiler implements LoweringServices {
                 // appends the files it reads beside the program.
                 inputs: [],
                 features,
+                ...(this.ui.primaryCanvasReadyGate ||
+                this.ui.windowCanvasReadyGate
+                    ? { canvasReadyGate: true as const }
+                    : {}),
                 ...(this.engineMsaaSamples !== undefined
                     ? { engineMsaaSamples: this.engineMsaaSamples }
                     : {}),

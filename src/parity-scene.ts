@@ -83,17 +83,12 @@ function manifestUsesSeededRandom(manifest: CompiledSceneManifest): boolean {
     return manifest.adaptations.includes("deterministic-seeded-random");
 }
 
-/**
- * Whether the reference capture has nothing to wait for past the entry
- * module: none of the program's sources starts an engine or writes a
- * canvas's readiness.
- */
-function manifestReadyAfterEntry(manifest: CompiledSceneManifest): boolean {
-    return !manifest.inputs.some(
-        (input) =>
-            /\.[cm]?[jt]s$/.test(input) &&
-            existsSync(input) &&
-            /startEngine\(|dataset\.ready/.test(readFileSync(input, "utf8")),
+/** Whether reached engine or canvas readiness requires waiting past entry. */
+export function manifestReadyAfterEntry(
+    manifest: CompiledSceneManifest,
+): boolean {
+    return (
+        !manifest.features.includes("backend:sdl") && !manifest.canvasReadyGate
     );
 }
 

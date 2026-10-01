@@ -79,6 +79,8 @@ export interface SceneDefinition {
      * browser reference is captured from it.
      */
     page?: HostPageProgram;
+    /** Root used to serve an ad-hoc source and its relative modules. */
+    siteRoot?: string;
     /**
      * An ad-hoc source's public directory: root-relative asset URLs resolve
      * beneath it at generation and in the reference capture.
@@ -111,14 +113,18 @@ export function sceneReferencePage(scene: SceneDefinition): {
     publicDir?: string;
 } {
     const page = scene.page?.path ?? scene.parity?.referenceHostPage;
-    const outside =
-        scene.page !== undefined &&
-        relative(resolve("."), resolve(scene.page.path)).startsWith("..");
+    const sourcePath = relative(resolve("."), resolve(scene.source));
+    const outside = sourcePath.startsWith(`..${sep}`) || isAbsolute(sourcePath);
+    const siteRoot =
+        scene.siteRoot ??
+        (scene.page?.root !== undefined || outside
+            ? scene.page
+                ? hostPageRoot(scene.page)
+                : dirname(resolve(scene.source))
+            : undefined);
     return {
         ...(page === undefined ? {} : { hostPage: page }),
-        ...(outside && scene.page
-            ? { siteRoot: hostPageRoot(scene.page) }
-            : {}),
+        ...(siteRoot === undefined ? {} : { siteRoot }),
         ...(scene.publicDir !== undefined
             ? { publicDir: scene.publicDir }
             : {}),
@@ -5315,8 +5321,6 @@ export function resolveScene(idOrSource: string): SceneDefinition {
             "/",
         );
     };
-    if (siteRoot !== undefined && !isHostPagePath(absoluteSource))
-        throw new Error("--site-root applies to an HTML page source.");
     // A page's source is the entry its module script names.
     const page = isHostPagePath(absoluteSource)
         ? {
@@ -5346,6 +5350,9 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         name,
         source,
         ...(page ? { page } : {}),
+        ...(siteRoot !== undefined
+            ? { siteRoot: repositoryPath(resolve(siteRoot)) }
+            : {}),
         ...(publicDir !== undefined
             ? { publicDir: repositoryPath(resolve(publicDir)) }
             : {}),
@@ -5378,7 +5385,15 @@ import {
     adHocCaptureEnvironment,
     fixedCaptureEnvironment,
 } from "./capture-timing.js";
-import { basename, extname, isAbsolute, relative, resolve } from "node:path";
+import {
+    basename,
+    dirname,
+    extname,
+    isAbsolute,
+    relative,
+    resolve,
+    sep,
+} from "node:path";
 
 /**
  * The registered application demos: the sources closest to a real

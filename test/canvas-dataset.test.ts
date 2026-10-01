@@ -62,12 +62,12 @@ function admitsInstrumentation(source: string): boolean {
 
 function compileDataset(body: string) {
     return compileSource(`
-        import { createEngine, startEngine } from "@babylonjs/lite";
+        import { createEngine as makeEngine, startEngine as runEngine } from "@babylonjs/lite";
         async function main() {
             const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-            const engine = await createEngine({ canvas });
+            const engine = await makeEngine({ canvas });
             ${body}
-            await startEngine(engine);
+            await runEngine(engine);
         }
         void main();
     `);
@@ -80,6 +80,7 @@ test("primary canvas readback retains its handshake without enabling device reco
         canvas.dataset.ready = String(phase === "complete");
     `);
     assert.ok(!result.manifest.features.includes("engine:device-recovery"));
+    assert.equal(result.manifest.canvasReadyGate, true);
     assert.match(result.cpp, /set_canvas_dataset\([^\n]+"ready", "false"/);
     assert.match(result.cpp, /canvas_dataset_value\([^\n]+"phase"/);
     assert.match(
@@ -90,6 +91,7 @@ test("primary canvas readback retains its handshake without enabling device reco
 
 test("write-only dataset instrumentation retains the browser erasure boundary", () => {
     const result = compileDataset('canvas.dataset.label = "diagnostic";');
+    assert.equal(result.manifest.canvasReadyGate, undefined);
     assert.doesNotMatch(
         result.cpp,
         /(?:set_canvas_dataset|defer_capture_until)/,
