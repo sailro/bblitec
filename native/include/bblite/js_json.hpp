@@ -610,6 +610,17 @@ public:
     }
 
     void set(std::string_view key, JsonValue value) const {
+        if (is_array()) {
+            const auto index = json_property_index(key);
+            if (!array_ || !index || *index > array_->size())
+                throw std::runtime_error(
+                    "Dynamic array assignment requires an owned dense array index.");
+            if (*index == array_->size())
+                array_->push_back(std::move(value));
+            else
+                (*array_)[*index] = std::move(value);
+            return;
+        }
         if (kind_ != Kind::object || native_)
             throw std::runtime_error("Dynamic property assignment requires an owned object.");
         set_entry(*object_, key, std::move(value));

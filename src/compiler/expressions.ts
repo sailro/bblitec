@@ -3348,6 +3348,15 @@ export class ExpressionLowerer {
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
+        const callee = this.context.unwrap(call.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            this.context.dataLowerer.prefersRuntimeTupleIteration(
+                callee.expression,
+                callback,
+            )
+        )
+            return undefined;
         const local =
             ts.isArrowFunction(callback) ||
             ts.isFunctionExpression(callback) ||

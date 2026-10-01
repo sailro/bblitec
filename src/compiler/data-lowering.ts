@@ -4646,16 +4646,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
               : undefined;
     }
 
-    /**
-     * Materializes a static module-constant numeric table referenced by an
-     * identifier, returning a table-typed value.
-     */
-    /**
-     * Materializes a constant array as a namespace-scope constant so a
-     * runtime index can read it (the demo cycles its block style
-     * through one). Such an array folds to a compile-time tuple
-     * otherwise, and a computed index cannot reach a tuple.
-     */
+    /** Runtime record callbacks must observe the source array's object identities. */
+    public prefersRuntimeTupleIteration(
+        owner: ts.Expression,
+        callback: ts.Expression | undefined,
+    ): boolean {
+        if (
+            !ts.isIdentifier(owner) ||
+            !callback ||
+            this.context.requiresStaticDataIteration(callback)
+        )
+            return false;
+        const storage = this.dataTypeAt(owner);
+        return (
+            (storage?.kind === "vector" || storage?.kind === "span") &&
+            storage.element.kind === "struct"
+        );
+    }
+
+    /** Materializes a compile-time tuple as a shared constant array for runtime reads. */
     public materializeConstantArray(
         expression: ts.Expression,
     ): Value | undefined {
@@ -7102,6 +7111,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             node,
             `Compile-time ${value.kind} value does not match the expected data ${dataType.kind} ` +
                 `(valueType=${JSON.stringify(value.dataType)}, nativeParameters=${JSON.stringify(value.nativeCallbackParameterTypes)}, nativeReturn=${JSON.stringify(value.nativeCallbackReturnType)}, cpp=${value.cpp.length > 0}).`,
+            isJsonValue(value) ? "dynamic-storage-required" : "unsupported",
         );
     }
 
@@ -8772,6 +8782,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
+    private jsonAssignmentTarget(
+        left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): { owner: string; key: string } | undefined {
+        const jsonOwner = this.context.probeEmission(() => {
+            if (
+                !isJsonRootedExpression(this.context, left.expression) &&
+                !this.usesNativeDataPath(left.expression) &&
+                rootIdentifier(left.expression, (node) =>
+                    this.context.unwrap(node),
+                )
+            )
+                return undefined;
+            const value = this.context.compileValue(left.expression);
+            return isJsonValue(value) ? value : undefined;
+        });
+        if (!jsonOwner) return undefined;
+        const owner = this.context.bindings.pinValueToTemporary(
+            jsonOwner,
+            "assignment_owner",
+        );
+        const key = ts.isPropertyAccessExpression(left)
+            ? this.context.cppString(left.name.text)
+            : this.context.bindings.pinValueToTemporary(
+                  {
+                      kind: "string",
+                      cpp: compileJsonPropertyKey(
+                          this.context,
+                          this.context.compileValue(left.argumentExpression),
+                          left.argumentExpression,
+                      ),
+                  },
+                  "assignment_key",
+              ).cpp;
+        return { owner: owner.cpp, key };
+    }
+
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const operator = ASSIGNMENT_OPERATORS.get(
             expression.operatorToken.kind,
@@ -8795,50 +8841,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return false;
         }
-        const jsonOwner = this.context.probeEmission(() => {
-            if (
-                !isJsonRootedExpression(this.context, left.expression) &&
-                !this.usesNativeDataPath(left.expression)
-            )
-                return undefined;
-            const value = this.context.compileValue(left.expression);
-            return isJsonValue(value) ? value : undefined;
-        });
-        if (jsonOwner) {
-            const owner = this.context.bindings.pinValueToTemporary(
-                jsonOwner,
-                "assignment_owner",
-            );
-            if (isJsonValue(owner)) {
-                if (operator !== "=")
-                    this.context.fail(
-                        expression,
-                        "Dynamic object properties currently support plain assignment only.",
-                    );
-                const key = ts.isPropertyAccessExpression(left)
-                    ? this.context.cppString(left.name.text)
-                    : this.context.bindings.pinValueToTemporary(
-                          {
-                              kind: "string",
-                              cpp: compileJsonPropertyKey(
-                                  this.context,
-                                  this.context.compileValue(
-                                      left.argumentExpression,
-                                  ),
-                                  left.argumentExpression,
-                              ),
-                          },
-                          "assignment_key",
-                      ).cpp;
-                const value = this.compileForSink(expression.right, {
-                    kind: "json",
-                });
-                this.context.emit({
-                    kind: "expression",
-                    code: `${owner.cpp}.set(${key}, ${value});`,
-                });
-                return true;
-            }
+        const json = this.jsonAssignmentTarget(left);
+        if (json) {
+            if (operator !== "=")
+                this.context.fail(
+                    expression,
+                    "Dynamic object properties currently support plain assignment only.",
+                );
+            const value = this.compileForSink(expression.right, {
+                kind: "json",
+            });
+            this.context.emit({
+                kind: "expression",
+                code: `${json.owner}.set(${json.key}, ${value});`,
+            });
+            return true;
         }
         if (
             ts.isPropertyAccessExpression(left) &&
@@ -10066,6 +10083,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * the operand is not a data path.
      */
     public emitPostfixUnary(expression: ts.PostfixUnaryExpression): boolean {
+        if (this.compileJsonUpdate(expression)) return true;
         if (
             !ts.isPropertyAccessExpression(
                 this.context.unwrap(expression.operand),
@@ -10109,6 +10127,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
+        const json = this.compileJsonUpdate(expression);
+        if (json) return json;
         const operand = this.context.unwrap(expression.operand);
         const target =
             this.compileDataPath(expression.operand, "write") ??
@@ -10141,6 +10161,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
+        const json = this.compileJsonUpdate(expression);
+        if (json) return json;
         const operand = this.context.unwrap(expression.operand);
         const target =
             this.compileDataPath(expression.operand, "write") ??
@@ -10157,6 +10179,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         delete writable(value).staticNumber;
         return value;
+    }
+
+    private compileJsonUpdate(
+        expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
+    ): Value | undefined {
+        const operand = this.context.unwrap(expression.operand);
+        if (
+            !ts.isPropertyAccessExpression(operand) &&
+            !ts.isElementAccessExpression(operand)
+        )
+            return undefined;
+        const target = this.jsonAssignmentTarget(operand);
+        if (!target) return undefined;
+        const previous =
+            this.context.allocateTemporaryCppName("update_previous");
+        const next = this.context.allocateTemporaryCppName("update_next");
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: previous,
+            initializer: `${target.owner}.get(${target.key}).to_number()`,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: next,
+            initializer: `${previous} ${expression.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-"} 1.0`,
+        });
+        this.context.emit({
+            kind: "expression",
+            code: `${target.owner}.set(${target.key}, bbl::js::json_value(${next}));`,
+        });
+        return this.leafValue(
+            ts.isPrefixUnaryExpression(expression) ? next : previous,
+            { kind: "number" },
+        );
     }
 
     /**
@@ -10738,6 +10796,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const rightOptional = hasOptional
             ? compileOperand(right, "comparison_right")
             : undefined;
+        if (
+            !loose &&
+            leftOptional &&
+            rightOptional &&
+            (isJsonValue(leftOptional) || isJsonValue(rightOptional))
+        ) {
+            const a = this.compileKnownValueForSink(
+                leftOptional,
+                { kind: "json" },
+                left,
+            );
+            const b = this.compileKnownValueForSink(
+                rightOptional,
+                { kind: "json" },
+                right,
+            );
+            return `${negated ? "!" : ""}(${a}.strict_equals(${b}))`;
+        }
         const leftType = optionalComparable(leftOptional?.dataType)
             ? leftOptional.dataType
             : this.dataTypeAt(left);
@@ -11970,6 +12046,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     }
                     const rawIterable =
                         projected ??
+                        (ts.isIdentifier(expression)
+                            ? this.materializeConstantArray(expression)
+                            : undefined) ??
                         this.compileDataPath(spread.expression, "read") ??
                         this.context.compileValue(spread.expression);
                     const iterable = this.narrowOptional(

@@ -2306,10 +2306,32 @@ export class DataTypeRegistry {
             return undefined;
         }
         const complete = mapped as DataType[];
+        // A tuple of records is also an array whose callback element is the
+        // checker's object union. Keep that shared layout in its storage.
+        if (complete.every((element) => element.kind === "struct")) {
+            const indexed = this.checker.getIndexTypeOfType(
+                reference,
+                ts.IndexKind.Number,
+            );
+            const element = indexed && this.fromTsType(indexed, node);
+            if (element?.kind === "struct")
+                return {
+                    kind: "vector",
+                    element: this.markStoredObjectReferences(element),
+                };
+        }
         return this.tupleStorage(complete);
     }
 
     public tupleStorage(elements: DataType[]): DataType {
+        if (
+            elements.length > 0 &&
+            elements.every(
+                (element) =>
+                    element.kind === "string" || element.kind === "enum",
+            )
+        )
+            return { kind: "vector", element: { kind: "string" } };
         if (elements.every((element) => element.kind === "number")) {
             return {
                 kind: "tuple",

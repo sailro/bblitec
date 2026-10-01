@@ -2404,6 +2404,7 @@ export class PropertyAccessLowerer {
             !ts.isElementAccessExpression(ownerExpression) &&
             !ts.isCallExpression(ownerExpression) &&
             !ts.isNewExpression(ownerExpression) &&
+            !ts.isArrayLiteralExpression(ownerExpression) &&
             !ts.isStringLiteralLike(ownerExpression) &&
             !ts.isConditionalExpression(ownerExpression)
         ) {
