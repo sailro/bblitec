@@ -27,6 +27,7 @@ import {
 import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
+import { compileTextCodecMethod } from "./text-codecs.js";
 import {
     compileSearchParamsMethod,
     deploymentSearchParamsValue,
@@ -452,6 +453,11 @@ export function compileDataMethodCall(
         return compileSearchParamsMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "date-time-format")
         return compileDateTimeFormatMethod(lowerer, call, dynamicOwner, method);
+    if (
+        dynamicOwner?.dataType?.kind === "text-decoder" ||
+        dynamicOwner?.dataType?.kind === "text-encoder"
+    )
+        return compileTextCodecMethod(lowerer, call, dynamicOwner, method);
     const tupleOwnerElements: readonly Value[] | undefined =
         dynamicOwner?.kind === "tuple"
             ? (dynamicOwner.tupleElements ?? [])

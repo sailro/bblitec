@@ -1096,7 +1096,7 @@ function check(
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { location: { search }, URLSearchParams },
+            { location: { search }, URLSearchParams, TextDecoder, TextEncoder },
         );
         const result = compileSource(source, {
             fileName: `${name}.ts`,
@@ -1863,6 +1863,33 @@ check(
     const lanes = Float64Array.from(floats, (value) => value / 2);
     if (calls !== "012" || mapped[0] !== 6 || mapped[1] !== 3 || mapped[2] !== 252 || named[0] !== 3 || named[2] !== 65534) throw new Error("mapped");
     if (ranged[3] !== -9 || picked[0] !== 1.25 || picked.length !== 2 || lanes[1] !== 0.75) throw new Error("mapped sources");
+`,
+);
+
+check(
+    "utf8-text-codecs",
+    `
+    const strict = new TextDecoder("UTF-8 ", { fatal: true });
+    const encoder = new TextEncoder();
+    function decodeName(bytes: Uint8Array, start: number, length: number): string {
+        const decoder = new TextDecoder();
+        return decoder.decode(bytes.subarray(start, start + length));
+    }
+    const document = new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x22, 0x6e, 0x22, 0x3a, 0x32, 0x7d]);
+    const parsed = JSON.parse(new TextDecoder().decode(document)) as { n: number };
+    if (parsed.n !== 2) throw new Error("decoded document without its BOM");
+    if (new TextDecoder("utf8", { ignoreBOM: true }).decode(document).length !== 8) throw new Error("kept BOM");
+    if (decodeName(document, 4, 3) !== "\\"n\\"" || new TextDecoder().decode() !== "") throw new Error("views");
+    const broken = new Uint8Array([0x61, 0xff, 0xed, 0xa0, 0x80]);
+    if (new TextDecoder().decode(broken) !== "a\\ufffd\\ufffd\\ufffd\\ufffd") throw new Error("replacement");
+    let name = "";
+    try { strict.decode(broken); } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("fatal decode");
+    const encoded = encoder.encode("\\u00e9\\u20ac\\ud800");
+    if (encoded.length !== 8 || encoded[0] !== 0xc3 || encoded[2] !== 0xe2 || encoded[5] !== 0xef || encoded[7] !== 0xbd) throw new Error("encode");
+    if (strict.decode(encoded.buffer) !== "\\u00e9\\u20ac\\ufffd" || encoder.encode().length !== 0) throw new Error("round trip");
+    const view = new DataView(encoded.buffer, 2, 3);
+    if (new TextDecoder().decode(view) !== "\\u20ac") throw new Error("data view");
 `,
 );
 

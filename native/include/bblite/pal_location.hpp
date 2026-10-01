@@ -6,7 +6,7 @@ namespace bbl::pal {
 
 /** The query component of the application's special (HTTP/HTTPS) URL. */
 inline std::string location_query(std::string_view input) {
-    auto scalar = js::search_params_detail::scalar_string(std::string(input));
+    auto scalar = js::usv_string(std::string(input));
     if (scalar.empty())
         return {};
     std::string output = "?";

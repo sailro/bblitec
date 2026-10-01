@@ -41,6 +41,7 @@ import {
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
+import { compileTextCodecNew } from "./text-codecs.js";
 import {
     DynamicBindingStorageRequired,
     requireDynamicBindingStorage,
@@ -5900,6 +5901,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): Value | undefined {
         return (
             compileDateNew(this, expression) ??
+            compileTextCodecNew(this, expression) ??
             this.compileNewArray(expression) ??
             this.compileTypedArrayNew(expression) ??
             this.compileArrayBufferNew(expression) ??

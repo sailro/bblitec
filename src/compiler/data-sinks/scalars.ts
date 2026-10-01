@@ -249,6 +249,8 @@ export const scalarsSinks: DataSinkOperations<
     | "storage"
     | "date"
     | "date-time-format"
+    | "text-decoder"
+    | "text-encoder"
     | "number"
     | "boolean"
     | "string"
@@ -329,6 +331,18 @@ export const scalarsSinks: DataSinkOperations<
             lowerer.requireDataValue(unwrapped, type).cpp,
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "date-time-format" ? value.cpp : undefined,
+    },
+    "text-decoder": {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "text-decoder" ? value.cpp : undefined,
+    },
+    "text-encoder": {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "text-encoder" ? value.cpp : undefined,
     },
     date: {
         expression: (type, lowerer, _expression, unwrapped) =>

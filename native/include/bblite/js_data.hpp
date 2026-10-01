@@ -4704,4 +4704,5 @@ inline void set_random_override(Callback<double()> callback) {
 
 } // namespace bbl::js
 
+#include <bblite/js_text_codec.hpp>
 #include <bblite/js_search_params.hpp>

@@ -2,24 +2,10 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
+#include <bblite/js_text_codec.hpp>
 
 namespace bbl::js {
 namespace search_params_detail {
-// Web IDL USVString conversion replaces unpaired UTF-16 surrogates.
-inline std::string scalar_string(const std::string& text) {
-    auto units = string_code_units(text);
-    for (std::size_t i = 0; i < units.size(); ++i) {
-        if (units[i] >= 0xd800u && units[i] <= 0xdbffu && i + 1 < units.size() &&
-            units[i + 1] >= 0xdc00u && units[i + 1] <= 0xdfffu) {
-            ++i;
-            continue;
-        }
-        if (units[i] >= 0xd800u && units[i] <= 0xdfffu)
-            units[i] = 0xfffdu;
-    }
-    return string_from_code_units(units);
-}
-
 inline std::string decode(std::string_view input) {
     const auto hex = [](char c) -> int {
         if (c >= '0' && c <= '9')
@@ -75,7 +61,7 @@ class SearchParams {
 public:
     SearchParams() = default;
     explicit SearchParams(const std::string& input) : entries_(make_gc_shared<Entries>()) {
-        const auto text = search_params_detail::scalar_string(input);
+        const auto text = usv_string(input);
         std::string_view remaining(text);
         if (remaining.starts_with('?'))
             remaining.remove_prefix(1);
@@ -102,7 +88,7 @@ public:
     Nullable<std::string> get(const std::string& key) const {
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
-        const auto name = search_params_detail::scalar_string(key);
+        const auto name = usv_string(key);
         for (const auto& [candidate, value] : *entries_)
             if (candidate == name)
                 return value;
@@ -112,8 +98,7 @@ public:
     bool has(const std::string& key, const std::string& value) const {
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
-        const auto name = search_params_detail::scalar_string(key),
-                   expected = search_params_detail::scalar_string(value);
+        const auto name = usv_string(key), expected = usv_string(value);
         return std::any_of(entries_->begin(), entries_->end(), [&](const auto& item) {
             return item.first == name && item.second == expected;
         });
@@ -121,8 +106,8 @@ public:
     void set(const std::string& key, const std::string& value) const {
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
-        const auto name = search_params_detail::scalar_string(key);
-        const auto replacement = search_params_detail::scalar_string(value);
+        const auto name = usv_string(key);
+        const auto replacement = usv_string(value);
         auto first = std::find_if(entries_->begin(), entries_->end(),
                                   [&](const auto& item) { return item.first == name; });
         if (first == entries_->end()) {

@@ -97,6 +97,8 @@ interface DataKinds {
     storage: { kind: "storage" };
     date: { kind: "date" };
     "date-time-format": { kind: "date-time-format" };
+    "text-decoder": { kind: "text-decoder" };
+    "text-encoder": { kind: "text-encoder" };
     number: {
         kind: "number";
     };

@@ -27,6 +27,8 @@ export const scalarKinds: DataKindOperations<
     | "storage"
     | "date"
     | "date-time-format"
+    | "text-decoder"
+    | "text-encoder"
     | "number"
     | "boolean"
     | "string"
@@ -60,6 +62,14 @@ export const scalarKinds: DataKindOperations<
     },
     "date-time-format": {
         ...leaf("bbl::js::DateTimeFormat", "dateformat", true, true),
+        opaqueReference: true,
+    },
+    "text-decoder": {
+        ...leaf("bbl::js::TextDecoder", "textdecoder", true, true),
+        opaqueReference: true,
+    },
+    "text-encoder": {
+        ...leaf("bbl::js::TextEncoder", "textencoder", true, true),
         opaqueReference: true,
     },
     number: leaf(CPP_SCALAR.number, "n"),

@@ -1066,6 +1066,16 @@ export class DataTypeRegistry {
             declaredInDefaultLibrary(type.symbol)
         )
             return { kind: "date-time-format" };
+        if (
+            type.symbol?.name === "TextDecoder" &&
+            declaredInDomLibrary(type.symbol)
+        )
+            return { kind: "text-decoder" };
+        if (
+            type.symbol?.name === "TextEncoder" &&
+            declaredInDomLibrary(type.symbol)
+        )
+            return { kind: "text-encoder" };
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);
