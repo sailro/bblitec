@@ -1,5 +1,7 @@
 export type HandleKind =
     | "custom-event"
+    | "dom-event"
+    | "dom-event-identity"
     | "worker-media-query"
     | "worker-mutation-observer"
     | AudioHandleKind

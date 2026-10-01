@@ -5,7 +5,7 @@ import { argumentAt } from "./syntax.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
-import { requireWindowHost } from "./window-events.js";
+import { documentEngine, requireWindowHost } from "./window-events.js";
 import { isWindowObserver, windowInterfaceTypeof } from "./dom-targets.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { nativeFunctionValue } from "./native-function-values.js";
@@ -16,7 +16,12 @@ export interface CanvasContext
         WorkerLoweringContext,
         Pick<
             LoweringServices,
-            "checker" | "isCanvasElement" | "reachFeature" | "callbackIdentity"
+            | "checker"
+            | "isCanvasElement"
+            | "reachFeature"
+            | "callbackIdentity"
+            | "defaultEngine"
+            | "requireDefaultEngine"
         > {}
 
 function hasDomInterface(
@@ -90,6 +95,16 @@ export function compileCanvasValue(
 ): Value | undefined {
     const node = context.unwrap(expression);
     const global = context.libraryGlobal(node);
+    if (global === "document" || global === "window") {
+        const engine = documentEngine(context, node);
+        if (!engine) throw new ApplicationRealmRequired();
+        context.reachFeature("input:dom", node);
+        return {
+            kind: "data",
+            dataType: { kind: "event-target" },
+            cpp: `bbl::dom_target_value(${engine}, bbl::DomEventTarget::${global}())`,
+        };
+    }
     if (!context.options.workers) {
         if (
             ((ts.isNewExpression(node) || ts.isTypeOfExpression(node)) &&

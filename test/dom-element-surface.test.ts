@@ -85,7 +85,7 @@ test("element event handler properties, containment, connection and layout exten
     writeFileSync(join(directory, "program.hpp"), cpp);
     assert.doesNotMatch(cpp, /"X"/);
     assert.match(cpp, /bbl::set_dom_pointer_handler\([^;]+"click", \{\}\)/);
-    assert.match(cpp, /bbl::ui_set_event_handler\([^;]+"change"/);
+    assert.match(cpp, /bbl::set_dom_pointer_handler\([^;]+"change"/);
     assert.match(cpp, /bbl::dom_target_is_element\([^;]+, true\)/);
     runRmlUiFixture(t, "dom-element-surface", {
         macros: {
@@ -132,8 +132,8 @@ test("record-field controls take their declared interface's tag", () => {
         globalThis.close();
     `);
     assert.match(cpp, /bbl::ui_set_attribute\([^;]+"min"/);
-    assert.match(cpp, /bbl::ui_on_event\([^;]+"change"/);
-    assert.match(cpp, /bbl::ui_set_event_handler\([^;]+"input"/);
+    assert.match(cpp, /bbl::on_dom_pointer\([^;]+"change"/);
+    assert.match(cpp, /bbl::set_dom_pointer_handler\([^;]+"input"/);
 });
 
 test("element event handler properties refuse what they cannot represent", () => {

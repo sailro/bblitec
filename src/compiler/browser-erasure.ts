@@ -94,6 +94,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "platform-keyboard-event",
     "platform-mouse-event",
     "custom-event",
+    "dom-event",
     "ui-element",
     "worker",
     "worker-scope",
@@ -621,6 +622,8 @@ export class BrowserErasure {
         // navigation, click). Do not erase that interface as browser chrome.
         if (
             call.arguments.some((argument, index) => {
+                const global = this.context.libraryGlobal(argument);
+                if (global === "document" || global === "window") return true;
                 if (
                     this.context.isCanvasElement(argument) &&
                     writesUnobservedCanvasMetadata(
@@ -639,9 +642,10 @@ export class BrowserErasure {
                     ? this.context.bindings.lookupOptional(value)?.dataType
                     : undefined;
                 return (
-                    type?.kind === "vector" &&
-                    type.element.kind === "handle" &&
-                    type.element.handle === "ui-element"
+                    type?.kind === "event-target" ||
+                    (type?.kind === "vector" &&
+                        type.element.kind === "handle" &&
+                        type.element.handle === "ui-element")
                 );
             })
         )

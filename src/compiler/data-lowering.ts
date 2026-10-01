@@ -8069,6 +8069,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     target.dataType.inner.kind === "string" ||
                     target.dataType.inner.kind === "enum" ||
                     target.dataType.inner.kind === "handle" ||
+                    target.dataType.inner.kind === "event-target" ||
                     // Owned typed arrays and byte-backed views both copy shared
                     // wrappers, including a view returned by a helper.
                     isTypedArrayType(target.dataType.inner) ||
@@ -8093,6 +8094,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind !== "string" &&
             kind !== "enum" &&
             kind !== "handle" &&
+            kind !== "event-target" &&
             kind !== "function" &&
             !isTypedArrayType(target.dataType) &&
             // JsonValue copies its array/object storage by shared pointer, so

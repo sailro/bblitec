@@ -79,6 +79,20 @@ struct WindowEvent final : ExternalEvent {
     std::optional<bool> checked;
     std::optional<UiElementHandle> selected_option;
     std::optional<bool> open;
+
+    void capture_form_state(Engine& engine) {
+        if (ui_get_attribute(engine, element, "type") == "checkbox")
+            checked = ui_get_checked(engine, element);
+        else if (handle_at(engine.ui_elements, element).tag == "select") {
+            selected_option = UiElementHandle{};
+            for (const auto option : handle_at(engine.ui_elements, element).children)
+                if (ui_get_selected(engine, option)) {
+                    selected_option = option;
+                    break;
+                }
+        } else
+            form_value = ui_get_form_value(engine, element);
+    }
 };
 struct WindowDomEvent final : ExternalEvent {
     std::shared_ptr<DomEventBatch> batch;
@@ -387,7 +401,17 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
             event->batch = std::move(batch);
             post_input(std::move(event));
         };
-        input.pointer_sink = [post_input](const PlatformMouseEvent& payload) {
+        input.pointer_sink = [post_input, &engine](const PlatformMouseEvent& payload) {
+            if ((payload.dom->type == "input" || payload.dom->type == "change") &&
+                payload.dom->target.kind == DomEventTargetKind::Element) {
+                auto event = std::make_unique<WindowEvent>();
+                event->element = UiElementHandle{payload.dom->target.element};
+                event->type = payload.dom->type;
+                event->mouse = payload;
+                event->capture_form_state(engine);
+                post_input(std::move(event));
+                return;
+            }
             auto event = std::make_unique<WindowDomEvent>();
             event->batch = std::make_shared<DomEventBatch>();
             event->batch->add(payload);
@@ -419,19 +443,8 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                 event->mouse = pointer;
                 if (name == "toggle")
                     event->open = ui_has_attribute(engine, element, "open");
-                if (name == "input" || name == "change") {
-                    if (ui_get_attribute(engine, element, "type") == "checkbox")
-                        event->checked = ui_get_checked(engine, element);
-                    else if (handle_at(engine.ui_elements, element).tag == "select") {
-                        event->selected_option = UiElementHandle{};
-                        for (const auto option : handle_at(engine.ui_elements, element).children)
-                            if (ui_get_selected(engine, option)) {
-                                event->selected_option = option;
-                                break;
-                            }
-                    } else
-                        event->form_value = ui_get_form_value(engine, element);
-                }
+                if (name == "input" || name == "change")
+                    event->capture_form_state(engine);
                 post_input(std::move(event));
             });
         }
@@ -990,6 +1003,16 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             ui_set_selection(engine, event->element, *event->selected_option);
                         if (event->form_value)
                             ui_set_form_value(engine, event->element, *event->form_value);
+                        if (event->mouse.dom) {
+                            dom_input(engine).pointer.dispatch(
+                                event->mouse,
+                                [](auto& callback, const auto& payload) {
+                                    EventLoop::current().dispatch_callback(
+                                        [&] { callback(payload); });
+                                },
+                                &engine);
+                            return;
+                        }
                         const auto& record = handle_at(engine.ui_elements, event->element);
                         if (event->type == "click") {
                             const auto callbacks = record.click_callbacks;

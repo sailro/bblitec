@@ -1450,6 +1450,7 @@ export class BindingScopes {
                     "tuple",
                     "product",
                     "enummap",
+                    "event-target",
                 ].includes(value.dataType.kind));
         if (isJsonValue(value) || snapshotsData) {
             const cpp = this.context.allocateTemporaryCppName(label);

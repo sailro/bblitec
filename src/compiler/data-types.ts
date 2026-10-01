@@ -485,6 +485,7 @@ export function platformHandleKind(
     | "gpu-device"
     | "gpu-texture"
     | "custom-event"
+    | "dom-event"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (type.symbol.name === "GPUDevice") return "gpu-device";
@@ -494,6 +495,8 @@ export function platformHandleKind(
     if (type.symbol.name === "Gamepad") return "gamepad";
     if (type.symbol.name === "GamepadButton") return "gamepad-button";
     if (type.symbol.name === "CustomEvent") return "custom-event";
+    if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
+        return "dom-event";
     return undefined;
 }
 
@@ -1652,6 +1655,17 @@ export class DataTypeRegistry {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
                 const element = this.fromStoredTsType(elementType, node);
+                if (
+                    symbolName === "WeakSet" &&
+                    element?.kind === "borrowed-platform-event"
+                )
+                    return {
+                        kind: "set",
+                        element: {
+                            kind: "handle",
+                            handle: "dom-event-identity",
+                        },
+                    };
                 return element
                     ? {
                           kind: "set",

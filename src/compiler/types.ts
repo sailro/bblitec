@@ -1514,6 +1514,8 @@ export type ValueKind =
     /** Callback-local platform keyboard data; it has no storable JS shape. */
     | "platform-keyboard-event"
     | "custom-event"
+    | "dom-event"
+    | "dom-event-identity"
     /** Callback-local platform mouse data; it has no storable JS shape. */
     | "platform-mouse-event"
     // The navigation plugin: the Detour surface behind the PAL, held the

@@ -1184,6 +1184,14 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         pointer.client_y = event.tfinger.y * engine.canvas_client_height;
         pointer.movement_x = event.tfinger.dx * engine.canvas_client_width;
         pointer.movement_y = event.tfinger.dy * engine.canvas_client_height;
+        pointer.pressure = released ? 0 : event.tfinger.pressure;
+        if (auto* window = SDL_GetWindowFromID(event.tfinger.windowID)) {
+            int x = 0, y = 0;
+            if (SDL_GetWindowPosition(window, &x, &y)) {
+                pointer.screen_x = x * engine.canvas_window_to_client_scale + pointer.client_x;
+                pointer.screen_y = y * engine.canvas_window_to_client_scale + pointer.client_y;
+            }
+        }
         if (down)
             contact.path = input.hit_path ? input.hit_path(pointer.client_x, pointer.client_y)
                                           : dom_canvas_path();
@@ -1252,7 +1260,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         if (!move && !wheel)
             update_tracked_mouse_button(event.button);
         const auto modifiers = SDL_GetModState();
-        const PlatformMouseEvent pointer{
+        PlatformMouseEvent pointer{
             .button = move || wheel ? -1.0 : static_cast<double>(event.button.button - 1),
             .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
             .client_x = (move    ? event.motion.x
@@ -1270,7 +1278,18 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             .ctrl_key = (modifiers & SDL_KMOD_CTRL) != 0,
             .alt_key = (modifiers & SDL_KMOD_ALT) != 0,
             .meta_key = (modifiers & SDL_KMOD_GUI) != 0,
+            .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,
         };
+        const auto window_id = move    ? event.motion.windowID
+                               : wheel ? event.wheel.windowID
+                                       : event.button.windowID;
+        if (auto* window = SDL_GetWindowFromID(window_id)) {
+            int x = 0, y = 0;
+            if (SDL_GetWindowPosition(window, &x, &y)) {
+                pointer.screen_x = x * engine.canvas_window_to_client_scale + pointer.client_x;
+                pointer.screen_y = y * engine.canvas_window_to_client_scale + pointer.client_y;
+            }
+        }
         auto path =
             input.hit_path ? input.hit_path(pointer.client_x, pointer.client_y)
             : canvas_contains_client_point(engine, pointer)

@@ -61,6 +61,7 @@ struct DomEventState {
     bool propagation_stopped = false;
     bool immediate_propagation_stopped = false;
     bool dispatching = false;
+    bool default_prevented = false;
     /** Set only while the owning realm invokes listeners; never transported. */
     Engine* dispatch_engine = nullptr;
 

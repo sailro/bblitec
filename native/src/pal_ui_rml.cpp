@@ -2122,6 +2122,14 @@ public:
                 if ((event_type == "color-input" && std::string_view(name) != "input") ||
                     (event_type == "color-change" && std::string_view(name) != "change"))
                     continue;
+                if (engine.dom_input) {
+                    PlatformMouseEvent payload;
+                    payload.payload_kind = DomInputEventKind::Event;
+                    const auto input =
+                        dom_event(payload, name, dom_ui_path(engine, element), true, false);
+                    input.dom->composed = std::string_view(name) == "input";
+                    dispatch_dom_pointer(engine, input);
+                }
                 dispatch_ui_listeners(ui_element(engine, element), name, PlatformMouseEvent{});
             }
             event.StopPropagation();

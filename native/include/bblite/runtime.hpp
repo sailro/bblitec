@@ -206,6 +206,8 @@ struct PlatformTransitionEvent {
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
+enum class DomInputEventKind { Event, Mouse, Pointer, Input };
+
 struct PlatformMouseEvent {
     double button = 0.0;
     double buttons = 0.0;
@@ -223,11 +225,43 @@ struct PlatformMouseEvent {
     bool ctrl_key = false;
     bool alt_key = false;
     bool meta_key = false;
+    double screen_x = 0.0;
+    double screen_y = 0.0;
+    double pressure = 0.0;
+    std::optional<std::string> input_data;
+    std::string input_type;
+    bool is_composing = false;
+    DomInputEventKind payload_kind = DomInputEventKind::Pointer;
+
+    [[nodiscard]] bool has_mouse_payload() const noexcept {
+        return payload_kind == DomInputEventKind::Mouse ||
+               payload_kind == DomInputEventKind::Pointer;
+    }
+    [[nodiscard]] const PlatformMouseEvent& mouse_payload() const {
+        if (!has_mouse_payload())
+            throw std::runtime_error("The event does not have a mouse payload.");
+        return *this;
+    }
+    [[nodiscard]] const PlatformMouseEvent& pointer_payload() const {
+        if (payload_kind != DomInputEventKind::Pointer)
+            throw std::runtime_error("The event does not have a pointer payload.");
+        return *this;
+    }
+    [[nodiscard]] const PlatformMouseEvent& input_payload() const {
+        if (payload_kind != DomInputEventKind::Input)
+            throw std::runtime_error("The event does not have an input payload.");
+        return *this;
+    }
 
     void prevent_default() const noexcept {
         if (dom && !dom->can_prevent_default())
             return;
         default_prevented = true;
+        if (dom)
+            dom->default_prevented = true;
+    }
+    [[nodiscard]] bool is_default_prevented() const noexcept {
+        return default_prevented || (dom && dom->default_prevented);
     }
     void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
     void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }

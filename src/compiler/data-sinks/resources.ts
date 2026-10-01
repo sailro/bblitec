@@ -54,6 +54,11 @@ function expressionHandle(
     // created it (or read back out of another container).
     let rawValue = lowerer.context.compileValue(unwrapped);
     if (
+        dataType.handle === "dom-event" ||
+        dataType.handle === "dom-event-identity"
+    )
+        return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
+    if (
         dataType.handle === "text-run-ref" &&
         (rawValue.kind === "number" || rawValue.kind === "text-run")
     )
@@ -223,6 +228,32 @@ function valueResource(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    if (
+        dataType.kind === "handle" &&
+        dataType.handle === "dom-event-identity"
+    ) {
+        if (
+            [
+                "dom-event",
+                "custom-event",
+                "platform-mouse-event",
+                "platform-keyboard-event",
+            ].includes(value.kind)
+        ) {
+            lowerer.context.reachFeature("input:dom", node);
+            lowerer.context.reachFeature("data:json", node);
+            return `bbl::dom_event_identity(${value.cpp})`;
+        }
+    }
+    if (
+        dataType.kind === "handle" &&
+        dataType.handle === "dom-event" &&
+        value.kind === "platform-mouse-event"
+    ) {
+        lowerer.context.reachFeature("input:dom", node);
+        lowerer.context.reachFeature("data:json", node);
+        return `bbl::OwnedDomEvent(${value.cpp}${value.platformEventBase ? ".payload<bbl::PlatformMouseEvent>()" : ""})`;
+    }
     if (
         dataType.kind === "handle" &&
         dataType.handle === "ui-element" &&

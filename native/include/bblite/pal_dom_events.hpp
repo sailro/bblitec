@@ -57,7 +57,10 @@ public:
         state.dispatch_engine = owner;
         struct Reset {
             DomEventState& state;
+            const Event& event;
             ~Reset() {
+                if constexpr (requires { event.default_prevented = true; })
+                    event.default_prevented = event.default_prevented || state.default_prevented;
                 state.phase = 0;
                 state.current_target.reset();
                 state.path.clear();
@@ -66,7 +69,7 @@ public:
                 state.dispatching = false;
                 state.dispatch_engine = nullptr;
             }
-        } reset{state};
+        } reset{state, event};
         const auto path = state.path;
         const auto deliver = [&](DomEventTarget target, bool capture, double phase) {
             if (state.propagation_stopped)

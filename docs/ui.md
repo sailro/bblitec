@@ -72,6 +72,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |
 | File drags | SDL file dragenter/dragover/dragleave/drop on elements, Document and Window; dragover cancellation accepts a drop; borrowed DataTransfer.files, count and first file with name/size | No authored drags, text transfers, items, effects or wider file indices; dragover follows native motion notifications |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
+| Constructed input events | Owned Event/MouseEvent/PointerEvent/InputEvent values, identity sets, synchronous element/Document/Window dispatch, capture/bubble routing, cancellation and redispatch | Shared pointer, focus and input/change channels only; cross-document redispatch, unrepresented payload fields and option accessors refuse |
 | Focus/forms | Focus/blur, literal/stored/optional focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Focus-option getters and spreads; full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
@@ -88,7 +89,8 @@ UI runs before cameras; preventDefault suppresses default UI actions and camera 
 Touch contacts retain independent IDs and their initial targets through release or cancellation;
 only the primary contact emits compatibility mouse events. Focus loss cancels active contacts.
 Window keyboard listeners precede default actions. Element focus/blur preserves listener identity,
-removal, non-bubbling dispatch and related targets; form callbacks use per-element dispatch.
+removal, non-bubbling dispatch and related targets. Form and successful file-selection input/change events
+use shared DOM listener ordering and removal; form state is updated before callbacks.
 Native canvas `tabIndex` reads as zero; keyboard focus targets the SDL surface rather than HTML tab order.
 
 Checkbox activation updates checked before input/change. Programmatic control writes are silent.
@@ -98,7 +100,10 @@ Native select keyboard navigation requires opening the menu first.
 
 Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.
 A base Event asserted to KeyboardEvent or MouseEvent reads a checked view of its payload.
-Native input views borrow dispatch; CustomEvent retains its detail and identity. Optional element calls snapshot the receiver and skip arguments
+Native Event/MouseEvent parameters borrow dispatch. PointerEvent/InputEvent helpers retain owned payloads
+and shared identity; retained targets reject an expired document.
+CustomEvent retains its detail and identity. Stored EventTargets preserve their document and snapshot before call arguments.
+Optional element calls snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
 Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element
 methods; an unrepresented canvas is not content-editable.

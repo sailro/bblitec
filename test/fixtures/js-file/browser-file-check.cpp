@@ -172,6 +172,23 @@ int main(int argc, char** argv) {
         "mixed unmappable MIME filter is rejected defensively");
     engine.ui_elements.push_back(std::move(input));
     int changes = 0;
+    std::string shared_events;
+    bbl::on_dom_pointer(engine, bbl::DomEventTarget::node(input_handle.value), "input", 900,
+                        [&](const bbl::PlatformMouseEvent& event) {
+                            require(event.dom->trusted && !event.dom->cancelable &&
+                                        event.dom->composed,
+                                    "file input flags");
+                            require(bbl::js::input_files(engine, input_handle).length() == 1u,
+                                    "selected file precedes input callback");
+                            shared_events += "I";
+                        });
+    bbl::on_dom_pointer(engine, bbl::DomEventTarget::node(input_handle.value), "change", 901,
+                        [&](const bbl::PlatformMouseEvent& event) {
+                            require(!event.dom->composed && event.dom->bubbles &&
+                                        !event.dom->cancelable,
+                                    "file change flags");
+                            shared_events += "C";
+                        });
     std::string selected_text;
     auto& listeners = engine.ui_elements[input_handle.value].file_change_callbacks;
     listeners = std::make_shared<bbl::UiEventListeners>();
@@ -192,6 +209,7 @@ int main(int argc, char** argv) {
     open_file.reset();
     bbl::js::click_file_input(engine, input_handle);
     require(changes == 0, "open cancellation fires no change");
+    require(shared_events.empty(), "open cancellation fires no shared events");
     require(bbl::js::input_files(engine, input_handle).length() == 0u,
             "open cancellation leaves files empty");
 
@@ -207,11 +225,14 @@ int main(int argc, char** argv) {
     bbl::js::click_file_input(engine, input_handle);
     open_dialog_hook = {};
     require(changes == 1, "selection fires change exactly once");
+    require(shared_events == "IC", "file selection publishes input then change once");
+    bbl::off_dom_pointer(engine, bbl::DomEventTarget::node(input_handle.value), "change", 901);
     require(selected_text == readable, "File.text success");
     require(last_open_options.filter_pattern == "*.json", "accept filter");
     open_file.reset();
     bbl::js::click_file_input(engine, input_handle);
     require(changes == 1, "cancel after selection fires no change");
+    require(shared_events == "IC", "cancel preserves shared event count");
     require(bbl::js::file_text(engine, bbl::js::file_at(bbl::js::input_files(engine, input_handle),
                                                         0u)) == readable,
             "cancel preserves prior selected File");
@@ -233,6 +254,7 @@ int main(int argc, char** argv) {
     bbl::js::FileList retained = bbl::js::input_files(engine, input_handle);
     bbl::js::click_file_input(engine, input_handle);
     require(changes == 2, "replacement fires change exactly once");
+    require(shared_events == "ICI", "shared change removal retains input identity");
     require(bbl::js::file_text(engine, bbl::js::file_at(retained, 0u)) == readable,
             "a retained old FileList keeps its immutable snapshot");
     require(engine.browser_file_storage->snapshot_count() == 2u &&

@@ -56,6 +56,7 @@ import {
 import { compileVatMethodCall } from "./intrinsics/vat.js";
 import { compilePhysicsMethodCall } from "./physics-surface.js";
 import { compileCustomEventConstructor } from "./custom-events.js";
+import { compileSyntheticEventConstructor } from "./synthetic-events.js";
 import {
     compileBrowserFileCall,
     compileBrowserFileConstructor,
@@ -925,6 +926,11 @@ export class ExpressionLowerer {
                 unwrapped,
             );
             if (customEvent) return customEvent;
+            const syntheticEvent = compileSyntheticEventConstructor(
+                this.context,
+                unwrapped,
+            );
+            if (syntheticEvent) return syntheticEvent;
             const constructed =
                 this.context.dataLowerer.compileNewExpression(unwrapped);
             if (constructed) {
