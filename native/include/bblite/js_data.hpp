@@ -2369,6 +2369,18 @@ std::string macos_time_zone();
            digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
 }
 
+/**
+ * Whether a `?` property that also admits null is own: it is while its storage holds a value.
+ * Empty storage is either an absent property or a stored null, which nothing records.
+ */
+template <typename Slot>
+[[nodiscard]] bool held_own_property(const Slot& slot, std::string_view property) {
+    if (static_cast<bool>(slot))
+        return true;
+    throw std::runtime_error("Own-property presence of '" + std::string(property) +
+                             "' is not represented while it is empty: it may be absent or null.");
+}
+
 /** JavaScript SameValue over numbers: NaN equals NaN and the signed zeros differ. */
 [[nodiscard]] inline bool same_value(double left, double right) {
     if (std::isnan(left) || std::isnan(right))

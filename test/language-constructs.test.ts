@@ -4086,3 +4086,48 @@ test("a setter-only property maps as data and refuses where its record is stored
         /has a setter without a getter/,
     );
 });
+
+check(
+    "optional-property-own-key-presence",
+    `
+    interface Stops { day?: string; strength?: number }
+    interface Quality { postProcess: boolean; steps?: number; maxPixels: number | undefined; stops?: Stops; charm?: { points: number } | null }
+    interface Config { name: string; quality: Quality; extra?: { scale: number } }
+    const DEFAULTS: Config = { name: "garden", quality: { postProcess: true, maxPixels: undefined, stops: { day: "a" }, charm: { points: 2 } } };
+    function isPlainObject(value: unknown): value is Record<string, unknown> {
+        return typeof value === "object" && value !== null && !Array.isArray(value);
+    }
+    function validate(candidate: unknown, defaults: unknown): string[] {
+        const problems: string[] = [];
+        const walk = (value: unknown, base: unknown, path: string): void => {
+            if (!isPlainObject(value) || !isPlainObject(base)) return;
+            for (const key of Object.keys(value)) {
+                const here = path === "" ? key : path + "." + key;
+                if (!(key in base)) { problems.push("unknown " + here); continue; }
+                const expected = base[key];
+                if (expected === undefined) { problems.push("open " + here); continue; }
+                walk(value[key], expected, here);
+            }
+        };
+        walk(candidate, defaults, "");
+        return problems;
+    }
+    const parsed = JSON.parse('{"name":"x","quality":{"steps":3,"maxPixels":5,"stops":{"day":"b","strength":2},"charm":{"points":1,"x":0}},"extra":{"scale":1}}') as unknown;
+    if (validate(parsed, DEFAULTS).join(",") !== "unknown quality.steps,open quality.maxPixels,unknown quality.stops.strength,unknown quality.charm.x,unknown extra")
+        throw new Error("dynamic view own keys");
+    const viewed = DEFAULTS.quality as unknown as Record<string, unknown>;
+    if (Object.keys(viewed).join(",") !== "postProcess,maxPixels,stops,charm" || "steps" in viewed || !("maxPixels" in viewed) || !("charm" in DEFAULTS.quality))
+        throw new Error("dynamic view keys");
+    type Weights = { base: number; bonus?: number; cap: number | undefined };
+    const weights: Weights = { base: 1, bonus: 4, cap: 2 };
+    if (Object.keys(weights).join(",") !== "base,bonus,cap" || Object.values(weights).map((value) => String(value)).join(",") !== "1,4,2")
+        throw new Error("present optional keys");
+    delete weights.bonus;
+    const entries = Object.entries(weights).map(([key, value]) => key + "=" + String(value));
+    if (entries.join(",") !== "base=1,cap=2" || "bonus" in weights || !("maxPixels" in DEFAULTS.quality))
+        throw new Error("deleted optional key");
+    const copy: Record<string, unknown> = { ...(DEFAULTS.quality as unknown as Record<string, unknown>) };
+    if (Object.keys(copy).join(",") !== "postProcess,maxPixels,stops,charm" || copy["maxPixels"] !== undefined)
+        throw new Error("spread own keys");
+`,
+);

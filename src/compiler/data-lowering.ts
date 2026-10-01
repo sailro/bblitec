@@ -92,7 +92,7 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { ownObjectEntries } from "./object-statics.js";
+import { structOwnEntries } from "./object-statics.js";
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
@@ -7419,7 +7419,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 name: snapshot,
                                 initializer: source.cpp,
                             });
-                            const entries = ownObjectEntries(
+                            const entries = structOwnEntries(
                                 {
                                     dataTypes: this.context.dataTypes,
                                     dataLowerer: this,
@@ -7427,18 +7427,34 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                         this.context.fail(node, message),
                                 },
                                 { ...source, cpp: snapshot },
+                                source.dataType,
                                 property,
-                            )!;
-                            for (const [key, value] of entries) {
+                            );
+                            // A `?` field is copied while it is own.
+                            for (const { key, value, presentCpp } of entries) {
                                 const cpp = this.compileKnownValueForSink(
                                     value,
                                     dataType.value,
                                     property,
                                 );
+                                if (presentCpp) {
+                                    this.context.emit({
+                                        kind: "open",
+                                        code: `if (${presentCpp}) {`,
+                                    });
+                                    this.context.increaseIndent();
+                                }
                                 this.context.emit({
                                     kind: "expression",
                                     code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
                                 });
+                                if (presentCpp) {
+                                    this.context.decreaseIndent();
+                                    this.context.emit({
+                                        kind: "close",
+                                        code: "}",
+                                    });
+                                }
                             }
                             continue;
                         }
@@ -8148,8 +8164,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * Whether `owner` carries `key`, as a condition. A compile-time record
      * answers from its properties and a dictionary from its native
      * membership. `in` also asks a struct, which answers from its type: a
-     * required field is always present and an optional one is present when
-     * it holds a value. `Object.hasOwn` declines a struct, whose fields are
+     * required field is always present and a `?` one is present when it
+     * holds a value. `Object.hasOwn` declines a struct, whose fields are
      * its type's rather than the object's own.
      */
     public membershipCpp(
@@ -8259,15 +8275,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (!field) {
                 return "false";
             }
-            if (field.type.kind !== "optional") {
-                return "true";
-            }
             const access = this.context.dataTypes.isReferenceStruct(
                 dataType.name,
             )
                 ? "->"
                 : ".";
-            return optionalPresentCpp(`${narrowed.cpp}${access}${field.name}`);
+            const slot = `${narrowed.cpp}${access}${field.name}`;
+            // A union arm's field is narrowed by its tag, not its storage.
+            if (field.presentForTags)
+                return field.type.kind === "optional"
+                    ? optionalPresentCpp(slot)
+                    : "true";
+            const present = this.context.dataTypes.ownPropertyPresentCpp(
+                dataType.name,
+                field,
+                slot,
+                ownerNode,
+            );
+            if (present === undefined) return "true";
+            this.context.reachJsData();
+            return present;
         }
         return this.context.fail(
             ownerNode,

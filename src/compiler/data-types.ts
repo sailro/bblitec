@@ -321,6 +321,15 @@ export interface DataStructField {
 /** The accessors an accessor-backed record field holds. */
 export type StructFieldAccessor = "get" | "get-set";
 
+/**
+ * Whether a field is one of its object's own keys: `own` always (a required
+ * property), `stored` while its storage holds a value (a `?` property, absent
+ * when empty), `nullable` while it holds a value and unknown when empty (a
+ * `?` property that also admits `null`, whose empty storage is either), and
+ * `ambiguous` when type shapes sharing the struct disagree.
+ */
+export type OwnPropertyPresence = "own" | "stored" | "nullable" | "ambiguous";
+
 export function propertyIsReadOnly(property: ts.Symbol): boolean {
     return (property.declarations ?? []).some(
         (declaration) =>
@@ -609,6 +618,48 @@ function sanitizeIdentifier(name: string): string {
 }
 
 /**
+ * A `?` property's presence: its storage is empty exactly when the property
+ * is absent, unless the storage also holds a `null` the property admits.
+ * Dynamic storage keeps `undefined` apart from `null`.
+ */
+function storedPresence(
+    type: DataType,
+    admitsNull: boolean,
+): OwnPropertyPresence {
+    if (type.kind === "json") return "stored";
+    if (
+        type.kind !== "optional" &&
+        type.kind !== "struct" &&
+        type.kind !== "function"
+    )
+        return "ambiguous";
+    return admitsNull ? "nullable" : "stored";
+}
+
+/** One field from a property every member of a union declares. */
+function unionPresence(
+    properties: readonly ts.Symbol[],
+    types: readonly ts.Type[],
+    mapped: DataType,
+): OwnPropertyPresence {
+    const optional = properties.map(
+        (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
+    );
+    if (optional.every((flag) => !flag)) return "own";
+    if (!optional.every(Boolean)) return "ambiguous";
+    return storedPresence(
+        mapped,
+        types.some((type) => nullability(type).null),
+    );
+}
+
+/** A presence key is `<struct>.<property>`; struct names hold no dot. */
+function splitPresenceKey(key: string): [string, string] {
+    const dot = key.indexOf(".");
+    return [key.slice(0, dot), key.slice(dot + 1)];
+}
+
+/**
  * The C++ spelling of a class field. A private name's sigil is not an
  * identifier character, and the prefix keeps `#x` apart from a public `_x`
  * on the same class; readers find fields by their source name, so this is
@@ -723,6 +774,13 @@ export class DataTypeRegistry {
      */
     private readonly jsonSerializedStructs = new EmissionSet<string>();
     private readonly jsonBoxedStructs = new EmissionMap<string, ts.Node>();
+    /** Each field's own-key presence, merged over every type shape the struct stands for. */
+    private readonly fieldPresence = new EmissionMap<
+        string,
+        OwnPropertyPresence
+    >();
+    /** Lowered reads of a field's presence, checked again once every shape is known. */
+    private readonly fieldPresenceReads = new EmissionMap<string, ts.Node>();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
     private readonly partialRecords = new EmissionSet<
@@ -1896,22 +1954,22 @@ export class DataTypeRegistry {
         if (common.length === 0) return undefined;
 
         const fields: DataStructField[] = [];
+        const presences: OwnPropertyPresence[] = [];
         for (const property of common) {
-            const candidates = propertiesByMember.map((properties) => {
-                const memberProperty = properties.find(
-                    ({ name }) => name === property.name,
-                )!;
-                const declaration =
+            const memberProperties = propertiesByMember.map((properties) =>
+                properties.find(({ name }) => name === property.name)!,
+            );
+            const memberTypes = memberProperties.map((memberProperty) =>
+                this.checker.getTypeOfSymbolAtLocation(
+                    memberProperty,
                     memberProperty.valueDeclaration ??
-                    memberProperty.declarations?.[0];
-                return this.fromTsType(
-                    this.checker.getTypeOfSymbolAtLocation(
-                        memberProperty,
-                        declaration ?? node,
-                    ),
-                    node,
-                );
-            });
+                        memberProperty.declarations?.[0] ??
+                        node,
+                ),
+            );
+            const candidates = memberTypes.map((memberType) =>
+                this.fromTsType(memberType, node),
+            );
             const first = candidates[0];
             if (
                 !first ||
@@ -1934,6 +1992,7 @@ export class DataTypeRegistry {
                     ? { readOnly: true }
                     : {}),
             });
+            presences.push(unionPresence(memberProperties, memberTypes, first));
         }
 
         const preferredName = type.aliasSymbol?.name;
@@ -1951,10 +2010,12 @@ export class DataTypeRegistry {
             .join(",");
         const existing = this.structsByKey.get(key);
         if (existing) {
+            this.recordFieldPresence(existing.name, fields, presences);
             const result = { kind: "struct" as const, name: existing.name };
             this.structTypesByIdentity.set(identity, result);
             return result;
         }
+        this.recordFieldPresence(name, fields, presences);
         this.registerStructDefinition(key, { name, fields });
         const result = { kind: "struct" as const, name };
         this.structTypesByIdentity.set(identity, result);
@@ -2073,6 +2134,7 @@ export class DataTypeRegistry {
             }
         }
         const fields: DataStructField[] = [];
+        const presences: OwnPropertyPresence[] = [];
         for (const propertyName of propertyNames) {
             const memberProperties = propertiesByMember.flatMap(
                 (properties) => {
@@ -2183,6 +2245,17 @@ export class DataTypeRegistry {
                       }
                     : {}),
             });
+            // A field some arms lack is an own key by tag, which no
+            // presence read decides.
+            presences.push(
+                propertyTypes.length < type.types.length
+                    ? "ambiguous"
+                    : unionPresence(
+                          memberProperties,
+                          propertyTypes,
+                          fields.at(-1)!.type,
+                      ),
+            );
         }
         const key = fields
             .map(
@@ -2192,10 +2265,12 @@ export class DataTypeRegistry {
             .join(",");
         const existing = this.structsByKey.get(key);
         if (existing) {
+            this.recordFieldPresence(existing.name, fields, presences);
             const result = { kind: "struct" as const, name: existing.name };
             this.structTypesByIdentity.set(identity, result);
             return result;
         }
+        this.recordFieldPresence(name, fields, presences);
         this.registerStructDefinition(key, { name, fields });
         const result = { kind: "struct" as const, name };
         this.structTypesByIdentity.set(identity, result);
@@ -2558,6 +2633,7 @@ export class DataTypeRegistry {
             return undefined;
         }
         const fields: DataStructField[] = [];
+        const presences: OwnPropertyPresence[] = [];
         const partial = this.isPartialRecord(type);
         const view = this.recordViews.has(this.structIdentity(type));
         for (const property of properties) {
@@ -2608,6 +2684,11 @@ export class DataTypeRegistry {
                     ? { defaultWhenMissing: true }
                     : {}),
             });
+            presences.push(
+                optional && !accessor
+                    ? storedPresence(mapped, nullability(propertyType).null)
+                    : "own",
+            );
         }
         if (partial) {
             this.referenceStructNames.add(provisionalName);
@@ -2629,15 +2710,102 @@ export class DataTypeRegistry {
             )
             .join(",")}`;
         const existing = this.structsByKey.get(key);
-        if (existing && !this.referenceStructNames.has(provisionalName)) {
-            return {
-                kind: "struct",
-                name: existing.name,
-            };
-        }
-        const name = provisionalName;
-        this.registerStructDefinition(key, { name, fields });
+        const name =
+            existing && !this.referenceStructNames.has(provisionalName)
+                ? existing.name
+                : provisionalName;
+        this.recordFieldPresence(name, fields, presences);
+        if (name === provisionalName)
+            this.registerStructDefinition(key, { name, fields });
         return { kind: "struct", name };
+    }
+
+    /**
+     * Merges the own-key presence a type shape gives each field into what
+     * its struct already holds: shapes that disagree (`f?: T` beside
+     * `f: T | undefined`) leave the field ambiguous.
+     */
+    private recordFieldPresence(
+        structName: string,
+        fields: readonly DataStructField[],
+        presences: readonly OwnPropertyPresence[],
+    ): void {
+        fields.forEach((field, index) => {
+            const key = `${structName}.${field.sourceName}`;
+            const presence = presences[index]!;
+            const previous = this.fieldPresence.get(key);
+            this.fieldPresence.set(
+                key,
+                previous === undefined || previous === presence
+                    ? presence
+                    : "ambiguous",
+            );
+        });
+    }
+
+    /**
+     * A field's own-key presence. A field no type shape recorded (a class
+     * field, an owned result) answers from its own declaration.
+     */
+    public ownPropertyPresence(
+        structName: string,
+        field: DataStructField,
+    ): OwnPropertyPresence {
+        return (
+            this.fieldPresence.get(`${structName}.${field.sourceName}`) ??
+            (field.optionalProperty || field.uncheckedProperty
+                ? storedPresence(field.type, false)
+                : "own")
+        );
+    }
+
+    /**
+     * The run-time test that `field` is an own key of the struct `slot`
+     * stores it in, or undefined when it always is. A nullable field's empty
+     * storage refuses at run time; an ambiguous field refuses here, and the
+     * read is checked again once every shape is known.
+     */
+    public ownPropertyPresentCpp(
+        structName: string,
+        field: DataStructField,
+        slot: string,
+        node: ts.Node,
+    ): string | undefined {
+        const presence = this.ownPropertyPresence(structName, field);
+        if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
+        if (presence === "own") return undefined;
+        this.fieldPresenceReads.set(`${structName}.${field.sourceName}`, node);
+        if (presence === "nullable")
+            return `bbl::js::held_own_property(${slot}, ${stringLiteral(field.sourceName)})`;
+        return field.type.kind === "optional"
+            ? optionalPresentCpp(slot)
+            : field.type.kind === "json"
+              ? `!${slot}.is_undefined()`
+              : `static_cast<bool>(${slot})`;
+    }
+
+    private refuseAmbiguousPresence(
+        field: DataStructField,
+        node: ts.Node,
+    ): never {
+        return this.fail(
+            node,
+            `Own-property presence of '${field.sourceName}' is not represented: the type shapes sharing its storage disagree on whether it is an own property.`,
+        );
+    }
+
+    /** A presence read stays sound only if no later shape made its field ambiguous. */
+    private checkFieldPresenceReads(): void {
+        for (const [key, node] of this.fieldPresenceReads) {
+            if (this.fieldPresence.get(key) !== "ambiguous") continue;
+            const [structName, sourceName] = splitPresenceKey(key);
+            const field = this.structsByName
+                .get(structName)
+                ?.fields.find(
+                    (candidate) => candidate.sourceName === sourceName,
+                );
+            if (field) this.refuseAmbiguousPresence(field, node);
+        }
     }
 
     public isReferenceStruct(name: string): boolean {
@@ -3904,15 +4072,8 @@ export class DataTypeRegistry {
         this.jsonBoxedStructs.set(type.name, node);
         this.cppType(type);
         for (const field of this.structFields(type.name, node, "accessors")) {
-            if (
-                field.optionalProperty ||
-                field.uncheckedProperty ||
-                field.type.kind === "optional"
-            )
-                this.fail(
-                    node,
-                    "Dynamic object views require represented own-property presence for optional fields.",
-                );
+            // The view lists a field among its own keys while it is one.
+            this.ownPropertyPresentCpp(type.name, field, "value", node);
             if (this.jsonValueCpp(field.type, "value", node) === undefined)
                 this.fail(
                     node,
@@ -3931,28 +4092,55 @@ export class DataTypeRegistry {
         ]);
         for (const name of names) {
             const fields = this.structsByName.get(name)!.fields;
+            const node = this.jsonBoxedStructs.get(name)!;
+            const present = fields.map((field) =>
+                this.ownPropertyPresentCpp(
+                    name,
+                    field,
+                    `value->${field.name}`,
+                    node,
+                ),
+            );
             lines.push(
                 `inline bbl::js::JsonValue json_value_property(const ${name}& value, std::string_view key) {`,
             );
-            for (const field of fields) {
+            fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
-                const cpp = this.jsonValueCpp(
-                    field.type,
-                    property,
-                    this.jsonBoxedStructs.get(name)!,
-                )!;
+                const cpp = this.jsonValueCpp(field.type, property, node)!;
+                // An absent shared object reads undefined, not its null, and
+                // a nullable field's empty storage refuses to guess.
+                const read =
+                    present[index] &&
+                    (field.type.kind === "struct" ||
+                        this.ownPropertyPresence(name, field) === "nullable")
+                        ? `${present[index]} ? ${cpp} : bbl::js::JsonValue{}`
+                        : cpp;
                 lines.push(
-                    `    if (key == ${stringLiteral(field.sourceName)}) return ${cpp};`,
+                    `    if (key == ${stringLiteral(field.sourceName)}) return ${read};`,
                 );
-            }
-            lines.push(
-                "    return {};",
-                "}",
-                `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
-                `    return {${fields.map((field) => stringLiteral(field.sourceName)).join(", ")}};`,
-                "}",
-                "",
-            );
+            });
+            lines.push("    return {};", "}");
+            if (present.every((condition) => condition === undefined))
+                lines.push(
+                    `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
+                    `    return {${fields.map((field) => stringLiteral(field.sourceName)).join(", ")}};`,
+                    "}",
+                    "",
+                );
+            else
+                lines.push(
+                    `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value) {`,
+                    "    bbl::js::Array<std::string> keys;",
+                    ...fields.map((field, index) => {
+                        const push = `keys.push_back(${stringLiteral(field.sourceName)});`;
+                        return present[index]
+                            ? `    if (${present[index]}) ${push}`
+                            : `    ${push}`;
+                    }),
+                    "    return keys;",
+                    "}",
+                    "",
+                );
         }
         return lines;
     }
@@ -4019,6 +4207,7 @@ export class DataTypeRegistry {
      * dependency order inside `namespace bblscene`.
      */
     public renderPreamble(structuredClone = false): DataPreamble {
+        this.checkFieldPresenceReads();
         const used = this.reachableNamedTypes();
         if (
             used.structs.size === 0 &&
