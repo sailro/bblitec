@@ -308,6 +308,7 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | pixel‑perfect | pixel‑perfect | Material Falloff Write |
 | opacity-alpha-write | <img src="images/scenes/regression-opacity-alpha-write.png" alt="Opacity alpha write rendering" width="160"> | pixel‑perfect | 0.000/0.000 | Opacity Alpha Write |
 | blend-alpha-write | <img src="images/scenes/regression-blend-alpha-write.png" alt="Blend alpha write rendering" width="160"> | pixel‑perfect | pixel‑perfect | Blend Alpha Write |
+| runtime-options | <img src="images/scenes/regression-runtime-options.png" alt="Runtime options rendering" width="160"> | 0.000/0.001 | 0.000/0.001 | Runtime Options |
 | no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | pixel‑perfect | pixel‑perfect | No Camera Floating Origin |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | pixel‑perfect | pixel‑perfect | Compiler State |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Track Clamp |
