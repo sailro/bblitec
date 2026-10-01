@@ -144,6 +144,7 @@ struct DomInput {
     DomEventListeners<PlatformKeyboardEvent> keyboard;
     DomEventListeners<PlatformCustomEvent> custom;
     DomEventListeners<PlatformTransitionEvent> transition;
+    DomEventListeners<PlatformDragEvent> drag;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -160,6 +161,10 @@ struct DomInput {
     bool native_pointer_default = false;
     bool canvas_background = true;
     bool pending_resize = false;
+    /** The path under an active file drag and the files its drop carries. */
+    std::vector<DomEventTarget> drag_path;
+    std::vector<DroppedFile> dropped_files;
+    double drag_x = 0, drag_y = 0;
 
 #if BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {
@@ -167,6 +172,7 @@ struct DomInput {
         keyboard.gc_trace(visitor);
         custom.gc_trace(visitor);
         transition.gc_trace(visitor);
+        drag.gc_trace(visitor);
     }
 #endif
 };
@@ -269,6 +275,29 @@ inline void off_dom_transition(Engine& engine, DomEventTarget target, std::strin
         engine.dom_input->transition.remove(target, std::move(type), identity, capture);
 }
 
+/** The platform sources file drags while a listened type names them. */
+inline void on_dom_drag(Engine& engine, DomEventTarget target, std::string type,
+                        std::size_t identity, DomEventListeners<PlatformDragEvent>::Callback callback,
+                        bool capture = false, bool once = false, bool passive = false) {
+    listen_dom_type(engine, type)
+        .drag.add(target, std::move(type), identity, std::move(callback), capture, once, passive);
+}
+
+inline void off_dom_drag(Engine& engine, DomEventTarget target, std::string type,
+                         std::size_t identity, bool capture = false) {
+    if (engine.dom_input)
+        engine.dom_input->drag.remove(target, std::move(type), identity, capture);
+}
+
+inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::string type,
+                                 DomEventListeners<PlatformDragEvent>::Callback callback) {
+    if (callback)
+        listen_dom_type(engine, type);
+    else if (!engine.dom_input)
+        return;
+    engine.dom_input->drag.set_handler(target, std::move(type), std::move(callback));
+}
+
 template <typename Event>
 [[nodiscard]] Event dom_event(Event payload, std::string type, std::vector<DomEventTarget> path,
                               bool bubbles = true, bool cancelable = true,
@@ -316,8 +345,8 @@ inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event
  * display checks completion between frames, so callbacks can request layout
  * without deadlocking behind a synchronous input acknowledgement. */
 struct DomEventBatch {
-    using Payload =
-        std::variant<PlatformMouseEvent, PlatformKeyboardEvent, PlatformTransitionEvent>;
+    using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent,
+                                 PlatformTransitionEvent, PlatformDragEvent>;
     struct Entry {
         Payload payload;
         bool controls_default = false;
@@ -354,6 +383,8 @@ struct DomEventBatch {
                                 suppressed.insert(event.pointer_id);
                         } else if constexpr (std::is_same_v<PayloadType, PlatformTransitionEvent>)
                             engine.dom_input->transition.dispatch(event, invoke, &engine);
+                        else if constexpr (std::is_same_v<PayloadType, PlatformDragEvent>)
+                            engine.dom_input->drag.dispatch(event, invoke, &engine);
                         else
                             engine.dom_input->keyboard.dispatch(event, invoke, &engine);
                     }

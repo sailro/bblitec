@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bblite/features/device_recovery.hpp>
+#include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/runtime.hpp>
@@ -10,6 +11,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <charconv>
 #include <optional>
 #include <string>
@@ -18,6 +20,9 @@
 #include <vector>
 
 #include "pal_runtime_trace.hpp"
+#if BBLITE_HAS_BROWSER_FILE
+#include "pal_file_dialog.hpp"
+#endif
 #include "pal_window.hpp"
 #include "pal_sdl_application.hpp"
 
@@ -903,6 +908,85 @@ inline void sync_pointer_lock(SDL_Window* window, Engine& engine) {
     dispatch_pointer_lock_change(engine);
 }
 
+/** Whether a listener names a file drag event. */
+inline bool listens_dom_drag(const DomInput& input) {
+    return std::any_of(input.event_types.begin(), input.event_types.end(), [](const auto& type) {
+        return type == "dragenter" || type == "dragover" || type == "dragleave" || type == "drop";
+    });
+}
+
+/**
+ * File drags over the window: dragenter and dragleave as the element under the
+ * drag changes, dragover while it moves, and drop with the files read at the
+ * drop; a drag that leaves or ends without files ends with dragleave.
+ */
+inline std::shared_ptr<DomEventBatch> dom_drag_input(Engine& engine, const SDL_Event& event) {
+    auto& input = *engine.dom_input;
+    const auto reset = [&] {
+        input.drag_path.clear();
+        input.dropped_files.clear();
+    };
+    if (event.type == SDL_EVENT_DROP_BEGIN || !listens_dom_drag(input)) {
+        if (event.type != SDL_EVENT_DROP_POSITION && event.type != SDL_EVENT_DROP_FILE)
+            reset();
+        return {};
+    }
+    auto batch = std::make_shared<DomEventBatch>();
+    const auto add = [&](std::string type, const std::vector<DomEventTarget>& path,
+                         bool cancelable, std::shared_ptr<const std::vector<DroppedFile>> files) {
+        PlatformDragEvent payload;
+        payload.client_x = input.drag_x;
+        payload.client_y = input.drag_y;
+        payload.files = std::move(files);
+        batch->add(dom_event(std::move(payload), std::move(type), path, true, cancelable), true);
+    };
+    const auto move_to = [&](float x, float y) {
+        input.drag_x = x * engine.canvas_window_to_client_scale;
+        input.drag_y = y * engine.canvas_window_to_client_scale;
+        auto path = input.hit_path ? input.hit_path(input.drag_x, input.drag_y) : dom_canvas_path();
+        if (!input.drag_path.empty() && path.front() == input.drag_path.front())
+            return;
+        if (!input.drag_path.empty())
+            add("dragleave", input.drag_path, false, {});
+        add("dragenter", path, true, {});
+        input.drag_path = std::move(path);
+    };
+    if (event.type == SDL_EVENT_DROP_POSITION) {
+        move_to(event.drop.x, event.drop.y);
+        add("dragover", input.drag_path, true, {});
+        return batch;
+    }
+    if (event.type == SDL_EVENT_DROP_FILE) {
+        // Platforms without drag positions report the drop's own.
+        if (input.drag_path.empty())
+            move_to(event.drop.x, event.drop.y);
+#if BBLITE_HAS_BROWSER_FILE
+        if (event.drop.data) {
+            try {
+                const std::u8string path(reinterpret_cast<const char8_t*>(event.drop.data));
+                auto snapshot = detail::selected_file_snapshot(std::filesystem::path(path));
+                input.dropped_files.push_back(
+                    {std::move(snapshot.bytes), std::move(snapshot.display_name)});
+            } catch (const std::exception& error) {
+                SDL_Log("A dropped file was not read: %s", error.what());
+            }
+        }
+#endif
+        return batch;
+    }
+    if (event.type != SDL_EVENT_DROP_COMPLETE)
+        return {};
+    if (!input.drag_path.empty()) {
+        if (input.dropped_files.empty())
+            add("dragleave", input.drag_path, false, {});
+        else
+            add("drop", input.drag_path, true,
+                std::make_shared<const std::vector<DroppedFile>>(std::move(input.dropped_files)));
+    }
+    reset();
+    return batch;
+}
+
 /** The page visibility a window event reports: hidden or minimized, or shown again. */
 inline std::optional<bool> window_visibility(const SDL_Event& event) {
     if (event.type == SDL_EVENT_WINDOW_HIDDEN || event.type == SDL_EVENT_WINDOW_MINIMIZED)
@@ -1220,6 +1304,9 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         input.pending_resize = false;
         batch->add(
             dom_event(PlatformMouseEvent{}, "resize", {DomEventTarget::window()}, false, false));
+    } else if (event.type == SDL_EVENT_DROP_BEGIN || event.type == SDL_EVENT_DROP_POSITION ||
+               event.type == SDL_EVENT_DROP_FILE || event.type == SDL_EVENT_DROP_COMPLETE) {
+        return dom_drag_input(engine, event);
     } else
         return {};
     return batch;

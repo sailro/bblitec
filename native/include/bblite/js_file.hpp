@@ -155,12 +155,15 @@ inline void revoke_object_url(Engine& engine, ObjectUrlHandle handle) {
     }
 }
 
-/** One immutable snapshot of an input's selected files. */
+/** One immutable snapshot of selected or dropped files; a program reads the first. */
 struct FileList {
     BrowserFileHandle first{};
+    /** How many files a drop carried; a selection holds one. */
+    std::size_t count = 1;
 
-    [[nodiscard]] std::size_t length() const noexcept { return first ? 1u : 0u; }
+    [[nodiscard]] std::size_t length() const noexcept { return first ? count : 0u; }
 };
+
 
 #if BBLITE_HAS_UI
 [[nodiscard]] inline UiElementRecord& browser_file_ui_element(Engine& engine,
@@ -188,6 +191,16 @@ struct FileList {
         throw std::runtime_error("Native File handle is absent or stale.");
     }
     return *record;
+}
+
+/** File.name: the selected or dropped file's display name. */
+[[nodiscard]] inline std::string file_name(const Engine& engine, const BrowserFileHandle& handle) {
+    return browser_file_record(engine, handle).display_name;
+}
+
+/** File.size: the snapshot's byte length. */
+[[nodiscard]] inline double file_size(const Engine& engine, const BrowserFileHandle& handle) {
+    return static_cast<double>(browser_file_record(engine, handle).bytes.size());
 }
 
 /** A selected File's bytes, as the snapshot holds them. */
@@ -270,6 +283,17 @@ inline void replace_browser_file(Engine& engine, BrowserFileHandle& destination,
     }
     destination = BrowserFileHandle{std::make_shared<BrowserFileRecord>(
         std::move(selected.bytes), std::move(selected.display_name), engine.browser_file_storage)};
+}
+
+/** A drop's files: the first becomes a File of the owning realm on first read. */
+[[nodiscard]] inline FileList drag_files(Engine& engine, const PlatformDragEvent& event) {
+    if (!event.files || event.files->empty())
+        return {};
+    if (!event.first_file) {
+        const auto& file = event.files->front();
+        replace_browser_file(engine, event.first_file, pal::SelectedFileSnapshot{file.bytes, file.name});
+    }
+    return FileList{event.first_file, event.files->size()};
 }
 
 namespace detail {

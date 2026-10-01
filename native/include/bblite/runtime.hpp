@@ -408,6 +408,32 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
+/** A file the platform dropped on the window: its bytes and display name, read at the drop. */
+struct DroppedFile {
+    std::vector<std::uint8_t> bytes;
+    std::string name;
+};
+
+/** A file drag over the window: dragenter, dragover, dragleave or drop. */
+struct PlatformDragEvent {
+    double client_x = 0.0;
+    double client_y = 0.0;
+    /** The drop's files; empty while dragging, as a browser withholds them before the drop. */
+    std::shared_ptr<const std::vector<DroppedFile>> files{};
+    /** The File the drop's first file became in the owning realm, made on first read. */
+    mutable BrowserFileHandle first_file{};
+    mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+
+    void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default())
+            return;
+        default_prevented = true;
+    }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+};
+
 /**
  * Last computed retained-layout box: border-box position and client (padding minus scrollbar)
  * size as DOMRect's reached surface, and the border-box (offset) size.
