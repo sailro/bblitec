@@ -1,0 +1,33 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "Page chrome was clipped out of the engine canvas inside filter layers too, so a blur or negative-offset shadow lost spread outside the canvas; only geometry drawn into the frame is clipped, a filter layer is clipped when composited, and the fixture carries both cases.",
+            "applied": true
+        },
+        {
+            "summary": "Occlusion and presentation computed the canvas rectangle two ways; one `presented_canvas_rect` (content box, target-scaled, truncated) drives both, Worker realms included.",
+            "applied": true
+        },
+        {
+            "summary": "The opaque-rectangle model cannot represent a rounded, transformed, translucent, filtered, masked or overflow-clipped engine canvas; those refuse where the occluders are built, and a canvas painted inside an open UI layer throws.",
+            "applied": true
+        },
+        {
+            "summary": "The occluder mask was rebuilt and every triangle re-triangulated per draw; the mask is cached until a canvas paints, triangles missing every canvas pass unchanged, and draw bounds come from the transform loop.",
+            "applied": true
+        },
+        {
+            "summary": "`cascaded_resize` restated the authored-width cascade; both read one `cascaded_declaration`, and the textarea grip is hit-tested before the cascade.",
+            "applied": true
+        },
+        {
+            "summary": "The text scene validation checked the engine twice and named a stale refusal; the SDL_GPU render capture had two guarded call sites where Dawn has one.",
+            "applied": true
+        },
+        {
+            "summary": "The UTF-8 decoder's replace step wrote captured state clang-analyzer reported as dead stores; it appends only and callers advance the copy point.",
+            "applied": true
+        }
+    ]
+}

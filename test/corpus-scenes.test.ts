@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import test from "node:test";
 import { suiteBrowserModuleDigest } from "../src/capture-suite-reference.js";
-import { getScene, scenes } from "../src/scene-registry.js";
+import { getScene, sceneReferencePage, scenes } from "../src/scene-registry.js";
 import { compareImages, compareRegion } from "../src/parity.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
@@ -245,7 +245,7 @@ test("keeps exact-source corpus references immutable", () => {
         );
         assert.equal(
             reference.referenceHostPage,
-            scene.parity.referenceHostPage,
+            sceneReferencePage(scene).hostPage,
         );
         if (reference.referenceHostPage) {
             assert.equal(

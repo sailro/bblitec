@@ -32,6 +32,7 @@
 #include "pal_platform_events.hpp"
 #include "pal_gpu_frame.hpp"
 #include "pal_gpu_sprites.hpp"
+#include "pal_gpu_surface.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 #if BBLITE_HAS_DAWN && BBLITE_HAS_TEXT_RENDERER
@@ -228,6 +229,7 @@ public:
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
+        require_window_filling_engine_canvas(engine, width, height);
 #endif
         begin_measurement();
 #if BBLITE_HAS_TEXT_RENDERER

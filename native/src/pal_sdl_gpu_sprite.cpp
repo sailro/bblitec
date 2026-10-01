@@ -32,6 +32,7 @@
 #include "pal_platform_events.hpp"
 #include "pal_gpu_frame.hpp"
 #include "pal_gpu_sprites.hpp"
+#include "pal_gpu_surface.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 #if BBLITE_HAS_TEXT_RENDERER
@@ -232,6 +233,8 @@ public:
         // context's own update.
         update_ui_rml_runtime(*ui_runtime, static_cast<std::uint32_t>(surface_width),
                               static_cast<std::uint32_t>(surface_height));
+        require_window_filling_engine_canvas(engine, static_cast<std::uint32_t>(surface_width),
+                                             static_cast<std::uint32_t>(surface_height));
 #endif
         begin_measurement();
         return FramePreparation::ready;

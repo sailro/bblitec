@@ -217,3 +217,18 @@ test("markup the host model cannot represent refuses, naming the page", () => {
     // A page with nothing but its language and entry has no host document.
     assert.equal(page([], [entryScript]).hostUi, undefined);
 });
+
+test("a fixed-scale viewport is inert and a zoomable one refuses", () => {
+    const viewport = (content: string) =>
+        page([element("meta", { name: "viewport", content })], [entryScript]);
+    assert.equal(
+        viewport(
+            "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no",
+        ).hostUi,
+        undefined,
+    );
+    assert.throws(
+        () => viewport("width=device-width, maximum-scale=5"),
+        /head metadata <meta name="viewport"/,
+    );
+});

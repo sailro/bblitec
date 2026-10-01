@@ -121,21 +121,6 @@ bool environment_cube_present(const EnvironmentState& environment) {
 // ---------------------------------------------------------------------------
 // Surfaces and viewports (pal_gpu_surface.hpp)
 
-#if BBLITE_HAS_UI
-PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
-                                   std::uint32_t target_width, std::uint32_t target_height) {
-    const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
-    const double scale_x = static_cast<double>(target_width) / engine.options.width;
-    const double scale_y = static_cast<double>(target_height) / engine.options.height;
-    return PixelViewport{
-        static_cast<std::int32_t>(rect.left * scale_x),
-        static_cast<std::int32_t>(rect.top * scale_y),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.width * scale_x)),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.height * scale_y)),
-    };
-}
-#endif
-
 std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scene& scene,
                                                 std::uint32_t target_width,
                                                 std::uint32_t target_height) {

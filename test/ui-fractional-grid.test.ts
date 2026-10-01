@@ -2,12 +2,78 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { compileSource, CompileError } from "../src/compiler.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
-import type { NativeHostUiNode } from "../src/compiler/types.js";
+import type { NativeHostUi, NativeHostUiNode } from "../src/compiler/types.js";
 
 const source = `import {createEngine,startEngine} from '@babylonjs/lite';
 async function main() {const engine=await createEngine({});await startEngine(engine);}main();`;
-const host = () => readNativeHostUi("ui/scene180-host.json");
+/** A panel whose rows are fractional grids of a label, a range and a value. */
+const host = (): NativeHostUi => {
+    const row = (id: string): NativeHostUiNode => ({
+        tag: "div",
+        attributes: {
+            class: "row",
+            style: "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;",
+        },
+        children: [
+            { tag: "label", attributes: { for: id }, text: id },
+            {
+                tag: "input",
+                attributes: {
+                    id,
+                    type: "range",
+                    min: "0",
+                    max: "1",
+                    step: "0.01",
+                    value: "1",
+                    style: "width: 100%;",
+                },
+            },
+            { tag: "span", attributes: { class: "val" }, text: "1.00" },
+        ],
+    });
+    return {
+        sourcePath: "test/ui-fractional-grid.test.ts",
+        elements: [
+            {
+                tag: "div",
+                attributes: { id: "panel", style: "display: flex; gap: 12px;" },
+                children: [
+                    {
+                        tag: "textarea",
+                        attributes: {
+                            style: "width: 280px; height: 140px; padding: 6px; box-sizing: border-box;",
+                        },
+                        text: "text",
+                    },
+                    {
+                        tag: "div",
+                        attributes: {
+                            style: "display: flex; flex-direction: column; width: 240px;",
+                        },
+                        children: [
+                            row("opacity"),
+                            row("red"),
+                            {
+                                tag: "div",
+                                children: [
+                                    {
+                                        tag: "span",
+                                        text: "Drag canvas to move",
+                                    },
+                                    { tag: "br" },
+                                    {
+                                        tag: "span",
+                                        text: "Scroll wheel to scale",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    };
+};
 
 test("fractional host grids preserve explicit track order and form border-box sizing", () => {
     const result = compileSource(source, { nativeHostUi: host() });

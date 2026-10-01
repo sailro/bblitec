@@ -23,7 +23,8 @@ Check them before adding an implementation. Source rejection does not imply miss
 - An inline module script runs before the entry and must end with a statement `import()` of it, reached on a
   generation-decided path; other dynamic imports refuse.
 - Page elements are present natively: their lookups' null guards fold.
-- Icon links, resource hints and theme-color, description and light color-scheme metadata are inert.
+- Icon links, resource hints and fixed-scale viewport, theme-color, description and light color-scheme metadata are
+  inert.
 - Classic/data scripts, inline handlers, external sheets, foreign markup, quirks mode and other head content refuse,
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
@@ -214,7 +215,10 @@ The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in
 
 Each backend composites premultiplied UI through one compositor: scene drivers render each segment into a
 transparent layer at scene sample count; sprite and Window drivers blend into their single-sample targets.
-Canvas overlays precede DOM chrome.
+Canvas overlays precede DOM chrome. An engine canvas presented beneath the UI (outside Worker hosts) is an opaque
+rectangle, its content box, as the pin configures it: UI painted before it, in paint order, is clipped out of the
+rectangle, a filtered layer at its composite. A rounded, transformed, translucent, filtered, masked or
+overflow-clipped engine canvas refuses.
 Backdrop blur snapshots preceding UI into FP16 scratch. An element with a backdrop filter is a backdrop root:
 when a descendant also has one, the element and its descendants paint into their own layer, so that backdrop
 reads only what the root painted before it, and draws its filtered backdrop over the same content, compounding a
@@ -240,6 +244,7 @@ Canvas-only capture excludes UI filters.
   naming an unknown color keyword passes the check and refuses.
 - A layer composite copies its source region before filtering, including composites without filters.
 - A canvas has no intrinsic layout size: CSS must size it.
+- A text or sprite renderer presents an authored engine canvas only while it fills the window.
 - An image regenerates its quad when its absolute offset's sub-pixel fraction changes.
 
 Parity measures the [full page](fidelity.md#what-is-measured-the-full-page).

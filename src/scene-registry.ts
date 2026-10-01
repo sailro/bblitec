@@ -735,6 +735,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-page-canvas",
+        name: "Regression - Page Canvas",
+        source: "examples/regression-page-canvas/src/main.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Page Canvas",
+        page: { path: "examples/regression-page-canvas/page.html" },
+        // A text scene on a page-authored canvas that does not fill the
+        // window, over page chrome the canvas covers and under a label. The
+        // canvas matches exactly; the label text is the UI text residual.
+        parity: {
+            canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [29, 35, 48],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",
@@ -2922,9 +2940,11 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 180 - Standalone Text Renderer",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
         title: "Babylon Lite Native - Standalone Text Renderer",
-        nativeHostUi: "ui/scene180-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/scene180.html",
+            root: "corpus/babylon-lite/lab",
+        },
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/scene180.html",
             canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             maxFullMad: 0.025,
             maxForegroundMad: 0.49,
@@ -2937,9 +2957,11 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 181 - Live Text Editor",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene181.ts",
         title: "Babylon Lite Native - Live Text Editor",
-        nativeHostUi: "ui/scene181-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/scene181.html",
+            root: "corpus/babylon-lite/lab",
+        },
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/scene181.html",
             canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             maxFullMad: 0.025,
             maxForegroundMad: 0.45,

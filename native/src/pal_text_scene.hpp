@@ -15,12 +15,38 @@
 
 namespace bbl::pal {
 
+/**
+ * Whether the scene's text draws in its one compiler-owned scene pass: the
+ * default render pass, or the scene-stage render task of the default task
+ * graph a surface scene registers with. Another render or geometry task
+ * would mirror the text into a pass of its own.
+ */
+inline bool text_in_default_scene_pass(const Scene& scene) {
+    if (!scene.state->default_render_task)
+        return false;
+    std::size_t scene_passes = 0;
+    for (const TaskHandle handle : scene.tasks) {
+        const FrameTaskRecord& task = handle_at(scene.engine->frame_tasks, handle);
+        if (task.kind == FrameTaskKind::geometry ||
+            (task.kind == FrameTaskKind::render && !task.render.scene_stages))
+            return false;
+        if (task.kind == FrameTaskKind::render)
+            ++scene_passes;
+    }
+    return scene.tasks.empty() || scene_passes == 1;
+}
+
 /** Validate the scene that actually owns the retained text bindings. */
 inline void validate_text_scene(const Scene& scene) {
     if (scene.state->text_renderables.empty())
         return;
-    if (!scene.state->default_render_task || !scene.tasks.empty()) {
-        throw std::runtime_error("Text scene bindings require the default render pass.");
+    if (!scene.engine || scene.camera.value >= scene.engine->cameras.size()) {
+        throw std::runtime_error("Text scene bindings require an explicit camera.");
+    }
+    if (!text_in_default_scene_pass(scene)) {
+        throw std::runtime_error("Text scene bindings require the scene's default pass: its own "
+                                 "render pass, or its default task graph's scene-stage task "
+                                 "beside no other render or geometry task.");
     }
     if (!scene.meshes.empty() || !scene.splat_meshes.empty() ||
 #if BBLITE_HAS_SPRITES
@@ -30,9 +56,6 @@ inline void validate_text_scene(const Scene& scene) {
         scene.environment.has_solid_skybox || scene.environment.has_ground) {
         throw std::runtime_error(
             "Text scene bindings require merged ordering for the attached non-text renderables.");
-    }
-    if (!scene.engine || scene.camera.value >= scene.engine->cameras.size()) {
-        throw std::runtime_error("Text scene bindings require an explicit camera.");
     }
     const auto& camera = handle_at(scene.engine->cameras, scene.camera);
     if (camera.kind == CameraKind::geospatial || camera.orthographic) {
