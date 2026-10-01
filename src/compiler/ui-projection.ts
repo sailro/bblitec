@@ -39,6 +39,7 @@ import {
     type UiGeneratedPart,
 } from "../ui-generated-content.js";
 import {
+    documentLookupId,
     parseUiSelectorSequence,
     splitUiSelectorList,
     uiSelectorSequenceCss,
@@ -4520,19 +4521,35 @@ export class UiProjection {
             return false;
         }
         if (this.context.options.workers) return true;
-        if (callee.name.text !== "getElementById") return true;
-        const id = this.context.unwrap(argumentAt(call, 0));
-        // A literal, or an inlined helper's parameter bound to one: a
-        // demo's `bindToggle(buttonId, ...)` looks its button up by the
-        // literal every call site passes, which the inlined binding still
-        // carries as a static string.
+        // A lookup by id, in either spelling, finds a companion element;
+        // any other selector is a retained-DOM query.
+        const id = this.lookupElementId(call);
+        return id === undefined
+            ? callee.name.text !== "getElementById"
+            : this.nativeHostUiTags().has(id);
+    }
+
+    /**
+     * The id a document `getElementById`/`querySelector` call finds one
+     * element by (`documentLookupId`), when its argument is a literal or an
+     * inlined helper's parameter bound to one: a demo's
+     * `bindToggle(buttonId, ...)` looks its button up by the literal every
+     * call site passes, which the inlined binding still carries as a static
+     * string.
+     */
+    public lookupElementId(call: ts.CallExpression): string | undefined {
+        const callee = this.context.unwrap(call.expression);
+        const argument = this.context.unwrap(argumentAt(call, 0));
         const text =
-            ts.isStringLiteral(id) || ts.isNoSubstitutionTemplateLiteral(id)
-                ? id.text
-                : ts.isIdentifier(id)
-                  ? this.context.bindings.lookupOptional(id)?.staticString
+            ts.isStringLiteral(argument) ||
+            ts.isNoSubstitutionTemplateLiteral(argument)
+                ? argument.text
+                : ts.isIdentifier(argument)
+                  ? this.context.bindings.lookupOptional(argument)?.staticString
                   : undefined;
-        return text !== undefined && this.nativeHostUiTags().has(text);
+        return ts.isPropertyAccessExpression(callee) && text !== undefined
+            ? documentLookupId(callee.name.text, text)
+            : undefined;
     }
 
     /**

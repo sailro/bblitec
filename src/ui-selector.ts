@@ -201,6 +201,27 @@ export function parseUiSelectorSequence(
     return steps.length ? steps : undefined;
 }
 
+/** The id a selector names when it is one ID selector (`"#id"`). */
+export function uiSelectorId(selector: string): string | undefined {
+    const steps = parseUiSelectorSequence(selector);
+    const tests = steps?.length === 1 ? steps[0]!.tests : [];
+    return tests.length === 1 && tests[0]!.kind === "id"
+        ? tests[0]!.name
+        : undefined;
+}
+
+/**
+ * The id `document[method](text)` finds one element by: `getElementById`'s
+ * text, or a `querySelector` of one ID selector, which finds the same element.
+ */
+export function documentLookupId(
+    method: string,
+    text: string,
+): string | undefined {
+    if (method === "getElementById") return text;
+    return method === "querySelector" ? uiSelectorId(text) : undefined;
+}
+
 export function isUiSelectorState(
     value: string,
 ): value is keyof typeof UI_SELECTOR_STATES {

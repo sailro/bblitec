@@ -51,7 +51,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Construction | Static tags, appendChild, mixed text/element append, remove, retained roots | No general DOM implementation |
 | Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes | Compound text writes; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
-| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup | Interaction states, :scope, dynamic selectors, pseudo-element queries |
+| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`) | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Focus/forms | Focus, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |

@@ -38,7 +38,6 @@ import { readProperty, type PropertyContext } from "./properties.js";
 import { walkReachedLoopNodes } from "./resource-loops.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import {
-    argumentAt,
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
@@ -120,7 +119,7 @@ interface DeclarationContext
     readonly pendingHostUiLookups: Value[];
     /** Module constants the static evaluator still folds. */
     readonly staticConstants: Map<ts.Symbol, ts.Expression>;
-    readonly ui: Pick<UiProjection, "nativeHostUiTags">;
+    readonly ui: Pick<UiProjection, "nativeHostUiTags" | "lookupElementId">;
     hasStableNativeBinding(value: Value): boolean;
     importedCall(
         expression: ts.Expression,
@@ -679,21 +678,14 @@ export class DeclarationLowerer {
         }
 
         const hostLookup = this.context.unwrap(declaration.initializer);
-        const hostLookupCallee = ts.isCallExpression(hostLookup)
-            ? this.context.unwrap(hostLookup.expression)
-            : undefined;
-        if (
+        const id =
             !this.context.defaultEngineCpp &&
             !this.context.options.workers &&
             ts.isCallExpression(hostLookup) &&
-            hostLookupCallee &&
-            ts.isPropertyAccessExpression(hostLookupCallee) &&
-            hostLookupCallee.name.text === "getElementById" &&
             this.context.isNativeHostUiLookup(hostLookup)
-        ) {
-            const id = this.context.compileStringLiteral(
-                argumentAt(hostLookup, 0),
-            );
+                ? this.context.ui.lookupElementId(hostLookup)
+                : undefined;
+        if (id !== undefined) {
             const value: Value = {
                 kind: "ui-element",
                 cpp: cppName,
