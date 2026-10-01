@@ -142,6 +142,7 @@ import {
 import {
     executeApplicationFunction,
     type ExecutedScalar,
+    type ExecutedTarget,
 } from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
 import { DataLowerer } from "./compiler/data-lowering.js";
@@ -796,7 +797,7 @@ class Compiler implements LoweringServices {
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
     /** @unjournaled Results of closed generation runs, a function of their inputs alone. */
     private readonly generationRuns = new Map<
-        ts.FunctionLikeDeclaration,
+        ExecutedTarget,
         Map<string, unknown>
     >();
     @journaled public accessor hasMainEntry = false;
@@ -3767,9 +3768,54 @@ class Compiler implements LoweringServices {
             );
         });
         if (carried !== undefined) return carried;
+        if (ts.isIdentifier(expression))
+            return this.moduleConstantText(expression);
         return ts.isCallExpression(expression)
             ? this.runGenerationBuilder(expression)
             : undefined;
+    }
+
+    /**
+     * The text of a module-scope string `const` whose binding carries none
+     * at generation (its module is materialized, or its initializer lowers
+     * to a concatenation): the constant run at generation, as its module
+     * runs it, once. A `const` string cannot change after its initializer,
+     * and the run reaches only module constants and functions. Undefined
+     * when the run reaches what generation does not carry (the host, the
+     * engine, a class, a `let`, the clock), which leaves the text to the
+     * static evaluator.
+     */
+    private moduleConstantText(identifier: ts.Identifier): string | undefined {
+        const declaration = this.symbols
+            .valueSymbol(identifier)
+            ?.declarations?.find(ts.isVariableDeclaration);
+        const statement = declaration?.parent.parent;
+        if (
+            !declaration?.initializer ||
+            !ts.isIdentifier(declaration.name) ||
+            !statement ||
+            !ts.isVariableStatement(statement) ||
+            !ts.isSourceFile(statement.parent) ||
+            statement.getSourceFile().isDeclarationFile ||
+            (statement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+            (this.checker.getTypeAtLocation(declaration.name).flags &
+                ts.TypeFlags.StringLike) ===
+                0
+        ) {
+            return undefined;
+        }
+        let text: unknown;
+        try {
+            text = this.runGenerationFunction(
+                declaration,
+                [],
+                `Module constant '${declaration.name.text}'`,
+            );
+        } catch (error) {
+            if (error instanceof CompileError) return undefined;
+            throw error;
+        }
+        return typeof text === "string" ? text : undefined;
     }
 
     /**
@@ -3840,10 +3886,11 @@ class Compiler implements LoweringServices {
     /**
      * An application function run at generation (`executeApplicationFunction`),
      * once per declaration and arguments when it folds no enclosing binding:
-     * the realm is fresh and closed, so one run is every run.
+     * the realm is fresh and closed, so one run is every run. A module
+     * constant runs once, with no arguments.
      */
     public runGenerationFunction(
-        declaration: ts.FunctionLikeDeclaration,
+        declaration: ExecutedTarget,
         args: readonly (ExecutedScalar | undefined)[],
         label: string,
     ): unknown {

@@ -100,6 +100,19 @@ function isModuleScopeFunction(declaration: SupportedFunction): boolean {
     );
 }
 
+/** Whether a symbol names a module-scope `const` declared in the program. */
+function isModuleConstant(symbol: ts.Symbol): boolean {
+    const declaration = symbol.declarations?.find(ts.isVariableDeclaration);
+    const statement = declaration?.parent.parent;
+    return (
+        statement !== undefined &&
+        ts.isVariableStatement(statement) &&
+        ts.isSourceFile(statement.parent) &&
+        !statement.parent.isDeclarationFile &&
+        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+    );
+}
+
 /** Whether an expression reads its function's `this`, `arguments` or `new.target`. */
 function readsInvocationContext(expression: ts.Expression): boolean {
     return someAnalysisNode(
@@ -1108,6 +1121,10 @@ export class StaticEvaluator {
             if (value.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }
+            const folded = value.parameterBinding
+                ? undefined
+                : this.generationText(unwrapped);
+            if (folded !== undefined) return folded;
             this.fail(
                 unwrapped,
                 `Expected a string literal; '${unwrapped.text}' is bound as ${value.kind} without a static string.`,
@@ -1733,18 +1750,26 @@ export class StaticEvaluator {
     private staticText(expression: ts.Expression): string {
         const value = this.staticTextValue(expression);
         if (value !== undefined) return value;
-        // A module constant (`const HEADER = headerWgsl()`) is read once,
-        // through its own binding's initializer, as JS evaluates it once.
+        // A module constant (`const HEADER = headerWgsl()`) is read once, as
+        // JS evaluates it once: run at generation (`generationText`), or
+        // through its own binding's initializer.
         const unwrapped = this.unwrap(expression);
         const symbol = ts.isIdentifier(unwrapped)
             ? this.resolveSymbol(unwrapped)
             : undefined;
         const constant =
-            symbol && this.staticConstants.has(symbol) ? symbol : undefined;
-        const known = constant && this.constantTexts.get(constant);
+            symbol &&
+            (this.staticConstants.has(symbol) || isModuleConstant(symbol))
+                ? symbol
+                : undefined;
+        if (!constant) return this.requiredText(expression);
+        const known = this.constantTexts.get(constant);
         if (known !== undefined) return known;
-        const text = this.requiredText(expression);
-        if (constant) this.constantTexts.set(constant, text);
+        const text =
+            (isModuleConstant(constant)
+                ? this.generationText(unwrapped)
+                : undefined) ?? this.requiredText(expression);
+        this.constantTexts.set(constant, text);
         return text;
     }
 

@@ -32,6 +32,7 @@ import {
     CompilerSymbols,
     declarationOrigin,
     declaredSymbol,
+    libraryGlobal,
 } from "./symbols.js";
 import { rootIdentifier, statementDeclaredNames } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -69,12 +70,17 @@ interface FilePart {
     imports: Map<string, ImportSource>;
 }
 
-/** A function-like node the closure can call as a value. */
-type ExecutedTarget = ts.FunctionLikeDeclaration;
+/**
+ * A function-like node the closure can call as a value, or a module-scope
+ * `const` whose value the closure evaluates, as its module does, once.
+ */
+export type ExecutedTarget =
+    ts.FunctionLikeDeclaration | ts.VariableDeclaration;
 
 /**
- * Execute `target` with `args` and return its plain-data result. `label`
- * names the function in refusals.
+ * Execute `target` with `args` and return its plain-data result: a
+ * function's return value, or a module constant's value (no arguments).
+ * `label` names the target in refusals.
  */
 export function executeApplicationFunction(
     context: ExecutedFunctionContext,
@@ -108,10 +114,17 @@ export function executeApplicationFunction(
         const executed: unknown = Reflect.apply(build, undefined, [
             program.bindings,
         ]);
-        if (typeof executed !== "function") {
-            throw new Error(`${label} is not a function once executed.`);
+        if (ts.isVariableDeclaration(target)) {
+            if (args.length > 0) {
+                throw new Error(`${label} is a constant, not a function.`);
+            }
+            result = executed;
+        } else {
+            if (typeof executed !== "function") {
+                throw new Error(`${label} is not a function once executed.`);
+            }
+            result = Reflect.apply(executed, undefined, [...args]);
         }
-        result = Reflect.apply(executed, undefined, [...args]);
     } catch (error: unknown) {
         return context.fail(
             target,
@@ -254,14 +267,10 @@ class ExecutedClosure {
 
     public program(): { javascript: string; bindings: object } {
         const targetFile = this.target.getSourceFile();
-        const targetStatement =
-            ts.isFunctionDeclaration(this.target) &&
-            ts.isSourceFile(this.target.parent)
-                ? this.target
-                : undefined;
+        const targetStatement = this.targetStatement();
         this.part(targetFile);
         if (targetStatement) {
-            this.include(targetStatement);
+            this.include(targetStatement.statement);
         } else {
             this.queue.push({ root: this.target, file: targetFile });
         }
@@ -309,9 +318,7 @@ class ExecutedClosure {
             files[part.index] =
                 `function __bblFile${part.index}() {\n${[...prologue, ...body].join("\n")}\nreturn { ${names.join(", ")} };\n}`;
         }
-        const root = targetStatement
-            ? JSON.stringify(targetStatement.name!.text)
-            : JSON.stringify("__bblTarget");
+        const root = JSON.stringify(targetStatement?.name ?? "__bblTarget");
         const source = `(function (__bblBindings) {
 "use strict";
 const __bblFiles = [${files.map((_file, index) => `__bblFile${index}`).join(", ")}];
@@ -334,6 +341,36 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             ),
             bindings: { pinned, enclosing },
         };
+    }
+
+    /**
+     * The module-scope statement declaring the target, with the name its
+     * file scope binds: a function declaration, or a `const` declaring the
+     * constant alone. Undefined for a function expression or method, which
+     * the closure evaluates in place.
+     */
+    private targetStatement():
+        { statement: ts.Statement; name: string } | undefined {
+        const target = this.target;
+        if (ts.isFunctionDeclaration(target)) {
+            return ts.isSourceFile(target.parent) && target.name
+                ? { statement: target, name: target.name.text }
+                : undefined;
+        }
+        if (!ts.isVariableDeclaration(target)) return undefined;
+        const statement = moduleScopeStatement(target);
+        if (
+            !statement ||
+            !ts.isIdentifier(target.name) ||
+            !ts.isVariableStatement(statement) ||
+            (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+        ) {
+            return this.context.fail(
+                target,
+                `${this.label} is not a module-scope 'const' binding one name.`,
+            );
+        }
+        return { statement, name: target.name.text };
     }
 
     private part(file: ts.SourceFile): FilePart {
@@ -403,12 +440,43 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                         `${this.label} writes a module-scope binding, so one execution would not describe every call.`,
                     );
                 }
+                const varying = this.varyingRead(node);
+                if (varying) {
+                    this.context.fail(
+                        node,
+                        `${this.label} reads ${varying}, so a run at generation would not describe the run the program makes.`,
+                    );
+                }
                 if (ts.isIdentifier(node) && !isNonReference(node)) {
                     this.resolve(node, root, file, isTargetWalk);
                 }
             },
             { types: "skip", skip: ts.isTypeAliasDeclaration },
         );
+    }
+
+    /**
+     * The language global a node reads whose answer is not a function of
+     * the program (the clock, `Math.random`, the host locale), or undefined.
+     */
+    private varyingRead(node: ts.Node): string | undefined {
+        const checker = this.context.checker;
+        if (ts.isIdentifier(node) && !isNonReference(node)) {
+            return libraryGlobal(checker, node) === "Date"
+                ? "the clock ('Date')"
+                : undefined;
+        }
+        if (!ts.isPropertyAccessExpression(node)) return undefined;
+        const member = node.name.text;
+        if (
+            member === "random" &&
+            libraryGlobal(checker, node.expression) === "Math"
+        ) {
+            return "'Math.random'";
+        }
+        return member.startsWith("toLocale") || member === "localeCompare"
+            ? `the host locale ('${member}')`
+            : undefined;
     }
 
     /**
