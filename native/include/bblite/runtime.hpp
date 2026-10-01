@@ -408,8 +408,9 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
-/** A file the platform dropped on the window: its bytes and display name, read at the drop. */
-struct DroppedFile {
+/** A drop count and its first file, the FileList index the compiler admits. */
+struct DroppedFiles {
+    std::size_t count = 0;
     std::vector<std::uint8_t> bytes;
     std::string name;
 };
@@ -419,9 +420,11 @@ struct PlatformDragEvent {
     double client_x = 0.0;
     double client_y = 0.0;
     /** The drop's files; empty while dragging, as a browser withholds them before the drop. */
-    std::shared_ptr<const std::vector<DroppedFile>> files{};
+    std::shared_ptr<const DroppedFiles> files{};
     /** The File the drop's first file became in the owning realm, made on first read. */
     mutable BrowserFileHandle first_file{};
+    /** Dragover cancellation crosses the Window realm mailbox back to the display. */
+    std::shared_ptr<std::atomic<bool>> acceptance{};
     mutable bool default_prevented = false;
     std::shared_ptr<DomEventState> dom{};
 

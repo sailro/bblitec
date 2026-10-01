@@ -2670,6 +2670,42 @@ export class PropertyAccessLowerer {
             // source's optional chain and fallback lower unchanged.
             return { kind: "json-null", cpp: "std::nullopt" };
         }
+        if (owner.platformEventBase) {
+            const eventInterface = this.declaredEventInterface(ownerExpression);
+            if (eventInterface === "DataTransfer") {
+                if (property !== "files")
+                    this.context.fail(
+                        expression.name,
+                        `Native DataTransfer exposes only files, not '${property}'.`,
+                    );
+                this.context.reachFeature("browser:file", expression);
+                const engine = `bbl::dom_event_owner(${owner.cpp})`;
+                return {
+                    kind: "file-list",
+                    cpp: `bbl::js::drag_files(${engine}, ${owner.cpp}.as<bbl::PlatformDragEvent>())`,
+                    engineCpp: engine,
+                    truthinessCpp: "true",
+                    impure: true,
+                };
+            }
+            if (eventInterface === "DragEvent") {
+                if (property === "dataTransfer")
+                    return valueForKind("platform-mouse-event", {
+                        cpp: owner.cpp,
+                        platformEventBase: true,
+                        readOnly: true,
+                        truthinessCpp: "true",
+                        ...(owner.engineCpp
+                            ? { engineCpp: owner.engineCpp }
+                            : {}),
+                    });
+                if (property === "clientX" || property === "clientY")
+                    return {
+                        kind: "number",
+                        cpp: `${owner.cpp}.as<bbl::PlatformDragEvent>().client_${property === "clientX" ? "x" : "y"}`,
+                    };
+            }
+        }
         if (
             owner.kind === "platform-mouse-event" ||
             owner.kind === "platform-keyboard-event" ||

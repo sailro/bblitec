@@ -164,7 +164,6 @@ struct FileList {
     [[nodiscard]] std::size_t length() const noexcept { return first ? count : 0u; }
 };
 
-
 #if BBLITE_HAS_UI
 [[nodiscard]] inline UiElementRecord& browser_file_ui_element(Engine& engine,
                                                               UiElementHandle handle) {
@@ -287,13 +286,14 @@ inline void replace_browser_file(Engine& engine, BrowserFileHandle& destination,
 
 /** A drop's files: the first becomes a File of the owning realm on first read. */
 [[nodiscard]] inline FileList drag_files(Engine& engine, const PlatformDragEvent& event) {
-    if (!event.files || event.files->empty())
+    if (!event.files || event.files->count == 0)
         return {};
     if (!event.first_file) {
-        const auto& file = event.files->front();
-        replace_browser_file(engine, event.first_file, pal::SelectedFileSnapshot{file.bytes, file.name});
+        const auto& file = *event.files;
+        replace_browser_file(engine, event.first_file,
+                             pal::SelectedFileSnapshot{file.bytes, file.name});
     }
-    return FileList{event.first_file, event.files->size()};
+    return FileList{event.first_file, event.files->count};
 }
 
 namespace detail {

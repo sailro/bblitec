@@ -65,8 +65,9 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
-| Handler properties | Element `on<event>` for represented pointer, keyboard and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
+| Handler properties | Element `on<event>` for represented pointer, keyboard, file-drag and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
 | Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |
+| File drags | SDL file dragenter/dragover/dragleave/drop on elements, Document and Window; dragover cancellation accepts a drop; borrowed DataTransfer.files, count and first file with name/size | No authored drags, text transfers, items, effects or wider file indices; dragover follows native motion notifications |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Focus/forms | Focus/blur, focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
@@ -116,10 +117,10 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
-live cap and per-file limits. Completion may occur before click returns. FileReader reads a
+live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
 assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.
-Multiple files/directories, unsupported accept values, arbitrary source paths, file-input type
+Multiple input selections, directories, unsupported accept values, arbitrary source paths, file-input type
 transitions and other FileReader reads refuse.
 
 iOS uses UIKit Files with local storage and security-scoped imports; other platforms use SDL dialogs.

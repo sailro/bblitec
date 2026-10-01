@@ -348,6 +348,26 @@ template <typename Driver> void exercise(int index) {
     }
     assert(lock_changes == 6 && locked_moves == 1);
     consume_ui = false;
+    // Event-only file drops run through every driver without linking file IO.
+    int drops = 0;
+    on_dom_drag(engine, DomEventTarget::canvas(), "dragover", 91,
+                [](const PlatformDragEvent& event) { event.prevent_default(); });
+    on_dom_drag(engine, DomEventTarget::canvas(), "drop", 92, [&](const PlatformDragEvent& event) {
+        assert(event.files && event.files->count == 1);
+        assert(event.files->bytes.empty());
+        ++drops;
+    });
+    for (const auto type : {SDL_EVENT_DROP_BEGIN, SDL_EVENT_DROP_FILE, SDL_EVENT_DROP_COMPLETE}) {
+        SDL_Event drop{};
+        drop.type = type;
+        drop.drop.windowID = SDL_GetWindowID(window);
+        drop.drop.x = 20;
+        drop.drop.y = 30;
+        drop.drop.data = type == SDL_EVENT_DROP_FILE ? "unread-file.txt" : nullptr;
+        assert(SDL_PushEvent(&drop));
+        assert(driver.prepare() == FramePreparation::ready);
+    }
+    assert(drops == 1);
     for (const Uint32 type : {SDL_EVENT_WINDOW_CLOSE_REQUESTED, SDL_EVENT_QUIT}) {
         state.running = true;
         SDL_Event close{};

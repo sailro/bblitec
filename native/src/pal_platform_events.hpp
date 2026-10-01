@@ -924,32 +924,38 @@ inline std::shared_ptr<DomEventBatch> dom_drag_input(Engine& engine, const SDL_E
     auto& input = *engine.dom_input;
     const auto reset = [&] {
         input.drag_path.clear();
-        input.dropped_files.clear();
+        input.dropped_files = {};
+        input.drag_acceptance.reset();
     };
     if (event.type == SDL_EVENT_DROP_BEGIN || !listens_dom_drag(input)) {
-        if (event.type != SDL_EVENT_DROP_POSITION && event.type != SDL_EVENT_DROP_FILE)
-            reset();
+        reset();
         return {};
     }
     auto batch = std::make_shared<DomEventBatch>();
-    const auto add = [&](std::string type, const std::vector<DomEventTarget>& path,
-                         bool cancelable, std::shared_ptr<const std::vector<DroppedFile>> files) {
+    const auto add = [&](std::string type, const std::vector<DomEventTarget>& path, bool cancelable,
+                         std::shared_ptr<const DroppedFiles> files) {
         PlatformDragEvent payload;
         payload.client_x = input.drag_x;
         payload.client_y = input.drag_y;
         payload.files = std::move(files);
+        if (type == "dragover")
+            payload.acceptance = input.drag_acceptance;
         batch->add(dom_event(std::move(payload), std::move(type), path, true, cancelable), true);
     };
     const auto move_to = [&](float x, float y) {
         input.drag_x = x * engine.canvas_window_to_client_scale;
         input.drag_y = y * engine.canvas_window_to_client_scale;
         auto path = input.hit_path ? input.hit_path(input.drag_x, input.drag_y) : dom_canvas_path();
+        if (path.empty())
+            throw std::logic_error("A file drag requires a DOM target path.");
         if (!input.drag_path.empty() && path.front() == input.drag_path.front())
-            return;
+            return false;
+        add("dragenter", path, true, {});
         if (!input.drag_path.empty())
             add("dragleave", input.drag_path, false, {});
-        add("dragenter", path, true, {});
         input.drag_path = std::move(path);
+        input.drag_acceptance = std::make_shared<std::atomic<bool>>(false);
+        return true;
     };
     if (event.type == SDL_EVENT_DROP_POSITION) {
         move_to(event.drop.x, event.drop.y);
@@ -957,31 +963,33 @@ inline std::shared_ptr<DomEventBatch> dom_drag_input(Engine& engine, const SDL_E
         return batch;
     }
     if (event.type == SDL_EVENT_DROP_FILE) {
-        // Platforms without drag positions report the drop's own.
-        if (input.drag_path.empty())
-            move_to(event.drop.x, event.drop.y);
+        // Platforms without drag positions report the drop's own coordinates.
+        if (move_to(event.drop.x, event.drop.y))
+            add("dragover", input.drag_path, true, {});
+        if (!event.drop.data)
+            throw std::runtime_error("A dropped file has no path.");
+        if (input.dropped_files.count >= maximum_browser_file_snapshots)
+            throw std::runtime_error("A file drop exceeds its 4096-file bound.");
 #if BBLITE_HAS_BROWSER_FILE
-        if (event.drop.data) {
-            try {
-                const std::u8string path(reinterpret_cast<const char8_t*>(event.drop.data));
-                auto snapshot = detail::selected_file_snapshot(std::filesystem::path(path));
-                input.dropped_files.push_back(
-                    {std::move(snapshot.bytes), std::move(snapshot.display_name)});
-            } catch (const std::exception& error) {
-                SDL_Log("A dropped file was not read: %s", error.what());
-            }
+        if (input.dropped_files.count == 0) {
+            const std::u8string path(reinterpret_cast<const char8_t*>(event.drop.data));
+            auto snapshot = detail::selected_file_snapshot(std::filesystem::path(path));
+            input.dropped_files.bytes = std::move(snapshot.bytes);
+            input.dropped_files.name = std::move(snapshot.display_name);
         }
 #endif
+        ++input.dropped_files.count;
         return batch;
     }
     if (event.type != SDL_EVENT_DROP_COMPLETE)
         return {};
     if (!input.drag_path.empty()) {
-        if (input.dropped_files.empty())
+        if (input.dropped_files.count == 0 ||
+            !input.drag_acceptance->load(std::memory_order_acquire))
             add("dragleave", input.drag_path, false, {});
         else
             add("drop", input.drag_path, true,
-                std::make_shared<const std::vector<DroppedFile>>(std::move(input.dropped_files)));
+                std::make_shared<const DroppedFiles>(std::move(input.dropped_files)));
     }
     reset();
     return batch;

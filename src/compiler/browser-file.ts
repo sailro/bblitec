@@ -371,15 +371,17 @@ export function emitBrowserFileAssignment(
 }
 
 /**
- * `input.files?.[0]`. The native FileList is a one-selection snapshot; only
- * index zero exists because `multiple` is outside the reached slice.
+ * The first selected or dropped file. Wider indices and enumeration refuse;
+ * dropped lists also retain their complete count.
  */
 export function compileBrowserFileElementAccess(
     context: BrowserFileContext,
     expression: ts.ElementAccessExpression,
 ): Value | undefined {
     const ownerExpression = context.unwrap(expression.expression);
-    const ownerType = context.checker.getTypeAtLocation(expression.expression);
+    const ownerType = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(expression.expression),
+    );
     const propertyFiles =
         ts.isPropertyAccessExpression(ownerExpression) &&
         ownerExpression.name.text === "files";
@@ -403,7 +405,7 @@ export function compileBrowserFileElementAccess(
     if (index.kind !== "number" || index.staticNumber !== 0) {
         context.fail(
             expression.argumentExpression,
-            "Native FileList supports only the single selected file at index 0.",
+            "Native FileList supports only the first file at index 0.",
         );
     }
     const engine = context.requireEngine(owner, expression);
@@ -457,6 +459,20 @@ export function compileBrowserFileProperty(
             cpp: `bbl::js::input_files(${engine}, ${owner.cpp})`,
             engineCpp: engine,
             truthinessCpp: "true",
+        };
+    }
+    if (owner.kind === "file") {
+        if (property !== "name" && property !== "size")
+            context.fail(
+                expression.name,
+                `Native File exposes name and size, not '${property}'.`,
+            );
+        const engine = context.requireEngine(owner, expression);
+        context.reachFeature("browser:file", expression);
+        return {
+            kind: property === "name" ? "string" : "number",
+            cpp: `bbl::js::file_${property}(${engine}, ${owner.cpp})`,
+            dataType: { kind: property === "name" ? "string" : "number" },
         };
     }
     if (owner.kind === "blob") {

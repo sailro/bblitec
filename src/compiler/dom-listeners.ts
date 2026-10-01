@@ -78,7 +78,12 @@ const serviceNames = new Set([
     "animationend",
     "animationiteration",
     "animationcancel",
+    "dragstart",
+    "drag",
+    "dragend",
 ]);
+
+const dragNames = new Set(["dragenter", "dragover", "dragleave", "drop"]);
 
 const keyboardNames = new Set(["keydown", "keyup"]);
 
@@ -92,24 +97,27 @@ export function isCustomDomEventName(type: string): boolean {
         !serviceNames.has(type) &&
         !keyboardNames.has(type) &&
         !transitionNames.has(type) &&
+        !dragNames.has(type) &&
         type !== "pagehide"
     );
 }
 
-type DomListenerFamily = "custom" | "keyboard" | "pointer" | "transition";
+type DomListenerFamily =
+    "custom" | "keyboard" | "pointer" | "transition" | "drag";
 
 /** The shared dispatch family a DOM event name joins, if any. */
 function domListenerFamily(type: string): DomListenerFamily | undefined {
     if (keyboardNames.has(type)) return "keyboard";
     if (pointerNames.has(type)) return "pointer";
     if (transitionNames.has(type)) return "transition";
+    if (dragNames.has(type)) return "drag";
     return isCustomDomEventName(type) ? "custom" : undefined;
 }
 
 /** The DOM listener family an element `on<type>` handler joins, if any. */
 export function elementDomHandlerFamily(
     type: string,
-): "keyboard" | "pointer" | undefined {
+): "keyboard" | "pointer" | "drag" | undefined {
     const family = domListenerFamily(type);
     return family === "custom" || family === "transition" || type === "resize"
         ? undefined
@@ -128,6 +136,10 @@ const DOM_CALLBACK_EVENTS = {
     },
     pointer: {
         cppType: "const bbl::PlatformMouseEvent&",
+        kind: "platform-mouse-event",
+    },
+    drag: {
+        cppType: "const bbl::PlatformDragEvent&",
         kind: "platform-mouse-event",
     },
     // Read through the base Event view; TransitionEvent adds propertyName.
@@ -255,7 +267,7 @@ function compileDomCallback(
         callback,
         { cppType: event.cppType, name },
         [
-            family === "transition"
+            family === "transition" || family === "drag"
                 ? valueForKind("platform-mouse-event", {
                       cpp: `bbl::js::BorrowedEvent(${name})`,
                       readOnly: true,
@@ -303,7 +315,7 @@ export function emitDomEventHandler(
         | "cppString"
     >,
     element: Value,
-    family: "keyboard" | "pointer",
+    family: "keyboard" | "pointer" | "drag",
     type: string,
     handler: ts.Expression | undefined,
     site: ts.Expression,

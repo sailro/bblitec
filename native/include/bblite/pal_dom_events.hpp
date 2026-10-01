@@ -163,7 +163,8 @@ struct DomInput {
     bool pending_resize = false;
     /** The path under an active file drag and the files its drop carries. */
     std::vector<DomEventTarget> drag_path;
-    std::vector<DroppedFile> dropped_files;
+    DroppedFiles dropped_files;
+    std::shared_ptr<std::atomic<bool>> drag_acceptance;
     double drag_x = 0, drag_y = 0;
 
 #if BBLITE_WORKERS
@@ -277,9 +278,10 @@ inline void off_dom_transition(Engine& engine, DomEventTarget target, std::strin
 
 /** The platform sources file drags while a listened type names them. */
 inline void on_dom_drag(Engine& engine, DomEventTarget target, std::string type,
-                        std::size_t identity, DomEventListeners<PlatformDragEvent>::Callback callback,
+                        std::size_t identity,
+                        DomEventListeners<PlatformDragEvent>::Callback callback,
                         bool capture = false, bool once = false, bool passive = false) {
-    listen_dom_type(engine, type)
+    listen_dom_pointer(engine, target, type)
         .drag.add(target, std::move(type), identity, std::move(callback), capture, once, passive);
 }
 
@@ -292,7 +294,7 @@ inline void off_dom_drag(Engine& engine, DomEventTarget target, std::string type
 inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::string type,
                                  DomEventListeners<PlatformDragEvent>::Callback callback) {
     if (callback)
-        listen_dom_type(engine, type);
+        listen_dom_pointer(engine, target, type);
     else if (!engine.dom_input)
         return;
     engine.dom_input->drag.set_handler(target, std::move(type), std::move(callback));
@@ -345,8 +347,8 @@ inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event
  * display checks completion between frames, so callbacks can request layout
  * without deadlocking behind a synchronous input acknowledgement. */
 struct DomEventBatch {
-    using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent,
-                                 PlatformTransitionEvent, PlatformDragEvent>;
+    using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent, PlatformTransitionEvent,
+                                 PlatformDragEvent>;
     struct Entry {
         Payload payload;
         bool controls_default = false;
@@ -383,9 +385,12 @@ struct DomEventBatch {
                                 suppressed.insert(event.pointer_id);
                         } else if constexpr (std::is_same_v<PayloadType, PlatformTransitionEvent>)
                             engine.dom_input->transition.dispatch(event, invoke, &engine);
-                        else if constexpr (std::is_same_v<PayloadType, PlatformDragEvent>)
+                        else if constexpr (std::is_same_v<PayloadType, PlatformDragEvent>) {
                             engine.dom_input->drag.dispatch(event, invoke, &engine);
-                        else
+                            if (event.acceptance)
+                                event.acceptance->store(event.default_prevented,
+                                                        std::memory_order_release);
+                        } else
                             engine.dom_input->keyboard.dispatch(event, invoke, &engine);
                     }
                     if (entry.controls_default && event.default_prevented)
