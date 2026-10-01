@@ -2182,6 +2182,9 @@ export class StatementLowerer {
             };
         }
         if (dataType?.kind === "struct") {
+            // Keep this object's identity: later iterations observe field
+            // deletions, while rebinding the source must not change its owner.
+            context.dataTypes.markStoredObjectReferences(dataType);
             const fields = context.dataTypes.structFields(dataType.name, node);
             const access = context.dataTypes.isReferenceStruct(dataType.name)
                 ? "->"

@@ -11569,15 +11569,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     property,
                     binding,
                 );
-                const value = this.leafValue(
-                    `${itemCpp}${
-                        this.context.dataTypes.isReferenceStruct(element.name)
-                            ? "->"
-                            : "."
-                    }${field.name}`,
-                    field.type,
+                const value = this.context.bindings.pinValueToTemporary(
+                    this.leafValue(
+                        `${itemCpp}${
+                            this.context.dataTypes.isReferenceStruct(
+                                element.name,
+                            )
+                                ? "->"
+                                : "."
+                        }${field.name}`,
+                        field.type,
+                    ),
+                    "iteration_field",
+                    binding.name,
                 );
-                defineItem(binding.name, value);
+                define(binding.name, value);
                 if (value.kind === "data") {
                     this.registerLocal(this.rootName(value.cpp), "copy");
                 }

@@ -4183,6 +4183,19 @@ check(
 );
 
 check(
+    "for-in-observes-struct-deletions",
+    `
+    const data: { a?: number; b?: number } = { a: 1, b: 2 };
+    const seen: string[] = [];
+    for (const key in data) {
+        seen.push(key);
+        if (key === "a") delete data.b;
+    }
+    if (seen.join(",") !== "a") throw new Error("enumerated deleted key");
+`,
+);
+
+check(
     "for-in-retains-owner-after-rebinding",
     `
     let dictionary: Record<string, number> = { a: 1, b: 2 };
@@ -4194,6 +4207,21 @@ check(
     }
     if (seen.join(",") !== "a,b" || original.b !== 2)
         throw new Error("enumeration changed owner");
+`,
+);
+
+check(
+    "runtime-for-of-renamed-fields-snapshot",
+    `
+    const items: { x: number; nested: { value: number } }[] = [{ x: 1, nested: { value: 3 } }];
+    const retained: Array<() => number> = [];
+    for (const { x: saved, nested: original } of items) {
+        items[0]!.x = 2;
+        items[0]!.nested = { value: 4 };
+        if (saved !== 1 || original.value !== 3) throw new Error("field snapshot");
+        retained.push(() => saved + original.value);
+    }
+    if (retained[0]!() !== 4) throw new Error("retained snapshot");
 `,
 );
 
