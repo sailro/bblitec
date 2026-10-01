@@ -32,7 +32,8 @@ test("retained presentation declarations preserve border sides, text styles and 
         "border-top:2px dashed red",
         "border-top-width:1px 2px",
         "border-width:-1px",
-        "transform-origin:top left",
+        "transform-origin:top 10px",
+        "transform-origin:left right",
         "-webkit-user-drag:auto",
         "constructor:none",
     ]) {
@@ -41,6 +42,22 @@ test("retained presentation declarations preserve border sides, text styles and 
             /Retained UI style property/,
         );
     }
+});
+
+test("keyword transform origins in either order and numeral font features project", () => {
+    const result = compile(
+        `.a{transform-origin:top right}.b{transform-origin:center left 2px}.c{font-feature-settings:"tnum"}`,
+    );
+    assert.match(result.cpp, /transform-origin:right top/);
+    assert.match(result.cpp, /transform-origin:left center 2px/);
+    const adaptation = result.manifest.adaptations.find(
+        ({ id }) => id === "substituted-ui-runtime",
+    );
+    assert.match(adaptation?.nativeSemantics ?? "", /font-feature-settings/);
+    assert.throws(
+        () => compile(`.c{font-feature-settings:"liga" 0}`),
+        /Retained UI style property 'font-feature-settings'/,
+    );
 });
 
 test("native presentation styles preserve box edges, formatting and live replacement", (t) => {

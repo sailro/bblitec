@@ -1390,6 +1390,26 @@ export class UiProjection {
             "font-variant-numeric",
         ]);
 
+    /**
+     * CSS admits two transform-origin keywords in either order; RmlUi's
+     * shorthand reads the horizontal one first.
+     */
+    private static canonicalUiTransformOrigin(value: string): string {
+        const keywords =
+            /^\s*(left|center|right|top|bottom)\s+(left|center|right|top|bottom)(\s+[^\s]+)?\s*$/i.exec(
+                value,
+            );
+        if (!keywords) return value;
+        const [, first, second, depth] = keywords;
+        const vertical = (keyword: string): boolean =>
+            /^(?:top|bottom)$/i.test(keyword);
+        const horizontal = (keyword: string): boolean =>
+            /^(?:left|right)$/i.test(keyword);
+        return vertical(first!) || horizontal(second!)
+            ? `${second!} ${first!}${depth ?? ""}`
+            : value;
+    }
+
     private static supportedBackdropFilter(value: string): boolean {
         return /^(?:none|blur\(\s*(?:\d+(?:\.\d+)?|\.\d+)px\s*\))$/i.test(
             value.trim(),
@@ -1693,7 +1713,7 @@ export class UiProjection {
             if (
                 property === "transform-origin" &&
                 !/^(?:(?:left|center|right|top|bottom)|(?:0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))|(?:left|center|right|0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))\s+(?:top|center|bottom|0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))(?:\s+(?:0|[+-]?\d+(?:\.\d+)?(?:px|em|rem)))?)$/.test(
-                    literalValue,
+                    UiProjection.canonicalUiTransformOrigin(literalValue),
                 )
             ) {
                 this.uiStyleRefusal(
@@ -1840,6 +1860,23 @@ export class UiProjection {
                 return;
             }
             if (UiProjection.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
+                this.uiDegradedStyleProperties.add(property);
+                return;
+            }
+            if (property === "font-feature-settings") {
+                // The numeral variants font-variant-numeric names; RmlUi has none.
+                const feature = String.raw`["'](?:tnum|lnum|pnum|onum)["'](?:\s+(?:on|off|0|1))?`;
+                if (
+                    literalValue !== "normal" &&
+                    !new RegExp(
+                        String.raw`^${feature}(?:\s*,\s*${feature})*$`,
+                    ).test(literalValue)
+                )
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only normal and the numeral variant features tnum, lnum, pnum and onum are accepted, with a recorded degradation",
+                    );
                 this.uiDegradedStyleProperties.add(property);
                 return;
             }
@@ -2274,6 +2311,8 @@ export class UiProjection {
                 let lowered = declaration;
                 if (colon >= 0 && property === "-webkit-appearance") {
                     lowered = `appearance:${declaration.slice(colon + 1)}`;
+                } else if (colon >= 0 && property === "transform-origin") {
+                    lowered = `transform-origin:${UiProjection.canonicalUiTransformOrigin(declaration.slice(colon + 1))}`;
                 } else if (colon >= 0 && property === "border-image") {
                     lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
                 } else if (colon >= 0 && isUiLayoutProperty(property)) {
