@@ -215,8 +215,10 @@ The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in
 
 Each backend composites premultiplied UI through one compositor: scene drivers render each segment into a
 transparent layer at scene sample count; sprite and Window drivers blend into their single-sample targets.
-Canvas overlays precede DOM chrome. An engine canvas presented beneath the UI (outside Worker hosts) is opaque, as the
-pin configures it: UI painted before it, in paint order, is clipped out of its content box.
+Canvas overlays precede DOM chrome. An engine canvas presented beneath the UI (outside Worker hosts) is an opaque
+rectangle, its content box, as the pin configures it: UI painted before it, in paint order, is clipped out of the
+rectangle, a filtered layer at its composite. A rounded, transformed, translucent, filtered, masked or
+overflow-clipped engine canvas refuses.
 Backdrop blur snapshots preceding UI into FP16 scratch. An element with a backdrop filter is a backdrop root:
 when a descendant also has one, the element and its descendants paint into their own layer, so that backdrop
 reads only what the root painted before it, and draws its filtered backdrop over the same content, compounding a

@@ -134,13 +134,15 @@ struct DocumentSnapshot {
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
+    std::vector<UiContentBox> content_boxes;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
     ScreenMetrics screen;
     InputCapabilities input;
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
-               screen == other.screen && input == other.input && rectangles == other.rectangles;
+               screen == other.screen && input == other.input && rectangles == other.rectangles &&
+               content_boxes == other.content_boxes;
     }
 };
 
@@ -246,8 +248,8 @@ struct WindowDocument {
         for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
             if (handle_at(engine.ui_elements, UiElementHandle{index}).tag != "canvas")
                 continue;
-            ready = ready ||
-                    ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
+            ready =
+                ready || ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
             if (failure.empty())
                 failure = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
         }
@@ -641,6 +643,7 @@ void update_window_document(bool wait) {
         for (std::size_t index = 0;
              index < layout->rectangles.size() && index < doc.engine.ui_elements.size(); ++index) {
             doc.engine.ui_elements[index].client_rect = layout->rectangles[index];
+            doc.engine.ui_elements[index].content_box = layout->content_boxes[index];
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->rectangles.size())
@@ -1090,8 +1093,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                             std::popcount(blue))};
                 }
                 next_layout.rectangles.resize(display.ui_elements.size());
-                for (std::size_t index = 0; index < display.ui_elements.size(); ++index)
+                next_layout.content_boxes.resize(display.ui_elements.size());
+                for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
                     next_layout.rectangles[index] = display.ui_elements[index].client_rect;
+                    next_layout.content_boxes[index] = display.ui_elements[index].content_box;
+                }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
                 {

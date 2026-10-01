@@ -163,47 +163,104 @@ inline std::vector<UiClipTriangle> subtract_ui_masks(std::vector<UiClipTriangle>
     return left;
 }
 
+/**
+ * Clip one recorded triangle to `mask`, appending each piece's vertices with
+ * the triangle's attributes interpolated at its corners.
+ */
+inline void append_clipped_ui_triangle(std::vector<UiRenderVertex>& vertices,
+                                       const std::array<UiRenderVertex, 3>& source,
+                                       const std::vector<UiClipTriangle>& mask,
+                                       std::vector<UiClipTriangle>& pieces,
+                                       UiClipScratch& scratch) {
+    const UiClipTriangle triangle{
+        {{source[0].x, source[0].y}, {source[1].x, source[1].y}, {source[2].x, source[2].y}}};
+    const float area = ui_clip_side(triangle[0], triangle[1], triangle[2]);
+    if (std::abs(area) < 1e-6f)
+        return;
+    pieces.clear();
+    append_ui_mask_intersection(pieces, std::span(&triangle, 1), mask, scratch);
+    for (const auto& piece : pieces)
+        for (const auto point : piece) {
+            const float a = ui_clip_side(triangle[1], triangle[2], point) / area;
+            const float b = ui_clip_side(triangle[2], triangle[0], point) / area;
+            const float c = 1 - a - b;
+            const auto number = [&](auto field) {
+                return a * (source[0].*field) + b * (source[1].*field) + c * (source[2].*field);
+            };
+            const auto color = [&](auto field) {
+                return static_cast<std::uint8_t>(std::clamp(std::lround(number(field)), 0l, 255l));
+            };
+            vertices.push_back({point[0], point[1], color(&UiRenderVertex::red),
+                                color(&UiRenderVertex::green), color(&UiRenderVertex::blue),
+                                color(&UiRenderVertex::alpha), number(&UiRenderVertex::u),
+                                number(&UiRenderVertex::v)});
+        }
+}
+
+inline std::array<UiRenderVertex, 3> recorded_ui_triangle(const UiRenderFrame& frame,
+                                                          std::size_t first) {
+    return {frame.vertices.at(frame.indices[first]), frame.vertices.at(frame.indices[first + 1]),
+            frame.vertices.at(frame.indices[first + 2])};
+}
+
 /** Preserve attributes when a recorded draw is clipped to the same mask as composites. */
 inline void clip_ui_geometry(UiRenderFrame& frame, std::uint32_t first_vertex,
                              std::uint32_t first_index, const std::vector<UiClipTriangle>& mask) {
     std::vector<UiRenderVertex> vertices;
-    std::vector<UiClipTriangle> clipped_triangles;
+    std::vector<UiClipTriangle> pieces;
     UiClipScratch scratch;
-    for (std::size_t i = first_index; i + 2 < frame.indices.size(); i += 3) {
-        const std::array source{frame.vertices.at(frame.indices[i]),
-                                frame.vertices.at(frame.indices[i + 1]),
-                                frame.vertices.at(frame.indices[i + 2])};
-        const UiClipTriangle triangle{
-            {{source[0].x, source[0].y}, {source[1].x, source[1].y}, {source[2].x, source[2].y}}};
-        const float area = ui_clip_side(triangle[0], triangle[1], triangle[2]);
-        if (std::abs(area) < 1e-6f)
-            continue;
-        clipped_triangles.clear();
-        append_ui_mask_intersection(clipped_triangles, std::span(&triangle, 1), mask, scratch);
-        for (const auto& clipped : clipped_triangles)
-            for (const auto point : clipped) {
-                const float a = ui_clip_side(triangle[1], triangle[2], point) / area;
-                const float b = ui_clip_side(triangle[2], triangle[0], point) / area;
-                const float c = 1 - a - b;
-                const auto number = [&](auto field) {
-                    return a * (source[0].*field) + b * (source[1].*field) + c * (source[2].*field);
-                };
-                const auto color = [&](auto field) {
-                    return static_cast<std::uint8_t>(
-                        std::clamp(std::lround(number(field)), 0l, 255l));
-                };
-                vertices.push_back({point[0], point[1], color(&UiRenderVertex::red),
-                                    color(&UiRenderVertex::green), color(&UiRenderVertex::blue),
-                                    color(&UiRenderVertex::alpha), number(&UiRenderVertex::u),
-                                    number(&UiRenderVertex::v)});
-            }
-    }
+    for (std::size_t i = first_index; i + 2 < frame.indices.size(); i += 3)
+        append_clipped_ui_triangle(vertices, recorded_ui_triangle(frame, i), mask, pieces, scratch);
     frame.vertices.resize(first_vertex);
     frame.indices.resize(first_index);
     for (const auto& vertex : vertices) {
         frame.indices.push_back(static_cast<std::uint32_t>(frame.vertices.size()));
         frame.vertices.push_back(vertex);
     }
+}
+
+/** An axis-aligned rectangle of frame pixels. */
+struct UiClipRect {
+    float left = 0, top = 0, right = 0, bottom = 0;
+
+    [[nodiscard]] bool overlaps(float min_x, float min_y, float max_x, float max_y) const {
+        return min_x < right && left < max_x && min_y < bottom && top < max_y;
+    }
+};
+
+/**
+ * Clip the draw recorded from `first_index` out of `rects`, given `outside`,
+ * the frame minus those rectangles. A triangle whose bounds miss every
+ * rectangle keeps its vertices and indices; the others are clipped to
+ * `outside`, their pieces appended with interpolated attributes.
+ */
+inline void occlude_ui_geometry(UiRenderFrame& frame, std::uint32_t first_index,
+                                std::span<const UiClipRect> rects,
+                                const std::vector<UiClipTriangle>& outside) {
+    std::vector<std::uint32_t> indices;
+    indices.reserve(frame.indices.size() - first_index);
+    std::vector<UiRenderVertex> vertices;
+    std::vector<UiClipTriangle> pieces;
+    UiClipScratch scratch;
+    for (std::size_t i = first_index; i + 2 < frame.indices.size(); i += 3) {
+        const auto source = recorded_ui_triangle(frame, i);
+        const auto [min_x, max_x] = std::minmax({source[0].x, source[1].x, source[2].x});
+        const auto [min_y, max_y] = std::minmax({source[0].y, source[1].y, source[2].y});
+        if (std::none_of(rects.begin(), rects.end(), [&](const UiClipRect& rect) {
+                return rect.overlaps(min_x, min_y, max_x, max_y);
+            })) {
+            indices.insert(indices.end(), frame.indices.begin() + static_cast<std::ptrdiff_t>(i),
+                           frame.indices.begin() + static_cast<std::ptrdiff_t>(i + 3));
+            continue;
+        }
+        const auto appended = vertices.size();
+        append_clipped_ui_triangle(vertices, source, outside, pieces, scratch);
+        for (std::size_t index = appended; index < vertices.size(); ++index)
+            indices.push_back(static_cast<std::uint32_t>(frame.vertices.size() + index));
+    }
+    frame.vertices.insert(frame.vertices.end(), vertices.begin(), vertices.end());
+    frame.indices.resize(first_index);
+    frame.indices.insert(frame.indices.end(), indices.begin(), indices.end());
 }
 
 inline std::vector<UiClipTriangle> ui_rect_mask(float left, float top, float right, float bottom) {

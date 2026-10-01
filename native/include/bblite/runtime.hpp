@@ -407,6 +407,15 @@ struct UiClientRect {
     [[nodiscard]] bool operator==(const UiClientRect&) const = default;
 };
 
+/** An element's content box, in layout pixels. */
+struct UiContentBox {
+    double left = 0.0;
+    double top = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+    [[nodiscard]] bool operator==(const UiContentBox&) const = default;
+};
+
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
     /**
@@ -3667,11 +3676,34 @@ struct UiElementRecord {
     std::shared_ptr<UiEventListeners> file_change_callbacks;
     bool file_input = false;
     UiClientRect client_rect{};
+    /** Synced with `client_rect`: where a canvas presents its GPU content. */
+    UiContentBox content_box{};
     bool client_rect_requested = false;
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
 };
+
+/**
+ * The pixels of a `width` x `height` target that a canvas laid out in a
+ * `layout_width` x `layout_height` viewport presents its GPU content in:
+ * its content box, scaled and truncated to whole pixels. The UI frame
+ * clips what it paints beneath the canvas to the same rectangle.
+ */
+[[nodiscard]] inline PixelViewport presented_canvas_rect(const UiElementRecord& canvas,
+                                                         double layout_width, double layout_height,
+                                                         std::uint32_t width,
+                                                         std::uint32_t height) {
+    const UiContentBox& box = canvas.content_box;
+    const double scale_x = static_cast<double>(width) / layout_width;
+    const double scale_y = static_cast<double>(height) / layout_height;
+    return PixelViewport{
+        static_cast<std::int32_t>(box.left * scale_x),
+        static_cast<std::int32_t>(box.top * scale_y),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(box.width * scale_x)),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(box.height * scale_y)),
+    };
+}
 
 /** Dispatches to the element's `type` listeners; the list outlives a listener that grows the
  * element arena or removes it. */

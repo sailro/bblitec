@@ -33,12 +33,16 @@ namespace bbl::pal {
  */
 #if BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
-    const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
-    return rect.width > 0.0 && rect.height > 0.0;
+    const auto& box = handle_at(engine.ui_elements, canvas).content_box;
+    return box.width > 0.0 && box.height > 0.0;
 }
 
-PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
-                                   std::uint32_t target_width, std::uint32_t target_height);
+/** The laid-out canvas's presented rectangle (`presented_canvas_rect`) in the target. */
+inline PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
+                                          std::uint32_t target_width, std::uint32_t target_height) {
+    return presented_canvas_rect(handle_at(engine.ui_elements, canvas), engine.options.width,
+                                 engine.options.height, target_width, target_height);
+}
 
 /** An auxiliary registered scene whose surface canvas retained layout never placed. */
 inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {

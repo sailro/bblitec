@@ -3001,28 +3001,40 @@ public:
         scissor = frame_bounds();
         transform = Rml::Matrix4f::Identity();
         canvas_occluders.clear();
+        occluder_rects.clear();
+        occlusion_outside.clear();
     }
 
     /**
-     * The content box of an engine canvas, in frame pixels. Its GPU content
-     * is opaque (the pin configures surfaces `alphaMode: "opaque"`) and the
-     * renderer presents it beneath this frame, so what the frame paints
-     * before the canvas, in paint order, is clipped out of the box.
+     * An engine canvas's presented rectangle (`presented_canvas_rect`). Its
+     * GPU content is opaque (the pin configures surfaces `alphaMode:
+     * "opaque"`) and the renderer presents it beneath this frame, so what
+     * the frame paints before the canvas, in paint order, is clipped out of
+     * the rectangle.
      */
     struct CanvasOccluder {
         std::uint32_t canvas = invalid_handle;
-        float left = 0, top = 0, right = 0, bottom = 0;
+        UiClipRect rect;
     };
 
     /** The engine canvases this frame paints, each occluding until it paints. */
     void occlude_until_painted(std::vector<CanvasOccluder> occluders) {
         canvas_occluders = std::move(occluders);
+        refresh_occlusion();
     }
 
     void canvas_painted(UiElementHandle canvas) {
-        std::erase_if(canvas_occluders, [&](const CanvasOccluder& occluder) {
+        const auto painted = std::erase_if(canvas_occluders, [&](const CanvasOccluder& occluder) {
             return occluder.canvas == canvas.value;
         });
+        if (painted == 0)
+            return;
+        // Occluders refuse the ancestors that open layers, so the canvas
+        // paints into the frame itself.
+        if (!layers.empty())
+            throw std::runtime_error("An engine canvas painted inside a UI layer is not "
+                                     "represented.");
+        refresh_occlusion();
     }
 
     /**
@@ -3152,9 +3164,11 @@ public:
                                  float(output.Bottom()));
         if (clip_mask_enabled)
             mask = intersect_ui_masks(mask, clip_mask);
+        // A layer's content keeps its filter spread; what the composite lays
+        // into the frame beneath an engine canvas is clipped out of it.
         if (destination == 0 && occluded(float(output.Left()), float(output.Top()),
                                          float(output.Right()), float(output.Bottom())))
-            mask = subtract_ui_masks(std::move(mask), occluder_triangles());
+            mask = intersect_ui_masks(mask, occlusion_outside);
         const auto before_draw = static_cast<std::uint32_t>(frame.draws.size());
         if (layers.size() == 1 && layers.back().backdrop && source == layers.back().id &&
             destination == 0 && filters.empty()) {
@@ -3226,6 +3240,8 @@ public:
         frame.vertices.reserve(frame.vertices.size() + geometry.vertices.size());
         frame.indices.reserve(frame.indices.size() + geometry.indices.size());
 
+        float min_x = std::numeric_limits<float>::infinity(), min_y = min_x;
+        float max_x = -min_x, max_y = -min_x;
         for (const Rml::Vertex& source : geometry.vertices) {
             Rml::Vector4f position{source.position.x + translation.x,
                                    source.position.y + translation.y, 0.0f, 1.0f};
@@ -3234,6 +3250,10 @@ public:
                 position.x /= position.w;
                 position.y /= position.w;
             }
+            min_x = std::min(min_x, position.x);
+            max_x = std::max(max_x, position.x);
+            min_y = std::min(min_y, position.y);
+            max_y = std::max(max_y, position.y);
             frame.vertices.push_back(UiRenderVertex{
                 position.x, position.y, source.colour.red, source.colour.green, source.colour.blue,
                 source.colour.alpha, source.tex_coord.x, source.tex_coord.y});
@@ -3244,24 +3264,23 @@ public:
             frame.indices.push_back(base_vertex + static_cast<std::uint32_t>(index));
         }
 
-        // Geometry painted before an engine canvas, in any layer, lies
-        // beneath the canvas's opaque content.
-        const bool occludes = occluded_from(base_vertex);
-        if (clip_mask_enabled || occludes) {
-            std::vector<UiClipTriangle> unoccluded;
-            if (occludes)
-                unoccluded = subtract_ui_masks(
-                    clip_mask_enabled ? clip_mask
-                                      : ui_rect_mask(0, 0, float(frame.width), float(frame.height)),
-                    occluder_triangles());
-            const auto& mask = occludes ? unoccluded : clip_mask;
+        if (clip_mask_enabled) {
             const double started = cpu.now();
             if (cpu.enabled) {
                 ++cpu.sample.clips;
                 cpu.sample.clip_pairs +=
-                    static_cast<std::uint64_t>(geometry.indices.size() / 3) * mask.size();
+                    static_cast<std::uint64_t>(geometry.indices.size() / 3) * clip_mask.size();
             }
-            clip_ui_geometry(frame, base_vertex, first_index, mask);
+            clip_ui_geometry(frame, base_vertex, first_index, clip_mask);
+            if (cpu.enabled)
+                cpu.sample.clipping += cpu.now() - started;
+        }
+        // Geometry painted into the frame before an engine canvas lies
+        // beneath the canvas's opaque content. Inside a layer it keeps its
+        // filter spread until its composite is clipped.
+        if (layers.empty() && occluded(min_x, min_y, max_x, max_y)) {
+            const double started = cpu.now();
+            occlude_ui_geometry(frame, first_index, occluder_rects, occlusion_outside);
             if (cpu.enabled)
                 cpu.sample.clipping += cpu.now() - started;
         }
@@ -3708,41 +3727,33 @@ private:
     std::vector<UiBlurKernel> blur_kernels;
     bool clip_mask_enabled = false;
     std::unordered_map<std::uint32_t, RetainedCanvasTexture> retained_canvas_textures;
+    /** The engine canvases that have not painted yet. */
     std::vector<CanvasOccluder> canvas_occluders;
+    /** Their rectangles, and the frame minus them, rebuilt when one paints. */
+    std::vector<UiClipRect> occluder_rects;
+    std::vector<UiClipTriangle> occlusion_outside;
+
+    void refresh_occlusion() {
+        occluder_rects.clear();
+        std::vector<UiClipTriangle> covered;
+        for (const CanvasOccluder& occluder : canvas_occluders) {
+            occluder_rects.push_back(occluder.rect);
+            const auto rectangle = ui_rect_mask(occluder.rect.left, occluder.rect.top,
+                                                occluder.rect.right, occluder.rect.bottom);
+            covered.insert(covered.end(), rectangle.begin(), rectangle.end());
+        }
+        occlusion_outside =
+            occluder_rects.empty()
+                ? std::vector<UiClipTriangle>{}
+                : subtract_ui_masks(ui_rect_mask(0, 0, float(frame.width), float(frame.height)),
+                                    covered);
+    }
 
     /** Whether a rectangle overlaps an engine canvas that has not painted yet. */
-    bool occluded(float left, float top, float right, float bottom) const {
-        return std::any_of(canvas_occluders.begin(), canvas_occluders.end(),
-                           [&](const CanvasOccluder& occluder) {
-                               return left < occluder.right && occluder.left < right &&
-                                      top < occluder.bottom && occluder.top < bottom;
-                           });
-    }
-
-    /** Whether the vertices recorded from `first_vertex` on overlap one. */
-    bool occluded_from(std::uint32_t first_vertex) const {
-        if (canvas_occluders.empty() || first_vertex >= frame.vertices.size())
-            return false;
-        float left = frame.vertices[first_vertex].x, right = left;
-        float top = frame.vertices[first_vertex].y, bottom = top;
-        for (std::size_t index = first_vertex + 1; index < frame.vertices.size(); ++index) {
-            const UiRenderVertex& vertex = frame.vertices[index];
-            left = std::min(left, vertex.x);
-            right = std::max(right, vertex.x);
-            top = std::min(top, vertex.y);
-            bottom = std::max(bottom, vertex.y);
-        }
-        return occluded(left, top, right, bottom);
-    }
-
-    std::vector<UiClipTriangle> occluder_triangles() const {
-        std::vector<UiClipTriangle> triangles;
-        for (const CanvasOccluder& occluder : canvas_occluders) {
-            const auto rectangle =
-                ui_rect_mask(occluder.left, occluder.top, occluder.right, occluder.bottom);
-            triangles.insert(triangles.end(), rectangle.begin(), rectangle.end());
-        }
-        return triangles;
+    bool occluded(float min_x, float min_y, float max_x, float max_y) const {
+        return std::any_of(
+            occluder_rects.begin(), occluder_rects.end(),
+            [&](const UiClipRect& rect) { return rect.overlaps(min_x, min_y, max_x, max_y); });
     }
 };
 
@@ -4294,30 +4305,32 @@ struct UiRmlRuntime {
     }
 
     /**
-     * The cascaded `resize` of a form control, which RmlUi does not carry:
-     * matching style rules by specificity and order, then the style
-     * attribute, then CSSOM writes.
+     * A property's cascaded authored value, for the properties RmlUi does
+     * not carry or resolve as authored: matching style rules by specificity
+     * and order, then the style attribute, then CSSOM writes. Empty when
+     * none declares it; private declarations take no part.
      */
-    std::string cascaded_resize(UiElementHandle handle, const UiElementRecord& record) const {
-        CascadedUiDeclaration resize;
+    std::string cascaded_declaration(UiElementHandle handle, const UiElementRecord& record,
+                                     std::string_view property) const {
+        CascadedUiDeclaration cascaded;
         const std::size_t source_order = for_each_matching_style_rule(
             handle, [&](const UiStyleRule& rule, std::size_t rule_order) {
-                std::string style = rule.style;
-                consider_cascaded_declaration(resize, take_css_declaration(style, "resize"),
+                std::string style = filter_private_ui_declarations(rule.style, false);
+                consider_cascaded_declaration(cascaded, take_css_declaration(style, property),
                                               ui_style_rule_specificity(rule), rule_order);
             });
         constexpr std::uint32_t inline_specificity = 0xffffffffu;
         if (const auto inline_style = record.attributes.find("style");
             inline_style != record.attributes.end()) {
-            std::string style = inline_style->second;
-            consider_cascaded_declaration(resize, take_css_declaration(style, "resize"),
+            std::string style = filter_private_ui_declarations(inline_style->second, false);
+            consider_cascaded_declaration(cascaded, take_css_declaration(style, property),
                                           inline_specificity, source_order);
         }
-        if (const auto written = record.style_properties.find("resize");
+        if (const auto written = record.style_properties.find(std::string(property));
             written != record.style_properties.end())
-            consider_cascaded_declaration(resize, written->second, inline_specificity,
-                                          source_order + 1);
-        return std::string(trim_css_token(resize.value));
+            consider_cascaded_declaration(cascaded, std::string(trim_css_token(written->second)),
+                                          inline_specificity, source_order + 1);
+        return cascaded.value;
     }
 
     std::string resolved_style_attribute(UiElementHandle handle, const UiElementRecord& record,
@@ -5175,26 +5188,8 @@ struct UiRmlRuntime {
     }
 
     bool has_active_authored_width(UiElementHandle handle, const UiElementRecord& record) const {
-        CascadedUiDeclaration width;
-        std::size_t source_order = for_each_matching_style_rule(
-            handle, [&](const UiStyleRule& rule, std::size_t rule_order) {
-                std::string style = filter_private_ui_declarations(rule.style, false);
-                consider_cascaded_declaration(width, take_css_declaration(style, "width"),
-                                              ui_style_rule_specificity(rule), rule_order);
-            });
-        constexpr std::uint32_t inline_specificity = 0xffffffffu;
-        if (const auto inline_style = record.attributes.find("style");
-            inline_style != record.attributes.end()) {
-            std::string style = filter_private_ui_declarations(inline_style->second, false);
-            consider_cascaded_declaration(width, take_css_declaration(style, "width"),
-                                          inline_specificity, source_order);
-        }
-        if (const auto dynamic_width = record.style_properties.find("width");
-            dynamic_width != record.style_properties.end()) {
-            consider_cascaded_declaration(width, dynamic_width->second, inline_specificity,
-                                          source_order + 1);
-        }
-        return !width.value.empty() && is_concrete_authored_width(width.value);
+        const std::string width = cascaded_declaration(handle, record, "width");
+        return !width.empty() && is_concrete_authored_width(width);
     }
 
     bool sync_container_queries() {
@@ -5518,7 +5513,8 @@ struct UiRmlRuntime {
      * the engine's own surface and its scenes' surfaces. A Worker host draws
      * canvas frames as textures in paint order instead.
      */
-    std::vector<UiRenderRecorder::CanvasOccluder> engine_canvas_occluders() {
+    std::vector<UiRenderRecorder::CanvasOccluder> engine_canvas_occluders(std::uint32_t width,
+                                                                          std::uint32_t height) {
         std::vector<UiRenderRecorder::CanvasOccluder> occluders;
 #if !BBLITE_WORKERS
         const auto add = [&](const std::optional<UiElementHandle>& canvas) {
@@ -5527,21 +5523,62 @@ struct UiRmlRuntime {
                             [&](const auto& occluder) { return occluder.canvas == canvas->value; }))
                 return;
             Rml::Element* element = projected_elements[canvas->value].element;
-            if (!element || !element->IsVisible(true))
+            const UiElementRecord& record = handle_at(engine.ui_elements, *canvas);
+            if (!element || !element->IsVisible(true) || record.content_box.width <= 0 ||
+                record.content_box.height <= 0)
                 return;
-            const Rml::Vector2f offset = element->GetAbsoluteOffset(Rml::BoxArea::Content);
-            const Rml::Vector2f size = element->GetBox().GetSize(Rml::BoxArea::Content);
-            if (size.x <= 0 || size.y <= 0)
-                return;
+            refuse_unpresented_canvas(*element, record.content_box);
+            const PixelViewport rect = presented_canvas_rect(record, engine.options.width,
+                                                             engine.options.height, width, height);
             occluders.push_back(
-                {canvas->value, offset.x, offset.y, offset.x + size.x, offset.y + size.y});
+                {canvas->value, UiClipRect{float(rect.x), float(rect.y), float(rect.x + rect.width),
+                                           float(rect.y + rect.height)}});
         };
         add(engine.surface_canvas);
         for (const auto& scene : engine.scenes())
             if (scene)
                 add(scene->surface_canvas);
+#else
+        static_cast<void>(width);
+        static_cast<void>(height);
 #endif
         return occluders;
+    }
+
+    /**
+     * Refuses an engine canvas the opaque presented rectangle beneath the
+     * page does not represent: rounded, or under a transform, opacity, a
+     * filter, a mask or an ancestor's overflow clip. (Painting the canvas
+     * in paint order would represent them.)
+     */
+    static void refuse_unpresented_canvas(Rml::Element& canvas, const UiContentBox& box) {
+        const auto refuse = [](std::string_view what) {
+            throw std::runtime_error("An engine canvas " + std::string(what) +
+                                     " is not represented: its GPU content is presented as an "
+                                     "opaque rectangle beneath the page.");
+        };
+        for (const Rml::Style::BorderRadius& radius : canvas.GetComputedValues().border_radius())
+            if (radius.value.x > 0 || radius.value.y > 0)
+                refuse("with rounded corners");
+        constexpr double tolerance = 0.5;
+        for (Rml::Element* element = &canvas; element; element = element->GetParentNode()) {
+            const Rml::Style::ComputedValues& values = element->GetComputedValues();
+            if (values.has_local_transform() || values.has_local_perspective())
+                refuse("under a transform");
+            if (values.opacity() < 1)
+                refuse("under opacity");
+            if (values.has_filter() || values.has_backdrop_filter() || values.has_mask_image())
+                refuse("under a filter or mask");
+            if (element == &canvas || (values.overflow_x() == Rml::Style::Overflow::Visible &&
+                                       values.overflow_y() == Rml::Style::Overflow::Visible))
+                continue;
+            const Rml::Vector2f clip = element->GetAbsoluteOffset(Rml::BoxArea::Padding);
+            const Rml::Vector2f size = element->GetBox().GetSize(Rml::BoxArea::Padding);
+            if (box.left < clip.x - tolerance || box.top < clip.y - tolerance ||
+                box.left + box.width > clip.x + size.x + tolerance ||
+                box.top + box.height > clip.y + size.y + tolerance)
+                refuse("clipped by an overflow ancestor");
+        }
     }
 
     void render_canvas(UiElementHandle handle, Rml::Element& element) {
@@ -5808,6 +5845,7 @@ struct UiRmlRuntime {
             Rml::Element* element = projected_elements[index].element;
             if (!element) {
                 record.client_rect = {};
+                record.content_box = {};
                 continue;
             }
             const Rml::Vector2f offset = element->GetAbsoluteOffset(Rml::BoxArea::Border);
@@ -5817,6 +5855,11 @@ struct UiRmlRuntime {
                                   static_cast<double>(element->GetClientHeight()),
                                   static_cast<double>(element->GetOffsetWidth()),
                                   static_cast<double>(element->GetOffsetHeight())};
+            const Rml::Vector2f content = element->GetAbsoluteOffset(Rml::BoxArea::Content);
+            const Rml::Vector2f content_size = element->GetBox().GetSize(Rml::BoxArea::Content);
+            record.content_box = {static_cast<double>(content.x), static_cast<double>(content.y),
+                                  static_cast<double>(content_size.x),
+                                  static_cast<double>(content_size.y)};
         }
     }
 
@@ -5985,8 +6028,7 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
         for (std::uint32_t i = 0; i < runtime.projected_elements.size(); ++i) {
             const auto& record = runtime.engine.ui_elements.at(i);
             auto* element = runtime.projected_elements[i].element;
-            if (!element || record.tag != "textarea" ||
-                runtime.cascaded_resize(UiElementHandle{i}, record) != "vertical")
+            if (!element || record.tag != "textarea")
                 continue;
             const auto position = element->GetAbsoluteOffset(Rml::BoxArea::Border);
             const auto dimensions = element->GetBox().GetSize(Rml::BoxArea::Border);
@@ -5996,7 +6038,8 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
             if (pointer.x < position.x + dimensions.x - grip ||
                 pointer.x > position.x + dimensions.x ||
                 pointer.y < position.y + dimensions.y - grip ||
-                pointer.y > position.y + dimensions.y)
+                pointer.y > position.y + dimensions.y ||
+                runtime.cascaded_declaration(UiElementHandle{i}, record, "resize") != "vertical")
                 continue;
             runtime.resizing = UiElementHandle{i};
             runtime.resize_start_y = pointer.y;
@@ -6200,7 +6243,7 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
     auto& cpu = runtime.render_interface.cpu;
     const double started = cpu.now();
     runtime.render_interface.begin_frame(width, height);
-    runtime.render_interface.occlude_until_painted(runtime.engine_canvas_occluders());
+    runtime.render_interface.occlude_until_painted(runtime.engine_canvas_occluders(width, height));
     runtime.canvas_render_ms = 0;
     runtime.context->Render();
     const double canvases_finished = started + runtime.canvas_render_ms;

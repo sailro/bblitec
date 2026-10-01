@@ -1,8 +1,9 @@
 // A text scene on an engine canvas ../page.html authors inside its layout:
 // the canvas is a 640x360 box beside the page's own chrome, not the window.
-// What the page paints before the canvas (the body and frame backgrounds, a
-// filtered panel partly under it) is covered by the canvas's opaque content;
-// the label painted after it stays on top. The scene registers through the
+// What the page paints before the canvas (the body and frame backgrounds,
+// panels with drop shadows, one at a negative offset, and a blur partly under it) is
+// covered by the canvas's opaque content, while their filter spread outside
+// the canvas stays; the label painted after it stays on top. The scene registers through the
 // default render task graph that presents into the canvas pane, and its
 // text draws in that graph's scene pass.
 
