@@ -19,6 +19,8 @@ inline constexpr std::string_view ui_user_agent_css =
     "[hidden]{display:none;}\n"
     "h1{display:block;font-size:2em;font-weight:bold;margin:0.67em 0;}\n"
     "h2{display:block;font-size:1.5em;font-weight:bold;margin:0.83em 0;}\n"
+    "p{display:block;margin:1em 0;}\n"
+    "code,kbd,samp,tt{font-family:monospace;}\n"
     "b,strong{font-weight:bold;}\n"
     "a[href]{color:#0000ee;text-decoration:underline;cursor:pointer;}\n"
     // Chromium's form-control font (docs/ui.md): the generic sans face two

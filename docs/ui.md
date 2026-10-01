@@ -157,7 +157,7 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
 | Media | Reached max-width, portrait/landscape and reduced-motion rules | Reduced motion polls Windows/macOS accessibility preferences, Android animator scale or the Linux desktop portal (standard reduced-motion, then GNOME enable-animations); unavailable preferences refuse |
-| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
+| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables; outer shadows blur before the border-box clip; a single box larger than the viewport renders its shadow with a stretched band; a runtime assignment is checked against the CSS grammar itself, so an invalid value is ignored as CSSOM does while a valid one RmlUi cannot represent refuses | Omitted/currentColor, non-pixel lengths; a multi-box (inline) shadow texture clips to viewport size |
@@ -248,7 +248,8 @@ Canvas-only capture excludes UI filters.
   when the PAL checks that property and is otherwise stored as written, where CSSOM ignores it. A box-shadow
   naming an unknown color keyword passes the check and refuses.
 - A layer composite copies its source region before filtering, including composites without filters.
-- A canvas has no intrinsic layout size: CSS must size it.
+- A canvas's backing size is its intrinsic size; a flex item or shrink-to-fit box does not count a canvas child's width.
+- A scene's canvas hides the page paint beneath it even where the scene clears to a translucent color.
 - A text or sprite renderer presents an authored engine canvas only while it fills the window.
 - An image regenerates its quad when its absolute offset's sub-pixel fraction changes.
 

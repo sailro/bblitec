@@ -3953,6 +3953,7 @@ class UiCanvasElement final : public Rml::Element {
     UiRmlRuntime* runtime_ = nullptr;
     UiElementHandle handle_{};
     void OnRender() override;
+    bool GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) override;
 
 public:
     explicit UiCanvasElement(const Rml::String& tag) : Element(tag) {}
@@ -6205,6 +6206,21 @@ struct UiRmlRuntime {
     UiBackgroundStyles background_styles;
     double canvas_render_ms = 0;
 };
+
+// A canvas is a replaced element: its backing size, in CSS pixels, is its
+// intrinsic size and ratio wherever CSS leaves a dimension auto.
+bool UiCanvasElement::GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) {
+    if (!runtime_ || handle_.value >= runtime_->engine.ui_elements.size())
+        return false;
+    const auto& canvas = runtime_->engine.ui_elements[handle_.value].canvas;
+    if (!canvas || canvas->width <= 0.0 || canvas->height <= 0.0)
+        return false;
+    dimensions =
+        Rml::Vector2f(static_cast<float>(canvas->width), static_cast<float>(canvas->height)) *
+        runtime_->density_ratio;
+    ratio = dimensions.x / dimensions.y;
+    return true;
+}
 
 void UiCanvasElement::OnRender() {
     Element::OnRender();
