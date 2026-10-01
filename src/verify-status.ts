@@ -28,6 +28,17 @@ import type {
 } from "./parity-scene.js";
 import { isWobblingCell } from "./scene-neutrality.js";
 import { scenes } from "./scene-registry.js";
+
+/**
+ * Scenes whose full page carries live text the registry partitions out
+ * (`neutralityPartition`, compared separately): their published values move
+ * with that text from run to run.
+ */
+const liveTextScenes: ReadonlySet<string> = new Set(
+    scenes
+        .filter((scene) => scene.parity?.neutralityPartition)
+        .map((scene) => scene.id),
+);
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import {
     artifactDirectory,
@@ -430,7 +441,10 @@ export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
         result.values.forEach((value, index) => {
             const rendered = renderedCells[index]!;
             const column = columns[index]!;
-            if (isWobblingCell(row.sceneId, column)) {
+            if (
+                isWobblingCell(row.sceneId, column) ||
+                liveTextScenes.has(row.sceneId)
+            ) {
                 exempt.push(
                     `${statusPath}:${row.line} ${row.sceneId} ${column}: wobble-exempt, published ${row.values[index]}, newest ${rendered}` +
                         (rendered !== row.values[index] ? " (differs)" : ""),
