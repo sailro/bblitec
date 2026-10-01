@@ -4293,6 +4293,33 @@ struct UiRmlRuntime {
         projected_style_revision = engine.ui_style_revision;
     }
 
+    /**
+     * The cascaded `resize` of a form control, which RmlUi does not carry:
+     * matching style rules by specificity and order, then the style
+     * attribute, then CSSOM writes.
+     */
+    std::string cascaded_resize(UiElementHandle handle, const UiElementRecord& record) const {
+        CascadedUiDeclaration resize;
+        const std::size_t source_order = for_each_matching_style_rule(
+            handle, [&](const UiStyleRule& rule, std::size_t rule_order) {
+                std::string style = rule.style;
+                consider_cascaded_declaration(resize, take_css_declaration(style, "resize"),
+                                              ui_style_rule_specificity(rule), rule_order);
+            });
+        constexpr std::uint32_t inline_specificity = 0xffffffffu;
+        if (const auto inline_style = record.attributes.find("style");
+            inline_style != record.attributes.end()) {
+            std::string style = inline_style->second;
+            consider_cascaded_declaration(resize, take_css_declaration(style, "resize"),
+                                          inline_specificity, source_order);
+        }
+        if (const auto written = record.style_properties.find("resize");
+            written != record.style_properties.end())
+            consider_cascaded_declaration(resize, written->second, inline_specificity,
+                                          source_order + 1);
+        return std::string(trim_css_token(resize.value));
+    }
+
     std::string resolved_style_attribute(UiElementHandle handle, const UiElementRecord& record,
                                          std::string* resolved_display = nullptr) const {
         std::string style;
@@ -5958,16 +5985,8 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
         for (std::uint32_t i = 0; i < runtime.projected_elements.size(); ++i) {
             const auto& record = runtime.engine.ui_elements.at(i);
             auto* element = runtime.projected_elements[i].element;
-            if (!element || record.tag != "textarea")
-                continue;
-            const auto style_attribute = record.attributes.find("style");
-            auto style = style_attribute == record.attributes.end() ? std::string{}
-                                                                    : style_attribute->second;
-            auto resize = take_css_declaration(style, "resize");
-            if (const auto found = record.style_properties.find("resize");
-                found != record.style_properties.end())
-                resize = found->second;
-            if (trim_css_token(resize) != "vertical")
+            if (!element || record.tag != "textarea" ||
+                runtime.cascaded_resize(UiElementHandle{i}, record) != "vertical")
                 continue;
             const auto position = element->GetAbsoluteOffset(Rml::BoxArea::Border);
             const auto dimensions = element->GetBox().GetSize(Rml::BoxArea::Border);
