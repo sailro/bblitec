@@ -108,6 +108,92 @@ std::string_view trim_css_token(std::string_view value) {
     return value.substr(first, last - first + 1);
 }
 
+// CSS Backgrounds 3 `box-shadow: none | <shadow>#`: each shadow is an optional `inset`, two to four
+// contiguous lengths (the third nonnegative) and at most one color, in any order. A closing parenthesis
+// ends a token, so `rgb(1,2,3)55` is a color then a unitless number. A value naming var() or a math
+// function is left to the style engine, which still needs balanced parentheses.
+bool css_box_shadow_valid(std::string_view value) {
+    value = trim_css_token(value);
+    if (ascii_iequals(value, "none"))
+        return true;
+    int lengths = 0, colors = 0, insets = 0;
+    bool lengths_ended = false, deferred = false;
+    const auto accept = [&](std::string_view token) {
+        if (deferred)
+            return true;
+        const std::size_t open = token.find('(');
+        if (open != std::string_view::npos) {
+            const std::string_view function = token.substr(0, open);
+            for (const std::string_view unread : {"var", "env", "calc", "min", "max", "clamp"})
+                if (ascii_iequals(function, unread)) {
+                    deferred = true;
+                    return true;
+                }
+        }
+        std::size_t offset = token.front() == '-' || token.front() == '+' ? 1 : 0;
+        if (const auto number = pal::detail::css_decimal(token, offset)) {
+            const std::string_view unit = token.substr(offset);
+            const bool length =
+                unit.empty() ? *number == 0
+                             : std::all_of(unit.begin(), unit.end(), [](char character) {
+                                   return std::isalpha(static_cast<unsigned char>(character));
+                               });
+            if (!length || lengths_ended || lengths == 4 || (lengths == 2 && token.front() == '-'))
+                return false;
+            ++lengths;
+            return true;
+        }
+        lengths_ended = lengths > 0;
+        if (ascii_iequals(token, "inset"))
+            return insets++ == 0;
+        if (colors++)
+            return false;
+        if (token.front() == '#') {
+            const std::string_view digits = token.substr(1);
+            return (digits.size() == 3 || digits.size() == 4 || digits.size() == 6 ||
+                    digits.size() == 8) &&
+                   std::all_of(digits.begin(), digits.end(), [](char character) {
+                       return std::isxdigit(static_cast<unsigned char>(character));
+                   });
+        }
+        return open != std::string_view::npos ||
+               std::all_of(token.begin(), token.end(), [](char character) {
+                   return std::isalpha(static_cast<unsigned char>(character)) || character == '-';
+               });
+    };
+    std::size_t depth = 0, start = std::string_view::npos;
+    for (std::size_t index = 0; index <= value.size(); ++index) {
+        const char character = index < value.size() ? value[index] : ',';
+        if (depth == 0 &&
+            (character == ',' || std::isspace(static_cast<unsigned char>(character)))) {
+            if (start != std::string_view::npos && !accept(value.substr(start, index - start)))
+                return false;
+            start = std::string_view::npos;
+            if (character == ',') {
+                if (!deferred && lengths < 2)
+                    return false;
+                lengths = colors = insets = 0;
+                lengths_ended = false;
+            }
+            continue;
+        }
+        if (start == std::string_view::npos)
+            start = index;
+        if (character == '(')
+            ++depth;
+        else if (character == ')') {
+            if (depth == 0)
+                return false;
+            if (--depth == 0) {
+                if (!accept(value.substr(start, index + 1 - start)))
+                    return false;
+                start = std::string_view::npos;
+            }
+        }
+    }
+    return depth == 0;
+}
+
 bool css_property_name_equals(std::string_view left, std::string_view right) {
     return right.starts_with("--") ? left == right : ascii_iequals(left, right);
 }
@@ -915,10 +1001,15 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
     }
     UiElementRecord& record = ui_element(engine, element);
     const auto existing = record.style_properties.find(name);
-    if (existing != record.style_properties.end() && existing->second == value &&
-        !record.style_property_order.empty() && record.style_property_order.back() == name) {
+    const bool unchanged = existing != record.style_properties.end() && existing->second == value;
+    if (unchanged && !record.style_property_order.empty() &&
+        record.style_property_order.back() == name) {
         return;
     }
+    // CSSOM ignores an assignment the property's grammar rejects; a stored
+    // value already passed.
+    if (!unchanged && name == "box-shadow" && !value.empty() && !css_box_shadow_valid(value))
+        return;
     std::erase(record.style_property_order, name);
     record.style_property_order.push_back(name);
     record.style_properties.insert_or_assign(std::move(name), std::move(value));
@@ -2838,8 +2929,7 @@ public:
         clip_mask_enabled = false;
         frame.composite_first_index = 0;
         scissor_enabled = false;
-        scissor = Rml::Rectanglei::FromSize(
-            Rml::Vector2i{static_cast<int>(width), static_cast<int>(height)});
+        scissor = frame_bounds();
         transform = Rml::Matrix4f::Identity();
     }
 
@@ -2961,12 +3051,11 @@ public:
             float sigma = 0;
             for (const auto& filter : filters)
                 sigma = std::hypot(sigma, filter.sigma);
-            layers.back().backdrop = BackdropLayer{scissor, sigma};
+            layers.back().backdrop = BackdropLayer{active_scissor(), sigma};
             return;
         }
-        const auto viewport = Rml::Rectanglei::FromSize(
-            {static_cast<int>(frame.width), static_cast<int>(frame.height)});
-        const auto output = scissor.Intersect(viewport);
+        const auto viewport = frame_bounds();
+        const auto output = active_scissor().Intersect(viewport);
         auto mask = ui_rect_mask(float(output.Left()), float(output.Top()), float(output.Right()),
                                  float(output.Bottom()));
         if (clip_mask_enabled)
@@ -3088,15 +3177,11 @@ public:
             }
         }
 
-        const Rml::Rectanglei active_scissor =
-            scissor_enabled ? scissor
-                            : Rml::Rectanglei::FromSize(Rml::Vector2i{
-                                  static_cast<int>(frame.width), static_cast<int>(frame.height)});
+        const Rml::Rectanglei region = active_scissor();
         frame.draws.push_back(UiRenderDraw{
             first_index, static_cast<std::uint32_t>(frame.indices.size()) - first_index, texture_id,
-            active_scissor.Left(), active_scissor.Top(),
-            static_cast<std::uint32_t>(std::max(0, active_scissor.Width())),
-            static_cast<std::uint32_t>(std::max(0, active_scissor.Height())), nearest_sampling,
+            region.Left(), region.Top(), static_cast<std::uint32_t>(std::max(0, region.Width())),
+            static_cast<std::uint32_t>(std::max(0, region.Height())), nearest_sampling,
             layers.empty() ? 0 : layers.back().id});
     }
 
@@ -3254,8 +3339,7 @@ public:
             ++cpu.sample.snapshots;
         if (layers.empty())
             throw std::runtime_error("Saving a retained UI texture requires an owned layer.");
-        const auto region = scissor.Intersect(Rml::Rectanglei::FromSize(
-            {static_cast<int>(frame.width), static_cast<int>(frame.height)}));
+        const auto region = active_scissor().Intersect(frame_bounds());
         if (region.Width() <= 0 || region.Height() <= 0)
             return {};
         const auto& layer = layers.back();
@@ -3391,6 +3475,15 @@ public:
     }
 
     void EnableScissorRegion(bool enable) override { scissor_enabled = enable; }
+
+    Rml::Rectanglei frame_bounds() const {
+        return Rml::Rectanglei::FromSize(
+            Rml::Vector2i{static_cast<int>(frame.width), static_cast<int>(frame.height)});
+    }
+
+    // The region draws and composites are limited to: the scissor while RmlUi
+    // enables one, the whole frame otherwise.
+    Rml::Rectanglei active_scissor() const { return scissor_enabled ? scissor : frame_bounds(); }
 
     void SetScissorRegion(Rml::Rectanglei region) override { scissor = region; }
 

@@ -1,0 +1,64 @@
+Make an element with a backdrop-filter a backdrop root, as Chromium does: when a descendant also
+reads a backdrop, the element and its descendants paint into a layer of their own after its filtered
+backdrop is drawn, composited over it at exit. That descendant's backdrop-filter then reads only what
+the backdrop root painted before it (Filter Effects 2), and draws its filtered backdrop over that same
+content, so a translucent root compounds as in Skia. Without such a descendant the layer would not
+change a pixel, so none is pushed.
+
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index a9a4034..3a276a4 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -213,4 +213,17 @@ void ElementEffects::ReleaseEffects()
+ }
+ 
++static bool HasBackdropFilterDescendant(Element* element)
++{
++	for (int i = 0; i < element->GetNumChildren(true); i++)
++	{
++		Element* child = element->GetChild(i);
++		if (child->GetDisplay() == Style::Display::None)
++			continue;
++		if (child->GetComputedValues().has_backdrop_filter() || HasBackdropFilterDescendant(child))
++			return true;
++	}
++	return false;
++}
++
+ void ElementEffects::RenderEffects(RenderStage render_stage)
+ {
+@@ -309,4 +322,9 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 			render_manager->PopLayer();
+ 			render_manager->SetScissorRegion(initial_scissor_region);
++
++			// A backdrop root: a descendant's backdrop-filter reads only what this subtree painted before it.
++			backdrop_root_layer = filters.empty() && mask_images.empty() && HasBackdropFilterDescendant(element);
++			if (backdrop_root_layer)
++				render_manager->PushLayer();
+ 		}
+ 	}
+@@ -343,4 +361,13 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 			render_manager->SetScissorRegion(initial_scissor_region);
+ 		}
++		else if (backdrop_root_layer)
++		{
++			// Composite the backdrop root's layer over its filtered backdrop, within its ancestors' clipping.
++			backdrop_root_layer = false;
++			ElementUtilities::SetClippingRegion(element);
++			render_manager->CompositeLayers(render_manager->GetTopLayer(), render_manager->GetNextLayer(), BlendMode::Blend, {});
++			render_manager->PopLayer();
++			render_manager->SetScissorRegion(initial_scissor_region);
++		}
+ 	}
+ }
+diff --git a/Source/Core/ElementEffects.h b/Source/Core/ElementEffects.h
+index 49ce288..92e55e4 100644
+--- a/Source/Core/ElementEffects.h
++++ b/Source/Core/ElementEffects.h
+@@ -63,4 +63,6 @@ private:
+ 	// If set, element data of all decorators need to be regenerated.
+ 	bool effects_data_dirty = false;
++	// Set while this backdrop root paints its descendants into a layer of its own.
++	bool backdrop_root_layer = false;
+ };
+ 

@@ -95,7 +95,7 @@
     {
       "library": "rmlui",
       "file": "native/patches/rmlui/0008-object-fit.patch",
-      "purpose": "Image fitting",
+      "purpose": "Image fitting and pixel-snapped image placement",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
@@ -229,6 +229,27 @@
       "library": "rmlui",
       "file": "native/patches/rmlui/0027-range-home-end.patch",
       "purpose": "Move a focused range input to its minimum on Home and its maximum on End",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0028-backdrop-root.patch",
+      "purpose": "Backdrop-filter elements are backdrop roots: a layer of their own when a descendant reads a backdrop",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0029-box-shadow-texture.patch",
+      "purpose": "Outer box shadows blur before the border-box clip; textures larger than the viewport stretch a band instead of clipping",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0030-strict-colour-functions.patch",
+      "purpose": "Colour functions end at their closing parenthesis",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },

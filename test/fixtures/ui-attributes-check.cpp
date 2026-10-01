@@ -81,6 +81,26 @@ int main() {
             assert(raw_panel->GetClientHeight() != 60.f);
             assert(ui_get_style_property(engine, panel, "height").empty());
             assert(!raw_panel->HasAttribute("style"));
+            // CSSOM ignores a box-shadow its grammar rejects: `rgb(...)55` is a color then a
+            // unitless number, so the earlier value stays.
+            ui_set_style_property(engine, panel, "box-shadow", "0 0 10px rgb(1,2,3)");
+            ui_set_style_property(engine, panel, "box-shadow", "0 0 10px rgb(1,2,3)55");
+            assert(ui_get_style_property(engine, panel, "box-shadow") == "0 0 10px rgb(1,2,3)");
+            for (const char* value : {"none", "inset 2px 3px #0008", "0 30px 80px rgba(0,0,0,0.55)",
+                                      "red 1px 2px, 0 0 4px 1px var(--glow)"}) {
+                ui_set_style_property(engine, panel, "box-shadow", value);
+                assert(ui_get_style_property(engine, panel, "box-shadow") == value);
+            }
+            for (const char* value :
+                 {"1px", "1px 2px 3px 4px 5px", "1px 2px -3px red", "1px red 2px",
+                  "1px 2px red blue", "1px 2px #12345", "1px 2px red,", "var(--glow))"})
+                assert(!bbl::css_box_shadow_valid(value));
+            // The style engine refuses the same trailing text after a color function.
+            Rml::PropertyDictionary declaration;
+            assert(Rml::StyleSheetSpecification::ParsePropertyDeclaration(declaration, "color",
+                                                                          "rgb(1,2,3)"));
+            assert(!Rml::StyleSheetSpecification::ParsePropertyDeclaration(declaration, "color",
+                                                                           "rgb(1,2,3)55"));
         }
         loop.queue_microtask([&] { loop.close(); });
     });
