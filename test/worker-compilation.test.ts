@@ -3,13 +3,87 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import { compileWorkerApplication } from "../src/compiler/worker-modules.js";
 import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import {
     buildNativeFixture,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("worker rendering compatibility keeps Window capture readiness separate", () => {
+    const directory = resolve("artifacts/worker-rendering-readiness");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    const frontend = createCompilerProgram(
+        'new Worker(new URL("./worker.ts", import.meta.url), {type: "module"});',
+        resolve(directory, "entry.ts"),
+    );
+    const statement = frontend.sourceFile.statements[0]!;
+    assert.ok(ts.isExpressionStatement(statement));
+    const worker = statement.expression;
+    assert.ok(ts.isNewExpression(worker));
+    // Exercise the manifest join independently of source lowering. The
+    // compiler supplies every product field; only realm metadata varies.
+    const base = compileSource("const value = 1;");
+    const joinRealms = (
+        windowRenders: boolean,
+        windowReady: boolean,
+        workerReady: boolean,
+        incompatible = false,
+    ) =>
+        compileWorkerApplication(
+            frontend,
+            (input, configuration) => {
+                const isWorker = configuration.namespace !== undefined;
+                if (!isWorker) configuration.register(worker);
+                return {
+                    ...base,
+                    manifest: {
+                        ...base.manifest,
+                        source: input.sourceFile.fileName,
+                        features: [
+                            "core",
+                            "platform:workers",
+                            ...(isWorker || windowRenders
+                                ? ["backend:sdl"]
+                                : []),
+                        ],
+                        ...((isWorker ? workerReady : windowReady)
+                            ? { canvasReadyGate: true as const }
+                            : {}),
+                        sceneMaterialCount: isWorker && incompatible ? 1 : 0,
+                    },
+                };
+            },
+            (_node, message) => {
+                throw new Error(message);
+            },
+        );
+    assert.equal(joinRealms(true, true, false).manifest.canvasReadyGate, true);
+    assert.equal(joinRealms(false, true, false).manifest.canvasReadyGate, true);
+    assert.equal(
+        Object.hasOwn(
+            joinRealms(false, false, true).manifest,
+            "canvasReadyGate",
+        ),
+        false,
+    );
+    assert.equal(
+        Object.hasOwn(
+            joinRealms(true, false, false).manifest,
+            "canvasReadyGate",
+        ),
+        false,
+    );
+    assert.throws(
+        () => joinRealms(true, true, false, true),
+        /incompatible generated rendering products/,
+    );
+});
 
 test("application asset merging retains independent texture and binary uses of one URL", () => {
     const result = compileSource(`

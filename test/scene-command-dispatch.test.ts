@@ -48,7 +48,7 @@ test("help prints the usage generated from the command table and exits 0", () =>
 
 test("one command's help is its own entry: process builds, validate measures", () => {
     const processEntry = [
-        "  process <id|source.ts|all> [--backend <value>] [--compiler <value>] [--shader <value>] [--cold]",
+        "  process <id|source.ts|all> [--backend <value>] [--compiler <value>] [--shader <value>] [--site-root <value>] [--public-dir <value>] [--cold]",
         "      compile, compile shaders (--shader d3d12|vulkan|metal|all) and build",
         "",
     ].join("\n");

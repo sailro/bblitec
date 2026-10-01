@@ -990,7 +990,7 @@ class Compiler implements LoweringServices {
             )
                 this.fail(
                     this.sourceFile,
-                    "Device recovery does not represent shared worker/offscreen device ownership.",
+                    "Device recovery does not represent Window/worker application realms or shared offscreen device ownership.",
                 );
             if (this.admissions.temporalRegisteredScenes.length > 1)
                 this.fail(

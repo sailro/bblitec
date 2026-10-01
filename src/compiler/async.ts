@@ -1442,7 +1442,11 @@ export class AsyncLowerer {
                 : undefined);
         const contextual = context.checker.getContextualType(node);
         const awaited =
-            contextual && context.checker.getAwaitedType(contextual);
+            contextual &&
+            context.checker.getAwaitedType(
+                // Absence of the promise itself is not absence of its payload.
+                context.checker.getNonNullableType(contextual),
+            );
         const expected =
             own &&
             awaited &&

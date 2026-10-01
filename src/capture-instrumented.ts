@@ -108,6 +108,9 @@ export function browserCaptureStaleness(
                     seekSeconds,
                     scene.parity?.referenceAnimationGroups,
                     goldenFixedFrame(scene),
+                    undefined,
+                    undefined,
+                    sceneReferencePage(scene).documentMarkers,
                 ),
         },
     );
@@ -373,6 +376,10 @@ export async function runInstrumentedCapture(
         seekSeconds,
         animationGroups,
         referenceFrame,
+        undefined,
+        undefined,
+        false,
+        sceneReferencePage(scene).documentMarkers,
     );
     const server = createSuiteSceneServer(moduleSource, {
         sourcePath: scene.source,
@@ -542,6 +549,9 @@ export async function runInstrumentedCapture(
                     seekSeconds,
                     animationGroups,
                     referenceFrame,
+                    undefined,
+                    undefined,
+                    sceneReferencePage(scene).documentMarkers,
                 ),
                 pin: capturePin(),
                 goldenIdentity,

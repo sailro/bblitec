@@ -66,7 +66,7 @@ test("unchanged device-loss scene retains polling predicates, GPU identities and
     );
 });
 
-test("recovery declines unrepresented callbacks, listeners, options and poll scheduling", () => {
+test("recovery declines unrepresented callbacks, listeners and options", () => {
     for (const [from, to, expected] of [
         [
             "onLost() {",
@@ -79,11 +79,6 @@ test("recovery declines unrepresented callbacks, listeners, options and poll sch
             /Only GPU uncapturederror/,
         ],
         ["onLost() {", "unknown() {", /Unrepresented device recovery option/],
-        [
-            "requestAnimationFrame(poll);",
-            "setTimeout(poll, 0);",
-            /Promise|executor|constructor/,
-        ],
     ] as const) {
         assert.notEqual(source.indexOf(from), -1, from);
         assert.throws(
@@ -94,6 +89,57 @@ test("recovery declines unrepresented callbacks, listeners, options and poll sch
             expected,
         );
     }
+});
+
+test("recovery refuses Window application realms selected by timer polling", () => {
+    const timerSource = `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.createElement("canvas"));
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        void main();
+    `;
+    const timer = compileSource(timerSource);
+    assert.ok(timer.manifest.features.includes("platform:window"));
+    assert.match(timer.cpp, /bbl::pal::create_realm_engine/);
+    // The timer selects a Window realm without a source Worker. Recovery
+    // cannot rebuild that realm's presenter-owned graphics device.
+    assert.ok(source.includes("requestAnimationFrame(poll);"));
+    assert.throws(
+        () =>
+            compileSource(
+                source.replace(
+                    "requestAnimationFrame(poll);",
+                    "setTimeout(poll, 0);",
+                ),
+                { fileName: sourcePath },
+            ),
+        /Device recovery does not represent Window\/worker application realms or shared offscreen device ownership/,
+    );
+});
+
+test("recovery also refuses applications with explicit workers", () => {
+    const directory = resolve("artifacts/device-recovery-worker-refusal");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                import { createEngine, enableDeviceLostSceneRecovery } from "@babylonjs/lite";
+                const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+                worker.terminate();
+                async function main(): Promise<void> {
+                    const engine = await createEngine(document.createElement("canvas"));
+                    enableDeviceLostSceneRecovery(engine);
+                }
+                void main();
+            `,
+                { fileName: join(directory, "entry.ts") },
+            ),
+        /Device recovery does not represent Window\/worker application realms or shared offscreen device ownership/,
+    );
 });
 
 test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract drift", () => {

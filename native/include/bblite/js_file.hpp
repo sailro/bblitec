@@ -335,7 +335,7 @@ inline void append_extension(std::vector<std::string>& extensions, std::string e
     }
 }
 
-/** A `top/*` accept entry: every type under one top-level media type. */
+/** A wildcard accept entry: every type under one top-level media type. */
 [[nodiscard]] inline bool mime_wildcard(std::string_view mime) {
     return mime.size() > 2u && mime.ends_with("/*") && mime.find('*') == mime.size() - 1u;
 }

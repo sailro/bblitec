@@ -9969,7 +9969,21 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
         projection.indexOf("bool has_active_authored_width"),
         projection.indexOf("void render_canvas("),
     );
-    assert.match(intrinsic, /for_each_matching_style_rule/);
+    assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
+    const cascade = cppFunction(
+        projection,
+        "std::string cascaded_declaration(",
+    );
+    assert.match(cascade, /for_each_matching_style_rule/);
+    assert.match(
+        cascade,
+        /consider_cascaded_declaration\(cascaded, take_css_declaration\(style, property\),\s*ui_style_rule_specificity\(rule\), rule_order\)/,
+    );
+    const matching = cppFunction(
+        projection,
+        "std::size_t for_each_matching_style_rule(",
+    );
+    assert.match(matching, /!style_selectors\.matches\(origin, rule_order\)/);
     const update = projection.slice(
         projection.indexOf("void update_ui_rml_runtime"),
         projection.indexOf("const UiRenderFrame& record_ui_rml_frame"),

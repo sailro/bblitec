@@ -15,7 +15,11 @@ import {
     backendShaderTarget,
 } from "../src/build-options.js";
 import { listFiles } from "../src/tooling/records.js";
-import { sceneBackendFiles, sceneBackendSource } from "./native-fixture.js";
+import {
+    cppFunction,
+    sceneBackendFiles,
+    sceneBackendSource,
+} from "./native-fixture.js";
 
 test("compiled backends have independent build and deployment directories", () => {
     const directory = "native/build-primitives-release";
@@ -204,14 +208,33 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
         /normalized_css_keyword\(dynamic_display->second\)/,
     );
 
-    const intrinsic = projection.slice(
-        projection.indexOf("bool has_active_authored_width"),
-        projection.indexOf("bool sync_hover_states"),
+    const intrinsic = cppFunction(
+        projection,
+        "bool has_active_authored_width(",
     );
-    assert.match(intrinsic, /CascadedUiDeclaration width/);
-    assert.match(intrinsic, /consider_cascaded_declaration/);
-    assert.match(intrinsic, /ui_style_rule_specificity\(rule\)/);
-    assert.match(intrinsic, /is_concrete_authored_width\(width\.value\)/);
+    assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
+    assert.match(intrinsic, /is_concrete_authored_width\(width\)/);
+    const cascade = cppFunction(
+        projection,
+        "std::string cascaded_declaration(",
+    );
+    assert.match(cascade, /CascadedUiDeclaration cascaded/);
+    assert.match(cascade, /for_each_matching_style_rule/);
+    assert.match(
+        cascade,
+        /consider_cascaded_declaration\(cascaded, take_css_declaration\(style, property\),\s*ui_style_rule_specificity\(rule\), rule_order\)/,
+    );
+    assert.match(cascade, /inline_specificity, source_order\)/);
+    assert.match(cascade, /inline_specificity, source_order \+ 1\)/);
+    const winner = cppFunction(
+        projection,
+        "void consider_cascaded_declaration(",
+    );
+    assert.match(winner, /specificity < current\.specificity/);
+    assert.match(
+        winner,
+        /specificity == current\.specificity &&\s*source_order < current\.source_order/,
+    );
     const concreteWidth = projection.slice(
         projection.indexOf("bool is_concrete_authored_width"),
         projection.indexOf("UiElementRecord& ui_element"),

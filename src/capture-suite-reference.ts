@@ -159,6 +159,8 @@ const entryReadyMarks =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");' +
     'document.documentElement.setAttribute("data-capture-ready", "true");';
 const fixedEngineStartMarker =
+    'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
+const documentEngineStartMarker =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
 
 /**
@@ -167,8 +169,11 @@ const fixedEngineStartMarker =
  * helper, so this projection is applied both to the entry module and to every
  * TypeScript module the suite server transpiles on demand.
  */
-function markFixedEngineStart(source: string): string {
-    return source.replace("await startEngine(engine);", fixedEngineStartMarker);
+function markFixedEngineStart(source: string, documentMarkers = false): string {
+    return source.replace(
+        "await startEngine(engine);",
+        documentMarkers ? documentEngineStartMarker : fixedEngineStartMarker,
+    );
 }
 
 /**
@@ -216,6 +221,7 @@ export function suiteBrowserModule(
     independentEngines?: number,
     animationPoseProtocol?: SuiteAnimationPoseProtocol,
     readyAfterEntry = false,
+    documentMarkers = false,
 ): string {
     if (animationPoseProtocol !== undefined) {
         if (animationPoseProtocol !== "applied-group-pose-v1")
@@ -311,7 +317,7 @@ export function suiteBrowserModule(
     const fixedFrameSource =
         fixedAnimationFrame === undefined || independentEngines !== undefined
             ? readySource
-            : markFixedEngineStart(readySource);
+            : markFixedEngineStart(readySource, documentMarkers);
     return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
 }
 
@@ -331,6 +337,7 @@ export function suiteBrowserModuleDigest(
     fixedAnimationFrame?: number,
     independentEngines?: number,
     animationPoseProtocol?: SuiteAnimationPoseProtocol,
+    documentMarkers = false,
 ): string {
     return createHash("sha256")
         .update(
@@ -342,6 +349,8 @@ export function suiteBrowserModuleDigest(
                 fixedAnimationFrame,
                 independentEngines,
                 animationPoseProtocol,
+                false,
+                documentMarkers,
             ),
         )
         .digest("hex");
@@ -462,6 +471,8 @@ interface SuiteCaptureOptions {
      * ready, and its fixed clock starts, once its entry module evaluates.
      */
     readyAfterEntry?: boolean;
+    /** HTML entry contract; omitted preserves frozen corpus module bytes. */
+    documentMarkers?: boolean;
 }
 
 /** Full-page capture is the product default; zero requests a canvas-only
@@ -738,7 +749,10 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                         options.fixedAnimationFrame === undefined ||
                         options.independentEngines !== undefined
                             ? sourceText
-                            : markFixedEngineStart(sourceText);
+                            : markFixedEngineStart(
+                                  sourceText,
+                                  options.documentMarkers,
+                              );
                     const moduleText = pinnedPackageSpecifiers(
                         fixedFrameSource,
                         options.independentEngines === undefined
@@ -923,7 +937,8 @@ const schedule = () => {
         const marks = document.documentElement;
         if (
             engineStartFrame < 0 &&
-            marks.dataset.fixedEngineStarting === "true"
+            (marks.dataset.fixedEngineStarting === "true" ||
+                document.getElementById("renderCanvas")?.dataset.fixedEngineStarting === "true")
         ) {
             engineStartFrame = frame;
         }
@@ -1062,6 +1077,7 @@ export async function captureSuiteReference(
         options.independentEngines,
         undefined,
         options.readyAfterEntry,
+        options.documentMarkers,
     );
     const server = createSuiteSceneServer(moduleSource, {
         ...options,

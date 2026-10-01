@@ -77,7 +77,8 @@ test(
             bbl::Engine engine;
             engine.options.width = 1200; engine.options.height = 800;
             engine.ui_elements.emplace_back();
-            engine.ui_elements.back().client_rect = {600, 100, 400, 600};
+            engine.ui_elements.back().client_rect = {580, 80, 440, 640};
+            engine.ui_elements.back().content_box = {600, 100, 400, 600};
             for (double density : {1.0, 2.0, 3.0}) {
                 engine.canvas_client_width = 1200 / density; engine.canvas_client_height = 800 / density;
                 auto pane = bbl::pal::laid_out_canvas_pane(engine, bbl::UiElementHandle{0}, 600, 400);
@@ -591,7 +592,10 @@ test(
         #define BBLITE_FLOATING_ORIGIN 0
         #include <bblite/runtime.hpp>
         #include <cassert>
-        namespace bbl::pal { ${cppFunction(source, "inline void validate_text_scene(")} }
+        namespace bbl::pal {
+            ${cppFunction(source, "inline bool text_in_default_scene_pass(")}
+            ${cppFunction(source, "inline void validate_text_scene(")}
+        }
         int main() {
             bbl::Engine engine;
             bbl::Scene scene, other;
@@ -609,7 +613,17 @@ test(
                 assert(false);
             };
             scene.meshes.push_back({0}); refuses("merged ordering"); scene.meshes.clear();
-            scene.tasks.push_back({0}); refuses("default render pass"); scene.tasks.clear();
+            engine.frame_tasks.emplace_back();
+            scene.tasks.push_back({0}); refuses("default pass");
+            engine.frame_tasks[0].render.scene_stages = true;
+            bbl::pal::validate_text_scene(scene);
+            engine.frame_tasks.emplace_back();
+            engine.frame_tasks[1].render.scene_stages = true;
+            scene.tasks.push_back({1}); refuses("default pass");
+            engine.frame_tasks[1].kind = bbl::FrameTaskKind::geometry;
+            refuses("default pass"); scene.tasks.clear();
+            scene.state->default_render_task = false; refuses("default pass");
+            scene.state->default_render_task = true;
             scene.environment.has_solid_skybox = true; refuses("merged ordering");
             scene.environment.has_solid_skybox = false;
             engine.cameras[0].orthographic = true; refuses("perspective");
