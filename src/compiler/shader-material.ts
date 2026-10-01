@@ -21,6 +21,8 @@ import type { LoweringServices } from "./lowering-services.js";
 import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
+import { sharedPinnedContext } from "../lowering/context.js";
+import { pinnedErrorMessageCpp } from "../lowering/pinned-error.js";
 import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
@@ -45,7 +47,7 @@ import type {
     SceneMeshManifest,
     Value,
 } from "./types.js";
-import { tupleComponents } from "./data-types.js";
+import { isTypedArrayType, tupleComponents } from "./data-types.js";
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -80,6 +82,7 @@ export interface ShaderMaterialContext
             | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
+            | "expectStaticArrayElements"
             | "objectProperty"
             | "compileValue"
             | "compileNumber"
@@ -87,6 +90,8 @@ export interface ShaderMaterialContext
             | "castNumber"
             | "compileShaderSource"
             | "compileStringLiteral"
+            | "bindings"
+            | "emit"
         > {}
 
 export function compileShaderMaterialOptions(
@@ -367,8 +372,7 @@ function compileShaderSamplers(
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
-    for (const element of context.expectStaticArrayLiteral(expression)
-        .elements) {
+    for (const element of context.expectStaticArrayElements(expression)) {
         // A typed `ShaderSamplerDecl` names its own sample type, view
         // dimension and comparison mode. Everything else goes through the
         // same static-string resolution `attributes` and `uniforms` take, so
@@ -470,8 +474,8 @@ function compileShaderStorageBuffers(
 ): CompiledShaderStorageBuffer[] {
     if (!expression) return [];
     const buffers = context
-        .expectStaticArrayLiteral(expression)
-        .elements.map((element): CompiledShaderStorageBuffer => {
+        .expectStaticArrayElements(expression)
+        .map((element): CompiledShaderStorageBuffer => {
             const resolved = context.resolveStaticExpression(element);
             if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
@@ -592,13 +596,13 @@ function compileShaderUniformSignatures(
     defaults: CompiledShaderUniformDefault[];
     dynamicDefaults: Array<{ name: string; components: string[] }>;
 } {
-    const array = context.expectStaticArrayLiteral(expression);
+    const elements = context.expectStaticArrayElements(expression);
     const defaults: CompiledShaderUniformDefault[] = [];
     const dynamicDefaults: Array<{
         name: string;
         components: string[];
     }> = [];
-    const signatures = array.elements.map((element) => {
+    const signatures = elements.map((element) => {
         const resolved = context.resolveStaticExpression(element);
         if (
             ts.isStringLiteral(resolved) ||
@@ -671,7 +675,12 @@ function compileShaderUniformSignatures(
                     components: compileShaderUniformComponents(
                         context,
                         defaultExpression,
-                        componentCount,
+                        {
+                            count: componentCount,
+                            name: uniformName,
+                            type: uniformType,
+                        },
+                        399,
                     ),
                 });
             }
@@ -755,7 +764,7 @@ export function resolveShaderUniform(
     material: Value,
     nameExpression: ts.Expression,
     expectedCounts: number[],
-): { offset: number; count: number } {
+): ShaderUniformSlot {
     if (!material.shaderVariant) {
         context.fail(
             nameExpression,
@@ -780,7 +789,22 @@ export function resolveShaderUniform(
             `Shader uniform '${name}' has ${entry.count} component(s); this setter expects ${expectedCounts.join(" or ")}.`,
         );
     }
-    return entry;
+    const signature = program.uniforms.find((uniform) =>
+        uniform.startsWith(`${name}:`),
+    );
+    return {
+        ...entry,
+        name,
+        type: signature ? signature.slice(name.length + 1) : "",
+    };
+}
+
+/** A custom uniform's layout entry with the declaration the pin reports. */
+export interface ShaderUniformSlot {
+    readonly offset: number;
+    readonly count: number;
+    readonly name: string;
+    readonly type: string;
 }
 
 /**
@@ -846,8 +870,11 @@ export function resolveShaderStorageBufferSlot(
 export function compileShaderUniformComponents(
     context: ShaderMaterialContext,
     expression: ts.Expression,
-    count: number,
+    uniform: Pick<ShaderUniformSlot, "count" | "name" | "type">,
+    /** The pin's length error: 401 for `setShaderUniform`, 399 for a default. */
+    lengthError: 399 | 401,
 ): string[] {
+    const { count } = uniform;
     if (count === 1) {
         return [context.compileNumber(expression)];
     }
@@ -878,6 +905,35 @@ export function compileShaderUniformComponents(
     ) {
         return tupleComponents(value.cpp, count);
     }
+    if (value.kind === "data" && isTypedArrayType(value.dataType)) {
+        // The pin's setter takes any ArrayLike: a length other than the
+        // declared count throws (LiteError 401), then each lane is stored
+        // through Math.fround.
+        const array = context.bindings.pinValueToTemporary(
+            value,
+            "uniform_values",
+        ).cpp;
+        const message = pinnedErrorMessageCpp(
+            sharedPinnedContext(),
+            lengthError,
+            [
+                uniform.name,
+                uniform.type,
+                count,
+                { cpp: `std::to_string(${array}.size())` },
+            ],
+        );
+        context.emit({
+            kind: "expression",
+            code: `if (${array}.size() != ${count}u) throw std::runtime_error(${message});`,
+        });
+        const float = value.dataType.kind === "f32array";
+        return Array.from({ length: count }, (_, index) =>
+            float
+                ? `${array}.load(${index}u)`
+                : `static_cast<float>(${array}.load(${index}u))`,
+        );
+    }
     context.fail(expression, `Expected a ${count}-component array value.`);
 }
 
@@ -886,8 +942,8 @@ function compileStaticStringArray(
     expression: ts.Expression,
 ): string[] {
     return context
-        .expectStaticArrayLiteral(expression)
-        .elements.map((element) => context.compileStaticString(element));
+        .expectStaticArrayElements(expression)
+        .map((element) => context.compileStaticString(element));
 }
 
 function expectStaticNumber(

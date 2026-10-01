@@ -812,7 +812,7 @@ test("rejects unknown or unsupported mesh factory options", () => {
             "Box options support size, width, height, and depth.",
         ],
         [
-            "createBox(engine, { ...{ size: 2 } });",
+            'createBox(engine, { ...JSON.parse("{}") });',
             "Box options support size, width, height, and depth.",
         ],
         [

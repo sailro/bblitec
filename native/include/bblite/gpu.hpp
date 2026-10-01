@@ -108,18 +108,7 @@ struct GpuCommandEncoder {
 };
 using GpuCommandEncoderHandle = std::shared_ptr<GpuCommandEncoder>;
 
-/** WebGPU sizes and byte views, shared by source records and platform destinations. */
-inline std::size_t gpu_size(double value) {
-    if (!std::isfinite(value) || value < 0 || std::trunc(value) != value ||
-        value > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
-        throw std::runtime_error("GPU extent is not a supported WebGPU size.");
-    return static_cast<std::size_t>(value);
-}
-inline std::uint32_t gpu_u32(std::size_t value) {
-    if (value > std::numeric_limits<std::uint32_t>::max())
-        throw std::runtime_error("GPU extent exceeds the native API's 32-bit range.");
-    return static_cast<std::uint32_t>(value);
-}
+/** Byte views over WebGPU sizes (`gpu_size`, `gpu_u32` in runtime.hpp). */
 inline std::span<const std::uint8_t> gpu_bytes(std::span<const std::uint8_t> data, double offset,
                                                double size) {
     const auto start = gpu_size(offset), count = gpu_size(size);

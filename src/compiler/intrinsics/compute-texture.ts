@@ -147,7 +147,7 @@ function compileLiteralComputeTextureOptions(
             );
     const target = context.allocateTemporaryCppName("compute_texture_options");
     context.emit(`bbl::ComputeStorageTextureOptions ${target};`);
-    for (const property of options.properties) {
+    for (const property of context.objectProperties(options)) {
         if (
             !ts.isPropertyAssignment(property) &&
             !ts.isShorthandPropertyAssignment(property)

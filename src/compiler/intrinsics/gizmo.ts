@@ -10,7 +10,10 @@ import type { LoweringServices } from "../lowering-services.js";
 // documented display-only adaptation. Camera deferral callbacks remain live.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { validateObjectProperties } from "../option-helpers.js";
+import {
+    validateObjectProperties,
+    type ObjectValidationContext,
+} from "../option-helpers.js";
 import type { Feature, Value, ValueKind } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -20,15 +23,18 @@ import {
 } from "../pointer-drag.js";
 
 /** Camera-owned callbacks querying the gizmo dispatcher. */
-export interface CameraDeferralContext extends Pick<
-    LoweringServices,
-    | "compileStoredDataFunction"
-    | "compileValue"
-    | "expectObjectLiteral"
-    | "objectProperty"
-    | "propertyName"
-    | "fail"
-> {}
+export interface CameraDeferralContext
+    extends
+        ObjectValidationContext,
+        Pick<
+            LoweringServices,
+            | "compileStoredDataFunction"
+            | "compileValue"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "propertyName"
+            | "fail"
+        > {}
 
 export interface GizmoIntrinsicContext
     extends

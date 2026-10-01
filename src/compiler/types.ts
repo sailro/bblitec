@@ -671,6 +671,8 @@ export interface ScenePbrMaterialManifest {
     /** Present array whose contents remain runtime UBO data. */
     readonly baseColorFactorRuntime?: true;
     readonly hasOrmTexture: boolean;
+    /** The pin's `normalTexture` presence, which `_computePbrMaterialFeatures` reads. */
+    readonly hasNormalTexture?: true;
     /** Uniform-only factors; absent when their values are runtime expressions. */
     readonly metallicFactor?: number;
     readonly roughnessFactor?: number;

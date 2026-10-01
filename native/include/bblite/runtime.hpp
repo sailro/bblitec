@@ -5859,6 +5859,8 @@ FileTexture load_compressed_texture_variants(Engine& engine, const std::vector<s
                                              bool invert_y);
 void set_material_base_color_file(Engine& engine, MaterialHandle material, FileTexture texture);
 void set_material_orm_file(Engine& engine, MaterialHandle material, FileTexture texture);
+void set_material_normal_file(Engine& engine, MaterialHandle material, FileTexture texture,
+                              float scale);
 MaterialHandle create_pbr_material(Engine& engine, PbrMaterialOptions options);
 MaterialHandle create_standard_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_standard_esm_shadow_material_view(Engine& engine, MaterialHandle source,
@@ -6097,9 +6099,8 @@ void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 /**
  * `PcfSpotlightShadowGeneratorConfig`, as the reached slice resolves it.
  *
- * `mapSize` sizes a GPU texture, so it is decided at generation; the rest
- * are the pinned `??` defaults or what the scene passed, at the JavaScript
- * width the pin holds them (a spot's projection near/far reach the
+ * Every field is the pinned `??` default or what the scene passed, at the
+ * JavaScript width the pin holds it (a spot's projection near/far reach the
  * perspective volume before any float store).
  */
 struct PcfSpotShadowOptions {
@@ -6152,9 +6153,9 @@ struct EsmDirectionalShadowOptions {
  * The spot generator's own three, plus the ortho volume the caster fit
  * projects into — a directional light has no position to project from, so
  * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
- * takes. `normalBias` is unreached on the two PCF factories and refuses by
- * name — generation anchors each factory's `?? false` default, so a pin that
- * changes what those factories carry refuses here rather than drifting
+ * takes. Neither PCF factory reads `normalBias`, so it has no field.
+ * Generation anchors each factory's `?? false` default, so a pin that
+ * changes what those factories carry refuses rather than drifting
  * silently. `forceRefreshEveryFrame` rides into the record, where it
  * disables the pinned render gate: the ESM and CSM factories already carry
  * it (break-meshes reaches those), and the PCF DIRECTIONAL factory carries
@@ -6197,6 +6198,19 @@ struct CsmDirectionalShadowOptions {
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
     bool force_refresh_every_frame{};
 };
+
+/** WebGPU sizes, shared by source records, generated options and platform destinations. */
+inline std::size_t gpu_size(double value) {
+    if (!std::isfinite(value) || value < 0 || std::trunc(value) != value ||
+        value > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
+        throw std::runtime_error("GPU extent is not a supported WebGPU size.");
+    return static_cast<std::size_t>(value);
+}
+inline std::uint32_t gpu_u32(std::size_t value) {
+    if (value > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("GPU extent exceeds the native API's 32-bit range.");
+    return static_cast<std::uint32_t>(value);
+}
 
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(Engine& engine, LightHandle light,
                                                             PcfSpotShadowOptions options);

@@ -1236,6 +1236,41 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         "cfg.forceRefreshEveryFrame ?? false",
         "PCF spot forceRefreshEveryFrame default",
     );
+    // Both PCF configs declare `normalBias` and neither factory reads it, so
+    // the port evaluates the option and drops it. The config is read only
+    // through named members, so no spread, element read or hand-off reaches
+    // the option either.
+    for (const [factory, label] of [
+        [pcfDirectionalFactory, "PCF directional"],
+        [spotFactory, "PCF spot"],
+    ] as const) {
+        context.expectShapeCount(
+            factory,
+            "normalBias",
+            `${label} normalBias read`,
+            0,
+        );
+        const config = factory.parameters[2]?.name;
+        const unnamed =
+            config && ts.isIdentifier(config)
+                ? context.findNodes(
+                      factory.body!,
+                      (node): node is ts.Identifier =>
+                          ts.isIdentifier(node) &&
+                          node.text === config.text &&
+                          !(
+                              ts.isPropertyAccessExpression(node.parent) &&
+                              node.parent.expression === node
+                          ),
+                  )
+                : [factory];
+        if (unnamed.length > 0) {
+            context.contractError(
+                unnamed[0]!,
+                `${label} factory reads its config other than through named members.`,
+            );
+        }
+    }
     // The morph-bounds provider. Its expansion is transcribed rather than
     // lowered -- the pinned body is a method on an object literal, which
     // `lowerPinnedFunction` does not reach -- so the shape is pinned here

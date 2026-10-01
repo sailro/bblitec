@@ -388,6 +388,15 @@ double performance_milliseconds() {
     return state.fixed ? state.milliseconds : monotonic_milliseconds();
 }
 
+double performance_time_origin() {
+    static const double origin = [] {
+        const auto epoch = std::chrono::system_clock::now().time_since_epoch();
+        return std::chrono::duration<double, std::milli>(epoch).count() -
+               performance_milliseconds();
+    }();
+    return origin;
+}
+
 void advance_performance_milliseconds(double delta_ms) {
     auto& state = performance_clock_state();
     if (state.fixed && delta_ms > 0.0) {

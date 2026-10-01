@@ -15,6 +15,57 @@ import {
     compilePostProcessTaskOptions,
 } from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
+import { sharedPinnedContext } from "../../lowering/context.js";
+
+/**
+ * Why `resizeEngine` runs nothing natively, read off the pin once: the
+ * render loop calls it at the head of every frame, and it only resizes each
+ * surface from its canvas.
+ */
+let resizeEngineAnchored = false;
+function assertPinnedResizeEngine(): void {
+    if (resizeEngineAnchored) return;
+    const context = sharedPinnedContext();
+    const module = "src/engine/engine.ts";
+    const { declaration: start } = context.functionDeclaration(
+        module,
+        "startEngine",
+    );
+    context.expectShapeCount(
+        start,
+        "resizeEngine(engine)",
+        "startEngine per-frame resize",
+    );
+    const { declaration: resize } = context.functionDeclaration(
+        module,
+        "resizeEngine",
+    );
+    context.assertStatementShapes(
+        resize,
+        resize.body!.statements,
+        "for (const surface of engine.surfaces) { resizeSurface(surface); }",
+        "resizeEngine surface resize",
+    );
+    resizeEngineAnchored = true;
+}
+
+/** `enableShaderMaterialUniformCaching` only installs the memoizing writers. */
+let uniformCachingAnchored = false;
+function assertPinnedUniformCaching(): void {
+    if (uniformCachingAnchored) return;
+    const context = sharedPinnedContext();
+    const { declaration } = context.functionDeclaration(
+        "src/material/shader/enable-shader-material-uniform-caching.ts",
+        "enableShaderMaterialUniformCaching",
+    );
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements,
+        "_installShaderUniformWriters(writeCachedSystemUniforms, writeCachedCustomUniforms);",
+        "shader uniform caching",
+    );
+    uniformCachingAnchored = true;
+}
 import { validateObjectProperties } from "../option-helpers.js";
 import {
     compileGpuTaskTimingIntrinsic,
@@ -137,6 +188,31 @@ export function compileEngineIntrinsic(
                 cpp: "std::function<void()>{[]() {}}",
                 nativeCallbackParameterTypes: [],
             };
+        }
+
+        case "resizeEngine": {
+            // The pin's render loop runs this at the head of every frame;
+            // native frame loops already refresh every surface's extent from
+            // its window, so the call only evaluates its engine.
+            assertPinnedResizeEngine();
+            context.expectArgumentCount(call, 1, 1);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            context.emitDiscardedValue(engine);
+            return { kind: "void", cpp: "" };
+        }
+
+        case "enableShaderMaterialUniformCaching": {
+            // The pin swaps in writers that memoize each material's write
+            // plan; native shader-material writers are planned at generation.
+            // The memoized custom writer skips a slot whose version did not
+            // move, so a `getShaderUniform` backing array mutated in place
+            // stops reaching the GPU there while native uploads the stored
+            // values: the two agree while writes go through
+            // `setShaderUniform`, as `getShaderUniform`'s contract requires.
+            assertPinnedUniformCaching();
+            context.expectArgumentCount(call, 0, 0);
+            return { kind: "void", cpp: "" };
         }
 
         case "createSceneContext": {

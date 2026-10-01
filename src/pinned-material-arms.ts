@@ -1264,6 +1264,7 @@ export async function composeScenePbrVariants(
             });
         }
         if (material.hasOrmTexture) input["ormTexture"] = {};
+        if (material.hasNormalTexture) input["normalTexture"] = {};
         if (material.enableSpecularAA) input.enableSpecularAA = true;
         input.occlusionStrength = material.occlusionStrength ?? 1;
         if (reflectanceRegistered && material.metallicF0Factor !== undefined) {

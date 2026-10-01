@@ -15,6 +15,8 @@ import {
     loadTexture2DSamplerCpp,
 } from "../../pinned-address-modes.js";
 import { compileDynamicPackagedAsset } from "../static-fetch.js";
+import { readAssetBytesSync } from "../asset-bytes-sync.js";
+import { externalGltfResourceUri } from "../../gltf-document.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -227,6 +229,57 @@ function compileGetContainerMeshes(
     return context.handleCollections.assetMeshCollection(container, call);
 }
 
+/**
+ * The packaged file `loadGltf(engine, bytes)` parses when `bytes` is the
+ * `arrayBuffer()` of a generation-time `fetch` response. The pin parses raw
+ * data as it parses the URL's bytes but with no base URL, so the asset must be
+ * self-contained; one referencing an external buffer or image refuses where
+ * the pin's loader would fail. Undefined for a string source.
+ */
+function fetchedGltfSource(
+    context: AssetIntrinsicContext,
+    expression: ts.Expression,
+): string | undefined {
+    const type = context.checker.getTypeAtLocation(expression);
+    if ((type.flags & ts.TypeFlags.StringLike) !== 0) return undefined;
+    // The bytes' own carrier, read in a probe that leaves no trace: the
+    // loader packages the file itself, not the response's opaque copy.
+    const bytes = context.probeEmission(
+        () => context.compileValue(expression),
+        () => false,
+    );
+    let read = context.unwrap(expression);
+    while (ts.isAwaitExpression(read)) read = context.unwrap(read.expression);
+    const sources =
+        bytes.fetchedBytes?.expression === read
+            ? bytes.fetchedBytes.sources
+            : undefined;
+    if (!sources) {
+        context.fail(
+            expression,
+            "loadGltf raw data must be the arrayBuffer() of a generation-time fetch response.",
+        );
+    }
+    const [source, ...others] = sources;
+    if (source === undefined || others.length > 0) {
+        context.fail(
+            expression,
+            "loadGltf raw data must come from one packaged fetch URL.",
+        );
+    }
+    const external = externalGltfResourceUri(
+        readAssetBytesSync(source, context.options.fileName),
+    );
+    if (external !== undefined) {
+        context.fail(
+            expression,
+            `loadGltf raw data has no base URL to resolve '${external}'; ` +
+                "the asset must be a GLB or use data: URIs.",
+        );
+    }
+    return source;
+}
+
 function compileLoadGltf(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
@@ -234,7 +287,9 @@ function compileLoadGltf(
     context.expectArgumentCount(call, 2, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const source = context.compileStringLiteral(argumentAt(call, 1));
+    const source =
+        fetchedGltfSource(context, argumentAt(call, 1)) ??
+        context.compileStringLiteral(argumentAt(call, 1));
     const asset = context.assetRegistry.registerAsset(source, "gltf");
     context.assetRegistry.recordGltfContainerLoad(asset, call);
     context.reachFeature("loader:gltf", call);

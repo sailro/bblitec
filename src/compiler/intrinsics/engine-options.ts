@@ -31,6 +31,7 @@ import {
     staticNumberValue,
     pinnedEnumMemberName,
     validateObjectProperties,
+    type ObjectValidationContext,
     type PositiveIntegerContext,
     type StaticBooleanContext,
 } from "../option-helpers.js";
@@ -38,6 +39,7 @@ import {
 export interface EngineOptionContext
     extends
         PositiveIntegerContext,
+        ObjectValidationContext,
         Pick<
             LoweringServices,
             | "admissions"

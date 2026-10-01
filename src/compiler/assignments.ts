@@ -544,6 +544,7 @@ export interface AssignmentContext
             | "compileStoredDataFunction"
             | "cppString"
             | "dataValue"
+            | "runGenerationFunction"
             | "fail"
         > {}
 

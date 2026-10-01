@@ -83,7 +83,7 @@ export function compileBoxOptions(
         );
         if (precision === "double") {
             const values = new EmissionMap<string, string>();
-            for (const property of unwrapped.properties) {
+            for (const property of context.objectProperties(unwrapped)) {
                 if (
                     !ts.isPropertyAssignment(property) &&
                     !ts.isShorthandPropertyAssignment(property)

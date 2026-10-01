@@ -1,31 +1,37 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { rootIdentifier, argumentAt } from "./syntax.js";
-import { validateObjectProperties } from "./option-helpers.js";
+import {
+    validateObjectProperties,
+    type ObjectValidationContext,
+} from "./option-helpers.js";
 import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 
-export interface WorkerLoweringContext extends Pick<
-    LoweringServices,
-    | "options"
-    | "checker"
-    | "dataLowerer"
-    | "dataTypes"
-    | "unwrap"
-    | "libraryGlobal"
-    | "bindings"
-    | "compileValue"
-    | "callbacks"
-    | "reachFeature"
-    | "reachJsData"
-    | "asyncActivations"
-    | "compileNumber"
-    | "emit"
-    | "allocateTemporaryCppName"
-    | "cppString"
-    | "propertyName"
-    | "fail"
-> {}
+export interface WorkerLoweringContext
+    extends
+        ObjectValidationContext,
+        Pick<
+            LoweringServices,
+            | "options"
+            | "checker"
+            | "dataLowerer"
+            | "dataTypes"
+            | "unwrap"
+            | "libraryGlobal"
+            | "bindings"
+            | "compileValue"
+            | "callbacks"
+            | "reachFeature"
+            | "reachJsData"
+            | "asyncActivations"
+            | "compileNumber"
+            | "emit"
+            | "allocateTemporaryCppName"
+            | "cppString"
+            | "propertyName"
+            | "fail"
+        > {}
 
 const realm = "bbl::pal::WorkerRealm::current()";
 const loop = "bbl::pal::EventLoop::current()";

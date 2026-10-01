@@ -29,7 +29,7 @@ import {
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
-    "propertyName" | "fail"
+    "propertyName" | "fail" | "objectProperties"
 > {}
 
 export function validateObjectProperties(
@@ -39,7 +39,7 @@ export function validateObjectProperties(
     message: string,
 ): void {
     const supportedNames = new EmissionSet(supported);
-    for (const property of object.properties) {
+    for (const property of context.objectProperties(object)) {
         const name =
             ts.isPropertyAssignment(property) ||
             ts.isShorthandPropertyAssignment(property)
@@ -184,6 +184,53 @@ export function compileBooleanOptions<N extends string>(
     return result;
 }
 
+/** What evaluating an option the pin never reads needs. */
+export interface DiscardOptionContext extends Pick<
+    LoweringServices,
+    | "evaluationOrder"
+    | "objectProperties"
+    | "compileValue"
+    | "emitDiscardedValue"
+    | "fail"
+> {}
+
+/**
+ * Evaluates `option`, a property of `object` the pin never reads, for its
+ * effects alone. A pure value has none and is dropped. An effectful one runs
+ * before the call that reads its siblings, which keeps source order only
+ * while no sibling written before it shares state with a later one; that
+ * case refuses.
+ */
+export function discardOption(
+    context: DiscardOptionContext,
+    object: ts.ObjectLiteralExpression,
+    option: ts.Expression,
+): void {
+    if (context.evaluationOrder.isPureExpression(option)) return;
+    const siblings = context
+        .objectProperties(object)
+        .flatMap((property) =>
+            ts.isPropertyAssignment(property)
+                ? [property.initializer]
+                : ts.isShorthandPropertyAssignment(property)
+                  ? [property.name]
+                  : [],
+        );
+    const index = siblings.indexOf(option);
+    if (
+        context.evaluationOrder
+            .operandsToPin(siblings)
+            .slice(0, index)
+            .some(Boolean)
+    ) {
+        context.fail(
+            option,
+            "An unread option with effects cannot keep its source order: an option written before it shares state with a later one.",
+        );
+    }
+    context.emitDiscardedValue(context.compileValue(option));
+}
+
 /** What the static folds read, as a lowering context carries it. */
 export interface PositiveIntegerContext extends Pick<
     LoweringServices,
@@ -200,6 +247,10 @@ export interface StaticFoldContext extends Omit<
     "bindings"
 > {
     readonly bindings: BindingLookup;
+    /** A static record field's number; a fold that leaves it out reads none. */
+    readonly staticProperty?: (
+        expression: ts.PropertyAccessExpression,
+    ) => number | undefined;
 }
 
 export function compilePositiveInteger(
@@ -396,6 +447,11 @@ export function staticJsonValue(
         }
         return values;
     }
+    return jsonScalarLiteral(node);
+}
+
+/** The JSON scalar a literal node spells, or `notJson`. */
+export function jsonScalarLiteral(node: ts.Expression): unknown {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
         return node.text;
     }
@@ -540,6 +596,9 @@ export function staticNumberValue(
             }
         }
         return undefined;
+    }
+    if (ts.isPropertyAccessExpression(node) && context.staticProperty) {
+        return context.staticProperty(node);
     }
     if (ts.isIdentifier(node)) {
         const global = context.libraryGlobal(node);

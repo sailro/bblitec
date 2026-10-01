@@ -64,6 +64,9 @@ Local JavaScript implementations take precedence over companion declarations. Ty
 run initializers. `declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
 A module executed at generation may import its relative siblings without an extension.
 
+Generation-known positions (option records, shader lists) read through `const` literals, settled
+conditionals and spreads, and parameterless module functions whose body returns a literal.
+
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,
 `SSR=false`. `BASE_URL` follows deployment. Custom string fields use `--env NAME=value` or
 `CompileOptions.environment`; absent keys are undefined. Built-ins cannot be overridden; dotenv and host
@@ -230,7 +233,7 @@ aliases retain identity; multiple engines in one entry and rebinding refuse.
 Runtime `msaaSamples` selects one sample for numeric 1, four otherwise, evaluated once. Engine reads,
 default scene targets and effect/frame-graph targets share this selection. Explicit numeric constants
 other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliary surfaces; native loops
-own extent refresh.
+own extent refresh. `resizeEngine` and `enableShaderMaterialUniformCaching` are native no-ops.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As
@@ -296,7 +299,7 @@ distribution are not implemented; Simulator captures do not qualify device behav
 
 | Format | Supported | Limits |
 | --- | --- | --- |
-| glTF | Meshes/materials, lights, perspective cameras, skins/morphs, animation, reached extensions, compressed/external assets | Contiguous FLOAT MAT4 inverse binds; complete contiguous animation accessors; fixed light capacity |
+| glTF | Meshes/materials, lights, perspective cameras, skins/morphs, animation, reached extensions, compressed/external assets; raw bytes read from a packaged fetch response | Contiguous FLOAT MAT4 inverse binds; complete contiguous animation accessors; fixed light capacity; raw bytes must be self-contained (GLB or `data:` URIs) |
 | glTF ORM composition | Source-selected occlusion/metallic-roughness merge | Equally sized opaque images; no scaled/alpha/compressed bitmap composition |
 | `.babylon` | Parented meshes/nodes, Standard materials, point lights, cameras, loadCamera/loadTextures | maxMeshes unsupported |
 | Closed collectors | Source traversal/order and per-asset metadata | Rest/default/optional parameters, partial/repeated hierarchies, early break, instanced/splat producers |
@@ -354,7 +357,8 @@ addition and its per-frame refresh are lowered from the pinned bodies; the refre
 ## Materials and material state
 
 Standard, PBR, Grid, shader and selected no-color views support reached properties. PBR layers include
-clearcoat, sheen, iridescence, anisotropy and transmission. UV/lightmap/vertex-color opt-ins remain explicit;
+clearcoat, sheen, iridescence, anisotropy and transmission. Created PBR materials take loaded base color,
+ORM and normal textures. UV/lightmap/vertex-color opt-ins remain explicit;
 lightmap binding precedes registration. Runtime texture-producer choices refuse.
 
 Public factors retain array identity/double precision. Reads require one registered scene and represented
@@ -363,10 +367,11 @@ versions. Public glTF albedo reads exclude material extensions, transforms and B
 environment rotation and wider metallic-reflectance fields remain limited.
 
 Shader materials admit bounded 2D/array samplers, float/depth/comparison sampling, storage buffers and
-selected uniform/system matrices. Wider descriptors, pipeline state and live composition profiles refuse.
-A source or plugin `getCustomCode` a scene builds with a function is run at generation over
-generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a runtime
-value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.
+selected uniform/system matrices; uniform writes take arrays, tuples and typed arrays. Wider descriptors,
+pipeline state and live composition profiles refuse.
+A source, template text or plugin `getCustomCode` a scene builds with a function is run at generation
+over generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a
+runtime value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.
 
 ### Node materials
 
@@ -479,8 +484,9 @@ Closed-context graph operations, master ramps and nullable buffers remain limite
 ## Shadows
 
 PCF spot/directional, ESM directional and CSM support reached receivers/casters, layers, blur and morph
-bounds. receiveShadows needs a known supported value. Broader options and thin-instance contracts refuse.
-PCF normalBias/spot refresh and CSM stabilization/bias remain limited.
+bounds. receiveShadows needs a known supported value. PCF `mapSize` may be a run-time integer; `normalBias`
+is evaluated and unused, as in the pin. Broader options and thin-instance contracts refuse.
+PCF spot refresh and CSM stabilization/bias remain limited.
 Generator enable changes retain resources and update receiver darkness; CSM callbacks retain source order.
 
 ## Navigation

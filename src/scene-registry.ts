@@ -967,6 +967,29 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Run-time option values and the native paths they reach: created
+        // PBR normal maps on tangent and cotangent meshes, a PCF directional
+        // map sized at run time with the unread normalBias, a typed-array
+        // shader uniform and a glTF loaded from fetched bytes.
+        id: "regression-runtime-options",
+        name: "Regression - Runtime Options",
+        source: "examples/regression-runtime-options.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Runtime Options",
+        buildDirectory: "native/build-regression-runtime-options-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-runtime-options/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-runtime-options",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-no-camera-floating-origin",
         name: "Regression - No Camera Floating Origin",
         source: "examples/regression-no-camera-floating-origin.ts",

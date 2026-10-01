@@ -29,11 +29,13 @@ import type {
 } from "../types.js";
 import {
     compileOptionalStaticBoolean,
+    discardOption,
     staticNumberPair,
     staticNumberValue,
     selectedStaticNumberValue,
     staticTupleElements,
     validateObjectProperties,
+    type DiscardOptionContext,
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
@@ -68,6 +70,7 @@ export interface MaterialOptionContext
     extends
         ObjectValidationContext,
         PositiveIntegerContext,
+        DiscardOptionContext,
         Pick<
             LoweringServices,
             | "sceneManifest"
@@ -109,6 +112,8 @@ export interface CompiledPbrMaterialOptions {
     hasBaseColorTexture: boolean;
     sourceBaseColorFactor: string;
     orm: Value;
+    /** The authored `normalTexture` and its scale; absent composes no normal-map arm. */
+    normal?: { texture: Value; scale: string };
     metallicFactor: string;
     roughnessFactor: string;
     directIntensity: string;
@@ -444,6 +449,8 @@ export function compilePbrMaterialOptions(
             "baseColorTexture",
             "baseColorFactor",
             "ormTexture",
+            "normalTexture",
+            "normalTextureScale",
             "metallicFactor",
             "roughnessFactor",
             "directIntensity",
@@ -458,7 +465,7 @@ export function compilePbrMaterialOptions(
             "usePhysicalLightFalloff",
             "plugins",
         ],
-        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, and skybox mode.",
+        "Reached PBR lowering supports base/ORM/normal textures, the normal texture scale, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, and skybox mode.",
     );
     const baseColorExpression = context.objectProperty(
         object,
@@ -491,6 +498,31 @@ export function compilePbrMaterialOptions(
     }
     if (ormExpression) {
         context.expectKind(orm, "texture", ormExpression);
+    }
+    const normalExpression = context.objectProperty(object, "normalTexture");
+    const normalTexture = normalExpression
+        ? context.compileValue(normalExpression)
+        : undefined;
+    if (normalTexture && normalExpression) {
+        context.expectKind(normalTexture, "texture", normalExpression);
+    }
+    // A UBO lane (`normalTextureScale ?? 1.0` in `_writeMaterialData`) only
+    // the normal-map arm reads, so a run-time value is admitted and, without
+    // a normal texture, is evaluated and dropped.
+    const normalScaleExpression = context.objectProperty(
+        object,
+        "normalTextureScale",
+    );
+    const normal = normalTexture && {
+        texture: normalTexture,
+        scale: pbrUniformNumber(
+            context,
+            normalScaleExpression,
+            pinnedDefaultNumber("pbrNormalTextureScale"),
+        ).cpp,
+    };
+    if (!normal && normalScaleExpression) {
+        discardOption(context, object, normalScaleExpression);
     }
     const baseColorFactor = baseColorFactorExpression
         ? compilePbrBaseColorFactor(context, baseColorFactorExpression)
@@ -648,6 +680,7 @@ export function compilePbrMaterialOptions(
             gltfAssetsBefore: context.sceneManifest.currentGltfAssetCount(),
             hasBaseColorTexture: true,
             hasOrmTexture: true,
+            ...(normal ? { hasNormalTexture: true as const } : {}),
             ...(baseColorFactor?.value
                 ? { baseColorFactor: baseColorFactor.value }
                 : baseColorFactor
@@ -685,6 +718,7 @@ export function compilePbrMaterialOptions(
         baseColorFactor:
             baseColorFactor?.cpp ?? "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
         orm,
+        ...(normal ? { normal } : {}),
         metallicFactor: metallicOption.cpp,
         roughnessFactor: roughnessOption.cpp,
         directIntensity: directOption.cpp,

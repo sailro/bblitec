@@ -5,7 +5,10 @@ import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
+    discardOption,
+    staticNumberValue,
     validateObjectProperties,
+    type DiscardOptionContext,
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
@@ -15,6 +18,7 @@ export interface ShadowIntrinsicContext
         IntrinsicCallContext,
         ObjectValidationContext,
         PositiveIntegerContext,
+        DiscardOptionContext,
         Pick<
             LoweringServices,
             | "admissions"
@@ -35,14 +39,19 @@ export interface ShadowIntrinsicContext
 /**
  * The options `createPcfSpotlightShadowGenerator` takes.
  *
- * `mapSize`, `bias` and `darkness` size the generator's own resources, so
- * they are resolved at generation; `near` and `far` are the projection
- * volume and stay run-time expressions, because scene 18 reads them off the
- * camera it just configured. `normalBias` and `forceRefreshEveryFrame` are
- * unreached and refuse by name rather than compiling to a value the pin
- * would have used differently.
+ * `mapSize` sizes the shadow target the native factory creates, so a
+ * run-time value is checked there; the rest stay run-time expressions,
+ * because scene 18 reads `near` and `far` off the camera it just configured.
+ * `forceRefreshEveryFrame` is unreached and refuses by name rather than
+ * compiling to a value the pin would have used differently.
  */
 const spotOptions = ["mapSize", "bias", "darkness", "near", "far"] as const;
+
+/**
+ * Options both PCF factories' config types declare and their bodies never
+ * read (the shadow lowerer asserts it): the value is evaluated and dropped.
+ */
+const pcfUnreadOptions = ["normalBias"] as const;
 
 /**
  * The options `createPcfDirectionalShadowGenerator` takes.
@@ -52,8 +61,7 @@ const spotOptions = ["mapSize", "bias", "darkness", "near", "far"] as const;
  * volume is fitted to the casters and these two are the depth range that fit
  * projects into. `forceRefreshEveryFrame` rides into the record, where it
  * disables the pinned render gate, exactly as the CSM and ESM factories
- * already carry it -- scene 140 reaches it. `normalBias` is still unreached
- * and refuses by name.
+ * already carry it -- scene 140 reaches it.
  *
  * The PCF SPOT factory still refuses `forceRefreshEveryFrame`, and that
  * asymmetry is deliberate rather than an oversight: no corpus scene reaches
@@ -150,6 +158,8 @@ interface ShadowGeneratorFactory {
     /** How a refusal names this family, e.g. "A PCF spotlight". */
     article: string;
     options: readonly string[];
+    /** Declared options the pinned factory never reads; evaluated, then dropped. */
+    unread?: readonly string[];
     /** The struct's field order, which the ESM extends with its ordinal. */
     emitted: readonly string[];
     defaults: Readonly<Record<string, string>>;
@@ -160,6 +170,12 @@ interface ShadowGeneratorFactory {
      * camera it just configured.
      */
     generationResolved: readonly string[];
+    /**
+     * Extents of a target the native factory creates at run time from the
+     * record: a run-time value is admitted, checked as the positive integer
+     * the GPU texture size and the pinned `1 / mapSize` lane agree on.
+     */
+    runtimeExtents?: readonly string[];
     factory: string;
     optionsStruct: string;
     features: readonly Feature[];
@@ -173,6 +189,7 @@ const shadowGeneratorFactories: Readonly<
         lightKind: "spot",
         article: "A PCF spotlight shadow generator",
         options: spotOptions,
+        unread: pcfUnreadOptions,
         emitted: spotOptions,
         // `far` resolves against the light's own range, which a scene-code
         // spot leaves at MAX_VALUE.
@@ -183,7 +200,8 @@ const shadowGeneratorFactories: Readonly<
             near: "bbl::upstream::pcf_spot_default_near",
             far: "bbl::upstream::pcf_spot_unbounded_far",
         },
-        generationResolved: ["mapSize"],
+        generationResolved: [],
+        runtimeExtents: ["mapSize"],
         factory: "bbl::create_pcf_spotlight_shadow_generator",
         optionsStruct: "bbl::PcfSpotShadowOptions",
         features: ["shadow:pcf"],
@@ -193,6 +211,7 @@ const shadowGeneratorFactories: Readonly<
         lightKind: "directional",
         article: "A PCF directional shadow generator",
         options: pcfDirectionalOptions,
+        unread: pcfUnreadOptions,
         emitted: pcfDirectionalOptions,
         defaults: {
             mapSize: "bbl::upstream::pcf_directional_default_map_size",
@@ -204,7 +223,8 @@ const shadowGeneratorFactories: Readonly<
             // the shadow lowerer asserts against the factory.
             forceRefreshEveryFrame: "false",
         },
-        generationResolved: ["mapSize"],
+        generationResolved: [],
+        runtimeExtents: ["mapSize"],
         factory: "bbl::create_pcf_directional_shadow_generator",
         optionsStruct: "bbl::PcfDirectionalShadowOptions",
         // Both: the resources, the receiver arm and the caster pass are the
@@ -307,9 +327,13 @@ function compileShadowGeneratorFactory(
         validateObjectProperties(
             context,
             options,
-            spec.options,
+            [...spec.options, ...(spec.unread ?? [])],
             `${spec.article} options`,
         );
+        for (const name of spec.unread ?? []) {
+            const expression = context.objectProperty(options, name);
+            if (expression) discardOption(context, options, expression);
+        }
         for (const name of spec.options) {
             const expression = context.objectProperty(options, name);
             if (!expression) continue;
@@ -333,6 +357,14 @@ function compileShadowGeneratorFactory(
                 // gate, so the map re-renders every frame the way
                 // `renderEsmShadowMap` / `renderCsmShadowMap` would.
                 resolved[name] = fixed ? "true" : "false";
+                continue;
+            }
+            if (spec.runtimeExtents?.includes(name)) {
+                // A run-time extent takes WebGPU's own size conversion.
+                resolved[name] =
+                    staticNumberValue(context, expression) === undefined
+                        ? `bbl::gpu_u32(bbl::gpu_size(${context.compileNumber(expression, "double")}))`
+                        : compilePositiveInteger(context, expression);
                 continue;
             }
             if (spec.generationResolved.includes(name)) {

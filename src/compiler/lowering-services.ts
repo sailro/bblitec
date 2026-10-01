@@ -50,6 +50,7 @@ import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
+import type { ExecutedScalar } from "./executed-application-function.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -178,6 +179,11 @@ export interface LoweringServices {
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
+    /**
+     * A static list's elements, a spread of a list generation settles
+     * (`...decls()`, `...(flag ? [a] : [])`) contributing its own.
+     */
+    expectStaticArrayElements(expression: ts.Expression): ts.Expression[];
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
@@ -230,6 +236,24 @@ export interface LoweringServices {
     allocateUserFunctionPrefix(): string;
     allocateBlockPrefix(): string;
     compileStaticString(expression: ts.Expression): string;
+    /**
+     * An object literal's properties in source order, each spread generation
+     * settles (`...(flag ? { a } : {})` behind a folded condition) replaced
+     * by its record's own; a spread it cannot settle stays for its reader to
+     * refuse.
+     */
+    objectProperties(
+        object: ts.ObjectLiteralExpression,
+    ): readonly ts.ObjectLiteralElementLike[];
+    /**
+     * An application function run once at generation per declaration and
+     * arguments; its plain-data result.
+     */
+    runGenerationFunction(
+        declaration: ts.FunctionLikeDeclaration,
+        args: readonly (ExecutedScalar | undefined)[],
+        label: string,
+    ): unknown;
     compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{

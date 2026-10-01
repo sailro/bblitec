@@ -70,6 +70,9 @@ double monotonic_milliseconds();
 // Browser-facing `performance.now()`. In ordinary runs this is the same
 // monotonic clock; fixed-delta captures advance it deterministically.
 double performance_milliseconds();
+// `performance.timeOrigin`: the epoch time of `performance_milliseconds()`'s
+// zero, so the two add up to `Date.now()`; one per process.
+double performance_time_origin();
 void advance_performance_milliseconds(double delta_ms);
 /**
  * Resident bytes on Windows and Apple platforms; refuses on other platforms.
