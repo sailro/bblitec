@@ -21,6 +21,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
+import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements } from "./loop-control.js";
@@ -118,7 +119,7 @@ interface DeclarationContext
     /** Declarations a storage demand retyped, by declaration. */
     readonly dynamicBindings: ReadonlyMap<
         ts.VariableDeclaration,
-        DataType | undefined
+        DynamicBindingStorage | undefined
     >;
     /** Host-page element lookups awaiting the retained UI projection. */
     readonly pendingHostUiLookups: Value[];
@@ -2205,8 +2206,39 @@ export class DeclarationLowerer {
             return false;
         }
         if (this.context.dynamicBindings.has(declaration)) {
-            const type = this.context.dynamicBindings.get(declaration);
-            if (type) {
+            const storage = this.context.dynamicBindings.get(declaration);
+            if (storage) {
+                const source = this.context.checker.getTypeAtLocation(name);
+                const mapped =
+                    storage === "error-array"
+                        ? undefined
+                        : this.context.dataTypes.fromStoredTsType(
+                              source,
+                              declaration,
+                          );
+                let type: DataType | undefined = mapped;
+                if (storage === "error-array") {
+                    type = { kind: "vector", element: { kind: "error" } };
+                } else if (storage === "array") {
+                    const indexed = this.context.checker.getIndexTypeOfType(
+                        source,
+                        ts.IndexKind.Number,
+                    );
+                    const element =
+                        mapped?.kind === "vector" || mapped?.kind === "span"
+                            ? mapped.element
+                            : indexed &&
+                              this.context.dataTypes.fromStoredTsType(
+                                  indexed,
+                                  declaration,
+                              );
+                    type = element ? { kind: "vector", element } : undefined;
+                }
+                if (!type)
+                    this.context.fail(
+                        declaration,
+                        "Demanded binding no longer has a native storage representation.",
+                    );
                 this.context.reachJsData();
                 const initializer = this.context.dataLowerer.compileForSink(
                     declaration.initializer,

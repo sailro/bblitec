@@ -1744,10 +1744,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.bindings.lookupOptional(unwrapped)?.kind ===
                     "tuple"
             )
-                throw new DynamicBindingStorageRequired(declaration, {
-                    kind: "vector",
-                    element,
-                });
+                throw new DynamicBindingStorageRequired(declaration, "array");
             const values = (known.tupleElements ?? []).map((entry) =>
                 this.compileKnownValueForSink(entry, element, expression),
             );
@@ -4732,10 +4729,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer
             )
-                throw new DynamicBindingStorageRequired(declaration, {
-                    kind: "vector",
-                    element,
-                });
+                throw new DynamicBindingStorageRequired(declaration, "array");
             return this.materializeKnownTuple(unwrapped, bound);
         }
         const elements = this.context.probeEmission(
@@ -9039,7 +9033,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     )
                         throw new DynamicBindingStorageRequired(
                             declaration,
-                            storage,
+                            "source",
                         );
                     this.context.fail(
                         left.argumentExpression,

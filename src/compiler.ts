@@ -63,7 +63,10 @@ import {
     type SurveyReport,
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
-import { DynamicBindingStorageRequired } from "./compiler/dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    type DynamicBindingStorage,
+} from "./compiler/dynamic-binding-storage.js";
 import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
@@ -576,7 +579,7 @@ function compileSourceApplication(
         // frontend and rebuild emission so earlier aliases use the same storage.
         const dynamicBindings = new Map<
             ts.VariableDeclaration,
-            DataType | undefined
+            DynamicBindingStorage | undefined
         >();
         const ownedRecords = new Map<
             NativeRecordStorageDemand["identity"],
@@ -608,10 +611,10 @@ function compileSourceApplication(
                 if (
                     error instanceof DynamicBindingStorageRequired &&
                     (!dynamicBindings.has(error.declaration) ||
-                        (error.dataType &&
+                        (error.storage &&
                             !dynamicBindings.get(error.declaration)))
                 ) {
-                    dynamicBindings.set(error.declaration, error.dataType);
+                    dynamicBindings.set(error.declaration, error.storage);
                 } else if (
                     error instanceof NativeRecordStorageRequired &&
                     !ownedRecords.has(error.demand.identity)
@@ -886,7 +889,7 @@ class Compiler implements LoweringServices {
         public readonly options: ResolvedCompileOptions,
         public readonly dynamicBindings: ReadonlyMap<
             ts.VariableDeclaration,
-            DataType | undefined
+            DynamicBindingStorage | undefined
         >,
         private readonly ownedRecords: ReadonlyMap<
             NativeRecordStorageDemand["identity"],

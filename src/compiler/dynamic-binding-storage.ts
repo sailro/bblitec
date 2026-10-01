@@ -1,12 +1,14 @@
 import ts from "typescript";
-import type { DataType } from "./data-types.js";
 import { resolvedSymbol } from "./symbols.js";
+
+/** Storage choices survive replay; generated type names belong to one registry. */
+export type DynamicBindingStorage = "source" | "array" | "error-array";
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
 export class DynamicBindingStorageRequired extends Error {
     constructor(
         readonly declaration: ts.VariableDeclaration,
-        readonly dataType?: DataType,
+        readonly storage?: DynamicBindingStorage,
     ) {
         super("A lexical record binding requires dynamic object storage.");
     }
