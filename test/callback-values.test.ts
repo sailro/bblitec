@@ -342,13 +342,30 @@ test("a timer schedules the stored function value it is given", (t) =>
         fired += 1;
     };
     schedule(next, 5);
+    let optional = (count?: number): void => {
+        fired += count ?? 10;
+    };
+    setTimeout(optional, 5);
+    let ticks = 0;
+    let tick = (): void => {
+        ticks += 1;
+    };
+    const interval = setInterval(tick, 5);
     next = () => {
         fired += 100;
     };
+    optional = () => {
+        fired += 1000;
+    };
+    tick = () => {
+        ticks += 100;
+    };
     await new Promise<void>((resolve) => {
-        setTimeout(() => resolve(), 40);
+        setTimeout(() => resolve(), 60);
     });
-    if (fired !== 1) throw new Error("scheduled stored function");
+    clearInterval(interval);
+    if (fired !== 11) throw new Error("scheduled stored function");
+    if (ticks < 1 || ticks >= 100) throw new Error("interval stored function");
     `,
         t,
         true,

@@ -13,6 +13,7 @@ import type {
     ClosureCaptures,
     NativeCaptureBinding,
 } from "./closure-captures.js";
+import type { DataType } from "./data-types.js";
 import type { ForwardDeclaration } from "./declarations.js";
 import type { PlatformCalls } from "./platform-calls.js";
 import type {
@@ -73,6 +74,16 @@ interface CallbackContext extends Pick<
     /** The document-hidden flag platform callbacks read, while one is lowered. */
     platformDocumentHiddenCpp: string | undefined;
     useNativeBinding(binding: NativeCaptureBinding): void;
+}
+
+/** A stored function every parameter of which may be omitted (optional or rest). */
+function callableWithoutArguments(
+    type: Extract<DataType, { kind: "function" }>,
+): boolean {
+    return type.parameters.every(
+        (parameter, index) =>
+            parameter.kind === "optional" || index === type.restParameter,
+    );
 }
 
 /**
@@ -167,8 +178,27 @@ export class CallbackLowerer {
             );
         }
         if (ts.isIdentifier(unwrapped)) {
+            const bound =
+                signature === "void" || signature === "interval"
+                    ? this.context.bindings.lookupOptional(unwrapped)
+                    : undefined;
+            // A timer calls the stored function value it was given, with no
+            // arguments.
+            if (
+                bound?.kind === "data" &&
+                bound.dataType?.kind === "function" &&
+                callableWithoutArguments(bound.dataType)
+            ) {
+                return this.compilePlatformCallback(
+                    unwrapped,
+                    undefined,
+                    [],
+                    undefined,
+                    true,
+                    false,
+                ).cpp;
+            }
             if (signature === "void") {
-                const bound = this.context.bindings.lookupOptional(unwrapped);
                 if (
                     bound?.kind === "callback" &&
                     bound.cpp.length > 0 &&
@@ -198,14 +228,9 @@ export class CallbackLowerer {
                         [],
                     );
                 }
-                // A stored zero-argument function is called through the
-                // value it holds when the timer is scheduled.
                 if (
-                    (this.context.options.workers &&
-                        (bound?.kind === "callback" || !bound)) ||
-                    (bound?.kind === "data" &&
-                        bound.dataType?.kind === "function" &&
-                        bound.dataType.parameters.length === 0)
+                    this.context.options.workers &&
+                    (bound?.kind === "callback" || !bound)
                 ) {
                     return this.compilePlatformCallback(
                         unwrapped,
