@@ -61,6 +61,12 @@ export function readMediaQueryProperty(
     };
 }
 
+/** Observer interfaces only an application realm's Window provides. */
+const WINDOW_OBSERVERS: readonly string[] = [
+    "MutationObserver",
+    "ResizeObserver",
+];
+
 export function compileCanvasValue(
     context: CanvasContext,
     expression: ts.Expression,
@@ -68,8 +74,8 @@ export function compileCanvasValue(
     const node = context.unwrap(expression);
     if (!context.options.workers) {
         if (
-            (ts.isNewExpression(node) &&
-                ["MutationObserver", "ResizeObserver"].includes(
+            ((ts.isNewExpression(node) || ts.isTypeOfExpression(node)) &&
+                WINDOW_OBSERVERS.includes(
                     context.libraryGlobal(node.expression) ?? "",
                 )) ||
             (ts.isCallExpression(node) &&
@@ -134,6 +140,20 @@ export function compileCanvasValue(
                 staticString: "function",
             };
         }
+    }
+    if (
+        ts.isTypeOfExpression(node) &&
+        WINDOW_OBSERVERS.includes(context.libraryGlobal(node.expression) ?? "")
+    ) {
+        // Observers are Window interfaces; dedicated workers have none.
+        const type = context.options.workers.namespace
+            ? "undefined"
+            : "function";
+        return {
+            kind: "string",
+            cpp: `std::string(${JSON.stringify(type)})`,
+            staticString: type,
+        };
     }
     if (
         ts.isTypeOfExpression(node) &&

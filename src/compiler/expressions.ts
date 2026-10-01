@@ -4144,7 +4144,9 @@ export class ExpressionLowerer {
                 foldedCondition === "true"
                     ? unwrapped.whenFalse
                     : unwrapped.whenTrue;
-            const selected = this.compileValue(taken);
+            // The selected arm is the whole expression's value, so it takes
+            // the full value pipeline (platform and worker values included).
+            const selected = this.context.compileValue(taken);
             // When the arm generation just discarded was the NULL one,
             // the binding it feeds can no longer be absent -- and the
             // scene's own guard over it is therefore settled. Say so on

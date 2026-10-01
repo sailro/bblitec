@@ -24,7 +24,8 @@ Check them before adding an implementation. Source rejection does not imply miss
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution, reduced-motion and pointer/hover matchMedia queries retain identity/current matches and
   zero-argument change listeners with identity-based removal. Pointer/hover admits conjunctions and
-  follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable.
+  follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable; `typeof` Window
+  observers is `function` in the Window realm.
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - MutationObserver supports microtask attribute notifications, static attribute filters and disconnect.
   Mutation records, old values, child-list changes and subtree observation refuse.

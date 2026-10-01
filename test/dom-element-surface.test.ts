@@ -139,3 +139,23 @@ test("element event handler properties refuse what they cannot represent", () =>
         /optional getAttribute call/,
     );
 });
+
+test("Window observer presence guards select the constructed observer", () => {
+    const directory = resolve("artifacts/dom-element-surface");
+    mkdirSync(directory, { recursive: true });
+    const cpp = compileEntry(
+        directory,
+        `
+        const panel = document.createElement("div");
+        document.body.appendChild(panel);
+        const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { panel.textContent = "resized"; });
+        resize?.observe(panel);
+        const mutation = typeof MutationObserver === "function" ? new MutationObserver(() => {}) : null;
+        mutation?.observe(panel, { attributes: true });
+        globalThis.close();
+    `,
+    );
+    assert.match(cpp, /bbl::pal::create_resize_observer\(/);
+    assert.match(cpp, /->observe\(/);
+    assert.match(cpp, /bbl::pal::create_mutation_observer\(/);
+});
