@@ -1,0 +1,70 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
+
+test("inlined DOM array callbacks snapshot selected string values", () => {
+    const result = compileSource(`
+        function buttons(names: readonly string[]): HTMLElement[] {
+            return names.map((name, index) => {
+                const button = document.createElement("button");
+                button.textContent = name;
+                button.addEventListener("click", () => { button.title = String(index); });
+                return button;
+            });
+        }
+        const names: string[] = ["first", "second"];
+        names.push("third");
+        const elements = buttons(names);
+    `);
+    assert.match(
+        result.cpp,
+        /std::string v_fn\d+_name = bbl::js::snapshot_value\(v_bblite_map_source_\d+\[v_bblite_map_index_\d+\]\);/,
+    );
+});
+
+test("array callback values survive slot replacement, growth and escaping captures", (t) => {
+    const result = compileSource(`
+        const original = "first string longer than native inline storage";
+        const names: string[] = [original, "second"];
+        const captured: (() => string)[] = [];
+        const selected = names.map((name, index, source) => {
+            captured.push(() => name);
+            if (index === 0) {
+                source[0] = "replaced";
+                for (let count = 0; count < 64; count++) source.push("growth " + count);
+            }
+            return name;
+        });
+        if (selected.length !== 2 || selected[0] !== original || selected[1] !== "second" ||
+            captured[0]!() !== original || captured[1]!() !== "second" || names[0] !== "replaced")
+            throw new Error("callback value snapshot");
+        const rewritten = selected.map(name => { name += "!"; return name; });
+        if (rewritten[0] !== original + "!" || selected[0] !== original)
+            throw new Error("rebound callback parameter");
+        const objects: {value: number}[] = [{value: 3}];
+        const first = objects[0]!;
+        const kept = objects.map((object, index, source) => {
+            source[index] = {value: 100};
+            source.push({value: 200});
+            object.value++;
+            return object;
+        });
+        if (kept.length !== 1 || kept[0] !== first || first.value !== 4 || objects[0]!.value !== 100)
+            throw new Error("callback object identity");
+        const filterSource: string[] = ["", original, "last"];
+        filterSource.push("");
+        if (filterSource.filter(Boolean).join(",") !== original + ",last")
+            throw new Error("Boolean string predicate");
+    `);
+    assert.doesNotMatch(
+        result.cpp,
+        /snapshot_value\(v_bblite_filter_source_\d+\[/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "array-callback-ownership", result.cpp);
+});
