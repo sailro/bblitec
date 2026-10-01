@@ -5783,13 +5783,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
                 const booleanConstructor =
                     this.context.libraryGlobal(callback) === "Boolean";
+                const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
+                const callbackValue = this.leafValue(
+                    snapshotCpp,
+                    dataType.element,
+                );
                 const callbackArguments: Value[] = [
                     {
-                        ...this.leafValue(
-                            `bbl::js::snapshot_value(${elementValue.cpp})`,
-                            dataType.element,
-                        ),
-                        nativeOwnedRvalue: true,
+                        ...callbackValue,
+                        ...(callbackValue.cpp === snapshotCpp
+                            ? { nativeOwnedRvalue: true as const }
+                            : {}),
                         nativeCaptures: elementValue.nativeCaptures,
                     },
                     {

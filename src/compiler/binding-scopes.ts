@@ -1080,7 +1080,9 @@ export class BindingScopes {
         const nativeType = borrowedEvent
             ? "const auto&"
             : reference
-              ? "auto&"
+              ? value.nativeOwnedRvalue
+                  ? "auto&&"
+                  : "auto&"
               : borrowsImmutableBinding
                 ? "auto&"
                 : value.kind === "number"
