@@ -11898,22 +11898,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         iterable.dataType?.kind === "span"
                             ? iterable.dataType.element
                             : undefined;
+                    // Lanes of another scalar spelling, or records seen
+                    // through the target's record type (projected as a
+                    // readonly view's elements are), convert one by one.
                     if (
                         iterable.kind === "data" &&
                         sourceElement &&
                         !dataTypesEqual(sourceElement, dataType.element) &&
-                        ["string", "enum"].includes(sourceElement.kind) &&
-                        ["string", "enum"].includes(dataType.element.kind)
+                        ((["string", "enum"].includes(sourceElement.kind) &&
+                            ["string", "enum"].includes(
+                                dataType.element.kind,
+                            )) ||
+                            (sourceElement.kind === "struct" &&
+                                dataType.element.kind === "struct"))
                     ) {
                         const item =
                             this.context.allocateTemporaryCppName(
                                 "spread_item",
                             );
-                        const converted = this.compileKnownValueForSink(
-                            this.leafValue(item, sourceElement),
-                            dataType.element,
-                            spread,
+                        let converted = "";
+                        const prepared = this.context.captureEmittedLines(
+                            () => {
+                                converted = this.compileKnownValueForSink(
+                                    this.leafValue(item, sourceElement),
+                                    dataType.element,
+                                    spread,
+                                );
+                            },
                         );
+                        if (prepared.length > 0)
+                            this.context.fail(
+                                spread,
+                                "Array spread converts each element in place; this element conversion needs statements.",
+                            );
                         return {
                             ...this.leafValue(
                                 `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +

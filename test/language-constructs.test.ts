@@ -4301,3 +4301,20 @@ check(
         throw new Error("predicates");
 `,
 );
+
+check(
+    "array-spread-of-wider-records",
+    `
+    type Spec = { id: string; rgb: [number, number, number] };
+    type Swatch = Spec & { swatch: string };
+    function palette(): { id: string; labelKey: string; rgb: [number, number, number]; swatch: string }[] {
+        return [{ id: "a", labelKey: "tint.a", rgb: [1, 2, 3], swatch: "#a" }];
+    }
+    const base = palette();
+    const extra: Spec = { id: "b", rgb: [4, 5, 6] };
+    const all: Swatch[] = [...base, { ...extra, swatch: "#b" }];
+    if (all.length !== 2 || all[0]!.swatch !== "#a" || all[0]!.rgb[2] !== 3 || all[1]!.id !== "b") throw new Error("spread records");
+    base[0]!.rgb[0] = 9;
+    if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
+`,
+);
