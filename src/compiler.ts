@@ -2109,7 +2109,7 @@ class Compiler implements LoweringServices {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
-        this.asyncActivations.refusePendingActivationUse(expression);
+        this.asyncActivations.requirePendingActivationRealm(expression);
         this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
         const dependencies = new EmissionSet<NativeCaptureBinding>();

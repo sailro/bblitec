@@ -97,6 +97,34 @@ test("a value promise's catch outside a realm compiles in the application realm"
     runNative(result, directory, t);
 });
 
+test("stored pending promises compile in the application realm", (t) => {
+    const directory = resolve("artifacts/async-stored-pending-realm");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        type Mode='creative'|'god';
+        function later(value:number):Promise<number>{return new Promise<number>((resolve)=>{setTimeout(()=>resolve(value*2),1);});}
+        async function twice(value:number):Promise<number>{const doubled=await later(value);return doubled+1;}
+        function ready(auto:boolean):Promise<Mode|'continue'>{if(auto)return Promise.resolve('creative');return Promise.resolve('continue');}
+        void(async()=>{
+            const [a,b]=await Promise.all([twice(1),twice(2)]);
+            if(a!==3||b!==5)throw new Error('stored pending');
+            const modes:Promise<Mode|'continue'>[]=[ready(true),ready(false),Promise.resolve('god')];
+            const settled=await Promise.all(modes);
+            if(settled.join()!=='creative,continue,god')throw new Error('literal union');
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+    assert.match(
+        result.cpp,
+        /Promise<bblscene::Enum\d+>::resolved\(bblscene::Enum\d+::creative\)/,
+    );
+    runNative(result, directory, t);
+});
+
 test("Promise.allSettled retains ordered values and original rejection identities", (t) => {
     const directory = resolve("artifacts/async-all-settled");
     mkdirSync(directory, { recursive: true });

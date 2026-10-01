@@ -462,7 +462,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
-        context.asyncActivations.refusePendingActivationUse(statement);
+        context.asyncActivations.requirePendingActivationRealm(statement);
         if (
             ts.canHaveModifiers(statement) &&
             ts

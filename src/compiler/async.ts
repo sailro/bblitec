@@ -22,6 +22,7 @@ import {
 import { errorValue } from "./error-values.js";
 import { isPromiseResultUsed } from "./promises.js";
 import { isHandleKind } from "./data-types/handles.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -230,12 +231,7 @@ export class AsyncLowerer {
                     node,
                     "Promise.resolve accepts at most one value.",
                 );
-            return this.asPromise(
-                node.arguments[0]
-                    ? context.compileValue(node.arguments[0])
-                    : { kind: "void", cpp: "" },
-                node,
-            );
+            return this.asPromise(this.resolvedValue(node), node);
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
@@ -659,8 +655,10 @@ export class AsyncLowerer {
      * `new Promise(executor)` outside an application realm. The executor
      * runs as the realm's does; the promise is consumed where it is created,
      * awaited or returned, so the settlement is read at that await (see
-     * `js_synchronous_promise.hpp`). Stored, the pending state would need a
-     * value the synchronous lowering does not have.
+     * `js_synchronous_promise.hpp`). A stored promise, or one a timer or
+     * frame callback settles after its executor returns, needs a pending
+     * state the synchronous lowering does not have: the program compiles in
+     * the application realm, whose promises keep it.
      */
     compileSynchronousConstructor(node: ts.NewExpression): Value {
         let consumer: ts.Node = node.parent;
@@ -672,22 +670,12 @@ export class AsyncLowerer {
         )
             consumer = consumer.parent;
         if (
-            !ts.isAwaitExpression(consumer) &&
-            !ts.isReturnStatement(consumer) &&
-            !ts.isArrowFunction(consumer)
+            (!ts.isAwaitExpression(consumer) &&
+                !ts.isReturnStatement(consumer) &&
+                !ts.isArrowFunction(consumer)) ||
+            this.deferredSettlement(node)
         )
-            return this.context.fail(
-                node,
-                "A constructed promise is awaited or returned where it is created; " +
-                    "the synchronous lowering has no pending promise value to store.",
-            );
-        const deferred = this.deferredSettlement(node);
-        if (deferred)
-            return this.context.fail(
-                deferred,
-                "A constructed promise settled from a timer or frame callback resumes " +
-                    "after its executor returns, which the synchronous lowering cannot.",
-            );
+            throw new ApplicationRealmRequired();
         if (!this.context.options.pendingActivations)
             throw new PendingActivationsRequired();
         this.context.asyncActivations.pendingActivations();
@@ -797,11 +785,8 @@ export class AsyncLowerer {
                 ?.some(
                     (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
                 );
-        if (synchronous && asynchronous)
-            return context.fail(
-                callback,
-                "An async Promise executor suspends inside construction; it needs the application realm.",
-            );
+        // An async executor suspends inside construction.
+        if (synchronous && asynchronous) throw new ApplicationRealmRequired();
         // Outside a realm a Promise<T> is represented by T itself.
         const type = synchronous
             ? this.synchronousPromiseType(node)
@@ -1433,6 +1418,54 @@ export class AsyncLowerer {
                   cpp: value.cpp === "std::nullopt" ? "" : value.cpp,
               }
             : value;
+    }
+    /**
+     * The value `Promise.resolve(value)` adopts, in the representation of
+     * the promise its context expects when that differs from the value's
+     * own: `Promise.resolve("a")` returned as a `Promise<"a" | "b">`
+     * resolves the literal union's enum, not a string.
+     */
+    private resolvedValue(node: ts.CallExpression): Value {
+        const context = this.context;
+        const argument = node.arguments[0];
+        if (!argument) return { kind: "void", cpp: "" };
+        const value = context.compileValue(argument);
+        const own =
+            value.dataType ??
+            (value.kind === "string" ||
+            value.kind === "number" ||
+            value.kind === "boolean"
+                ? { kind: value.kind }
+                : undefined);
+        const contextual = context.checker.getContextualType(node);
+        const awaited =
+            contextual && context.checker.getAwaitedType(contextual);
+        const expected =
+            own &&
+            awaited &&
+            (awaited.flags &
+                (ts.TypeFlags.Any |
+                    ts.TypeFlags.Unknown |
+                    ts.TypeFlags.Void |
+                    ts.TypeFlags.Undefined)) ===
+                0
+                ? context.dataTypes.fromTsType(awaited, node)
+                : undefined;
+        if (
+            !own ||
+            !expected ||
+            context.dataTypes.cppType(expected) ===
+                context.dataTypes.cppType(own)
+        )
+            return value;
+        return context.dataLowerer.leafValue(
+            context.dataLowerer.compileKnownValueForSink(
+                value,
+                expected,
+                argument,
+            ),
+            expected,
+        );
     }
     private asPromise(value: Value, node: ts.Node): Value {
         if (value.kind === "promise") return value;

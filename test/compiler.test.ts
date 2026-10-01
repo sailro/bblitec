@@ -18841,17 +18841,15 @@ test("does not erase a bounded wait through a shadowed RAF", () => {
     );
 });
 
-test("refuses a nested frame yield whose result is retained", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                frameYieldScene(
-                    "    const timestamp = await new Promise<number>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));\n    canvas.dataset.timestamp = String(timestamp);",
-                ),
-                frameYieldFile,
-            ),
-        /settled from a timer or frame callback/,
+test("compiles a retained nested frame yield in the application realm", () => {
+    const result = compileSource(
+        frameYieldScene(
+            "    const timestamp = await new Promise<number>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));\n    canvas.dataset.timestamp = String(timestamp);",
+        ),
+        frameYieldFile,
     );
+    assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+    assert.match(result.cpp, /bbl::js::Promise<double>/);
 });
 
 // ---------------------------------------------------------------------------
