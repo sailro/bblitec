@@ -1096,7 +1096,13 @@ function check(
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { location: { search }, URLSearchParams, TextDecoder, TextEncoder },
+            {
+                location: { search },
+                URLSearchParams,
+                TextDecoder,
+                TextEncoder,
+                WeakRef,
+            },
         );
         const result = compileSource(source, {
             fileName: `${name}.ts`,
@@ -1714,6 +1720,29 @@ check(
         return copy.size;
     }
     if (distinct([1, 2, 2]) !== 2 || distinct([]) !== 0) throw new Error("number copies");
+`,
+);
+
+check(
+    "weak-references",
+    `
+    interface Item { id: number }
+    class Node { constructor(public label: string) {} }
+    const item: Item = { id: 1 };
+    const refs: WeakRef<Item>[] = [new WeakRef(item), new WeakRef({ id: 2 })];
+    const nodeRef = new WeakRef(new Node("a"));
+    const node = nodeRef.deref()!;
+    let total = 0;
+    for (const ref of refs) {
+        const target = ref.deref();
+        if (!target) continue;
+        total += target.id;
+    }
+    refs[0]!.deref()!.id = 5;
+    nodeRef.deref()!.label += "b";
+    if (total !== 3 || item.id !== 5 || node.label !== "ab" || nodeRef.deref() !== node) throw new Error("targets");
+    const twin = new WeakRef(item);
+    if (twin === refs[0] || twin.deref() !== refs[0]!.deref()) throw new Error("reference identity");
 `,
 );
 

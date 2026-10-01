@@ -42,6 +42,7 @@ import {
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { compileTextCodecNew } from "./text-codecs.js";
+import { compileWeakRefNew } from "./weak-refs.js";
 import {
     DynamicBindingStorageRequired,
     requireDynamicBindingStorage,
@@ -5902,6 +5903,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return (
             compileDateNew(this, expression) ??
             compileTextCodecNew(this, expression) ??
+            compileWeakRefNew(this, expression) ??
             this.compileNewArray(expression) ??
             this.compileTypedArrayNew(expression) ??
             this.compileArrayBufferNew(expression) ??

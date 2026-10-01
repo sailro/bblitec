@@ -1313,6 +1313,19 @@ export class DataTypeRegistry {
                     value: this.markStoredObjectReferences(value),
                 };
             }
+            // A WeakRef retains its target as the weak collections retain
+            // their keys: never collecting it is a conforming WeakRef.
+            if (symbolName === "WeakRef") {
+                const [targetType] = this.checker.getTypeArguments(reference);
+                if (!targetType) return undefined;
+                const target = this.fromStoredTsType(targetType, node);
+                return target
+                    ? {
+                          kind: "weak-ref",
+                          target: this.markStoredObjectReferences(target),
+                      }
+                    : undefined;
+            }
             if (symbolName === "Set" || symbolName === "WeakSet") {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;

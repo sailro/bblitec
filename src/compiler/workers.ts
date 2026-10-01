@@ -155,6 +155,8 @@ function uncloneablePosition(
             return refuse("a TextEncoder");
         case "collator":
             return refuse("an Intl.Collator");
+        case "weak-ref":
+            return refuse("a WeakRef");
         case "bufferview":
             return refuse("an ArrayBufferView without its element class");
         case "numberindex":

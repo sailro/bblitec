@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { nullability } from "../type-facts.js";
 
-import { type DataType } from "../data-types.js";
+import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
@@ -252,6 +252,7 @@ export const scalarsSinks: DataSinkOperations<
     | "text-decoder"
     | "text-encoder"
     | "collator"
+    | "weak-ref"
     | "number"
     | "boolean"
     | "string"
@@ -350,6 +351,14 @@ export const scalarsSinks: DataSinkOperations<
             lowerer.requireDataValue(unwrapped, type).cpp,
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "collator" ? value.cpp : undefined,
+    },
+    "weak-ref": {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (type, _lowerer, value) =>
+            value.dataType && dataTypesEqual(value.dataType, type)
+                ? value.cpp
+                : undefined,
     },
     date: {
         expression: (type, lowerer, _expression, unwrapped) =>

@@ -142,7 +142,7 @@ alignment and bounds; set/slice/subarray/fill/copyWithin preserve overlap rules.
 consumers and some iteration paths refuse views. `ArrayBufferView` retains typed arrays and DataView.
 Numeric index-signature writes preserve element conversion and grow ordinary arrays.
 
-Proxy, WeakRef and Symbol values refuse. Array/object aliases retain identity. Spreads copy own scalar
+Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity. Spreads copy own scalar
 fields and share nested objects.
 Object enumeration places numeric index keys before insertion-ordered names. Fixed record key
 snapshots retain initialized keys; module namespace keys are lexical and values remain live.
