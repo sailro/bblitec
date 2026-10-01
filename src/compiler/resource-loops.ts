@@ -61,7 +61,7 @@ interface ResourceLoopContext
             | "knownValueWithoutEvaluation"
         > {}
 
-function resolvedLoopCallee(
+function resolvedLoopFunction(
     context: Pick<ResourceLoopContext, "checker"> &
         Partial<
             Pick<
@@ -69,9 +69,8 @@ function resolvedLoopCallee(
                 "bindings" | "knownValueWithoutEvaluation"
             >
         >,
-    call: ts.CallExpression | ts.NewExpression,
+    callee: ts.Expression,
 ): ts.Signature["declaration"] {
-    const callee = unwrapExpression(call.expression);
     const value =
         context.knownValueWithoutEvaluation?.(callee) ??
         (ts.isIdentifier(callee)
@@ -91,10 +90,17 @@ function resolvedLoopCallee(
             ? tryResolveFunctionDeclaration(context.checker, declaration)
             : declaration;
     }
+    return ts.isIdentifier(callee)
+        ? tryResolveFunctionDeclaration(context.checker, callee)
+        : undefined;
+}
+
+function resolvedLoopCallee(
+    context: Parameters<typeof resolvedLoopFunction>[0],
+    call: ts.CallExpression | ts.NewExpression,
+): ts.Signature["declaration"] {
     return (
-        (ts.isIdentifier(callee)
-            ? tryResolveFunctionDeclaration(context.checker, callee)
-            : undefined) ??
+        resolvedLoopFunction(context, unwrapExpression(call.expression)) ??
         context.checker.getResolvedSignature(call)?.declaration
     );
 }
@@ -481,7 +487,15 @@ export function walkReachedLoopNodes(
             }
         }
     };
-    walk(root, new Map());
+    const callbackRoot = ts.isIdentifier(root)
+        ? resolvedLoopFunction(context, root)
+        : undefined;
+    walk(
+        callbackRoot && isSupportedFunction(callbackRoot) && callbackRoot.body
+            ? callbackRoot.body
+            : root,
+        new Map(),
+    );
 }
 
 export function requiresStaticLoopIteration(
