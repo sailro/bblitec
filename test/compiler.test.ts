@@ -7380,6 +7380,48 @@ test("binds a shadow generator created before its light to the eventual scene sl
     );
 });
 
+test("retains light registration identities through constant resource tuples", () => {
+    for (const [declaration, selected] of [
+        ["const lights = [spot, sun] as const;", "light"],
+        [
+            "const lights = [{ light: spot }, { light: sun }] as const;",
+            "light.light",
+        ],
+    ]) {
+        const result = compileSource(`
+            import {
+                addToScene, createDirectionalLight, createEngine,
+                createHemisphericLight, createPcfDirectionalShadowGenerator,
+                createPcfSpotlightShadowGenerator, createSceneContext, createSpotLight,
+            } from "babylon-lite";
+            async function main() {
+                const engine = await createEngine({});
+                const scene = createSceneContext(engine);
+                addToScene(scene, createHemisphericLight([0, 1, 0], 1));
+                const spot = createSpotLight([0, 4, 0], [0, -1, 0], 1, 8);
+                const sun = createDirectionalLight([-1, -2, -1], 1);
+                spot.shadowGenerator = createPcfSpotlightShadowGenerator(engine, spot);
+                ${declaration}
+                for (const light of lights) addToScene(scene, ${selected});
+                sun.shadowGenerator = createPcfDirectionalShadowGenerator(engine, sun);
+            }
+            void main();
+        `);
+        assert.deepEqual(result.manifest.sceneLightKinds, [
+            "hemispheric",
+            "spot",
+            "directional",
+        ]);
+        assert.deepEqual(
+            result.manifest.shadowGenerators.map(
+                ({ lightIndex }) => lightIndex,
+            ),
+            [1, 2],
+        );
+        assert.equal(result.manifest.dynamicSceneLights, false);
+    }
+});
+
 test("keeps shadow-light slots local to each scene", () => {
     const result = compileSource(`
         import {
@@ -19248,6 +19290,53 @@ test("binds a loader group collection, resolves finds statically, and erases the
     );
     assert.ok(result.manifest.features.includes("animation:gltf-additive"));
     assert.ok(result.manifest.features.includes("animation:gltf-group-time"));
+});
+
+test("preserves animation group selection through mutable and readonly array aliases", () => {
+    for (const declaration of [
+        `const active = [idle];
+        const alias = active;
+        alias.push(sadPose);`,
+        `const active = [idle, sadPose] as const;
+        const alias: readonly AnimationGroup[] = active;`,
+    ]) {
+        const result = compileWithAnimationFixture(
+            HANDLE_COLLECTION_SCENE(`
+        const idle = requireGroup(groups, "idle");
+        const sadPose = requireGroup(groups, "sad_pose");
+        ${declaration}
+        addAnimationGroups(manager, active);
+        addAnimationGroups(manager, alias);
+        for (const group of alias) {
+            group.currentTime = group === sadPose ? 0.25 : 1.5;
+            pauseAnimation(group);
+        }
+        `),
+            ["idle", "sad_pose"],
+        );
+
+        // Mutation through one alias updates the selection both aliases
+        // register, and iteration retains each selected group's identity.
+        assert.equal(
+            [
+                ...result.cpp.matchAll(
+                    /bbl::add_animation_groups\([^;]*std::vector<bbl::AnimationGroupHandle>\{v_idle, v_sadPose\}\)/g,
+                ),
+            ].length,
+            2,
+        );
+        assert.match(
+            result.cpp,
+            /bbl::set_animation_current_time\(v_engine, [^,]+, 0\.25\)/,
+        );
+        assert.match(
+            result.cpp,
+            /bbl::set_animation_current_time\(v_engine, [^,]+, 1\.5\)/,
+        );
+        assert.ok(
+            result.manifest.features.includes("animation:managed-groups"),
+        );
+    }
 });
 
 test("cross-fades glTF groups without enabling or replacing their mixer", () => {

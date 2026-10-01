@@ -757,7 +757,6 @@ export function compileDataMethodCall(
         const element = lowerer.knownTupleElement(
             callee.expression,
             dynamicOwner,
-            true,
         );
         if (!element) {
             lowerer.context.fail(

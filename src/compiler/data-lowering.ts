@@ -1707,11 +1707,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (known.kind !== "tuple") {
             return undefined;
         }
-        const element = this.knownTupleElement(
-            expression,
-            known,
-            knownValue !== undefined,
-        );
+        const element = this.knownTupleElement(expression, known);
         if (!element) {
             return undefined;
         }
@@ -1781,13 +1777,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * The element type a compile-time tuple takes as a native array: the
-     * one its expression declares, or the one every element shares. With
-     * `checkFit`, undefined when an element does not fit it.
+     * one its expression declares, or the one every element shares, provided
+     * every element fits that storage.
      */
     public knownTupleElement(
         expression: ts.Expression,
         known: Value,
-        checkFit: boolean,
     ): DataType | undefined {
         const container = this.dataTypeAt(expression);
         const sourceType = this.context.checker.getTypeAtLocation(expression);
@@ -1832,7 +1827,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         if (
-            checkFit &&
             !(known.tupleElements ?? []).every((entry) =>
                 this.knownValueFitsSink(entry, element, expression, false),
             )
@@ -4718,6 +4712,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             element.kind,
         );
         if (!scalarElements && bound) {
+            // Prove constant storage before requesting lexical replay. A
+            // resource view can have a nominal data type without retaining
+            // the native identity and metadata its specialized reads need.
+            if (
+                !bound.tupleElements!.every((entry) =>
+                    this.knownValueFitsSink(entry, element, unwrapped, true),
+                )
+            )
+                return undefined;
             // Keep allocated elements at the lexical initializer, including
             // fresh factory calls and aliases that precede the first search.
             const declaration = resolvedSymbol(
