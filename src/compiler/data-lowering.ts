@@ -2016,8 +2016,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return (
                     value.kind === "record" &&
                     this.context.dataTypes
-                        .structFields(sink.name, node)
+                        .structFields(sink.name, node, "accessors")
                         .every((field) => {
+                            if (field.accessor) return false;
                             const property =
                                 value.recordProperties?.[field.sourceName];
                             return property

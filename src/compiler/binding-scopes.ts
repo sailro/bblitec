@@ -1816,7 +1816,7 @@ export class BindingScopes {
             const callbackContainer =
                 stored?.kind === "struct" &&
                 this.context.dataTypes
-                    .structFields(stored.name, node)
+                    .structFields(stored.name, node, "accessors")
                     .some(
                         (field) =>
                             field.type.kind === "vector" &&
