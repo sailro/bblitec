@@ -101,7 +101,9 @@ dense storage. Sparse growth, named array properties and writes through erased n
 record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
 permit statements before a final return; early returns refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree;
-a typed record whose methods name its own binding is one shared object.
+a typed record whose methods name its own binding is one shared object. Stored callback fields retain
+function identity and observe replacement through record aliases. Native function `call`/receiver-only
+`bind` preserve target and argument evaluation order; dynamic receiver rebinding and partial `bind` refuse.
 
 | Promise operation | Contract |
 | --- | --- | --- |

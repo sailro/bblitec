@@ -2572,10 +2572,17 @@ export class UserFunctionLowerer {
                 body,
                 (node) => {
                     if (ts.isCallExpression(node)) {
-                        // Passing a named callback can call back into this function
-                        // just as a direct call can (array methods and schedulers).
+                        // Callback arguments can call back into this function,
+                        // including through an anonymous scheduler body.
                         for (const argument of node.arguments) {
                             const value = unwrapExpression(argument);
+                            if (
+                                ts.isArrowFunction(value) ||
+                                ts.isFunctionExpression(value)
+                            ) {
+                                for (const called of this.directCalls(value))
+                                    callees.add(called);
+                            }
                             const callback = ts.isIdentifier(value)
                                 ? tryResolveFunctionDeclaration(
                                       this.checker,
@@ -3012,7 +3019,11 @@ export class UserFunctionLowerer {
                     argument.staticElementsOwner?.staticElements ||
                     argument.staticElements);
             if (
-                ((argument?.kind === "record" ||
+                (((argument?.kind === "record" &&
+                    !(
+                        recursive &&
+                        rootEntry.parameterTypes[index]?.kind === "struct"
+                    )) ||
                     argument?.dataType?.kind === "json") &&
                     rootEntry.parameterTypes[index]?.kind !== "json") ||
                 tupleFacts ||

@@ -1196,7 +1196,10 @@ export class DataTypeRegistry {
                 this.checker.getTypeOfSymbolAtLocation(property, node),
                 node,
             );
-            if (!actual || !dataTypesEqual(actual, field.type))
+            if (
+                !actual ||
+                !dataTypesEqual(markIdentityFunctions(actual), field.type)
+            )
                 return undefined;
         }
         return this.markStoredObjectReferences(target);
@@ -2407,7 +2410,7 @@ export class DataTypeRegistry {
                 type,
                 node,
                 provisionalName,
-                preferredName !== undefined,
+                preferredName !== undefined || this.classDemanded,
             );
             if (mapped?.kind === "struct") {
                 this.structTypesByIdentity.set(identity, mapped);
@@ -2696,7 +2699,9 @@ export class DataTypeRegistry {
             const optional =
                 partial || (property.flags & ts.SymbolFlags.Optional) !== 0;
             const mapped: DataType = this.markStoredObjectReferences(
-                optional ? this.nullableType(mappedValue) : mappedValue,
+                markIdentityFunctions(
+                    optional ? this.nullableType(mappedValue) : mappedValue,
+                ),
             );
             const accessor = this.propertyAccessor(property, view);
             fields.push({

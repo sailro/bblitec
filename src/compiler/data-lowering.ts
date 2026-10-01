@@ -562,13 +562,20 @@ export class DataLowerer {
         call: ts.CallExpression,
         functionType: DataType & { kind: "function" },
         label = "Stored function",
+        argumentOffset = 0,
     ): string[] {
+        for (const argument of call.arguments.slice(0, argumentOffset))
+            this.context.emitDiscardedValue(
+                this.context.compileValue(argument),
+            );
+        const arguments_ = call.arguments.slice(argumentOffset);
+        const ordered = this.context.evaluationOrder.operandsToPin(arguments_);
         const erased = new EmissionSet(functionType.erasedParameters ?? []);
         const sourceParameterCount =
             functionType.parameters.length + erased.size;
         if (
             functionType.restParameter === undefined &&
-            call.arguments.length > sourceParameterCount
+            arguments_.length > sourceParameterCount
         ) {
             this.context.fail(
                 call,
@@ -582,7 +589,7 @@ export class DataLowerer {
             sourceIndex < sourceParameterCount;
             sourceIndex += 1
         ) {
-            const argument = call.arguments[sourceIndex];
+            const argument = arguments_[sourceIndex];
             if (erased.has(sourceIndex)) {
                 if (argument) {
                     const argumentType =
@@ -619,7 +626,7 @@ export class DataLowerer {
                     name: packed,
                     initializer: "{}",
                 });
-                for (const argument of call.arguments.slice(sourceIndex)) {
+                for (const argument of arguments_.slice(sourceIndex)) {
                     if (ts.isSpreadElement(argument)) {
                         const source =
                             this.context.allocateTemporaryCppName(
@@ -652,7 +659,10 @@ export class DataLowerer {
             }
             if (argument) {
                 const value = this.compileForSink(argument, parameter);
-                if (functionType.restParameter !== undefined) {
+                if (
+                    functionType.restParameter !== undefined ||
+                    ordered[sourceIndex]
+                ) {
                     const name =
                         this.context.allocateTemporaryCppName("call_argument");
                     this.context.emit({
@@ -5861,6 +5871,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callable: string,
         functionType: DataType<"function">,
         receiver?: string,
+        argumentOffset = 0,
     ): Value {
         if (
             call.questionDotToken ||
@@ -5872,6 +5883,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 callable,
                 functionType,
                 receiver,
+                argumentOffset,
             );
         }
         if (receiver)
@@ -5887,7 +5899,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: callback,
             initializer: `bbl::js::snapshot_callback(${callable})`,
         });
-        const args = this.compileFunctionArguments(call, functionType);
+        const args = this.compileFunctionArguments(
+            call,
+            functionType,
+            "Stored function",
+            argumentOffset,
+        );
         const cpp = `${callback}(${args.join(", ")})`;
         return functionType.result
             ? this.leafValue(cpp, functionType.result)
@@ -5900,6 +5917,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callable: string,
         functionType: DataType<"function">,
         receiver?: string,
+        argumentOffset = 0,
     ): Value {
         // A called helper can clear the slot without invalidating TypeScript's
         // property narrowing. Optional invocation still observes that absence.
@@ -5925,7 +5943,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.emit(`if (!${callback}) ${missing}`);
             this.context.enterRuntimeControlFlow();
             try {
-                const args = this.compileFunctionArguments(call, functionType);
+                const args = this.compileFunctionArguments(
+                    call,
+                    functionType,
+                    "Stored function",
+                    argumentOffset,
+                );
                 const invocation = `${callback}(${args.join(", ")})`;
                 this.context.emit(
                     resultType
@@ -11089,6 +11112,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const value =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
+        if (value?.kind === "callback") {
+            const mapped = this.dataTypeAt(expression);
+            if (mapped?.kind === "function") {
+                const dataType: DataType<"function"> = {
+                    ...mapped,
+                    identity: true,
+                };
+                return {
+                    cpp: this.compileKnownValueForSink(
+                        value,
+                        dataType,
+                        expression,
+                    ),
+                    dataType,
+                };
+            }
+        }
         if (value?.kind === "string") {
             return {
                 cpp:

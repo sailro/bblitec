@@ -138,6 +138,7 @@ import {
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -2735,24 +2736,11 @@ export class ExpressionLowerer {
                 callable.kind === "data" &&
                 callable.dataType?.kind === "function"
             ) {
-                const functionType = callable.dataType;
-                const selected = this.context.bindings.pinValueToTemporary(
-                    callable,
-                    "call_target",
-                    callee,
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    callable.cpp,
+                    callable.dataType,
                 );
-                const argumentsCpp =
-                    this.context.dataLowerer.compileFunctionArguments(
-                        call,
-                        functionType,
-                    );
-                const cpp = `${selected.cpp}(${argumentsCpp.join(", ")})`;
-                return functionType.result
-                    ? this.context.dataLowerer.leafValue(
-                          cpp,
-                          functionType.result,
-                      )
-                    : { kind: "void", cpp };
             }
         }
         if (ts.isElementAccessExpression(callee)) {
@@ -2803,19 +2791,11 @@ export class ExpressionLowerer {
                 callable.kind === "data" &&
                 callable.dataType?.kind === "function"
             ) {
-                const functionType = callable.dataType;
-                const argumentsCpp =
-                    this.context.dataLowerer.compileFunctionArguments(
-                        call,
-                        functionType,
-                    );
-                const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
-                return functionType.result
-                    ? this.context.dataLowerer.leafValue(
-                          cpp,
-                          functionType.result,
-                      )
-                    : { kind: "void", cpp };
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    callable.cpp,
+                    callable.dataType,
+                );
             }
             this.context.fail(
                 callee,
@@ -4834,6 +4814,58 @@ export class ExpressionLowerer {
             : record;
     }
 
+    /** Function.call/bind consume a function object before their arguments run. */
+    private compileFunctionObject(expression: ts.Expression): Value {
+        if (
+            this.context.checker
+                .getTypeAtLocation(expression)
+                .getCallSignatures()
+                .some((signature) => signature.thisParameter)
+        )
+            this.context.fail(
+                expression,
+                "Function.call/bind does not rebind a dynamic this parameter.",
+            );
+        const value = this.compileValue(expression);
+        if (value.kind !== "callback") return value;
+        const declaration =
+            value.callbackDeclaration &&
+            ts.isIdentifier(value.callbackDeclaration)
+                ? tryResolveFunctionDeclaration(
+                      this.context.checker,
+                      value.callbackDeclaration,
+                  )
+                : value.callbackDeclaration;
+        if (
+            declaration &&
+            !ts.isArrowFunction(declaration) &&
+            declaration.body &&
+            someAnalysisNode(
+                declaration.body,
+                (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+                {
+                    skip: (node) =>
+                        ts.isFunctionLike(node) && !ts.isArrowFunction(node),
+                },
+            )
+        )
+            this.context.fail(
+                expression,
+                "Function.call/bind requires a lexical receiver or a function without dynamic this.",
+            );
+        const mapped = this.context.dataLowerer.dataTypeAt(expression);
+        if (mapped?.kind !== "function") return value;
+        const type: DataType<"function"> = { ...mapped, identity: true };
+        return this.context.dataLowerer.leafValue(
+            this.context.dataLowerer.compileKnownValueForSink(
+                value,
+                type,
+                expression,
+            ),
+            type,
+        );
+    }
+
     private compilePropertyCall(
         callee: ts.PropertyAccessExpression,
         call: ts.CallExpression,
@@ -4845,17 +4877,7 @@ export class ExpressionLowerer {
                 .getCallSignatures().length > 0
         ) {
             this.context.expectArgumentCount(call, 1, 1);
-            if (
-                this.context.checker
-                    .getTypeAtLocation(callee.expression)
-                    .getCallSignatures()
-                    .some((signature) => signature.thisParameter)
-            )
-                return this.context.fail(
-                    callee,
-                    "Function.bind does not rebind a dynamic this parameter.",
-                );
-            const callable = this.compileValue(callee.expression);
+            const callable = this.compileFunctionObject(callee.expression);
             if (
                 callable.kind !== "data" ||
                 callable.dataType?.kind !== "function"
@@ -4876,7 +4898,10 @@ export class ExpressionLowerer {
             const receiver = this.compileValue(argumentAt(call, 0));
             const receiverType =
                 receiver.dataType ??
-                this.context.dataLowerer.dataTypeAt(argumentAt(call, 0));
+                this.context.dataTypes.fromStoredTsType(
+                    this.context.checker.getTypeAtLocation(argumentAt(call, 0)),
+                    argumentAt(call, 0),
+                );
             if (receiver.kind !== "json-null" && !receiverType)
                 return this.context.fail(
                     call,
@@ -4928,33 +4953,22 @@ export class ExpressionLowerer {
         if (callee.name.text === "call") {
             const objectCall = compileObjectPrototypeCall(this.context, call);
             if (objectCall) return objectCall;
-            const callable = this.compileValue(callee.expression);
+            const callable = this.context.checker
+                .getTypeAtLocation(callee.expression)
+                .getCallSignatures().length
+                ? this.compileFunctionObject(callee.expression)
+                : this.compileValue(callee.expression);
             if (
                 callable.kind === "data" &&
                 callable.dataType?.kind === "function"
             ) {
-                const functionType = callable.dataType;
-                const supplied = call.arguments.slice(1);
-                if (supplied.length !== functionType.parameters.length) {
-                    this.context.fail(
-                        call,
-                        `Function.call expected ${functionType.parameters.length} arguments after thisArg, received ${supplied.length}.`,
-                    );
-                }
-                const argumentsCpp = functionType.parameters.map(
-                    (type, index) =>
-                        this.context.dataLowerer.compileForSink(
-                            supplied[index]!,
-                            type,
-                        ),
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    callable.cpp,
+                    callable.dataType,
+                    undefined,
+                    1,
                 );
-                const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
-                return functionType.result
-                    ? this.context.dataLowerer.leafValue(
-                          cpp,
-                          functionType.result,
-                      )
-                    : { kind: "void", cpp };
             }
         }
         const staticOwner = this.context.libraryGlobal(callee.expression);
@@ -5508,19 +5522,11 @@ export class ExpressionLowerer {
                         callee.questionDotToken ? instance?.cpp : undefined,
                     );
                 }
-                const argumentsCpp =
-                    this.context.dataLowerer.compileFunctionArguments(
-                        call,
-                        functionType,
-                        `Stored callback field '${callee.name.text}'`,
-                    );
-                const cpp = `${recordCallback.cpp}(${argumentsCpp.join(", ")})`;
-                return functionType.result
-                    ? this.context.dataLowerer.leafValue(
-                          cpp,
-                          functionType.result,
-                      )
-                    : { kind: "void", cpp };
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    recordCallback.cpp,
+                    functionType,
+                );
             }
             if (instance && declaration) {
                 const optionalFound =
