@@ -70,6 +70,20 @@ export function domTargetIdentity(
     return { target, engine };
 }
 
+/**
+ * Element interfaces native DOM targets answer `instanceof` for: a tag, or
+ * any element (`Element`) or any HTML-namespace element (`HTMLElement`).
+ */
+export const DOM_ELEMENT_INTERFACES: ReadonlyMap<string, string> = new Map([
+    ["Element", "element"],
+    ["HTMLElement", "html-element"],
+    ["HTMLInputElement", "input"],
+    ["HTMLSelectElement", "select"],
+    ["HTMLTextAreaElement", "textarea"],
+    ["HTMLButtonElement", "button"],
+    ["HTMLCanvasElement", "canvas"],
+]);
+
 /** Retained HTML element interfaces follow the element's tag and document identity. */
 export function compileDomInstanceOf(
     context: Context &
@@ -84,14 +98,9 @@ export function compileDomInstanceOf(
         expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword
     )
         return undefined;
-    const tags = new Map([
-        ["HTMLInputElement", "input"],
-        ["HTMLSelectElement", "select"],
-        ["HTMLTextAreaElement", "textarea"],
-        ["HTMLButtonElement", "button"],
-        ["HTMLCanvasElement", "canvas"],
-    ]);
-    const tag = tags.get(context.libraryGlobal(expression.right) ?? "");
+    const tag = DOM_ELEMENT_INTERFACES.get(
+        context.libraryGlobal(expression.right) ?? "",
+    );
     if (!tag) return undefined;
     const value = context.compileValue(expression.left);
     const type = value.dataType;
@@ -110,5 +119,7 @@ export function compileDomInstanceOf(
         type?.kind === "optional" && type.inner.kind === "event-target"
             ? value.cpp
             : eventTargetCpp(context, value, expression.left);
-    return `bbl::dom_target_has_tag(${target}, ${context.cppString(tag)})`;
+    return tag === "element" || tag === "html-element"
+        ? `bbl::dom_target_is_element(${target}, ${tag === "html-element"})`
+        : `bbl::dom_target_has_tag(${target}, ${context.cppString(tag)})`;
 }

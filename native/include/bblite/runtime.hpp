@@ -393,12 +393,17 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
-/** Last computed retained-layout box exposed as DOMRect's reached surface. */
+/**
+ * Last computed retained-layout box: border-box position and client (padding minus scrollbar)
+ * size as DOMRect's reached surface, and the border-box (offset) size.
+ */
 struct UiClientRect {
     double left = 0.0;
     double top = 0.0;
     double width = 0.0;
     double height = 0.0;
+    double offset_width = 0.0;
+    double offset_height = 0.0;
 };
 
 struct MeshHandle {
@@ -3560,6 +3565,39 @@ struct UiStyleRule {
 };
 
 /**
+ * An HTML event handler over a per-element listener list: the first handler appends one
+ * listener, a later one replaces its callback in place and an empty one removes it. The
+ * listener forwards through a shared cell, so a dispatch's listener snapshot observes both.
+ */
+template <typename Callback> struct UiEventHandler {
+    std::shared_ptr<Callback> cell;
+    std::size_t index = 0;
+};
+
+template <typename Callback>
+void set_ui_event_handler(std::vector<Callback>& listeners,
+                          std::optional<UiEventHandler<Callback>>& handler, Callback callback) {
+    if (handler && callback) {
+        *handler->cell = std::move(callback);
+        return;
+    }
+    if (handler) {
+        *handler->cell = {};
+        listeners.erase(listeners.begin() + static_cast<std::ptrdiff_t>(handler->index));
+        handler.reset();
+        return;
+    }
+    if (!callback)
+        return;
+    auto cell = std::make_shared<Callback>(std::move(callback));
+    listeners.push_back([cell](const auto&... event) {
+        if (*cell)
+            (*cell)(event...);
+    });
+    handler = UiEventHandler<Callback>{std::move(cell), listeners.size() - 1};
+}
+
+/**
  * The retained UI representation produced by DOM lowering.
  *
  * This deliberately contains browser-neutral data only. RmlUi element
@@ -3647,14 +3685,17 @@ struct UiElementRecord {
     /** Materialized static-markup nodes owned by this element. */
     std::vector<UiElementHandle> markup_children;
     std::vector<std::function<void()>> click_callbacks;
-    std::unordered_map<std::string, std::vector<std::function<void(const PlatformMouseEvent&)>>>
-        event_callbacks;
+    using EventCallback = std::function<void(const PlatformMouseEvent&)>;
+    std::unordered_map<std::string, std::vector<EventCallback>> event_callbacks;
+    /** `on<event>` handlers, each one entry of `event_callbacks[event]`. */
+    std::unordered_map<std::string, std::optional<UiEventHandler<EventCallback>>> event_handlers;
     /** Browser-file state exists only for retained <a>/<input> elements. */
     ObjectUrlHandle download_url{};
     BrowserFileHandle selected_file{};
     std::string download_name;
     std::string file_accept;
     std::vector<std::function<void()>> file_change_callbacks;
+    std::optional<UiEventHandler<std::function<void()>>> file_change_handler;
     bool file_input = false;
     UiClientRect client_rect{};
     bool client_rect_requested = false;

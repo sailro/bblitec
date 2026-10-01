@@ -526,7 +526,8 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
     record.client_rect_requested = true;
     const double scale = engine.canvas_client_width / engine.options.width;
     const auto& rect = record.client_rect;
-    return {rect.left * scale, rect.top * scale, rect.width * scale, rect.height * scale};
+    return {rect.left * scale,   rect.top * scale,          rect.width * scale,
+            rect.height * scale, rect.offset_width * scale, rect.offset_height * scale};
 }
 
 std::string ui_get_form_value(Engine& engine, UiElementHandle element) {
@@ -947,6 +948,29 @@ bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view 
     return ui_element(engine, element).attributes.contains(std::string(name));
 }
 
+bool ui_contains(Engine& engine, UiElementHandle ancestor, UiElementHandle node) {
+    static_cast<void>(ui_element(engine, ancestor));
+    for (auto cursor = node; cursor.value != invalid_handle;) {
+        if (cursor == ancestor)
+            return true;
+        const auto& record = ui_element(engine, cursor);
+        if (record.attached_to_root)
+            return false;
+        cursor = record.parent.value != invalid_handle ? record.parent : record.markup_owner;
+    }
+    return false;
+}
+
+bool ui_is_connected(Engine& engine, UiElementHandle element) {
+    for (auto cursor = element; cursor.value != invalid_handle;) {
+        const auto& record = ui_element(engine, cursor);
+        if (record.attached_to_root)
+            return true;
+        cursor = record.parent.value != invalid_handle ? record.parent : record.markup_owner;
+    }
+    return false;
+}
+
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
     const std::string normalized = js::string_lower(std::string(name));
     auto& record = ui_element(engine, element);
@@ -1073,6 +1097,16 @@ void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, 
     }
     record.attributes.insert_or_assign("class", std::move(joined));
     mark_ui_changed(engine);
+}
+
+bool ui_has_class(Engine& engine, UiElementHandle element, std::string_view name) {
+    return ui_record_has_class(ui_element(engine, element), name);
+}
+
+bool ui_toggle_class(Engine& engine, UiElementHandle element, std::string name) {
+    const bool enabled = !ui_has_class(engine, element, name);
+    ui_toggle_class(engine, element, std::move(name), enabled);
+    return enabled;
 }
 
 void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string class_name,
@@ -1439,6 +1473,12 @@ bool ui_clear_focus(Engine& engine, UiElementHandle next) {
     return revision == engine.ui_focus_revision;
 }
 
+void ui_blur(Engine& engine, UiElementHandle element) {
+    static_cast<void>(ui_element(engine, element));
+    if (ui_active_element(engine) == element)
+        static_cast<void>(ui_clear_focus(engine));
+}
+
 void ui_focus(Engine& engine, UiElementHandle element, bool visible) {
     if (!ui_focusable(engine, element))
         return;
@@ -1502,6 +1542,16 @@ void ui_on_file_change(Engine& engine, UiElementHandle element, std::function<vo
     record.file_change_callbacks.push_back(std::move(callback));
     mark_ui_changed(engine);
 }
+
+void ui_set_file_change_handler(Engine& engine, UiElementHandle element,
+                                std::function<void()> callback) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "input" || !record.file_input)
+        throw std::runtime_error("Native file change handlers require an <input type=\"file\">.");
+    set_ui_event_handler(record.file_change_callbacks, record.file_change_handler,
+                         std::move(callback));
+    mark_ui_changed(engine);
+}
 #endif
 
 void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
@@ -1511,6 +1561,21 @@ void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
     }
     UiElementRecord& record = ui_element(engine, element);
     record.event_callbacks[std::move(event)].push_back(std::move(callback));
+    mark_ui_changed(engine);
+}
+
+void ui_set_event_handler(Engine& engine, UiElementHandle element, std::string event,
+                          std::function<void(const PlatformMouseEvent&)> callback) {
+    if (event.empty())
+        throw std::runtime_error("Native UI event handlers require an event name.");
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.file_input)
+        throw std::runtime_error(
+            "A file input's change handler requires its static type='file' at the assignment.");
+    set_ui_event_handler(record.event_callbacks[event], record.event_handlers[event],
+                         std::move(callback));
+    if (!record.event_handlers[event])
+        record.event_handlers.erase(event);
     mark_ui_changed(engine);
 }
 
@@ -5613,9 +5678,12 @@ struct UiRmlRuntime {
                 continue;
             }
             const Rml::Vector2f offset = element->GetAbsoluteOffset(Rml::BoxArea::Border);
-            record.client_rect = {static_cast<double>(offset.x), static_cast<double>(offset.y),
+            record.client_rect = {static_cast<double>(offset.x),
+                                  static_cast<double>(offset.y),
                                   static_cast<double>(element->GetClientWidth()),
-                                  static_cast<double>(element->GetClientHeight())};
+                                  static_cast<double>(element->GetClientHeight()),
+                                  static_cast<double>(element->GetOffsetWidth()),
+                                  static_cast<double>(element->GetOffsetHeight())};
         }
     }
 

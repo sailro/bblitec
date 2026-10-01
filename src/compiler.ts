@@ -7072,6 +7072,10 @@ class Compiler implements LoweringServices {
     }
 
     public requireEngine(value: Value, node: ts.Node): string {
+        // Retained elements belong to the document, whose engine every
+        // realm names even where the value's storage dropped it.
+        if (!value.engineCpp && value.kind === "ui-element")
+            return this.ui.documentEngine(node);
         if (!value.engineCpp) {
             this.fail(
                 node,

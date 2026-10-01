@@ -145,7 +145,9 @@ struct LayoutSnapshot {
                std::equal(rectangles.begin(), rectangles.end(), other.rectangles.begin(),
                           [](const auto& left, const auto& right) {
                               return left.left == right.left && left.top == right.top &&
-                                     left.width == right.width && left.height == right.height;
+                                     left.width == right.width && left.height == right.height &&
+                                     left.offset_width == right.offset_width &&
+                                     left.offset_height == right.offset_height;
                           });
     }
 };
@@ -326,6 +328,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
             names.events.push_back("input");
         native.click_callbacks.clear();
         native.event_callbacks.clear();
+        native.event_handlers.clear();
 #if BBLITE_HAS_BROWSER_FILE
         if (!native.file_change_callbacks.empty() || native.file_input ||
             native.download_url.slot != invalid_handle) {
@@ -719,6 +722,8 @@ UiClientRect window_element_size(UiElementHandle element) {
     box.top /= layout->pixel_ratio;
     box.width /= layout->pixel_ratio;
     box.height /= layout->pixel_ratio;
+    box.offset_width /= layout->pixel_ratio;
+    box.offset_height /= layout->pixel_ratio;
     return box;
 }
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {

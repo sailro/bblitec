@@ -70,6 +70,11 @@ import {
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
+import {
+    elementDomHandlerFamily,
+    emitDomEventHandler,
+} from "./dom-listeners.js";
+import { DOM_ELEMENT_INTERFACES } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
 import { engineCanvasIds, primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -485,6 +490,25 @@ export class UiProjection {
             }
         }
         return undefined;
+    }
+
+    /**
+     * The element's tag, or the one its declared HTML interface names when
+     * storage (a record field, a container) did not carry the tag.
+     */
+    public declaredUiTag(
+        element: Value,
+        expression: ts.Expression,
+    ): string | undefined {
+        if (element.uiTag !== undefined) return element.uiTag;
+        const tag = DOM_ELEMENT_INTERFACES.get(
+            this.context.checker
+                .getNonNullableType(
+                    this.context.checker.getTypeAtLocation(expression),
+                )
+                .getSymbol()?.name ?? "",
+        );
+        return tag === "element" || tag === "html-element" ? undefined : tag;
     }
 
     /** Evaluate helper receivers at admitted operations, not during erasure probes. */
@@ -3774,45 +3798,125 @@ export class UiProjection {
     }
 
     /**
-     * `input.onchange = handler` on a retained file input: the handler the
-     * change after a selection dispatches, as `addEventListener("change")`
-     * registers it. The attribute is one slot, so it is assigned once.
-     * Every other event-handler property refuses by name.
+     * `element.on<type> = handler`: the HTML event handler of an event the
+     * element's listeners represent. The first handler joins the listeners in
+     * registration order, a later one replaces it in place and `null` removes
+     * it. A handler that can return `false` (which cancels the event) and
+     * events without a native listener family refuse.
      */
     private emitUiEventHandlerProperty(
         element: Value,
         engine: string,
         property: string,
+        receiver: ts.Expression,
         assignment: ts.BinaryExpression,
     ): void {
-        if (property !== "onchange" || !element.uiFileInput)
+        const type = property.slice(2);
+        const handlerType = this.context.checker.getTypeAtLocation(
+            assignment.right,
+        );
+        const nullish =
+            (handlerType.flags &
+                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+            0;
+        if (!nullish && handlerType.getCallSignatures().length === 0)
+            this.context.fail(
+                assignment.right,
+                `Native UI event handler property '${property}' requires a function or null.`,
+            );
+        if (
+            handlerType.getCallSignatures().some((signature) => {
+                const result =
+                    this.context.checker.getReturnTypeOfSignature(signature);
+                return (result.isUnion() ? result.types : [result]).some(
+                    (member) =>
+                        (member.flags &
+                            (ts.TypeFlags.BooleanLike |
+                                ts.TypeFlags.Any |
+                                ts.TypeFlags.Unknown)) !==
+                        0,
+                );
+            })
+        )
+            this.context.fail(
+                assignment.right,
+                `Native UI event handler property '${property}' requires a handler that cannot return false; a false result cancels the event and is not lowered.`,
+            );
+        const handler = nullish ? undefined : assignment.right;
+        if (handler)
+            this.context.callbacks.hoistForwardCallbackBindings(
+                handler,
+                assignment.pos,
+            );
+        const tag = this.declaredUiTag(element, receiver);
+        const formEvent =
+            (type === "change" || type === "input") &&
+            ["input", "textarea", "select"].includes(tag ?? "");
+        if (formEvent && element.uiFileInput) {
+            if (type !== "change")
+                this.context.fail(
+                    assignment.left,
+                    "A native file input dispatches only change.",
+                );
+            const callback = handler
+                ? this.context.callbacks.compilePlatformCallback(
+                      handler,
+                      undefined,
+                      [],
+                      undefined,
+                      true,
+                      false,
+                  ).cpp
+                : "{}";
+            this.context.reachFeature("browser:file", assignment);
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_file_change_handler(${engine}, ${element.cpp}, ${callback});`,
+            });
+            return;
+        }
+        if (formEvent) {
+            const parameter =
+                this.context.allocateTemporaryCppName("ui_pointer_event");
+            const callback = handler
+                ? this.context.callbacks.compilePlatformCallback(
+                      handler,
+                      {
+                          cppType: "const bbl::PlatformMouseEvent&",
+                          name: parameter,
+                      },
+                      [
+                          {
+                              kind: "platform-mouse-event",
+                              cpp: parameter,
+                              readOnly: true,
+                          },
+                      ],
+                      undefined,
+                      true,
+                      false,
+                  ).cpp
+                : "{}";
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_event_handler(${engine}, ${element.cpp}, ${this.context.cppString(type)}, ${callback});`,
+            });
+            return;
+        }
+        const family = elementDomHandlerFamily(type);
+        if (!family)
             this.context.fail(
                 assignment.left,
-                `Native UI event handler property '${property}' is not lowered; register the handler with addEventListener.`,
+                `Native UI event handler property '${property}' is not lowered: '${type}' has no native element listener.`,
             );
-        if (element.uiFileChangeHandler)
-            this.context.fail(
-                assignment,
-                "A file input's onchange handler is assigned once; replacing it is not lowered.",
-            );
-        writable(element).uiFileChangeHandler = true;
-        this.context.callbacks.hoistForwardCallbackBindings(
-            assignment.right,
-            assignment.pos,
+        emitDomEventHandler(
+            this.context,
+            element,
+            family,
+            type,
+            handler,
+            receiver,
         );
-        const handler = this.context.callbacks.compilePlatformCallback(
-            assignment.right,
-            undefined,
-            [],
-            undefined,
-            true,
-            false,
-        );
-        this.context.reachFeature("browser:file", assignment);
-        this.context.emit({
-            kind: "expression",
-            code: `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
-        });
     }
 
     public compileUiBrowserFileAttribute(
@@ -4025,7 +4129,10 @@ export class UiProjection {
             if (
                 property === "value" &&
                 ["textarea", "input", "select", "option", "output"].includes(
-                    directElement.uiTag ?? "",
+                    this.declaredUiTag(
+                        directElement,
+                        expression.left.expression,
+                    ) ?? "",
                 ) &&
                 !directElement.uiFileInput
             ) {
@@ -4055,6 +4162,7 @@ export class UiProjection {
                     directElement,
                     engine,
                     property,
+                    expression.left.expression,
                     expression,
                 );
                 return true;

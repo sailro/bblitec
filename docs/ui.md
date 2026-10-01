@@ -49,12 +49,13 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Area | Supported | Limits |
 | --- | --- | --- |
 | Construction | Static tags, appendChild, mixed text/element append, remove, retained roots | No general DOM implementation |
-| Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes | Compound text writes; unsupported root replacement/removal |
+| Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes, id/className/getAttribute/hasAttribute reads | Compound text writes; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
-| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`) | Interaction states, :scope, dynamic selectors, pseudo-element queries |
+| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
+| Handler properties | Element `on<event>` for represented pointer, keyboard and form-control events: HTML listener position, in-place replacement, `null` removal | Handlers that can return false; events without an element listener |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
-| Focus/forms | Focus, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
+| Focus/forms | Focus/blur, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
@@ -92,7 +93,8 @@ removes prior children. Plain text leaf updates retain projected text nodes and 
 across the Window mailbox; structural and special text changes rebuild projection.
 Dataset reads distinguish missing (`undefined`) and empty attributes.
 Source append arguments finish before insertion. Canvas backing dimensions are drawable pixels; client
-dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
+dimensions and bounding rectangles are CSS pixels; element offset/client sizes are rounded CSS pixels.
+Rectangle and size reads flush pending layout.
 Pixel ratio, viewport size and input capabilities read host state without flushing pending DOM or canvas writes.
 
 ### File transfer controls
@@ -100,7 +102,7 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
 live cap and per-file limits. Completion may occur before click returns. A file input's `onchange`
-property registers its change handler once; other event-handler properties refuse. FileReader reads a
+property is its change handler. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
 assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.
 Multiple files/directories, unsupported accept values, arbitrary source paths, file-input type

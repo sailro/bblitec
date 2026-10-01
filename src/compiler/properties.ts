@@ -1805,6 +1805,13 @@ const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["composed", "composed"],
     ["isTrusted", "trusted"],
 ]);
+/** Element layout extents and their `bbl::UiClientRect` fields. */
+const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
+    ["offsetWidth", "offset_width"],
+    ["offsetHeight", "offset_height"],
+    ["clientWidth", "width"],
+    ["clientHeight", "height"],
+]);
 
 /**
  * A number, boolean, string or enum read from storage: the reads an
@@ -1890,7 +1897,7 @@ export class PropertyAccessLowerer {
             expression.name.text === "activeElement" &&
             this.context.libraryGlobal(expression.expression) === "document"
         ) {
-            const engine = this.context.requireDefaultEngine(expression);
+            const engine = this.context.ui.documentEngine(expression);
             this.context.reachFeature("ui:rml", expression);
             return {
                 kind: "ui-element",
@@ -2243,6 +2250,29 @@ export class PropertyAccessLowerer {
                     cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, "lang")`,
                     dataType: { kind: "string" },
                 };
+            if (property === "id" || property === "className")
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${property === "id" ? '"id"' : '"class"'})`,
+                    dataType: { kind: "string" },
+                    freshData: true,
+                };
+            if (property === "isConnected")
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_is_connected(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            const layoutExtent = UI_LAYOUT_EXTENTS.get(property);
+            if (layoutExtent)
+                // Whole CSS pixels of the element's box, read as a client
+                // rectangle is: a layout read, so never discarded.
+                return {
+                    kind: "number",
+                    cpp: `std::round(bbl::ui_get_client_rect(${this.context.requireEngine(owner, expression)}, ${owner.cpp}).${layoutExtent})`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
             if (["min", "max", "step"].includes(property)) {
                 if (owner.uiTag !== "input")
                     this.context.fail(
@@ -2272,7 +2302,7 @@ export class PropertyAccessLowerer {
             owner.kind === "ui-element" &&
             property === "value" &&
             ["textarea", "input", "select", "option", "output"].includes(
-                owner.uiTag ?? "",
+                this.context.ui.declaredUiTag(owner, ownerExpression) ?? "",
             ) &&
             !owner.uiFileInput
         ) {

@@ -1983,8 +1983,6 @@ export interface ValueFields {
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
     uiFileInput?: true;
-    /** The file input's `onchange` handler property has been assigned. */
-    uiFileChangeHandler?: true;
     /** The FileReader bound here has started a read. */
     fileReaderStarted?: true;
     /**

@@ -29,16 +29,14 @@ public:
 
     void add(DomEventTarget target, std::string type, std::size_t identity, Callback callback,
              bool capture = false, bool once = false, bool passive = false) {
-        const auto entry = js::make_gc_shared<Listener>(std::move(callback), passive);
-        auto wrapper = js::make_closure(std::tuple{entry}, [](auto& captures, const Event& event) {
-            const auto& listener = std::get<0>(captures);
-            auto& state = *event.dom;
-            const bool previous = state.passive_listener;
-            state.passive_listener = listener->passive;
-            RestorePassive restore{state, previous};
-            listener->callback(event);
-        });
-        listeners_[key(target, std::move(type), capture)].add(identity, std::move(wrapper), once);
+        listeners_[key(target, std::move(type), capture)].add(
+            identity, wrap(std::move(callback), passive), once);
+    }
+
+    /** The target's `on<type>` handler: a non-capture listener at its first position. */
+    void set_handler(DomEventTarget target, std::string type, Callback callback) {
+        listeners_[key(target, std::move(type), false)].set_handler(
+            callback ? wrap(std::move(callback), false) : Callback{});
     }
 
     void remove(DomEventTarget target, std::string type, std::size_t identity,
@@ -111,6 +109,17 @@ private:
         void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 #endif
     };
+    static Callback wrap(Callback callback, bool passive) {
+        const auto entry = js::make_gc_shared<Listener>(std::move(callback), passive);
+        return js::make_closure(std::tuple{entry}, [](auto& captures, const Event& event) {
+            const auto& listener = std::get<0>(captures);
+            auto& state = *event.dom;
+            const bool previous = state.passive_listener;
+            state.passive_listener = listener->passive;
+            RestorePassive restore{state, previous};
+            listener->callback(event);
+        });
+    }
     using Key = std::tuple<DomEventTargetKind, std::uint32_t, std::string, bool>;
     static Key key(DomEventTarget target, std::string type, bool capture) {
         return {target.kind, target.element, std::move(type), capture};
@@ -166,10 +175,9 @@ inline DomInput& dom_input(Engine& engine) {
     return *engine.dom_input;
 }
 
-inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
-                           std::size_t identity,
-                           DomEventListeners<PlatformMouseEvent>::Callback callback,
-                           bool capture = false, bool once = false, bool passive = false) {
+/** Native hit testing and the Window display learn which types and elements have listeners. */
+inline DomInput& listen_dom_pointer(Engine& engine, DomEventTarget target,
+                                    const std::string& type) {
     auto& input = dom_input(engine);
     const bool new_type = input.event_types.insert(type).second;
     const bool new_element = target.kind == DomEventTargetKind::Element &&
@@ -180,19 +188,49 @@ inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string ty
         ++engine.ui_revision;
 #endif
     }
-    input.pointer.add(target, std::move(type), identity, std::move(callback), capture, once,
-                      passive);
+    return input;
+}
+
+inline DomInput& listen_dom_keyboard(Engine& engine, const std::string& type) {
+    auto& input = dom_input(engine);
+    if (input.event_types.insert(type).second)
+        ++input.revision;
+    return input;
+}
+
+inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
+                           std::size_t identity,
+                           DomEventListeners<PlatformMouseEvent>::Callback callback,
+                           bool capture = false, bool once = false, bool passive = false) {
+    listen_dom_pointer(engine, target, type)
+        .pointer.add(target, std::move(type), identity, std::move(callback), capture, once,
+                     passive);
 }
 
 inline void on_dom_keyboard(Engine& engine, DomEventTarget target, std::string type,
                             std::size_t identity,
                             DomEventListeners<PlatformKeyboardEvent>::Callback callback,
                             bool capture = false, bool once = false, bool passive = false) {
-    auto& input = dom_input(engine);
-    if (input.event_types.insert(type).second)
-        ++input.revision;
-    input.keyboard.add(target, std::move(type), identity, std::move(callback), capture, once,
-                       passive);
+    listen_dom_keyboard(engine, type)
+        .keyboard.add(target, std::move(type), identity, std::move(callback), capture, once,
+                      passive);
+}
+
+/** `target.on<type> = callback`; an empty callback removes the handler. */
+inline void set_dom_pointer_handler(Engine& engine, DomEventTarget target, std::string type,
+                                    DomEventListeners<PlatformMouseEvent>::Callback callback) {
+    if (!callback && !engine.dom_input)
+        return;
+    auto& input = callback ? listen_dom_pointer(engine, target, type) : *engine.dom_input;
+    input.pointer.set_handler(target, std::move(type), std::move(callback));
+}
+
+inline void set_dom_keyboard_handler(Engine& engine, DomEventTarget target, std::string type,
+                                     DomEventListeners<PlatformKeyboardEvent>::Callback callback) {
+    if (!callback && !engine.dom_input)
+        return;
+    auto& input = callback ? listen_dom_keyboard(engine, type) : *engine.dom_input;
+    input.keyboard.set_handler(target, std::move(type), std::move(callback));
 }
 
 inline void off_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
@@ -332,18 +370,23 @@ inline Engine& dom_target_owner(DomEventTargetValue value) {
     return *value.engine;
 }
 
-inline UiElementHandle dom_target_element(DomEventTargetValue value) {
+/** The retained element a target names, invalid for Document, Window and text targets. */
+inline UiElementHandle dom_target_retained_element(DomEventTargetValue value) {
     const auto& engine = dom_target_owner(value);
     const auto element = value.target.kind == DomEventTargetKind::Element
                              ? UiElementHandle{value.target.element}
                          : value.target.kind == DomEventTargetKind::Canvas ? engine.primary_canvas
                                                                            : UiElementHandle{};
     if (element.value >= engine.ui_elements.size())
-        throw std::runtime_error(
-            "The event target has no retained element in its owning document.");
-    const auto& record = engine.ui_elements[element.value];
-    if (record.tag.empty() || record.tag.front() == '#')
-        throw std::runtime_error("The event target is not an Element.");
+        return {};
+    const auto& tag = engine.ui_elements[element.value].tag;
+    return tag.empty() || tag.front() == '#' ? UiElementHandle{} : element;
+}
+
+inline UiElementHandle dom_target_element(DomEventTargetValue value) {
+    const auto element = dom_target_retained_element(value);
+    if (element.value == invalid_handle)
+        throw std::runtime_error("The event target is not an Element of its owning document.");
     return element;
 }
 
@@ -351,15 +394,30 @@ inline UiElementHandle dom_target_element(DomEventTargetValue value) {
 inline bool dom_target_has_tag(DomEventTargetValue value, std::string_view tag) {
     if (value.target.kind == DomEventTargetKind::Canvas)
         return tag == "canvas";
-    if (value.target.kind != DomEventTargetKind::Element)
-        return false;
-    return handle_at(dom_target_owner(value).ui_elements, UiElementHandle{value.target.element})
-               .tag == tag;
+    const auto element = dom_target_retained_element(value);
+    return element.value != invalid_handle &&
+           dom_target_owner(value).ui_elements[element.value].tag == tag;
 }
 
 inline bool dom_target_has_tag(const js::Nullable<DomEventTargetValue>& value,
                                std::string_view tag) {
     return value.has_value() && dom_target_has_tag(*value, tag);
+}
+
+/** `instanceof Element`, or `HTMLElement` when `html`: static SVG markup is in the SVG namespace. */
+inline bool dom_target_is_element(DomEventTargetValue value, bool html) {
+    if (value.target.kind == DomEventTargetKind::Canvas)
+        return true;
+    const auto element = dom_target_retained_element(value);
+    if (element.value == invalid_handle)
+        return false;
+    const auto& record = dom_target_owner(value).ui_elements[element.value];
+    return !html || record.markup_owner.value == invalid_handle ||
+           (record.tag != "svg" && record.tag != "path" && record.tag != "rect");
+}
+
+inline bool dom_target_is_element(const js::Nullable<DomEventTargetValue>& value, bool html) {
+    return value.has_value() && dom_target_is_element(*value, html);
 }
 
 inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHandle target) {
@@ -375,6 +433,18 @@ inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHa
         target = record.parent.value != invalid_handle ? record.parent : record.markup_owner;
     }
     return path;
+}
+
+/** `ancestor.contains(target)`: Document, Window and other documents' nodes are never contained. */
+inline bool dom_target_within(Engine& engine, UiElementHandle ancestor,
+                              const js::Nullable<DomEventTargetValue>& value) {
+    if (!value.has_value() || value->engine != &engine)
+        return false;
+    const auto node = dom_target_retained_element(*value);
+    if (node.value == invalid_handle)
+        return false;
+    const auto path = dom_ui_path(engine, node);
+    return std::find(path.begin(), path.end(), DomEventTarget::node(ancestor.value)) != path.end();
 }
 #endif
 

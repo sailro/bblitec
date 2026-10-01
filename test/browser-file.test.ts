@@ -209,7 +209,10 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
         input.click();
         engine.canvas.width = loaded;
     `);
-    assert.match(result.cpp, /bbl::ui_on_file_change\(v_engine, v_input,/);
+    assert.match(
+        result.cpp,
+        /bbl::ui_set_file_change_handler\(v_engine, v_input,/,
+    );
     assert.match(result.cpp, /bbl::js::FileReader\{\}/);
     assert.match(result.cpp, /\.set_onload\(/);
     assert.match(result.cpp, /\.set_onerror\(/);
@@ -227,16 +230,10 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
                 error instanceof CompileError && pattern.test(error.message),
         );
     refusal(
-        `const button = document.createElement("button");
-         button.onclick = () => {};`,
-        /event handler property 'onclick' is not lowered/,
-    );
-    refusal(
         `const input = document.createElement("input");
          input.type = "file";
-         input.onchange = () => {};
-         input.onchange = () => {};`,
-        /onchange handler is assigned once/,
+         input.oninput = () => {};`,
+        /file input dispatches only change/,
     );
     refusal(
         `const reader = new FileReader();

@@ -155,6 +155,94 @@ function pinDetached(
     return context.bindings.pinValueToTemporary(snapshot, label, node);
 }
 
+type DomListenerFamily = "custom" | "keyboard" | "pointer";
+
+function compileDomCallback(
+    context: Pick<Context, "allocateTemporaryCppName" | "callbacks">,
+    callback: ts.Expression,
+    family: DomListenerFamily,
+    engine: string,
+): { cpp: string; identity: string } {
+    const name = context.allocateTemporaryCppName("dom_event");
+    return context.callbacks.compilePlatformCallback(
+        callback,
+        {
+            cppType:
+                family === "custom"
+                    ? "const bbl::PlatformCustomEvent&"
+                    : family === "keyboard"
+                      ? "const bbl::PlatformKeyboardEvent&"
+                      : "const bbl::PlatformMouseEvent&",
+            name,
+        },
+        [
+            {
+                kind:
+                    family === "custom"
+                        ? "custom-event"
+                        : family === "keyboard"
+                          ? "platform-keyboard-event"
+                          : "platform-mouse-event",
+                cpp: name,
+                readOnly: true,
+                engineCpp: engine,
+                ...(family === "custom"
+                    ? {
+                          dataType: {
+                              kind: "handle" as const,
+                              handle: "custom-event" as const,
+                          },
+                      }
+                    : {}),
+            },
+        ],
+    );
+}
+
+/** The DOM listener family an element `on<type>` handler joins, if any. */
+export function elementDomHandlerFamily(
+    type: string,
+): "keyboard" | "pointer" | undefined {
+    if (type === "keydown" || type === "keyup") return "keyboard";
+    return pointerNames.has(type) && type !== "resize" ? "pointer" : undefined;
+}
+
+/**
+ * `element.on<type> = handler` for the shared dispatch families: the HTML
+ * event handler, one non-capture listener per target and type whose
+ * callback a later assignment replaces in place and `null` removes.
+ */
+export function emitDomEventHandler(
+    context: Pick<
+        Context,
+        | "requireEngine"
+        | "bindings"
+        | "reachFeature"
+        | "allocateTemporaryCppName"
+        | "callbacks"
+        | "emit"
+        | "cppString"
+    >,
+    element: Value,
+    family: "keyboard" | "pointer",
+    type: string,
+    handler: ts.Expression | undefined,
+    site: ts.Expression,
+): void {
+    const engine = context.requireEngine(element, site);
+    const owner = pinDetached(context, element, "event_target", site);
+    context.reachFeature("input:dom", site);
+    const listener = handler
+        ? compileDomCallback(context, handler, family, engine).cpp
+        : "{}";
+    context.emit({
+        kind: "expression",
+        code:
+            `bbl::set_dom_${family}_handler(${engine}, ` +
+            `bbl::DomEventTarget::node(${owner.cpp}.value), ${context.cppString(type)}, ${listener});`,
+    });
+}
+
 /** One listener path for native DOM identities; error/visibility/file services
  * retain their own payloads until they join this dispatch contract. */
 export function emitDomEventListener(
@@ -288,38 +376,7 @@ export function emitDomEventListener(
                 : value;
         identity = callbackIdentity(pinned, callback);
     } else {
-        const name = context.allocateTemporaryCppName("dom_event");
-        const compiled = context.callbacks.compilePlatformCallback(
-            callback,
-            {
-                cppType: custom
-                    ? "const bbl::PlatformCustomEvent&"
-                    : keyboard
-                      ? "const bbl::PlatformKeyboardEvent&"
-                      : "const bbl::PlatformMouseEvent&",
-                name,
-            },
-            [
-                {
-                    kind: custom
-                        ? "custom-event"
-                        : keyboard
-                          ? "platform-keyboard-event"
-                          : "platform-mouse-event",
-                    cpp: name,
-                    readOnly: true,
-                    engineCpp: engine,
-                    ...(custom
-                        ? {
-                              dataType: {
-                                  kind: "handle" as const,
-                                  handle: "custom-event" as const,
-                              },
-                          }
-                        : {}),
-                },
-            ],
-        );
+        const compiled = compileDomCallback(context, callback, family, engine);
         identity = compiled.identity;
         listener = compiled.cpp;
     }
