@@ -21,13 +21,17 @@ export interface FlagSpec {
     positionals?: number;
 }
 
+/** Where an ad-hoc page or entry's root-relative URLs resolve. */
+export const AD_HOC_SOURCE_FLAGS = ["--site-root", "--public-dir"] as const;
+
 /**
  * The flags every measuring command shares, spelled once: the backend,
- * the pose and the validation layer. The native executable is chosen by
- * `BBLITE_NATIVE_EXE`, never a flag, so every command honours it alike.
+ * the pose, the validation layer and an ad-hoc source's roots. The native
+ * executable is chosen by `BBLITE_NATIVE_EXE`, never a flag, so every
+ * command honours it alike.
  */
 export const MEASURE_FLAGS = {
-    value: ["--backend", "--seek"],
+    value: ["--backend", "--seek", ...AD_HOC_SOURCE_FLAGS],
     boolean: ["--gpu-debug"],
 } as const;
 

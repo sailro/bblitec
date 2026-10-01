@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+    configureAdHocScenes,
     getScene,
     resolveScene,
     sceneReferencePage,
@@ -604,6 +612,37 @@ test("an HTML page is a scene source hosting the entry it names", () => {
     } finally {
         rmSync(page, { force: true });
         rmSync(".cache/adhoc-page.ts", { force: true });
+    }
+});
+
+test("an ad-hoc page outside the repository keeps its site root and public directory", () => {
+    const site = mkdtempSync(resolve(tmpdir(), "bblite-adhoc-"));
+    mkdirSync(resolve(site, "src"), { recursive: true });
+    writeFileSync(resolve(site, "src/main.ts"), "export {};\n");
+    const page = resolve(site, "outside-page.html");
+    writeFileSync(
+        page,
+        '<!doctype html><script type="module" src="/src/main.ts"></script>\n',
+    );
+    try {
+        configureAdHocScenes({ publicDir: resolve(site, "public") });
+        const scene = resolveScene(page);
+        assert.equal(scene.id, "outside-page");
+        assert.equal(resolve(scene.source), resolve(site, "src/main.ts"));
+        assert.equal(resolve(scene.publicDir ?? ""), resolve(site, "public"));
+        const reference = sceneReferencePage(scene);
+        assert.equal(resolve(reference.siteRoot ?? ""), site);
+        assert.equal(
+            resolve(reference.publicDir ?? ""),
+            resolve(site, "public"),
+        );
+        assert.throws(
+            () => resolveScene("regression-host-page"),
+            /apply to an ad-hoc source, not registered scene 'regression-host-page'/,
+        );
+    } finally {
+        configureAdHocScenes({});
+        rmSync(site, { recursive: true, force: true });
     }
 });
 

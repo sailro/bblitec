@@ -152,8 +152,10 @@ export type SuiteSourceTransform = (source: string) => string;
 /** Fresh diagnostics only; omitted means the frozen-reference protocol. */
 type SuiteAnimationPoseProtocol = "applied-group-pose-v1";
 
+// The harness keeps its own marks on the document element: a page names its
+// canvases as it likes.
 const fixedEngineStartMarker =
-    'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
+    'document.documentElement.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
 
 /**
  * Arm the deterministic RAF clock in whichever module actually starts the
@@ -441,6 +443,13 @@ interface SuiteCaptureOptions {
     search?: string;
     /** Audited host-page elements that surround the immutable scene module. */
     hostUi?: NativeHostUi;
+    /**
+     * The directory `/` paths name, for a page outside the repository: its
+     * modules and files are served from it before the repository's.
+     */
+    siteRoot?: string;
+    /** The public directory root-relative asset URLs are served from first. */
+    publicDir?: string;
 }
 
 /** Full-page capture is the product default; zero requests a canvas-only
@@ -538,6 +547,13 @@ export function createSuiteSceneServer(
     options: SuiteCaptureOptions = {},
 ): ReturnType<typeof createServer> {
     const root = resolve(".");
+    // A page outside the repository is served from its site root, and the
+    // repository still serves the pinned packages beneath it.
+    const siteRoot = options.siteRoot ? resolve(options.siteRoot) : root;
+    const servedRoots = siteRoot === root ? [root] : [siteRoot, root];
+    const publicDir = options.publicDir
+        ? resolve(options.publicDir)
+        : undefined;
     const { width, height } = options.viewport ?? { width: 1280, height: 720 };
     if (
         !Number.isSafeInteger(width) ||
@@ -550,7 +566,7 @@ export function createSuiteSceneServer(
         );
     }
     const entryPath = options.sourcePath
-        ? `/${relative(root, resolve(options.sourcePath))
+        ? `/${relative(siteRoot, resolve(options.sourcePath))
               .split(sep)
               .join("/")
               .replace(/\.ts$/, ".js")}`
@@ -671,58 +687,72 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             return;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
-        const path = resolve(root, relative);
-        // Local TypeScript modules transpile on demand. Corpus scenes
-        // write both specifier styles: the ESM ".js" one the demo build
-        // rewrites, and the bare extensionless one bundlers resolve (the
-        // sprite scenes import `../_shared/sprite-atlas-image`), so the
-        // sibling to compile is found either way.
-        if (
-            url.pathname.endsWith(".ts") ||
-            !existsSync(path) ||
-            !statSync(path).isFile()
-        ) {
-            const typescriptPath = url.pathname.endsWith(".ts")
-                ? path
-                : url.pathname.endsWith(".js")
-                  ? `${path.slice(0, -3)}.ts`
-                  : `${path}.ts`;
+        for (const servedRoot of servedRoots) {
+            const path = resolve(servedRoot, relative);
+            // Local TypeScript modules transpile on demand. Corpus scenes
+            // write both specifier styles: the ESM ".js" one the demo build
+            // rewrites, and the bare extensionless one bundlers resolve (the
+            // sprite scenes import `../_shared/sprite-atlas-image`), so the
+            // sibling to compile is found either way.
             if (
-                typescriptPath.startsWith(`${root}${sep}`) &&
-                existsSync(typescriptPath) &&
-                statSync(typescriptPath).isFile()
+                url.pathname.endsWith(".ts") ||
+                !existsSync(path) ||
+                !statSync(path).isFile()
             ) {
-                const sourceText = readFileSync(typescriptPath, "utf8");
-                const fixedFrameSource =
-                    options.fixedAnimationFrame === undefined ||
-                    options.independentEngines !== undefined
-                        ? sourceText
-                        : markFixedEngineStart(sourceText);
-                const moduleText = pinnedPackageSpecifiers(
-                    fixedFrameSource,
-                    options.independentEngines === undefined
-                        ? pinnedBrowserEntryUrl
-                        : engineCaptureEntryUrl,
-                );
-                response.writeHead(200, {
-                    "Content-Type": "text/javascript; charset=utf-8",
-                });
-                response.end(
-                    browserHarness().transpileForBrowser(
-                        moduleText,
-                        typescriptPath,
-                    ),
-                );
+                const typescriptPath = url.pathname.endsWith(".ts")
+                    ? path
+                    : url.pathname.endsWith(".js")
+                      ? `${path.slice(0, -3)}.ts`
+                      : `${path}.ts`;
+                if (
+                    typescriptPath.startsWith(`${servedRoot}${sep}`) &&
+                    existsSync(typescriptPath) &&
+                    statSync(typescriptPath).isFile()
+                ) {
+                    const sourceText = readFileSync(typescriptPath, "utf8");
+                    const fixedFrameSource =
+                        options.fixedAnimationFrame === undefined ||
+                        options.independentEngines !== undefined
+                            ? sourceText
+                            : markFixedEngineStart(sourceText);
+                    const moduleText = pinnedPackageSpecifiers(
+                        fixedFrameSource,
+                        options.independentEngines === undefined
+                            ? pinnedBrowserEntryUrl
+                            : engineCaptureEntryUrl,
+                    );
+                    response.writeHead(200, {
+                        "Content-Type": "text/javascript; charset=utf-8",
+                    });
+                    response.end(
+                        browserHarness().transpileForBrowser(
+                            moduleText,
+                            typescriptPath,
+                        ),
+                    );
+                    return;
+                }
+            }
+            if (
+                path.startsWith(`${servedRoot}${sep}`) &&
+                existsSync(path) &&
+                statSync(path).isFile()
+            ) {
+                response.writeHead(200, { "Content-Type": mimeType(path) });
+                response.end(readFileSync(path));
                 return;
             }
         }
+        const publicPath =
+            publicDir === undefined ? undefined : resolve(publicDir, relative);
         if (
-            path.startsWith(`${root}${sep}`) &&
-            existsSync(path) &&
-            statSync(path).isFile()
+            publicPath !== undefined &&
+            publicPath.startsWith(`${publicDir}${sep}`) &&
+            existsSync(publicPath) &&
+            statSync(publicPath).isFile()
         ) {
-            response.writeHead(200, { "Content-Type": mimeType(path) });
-            response.end(readFileSync(path));
+            response.writeHead(200, { "Content-Type": mimeType(publicPath) });
+            response.end(readFileSync(publicPath));
             return;
         }
         const bundledRelative = bundledDemoAssetPath(relative);
@@ -878,10 +908,10 @@ const schedule = () => {
         scheduled = false;
         flushing = true;
         frame += 1;
-        const canvas = document.getElementById("renderCanvas");
+        const marks = document.documentElement;
         if (
             engineStartFrame < 0 &&
-            canvas?.dataset.fixedEngineStarting === "true"
+            marks.dataset.fixedEngineStarting === "true"
         ) {
             engineStartFrame = frame;
         }
@@ -914,16 +944,14 @@ const schedule = () => {
             timer.due += timer.period;
             timer.callback(...timer.args);
         }
-        if (canvas) {
-            const captureFrame = engineStartFrame < 0
-                ? -1
-                : frame - engineStartFrame;
-            canvas.dataset.fixedAnimationFrame = String(frame);
-            canvas.dataset.fixedCaptureFrame = String(captureFrame);
-            canvas.dataset.fixedAnimationCallbacks = String(due.length);
-        }
+        const captureFrame = engineStartFrame < 0
+            ? -1
+            : frame - engineStartFrame;
+        marks.dataset.fixedAnimationFrame = String(frame);
+        marks.dataset.fixedCaptureFrame = String(captureFrame);
+        marks.dataset.fixedAnimationCallbacks = String(due.length);
         if (
-            canvas?.dataset.ready === "true" &&
+            document.querySelector('canvas[data-ready="true"]') !== null &&
             engineStartFrame >= 0 &&
             frame - engineStartFrame >= target
         ) {

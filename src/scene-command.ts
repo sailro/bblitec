@@ -45,6 +45,7 @@ import {
 import {
     type FlagSpec,
     type ParsedFlags,
+    AD_HOC_SOURCE_FLAGS,
     MEASURE_FLAGS,
     flagNumber,
     isMainModule,
@@ -133,6 +134,7 @@ import {
 } from "./capture-native.js";
 import { compareImages } from "./parity.js";
 import {
+    configureAdHocScenes,
     resolveScene,
     scenes,
     type SceneDefinition,
@@ -290,6 +292,7 @@ function compilerArguments(scene: SceneDefinition): string[] {
                   ...(scene.page.root ? ["--site-root", scene.page.root] : []),
               ]
             : [scene.source]),
+        ...(scene.publicDir ? ["--public-dir", scene.publicDir] : []),
         "--out",
         scene.output,
         "--title",
@@ -3207,14 +3210,17 @@ const COMMANDS: readonly CommandSpec[] = [
     {
         name: "compile",
         argument: SCENE_OR_ALL_ARGUMENT,
-        flags: { boolean: ["--cold"] },
+        flags: { value: AD_HOC_SOURCE_FLAGS, boolean: ["--cold"] },
         summary: "generate C++, WGSL, assets and manifests",
         lock: true,
     },
     {
         name: "build",
         argument: SCENE_OR_ALL_ARGUMENT,
-        flags: { value: ["--backend", "--compiler"], boolean: ["--cold"] },
+        flags: {
+            value: ["--backend", "--compiler", ...AD_HOC_SOURCE_FLAGS],
+            boolean: ["--cold"],
+        },
         summary:
             "configure, build and deploy the generated tree (--backend sdl_gpu|dawn|both, --compiler auto|clangcl|msvc)",
         lock: true,
@@ -3223,7 +3229,12 @@ const COMMANDS: readonly CommandSpec[] = [
         name: "process",
         argument: SCENE_OR_ALL_ARGUMENT,
         flags: {
-            value: ["--backend", "--compiler", "--shader"],
+            value: [
+                "--backend",
+                "--compiler",
+                "--shader",
+                ...AD_HOC_SOURCE_FLAGS,
+            ],
             boolean: ["--cold"],
         },
         summary:
@@ -3422,6 +3433,16 @@ async function main(): Promise<void> {
     // One strict parse per invocation, against the command's own spec.
     const parsed = parseFlags(rest, spec.flags, command);
     if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
+    const siteRoot = parsed.values.get("--site-root");
+    const publicDir = parsed.values.get("--public-dir");
+    if (id === "all" && (siteRoot !== undefined || publicDir !== undefined))
+        throw new Error(
+            `${command}: --site-root and --public-dir apply to one ad-hoc source.`,
+        );
+    configureAdHocScenes({
+        ...(siteRoot !== undefined ? { siteRoot } : {}),
+        ...(publicDir !== undefined ? { publicDir } : {}),
+    });
     switch (command) {
         case "doctor":
             runDoctor();

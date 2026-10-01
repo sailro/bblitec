@@ -79,15 +79,50 @@ export interface SceneDefinition {
      * browser reference is captured from it.
      */
     page?: HostPageProgram;
+    /**
+     * An ad-hoc source's public directory: root-relative asset URLs resolve
+     * beneath it at generation and in the reference capture.
+     */
+    publicDir?: string;
     parity?: SceneParityDefinition;
 }
 
-/** The browser page a scene's reference is captured from, when it has one. */
+/** Where an ad-hoc source's root-relative URLs resolve (`--site-root`, `--public-dir`). */
+export interface AdHocSceneOptions {
+    siteRoot?: string;
+    publicDir?: string;
+}
+
+let adHocSceneOptions: AdHocSceneOptions = {};
+
+/** The site root and public directory every ad-hoc source this process resolves takes. */
+export function configureAdHocScenes(options: AdHocSceneOptions): void {
+    adHocSceneOptions = options;
+}
+
+/**
+ * The browser page a scene's reference is captured from, when it has one,
+ * and where its URLs resolve: a page outside the repository is served from
+ * its site root, an ad-hoc source's public directory beside it.
+ */
 export function sceneReferencePage(scene: SceneDefinition): {
     hostPage?: string;
+    siteRoot?: string;
+    publicDir?: string;
 } {
     const page = scene.page?.path ?? scene.parity?.referenceHostPage;
-    return page === undefined ? {} : { hostPage: page };
+    const outside =
+        scene.page !== undefined &&
+        relative(resolve("."), resolve(scene.page.path)).startsWith("..");
+    return {
+        ...(page === undefined ? {} : { hostPage: page }),
+        ...(outside && scene.page
+            ? { siteRoot: hostPageRoot(scene.page) }
+            : {}),
+        ...(scene.publicDir !== undefined
+            ? { publicDir: scene.publicDir }
+            : {}),
+    };
 }
 
 /**
@@ -5224,16 +5259,22 @@ function defaultSceneName(id: string): string {
 }
 
 export function resolveScene(idOrSource: string): SceneDefinition {
-    const registered = scenes.find(({ id }) => id === idOrSource);
-    if (registered) return registered;
-
     const absoluteSource = resolve(idOrSource);
-    const registeredSource = scenes.find(
-        ({ source, page }) =>
-            resolve(source) === absoluteSource ||
-            (page !== undefined && resolve(page.path) === absoluteSource),
-    );
-    if (registeredSource) return registeredSource;
+    const registered =
+        scenes.find(({ id }) => id === idOrSource) ??
+        scenes.find(
+            ({ source, page }) =>
+                resolve(source) === absoluteSource ||
+                (page !== undefined && resolve(page.path) === absoluteSource),
+        );
+    const { siteRoot, publicDir } = adHocSceneOptions;
+    if (registered) {
+        if (siteRoot !== undefined || publicDir !== undefined)
+            throw new Error(
+                `--site-root and --public-dir apply to an ad-hoc source, not registered scene '${registered.id}'.`,
+            );
+        return registered;
+    }
     // An HTML page is a source too: it names its entry and hosts it.
     if (
         !existsSync(absoluteSource) ||
@@ -5248,23 +5289,29 @@ export function resolveScene(idOrSource: string): SceneDefinition {
                 scenes.map(({ id }) => id).join(", "),
         );
     }
-    const relativeSource = relative(resolve("."), absoluteSource);
-    if (
-        isAbsolute(relativeSource) ||
-        relativeSource === ".." ||
-        relativeSource.startsWith(`..${sep}`)
-    ) {
-        throw new Error("Ad-hoc scene sources must be inside the repository.");
-    }
-    const repositoryPath = (path: string): string =>
-        relative(resolve("."), path).replace(/\\/g, "/");
+    // A source outside the repository keeps the relative path that reaches
+    // it, or its absolute path where none exists (another drive).
+    const repositoryPath = (path: string): string => {
+        const relativePath = relative(resolve("."), path);
+        return (isAbsolute(relativePath) ? path : relativePath).replace(
+            /\\/g,
+            "/",
+        );
+    };
+    if (siteRoot !== undefined && !isHostPagePath(absoluteSource))
+        throw new Error("--site-root applies to an HTML page source.");
     // A page's source is the entry its module script names.
     const page = isHostPagePath(absoluteSource)
-        ? { path: repositoryPath(absoluteSource) }
+        ? {
+              path: repositoryPath(absoluteSource),
+              ...(siteRoot !== undefined
+                  ? { root: repositoryPath(resolve(siteRoot)) }
+                  : {}),
+          }
         : undefined;
     const source = page
         ? repositoryPath(readHostPageEntry(page))
-        : relativeSource.replace(/\\/g, "/");
+        : repositoryPath(absoluteSource);
     const id = basename(absoluteSource, extname(absoluteSource))
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
@@ -5282,6 +5329,9 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         name,
         source,
         ...(page ? { page } : {}),
+        ...(publicDir !== undefined
+            ? { publicDir: repositoryPath(resolve(publicDir)) }
+            : {}),
         output: `generated/${id}`,
         title: `Babylon Lite Native - ${name}`,
         buildDirectory: `native/build-${id}-release`,
@@ -5302,19 +5352,16 @@ export function resolveScene(idOrSource: string): SceneDefinition {
 }
 import { existsSync, statSync } from "node:fs";
 import type { HostPageProgram } from "./compiler/types.js";
-import { isHostPagePath, readHostPageEntry } from "./host-page.js";
+import {
+    hostPageRoot,
+    isHostPagePath,
+    readHostPageEntry,
+} from "./host-page.js";
 import {
     adHocCaptureEnvironment,
     fixedCaptureEnvironment,
 } from "./capture-timing.js";
-import {
-    basename,
-    extname,
-    isAbsolute,
-    relative,
-    resolve,
-    sep,
-} from "node:path";
+import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 
 /**
  * The registered application demos: the sources closest to a real

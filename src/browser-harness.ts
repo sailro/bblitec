@@ -214,8 +214,9 @@ export async function waitForSceneReady(
     fixedAnimationFrame?: number,
 ): Promise<void> {
     await gotoScenePage(page, origin, search);
+    // Any canvas the page marks ready: a host page names its own canvases.
     await page.waitForFunction(
-        () => document.getElementById("renderCanvas")?.dataset.ready === "true",
+        () => document.querySelector('canvas[data-ready="true"]') !== null,
         undefined,
         { timeout: 120_000 },
     );
@@ -229,12 +230,13 @@ export async function waitForSceneReady(
         );
     }
     if (fixedAnimationFrame !== undefined) {
-        const canvas = page.locator("#renderCanvas");
+        // The fixed RAF clock keeps its marks on the document element.
+        const marks = page.locator("html");
         const expectedCaptureFrame = String(fixedAnimationFrame);
         const deadline = Date.now() + 120_000;
         try {
             while (
-                (await canvas.getAttribute("data-fixed-capture-frame")) !==
+                (await marks.getAttribute("data-fixed-capture-frame")) !==
                 expectedCaptureFrame
             ) {
                 if (Date.now() >= deadline) {
@@ -243,13 +245,13 @@ export async function waitForSceneReady(
                 await page.waitForTimeout(25);
             }
         } catch (error) {
-            const frame = await canvas.getAttribute(
+            const frame = await marks.getAttribute(
                 "data-fixed-animation-frame",
             );
-            const captureFrame = await canvas.getAttribute(
+            const captureFrame = await marks.getAttribute(
                 "data-fixed-capture-frame",
             );
-            const callbacks = await canvas.getAttribute(
+            const callbacks = await marks.getAttribute(
                 "data-fixed-animation-callbacks",
             );
             throw new Error(
