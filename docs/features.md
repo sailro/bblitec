@@ -507,6 +507,8 @@ unimplemented query/disposal APIs refuse.
 Scene-owned and scene-less graphs support ordered targets/tasks, overrides, depth, MRTs, blits and MSAA
 resolve. Default tasks retain source ordering; authored tasks use explicit lists. Task
 reordering/removal/disposal and broader resource views/samplers remain limited.
+RenderTarget handles retain identity in typed containers and mutable records; SceneContext values
+can key those caches. Dynamically retrieved targets lack the attachment proofs required by TAA.
 
 ### Post-process passes
 

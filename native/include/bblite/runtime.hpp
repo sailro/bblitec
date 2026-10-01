@@ -593,6 +593,7 @@ struct AnimationGroupHandle {
 
 struct RenderTargetHandle {
     std::uint32_t value = invalid_handle;
+    [[nodiscard]] bool operator==(const RenderTargetHandle&) const = default;
 };
 
 struct TaskHandle {
@@ -5396,6 +5397,12 @@ struct Scene {
 
     [[nodiscard]] bool shares_identity(const Scene& other) const noexcept {
         return state == other.state;
+    }
+
+    [[nodiscard]] const SceneState* identity() const noexcept { return state.get(); }
+
+    [[nodiscard]] bool operator==(const Scene& other) const noexcept {
+        return shares_identity(other);
     }
 
     /** Rebuild a lightweight Scene wrapper after locking shared state. */

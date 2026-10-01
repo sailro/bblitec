@@ -41,6 +41,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     gamepad: "bbl::GamepadHandle",
     "gamepad-button": "bbl::GamepadButtonHandle",
     scene: "bbl::Scene",
+    "render-target": "bbl::RenderTargetHandle",
     "scene-node": "bbl::SceneNodeHandle",
     light: "bbl::LightHandle",
     "shadow-generator": "bbl::ShadowGeneratorHandle",
