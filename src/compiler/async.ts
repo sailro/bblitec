@@ -1430,6 +1430,9 @@ export class AsyncLowerer {
         const argument = node.arguments[0];
         if (!argument) return { kind: "void", cpp: "" };
         const value = context.compileValue(argument);
+        // Existing promises keep their identity and settlement; only a raw
+        // payload needs conversion to its contextual result representation.
+        if (value.kind === "promise") return value;
         const own =
             value.dataType ??
             (value.kind === "string" ||

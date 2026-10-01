@@ -125,6 +125,35 @@ test("stored pending promises compile in the application realm", (t) => {
     runNative(result, directory, t);
 });
 
+test("Promise.resolve preserves existing promise identity and settlement", (t) => {
+    const directory = resolve("artifacts/async-promise-resolve-adoption");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        const fulfilled: Promise<number> = Promise.resolve(7);
+        const adopted: Promise<number> = Promise.resolve(fulfilled);
+        const pending = new Promise<number>((resolve) => setTimeout(() => resolve(9), 1));
+        const adoptedPending: Promise<number> = Promise.resolve(pending);
+        const reason = new Error("rejected");
+        const rejected: Promise<number> = Promise.reject(reason);
+        const adoptedRejected: Promise<number> = Promise.resolve(rejected);
+        const recovered = adoptedRejected.catch((error) => {
+            if (error !== reason) throw new Error("rejection identity");
+            return 11;
+        });
+        void (async () => {
+            if (adopted !== fulfilled || adoptedPending !== pending || adoptedRejected !== rejected)
+                throw new Error("promise identity");
+            const values = await Promise.all([adopted, adoptedPending, recovered]);
+            if (values.join() !== "7,9,11") throw new Error("adopted settlement");
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    runNative(result, directory, t);
+});
+
 test("an awaited call may omit an optional parameter", (t) => {
     const directory = resolve("artifacts/async-optional-parameter");
     mkdirSync(directory, { recursive: true });
