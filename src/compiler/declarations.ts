@@ -21,7 +21,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
-import { EmissionSet, writable } from "./emission-transaction.js";
+import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -135,6 +135,12 @@ interface DeclarationContext
     unwrappedValueSymbol(expression: ts.Expression): ts.Symbol | undefined;
 }
 
+/** A `const` a callback names before the source declares it. */
+export type ForwardDeclaration = ts.VariableDeclaration & {
+    name: ts.Identifier;
+    initializer: ts.Expression;
+};
+
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
 
@@ -219,6 +225,106 @@ export class DeclarationLowerer {
         );
     }
 
+    /**
+     * Later `const` declarations a callback named before the walk reached
+     * them: materialized ahead of the callback ("hoisted"), or declared as
+     * temporal-dead-zone storage their initializer fills where the source
+     * declares it.
+     */
+    private readonly forwardBindings = new EmissionMap<
+        ts.Symbol,
+        "hoisted" | { cppName: string; type: DataType }
+    >();
+
+    private lexicalBindingType(
+        name: ts.Identifier,
+        initializer: ts.Expression,
+    ): DataType | undefined {
+        return (
+            this.context.dataLowerer.dataTypeAt(name) ??
+            this.context.dataTypes.fromCheckedObjectInitializer(initializer)
+        );
+    }
+
+    /** Storage for a binding read before its initializer runs, as JavaScript's temporal dead zone. */
+    private declareLexicalBinding(
+        name: ts.Identifier,
+        symbol: ts.Symbol,
+        type: DataType,
+    ): string {
+        const cppName = this.context.bindings.cppIdentifier(name.text);
+        const cppType = this.context.dataTypes.cppType(type);
+        this.context.reachJsData();
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: cppName,
+            initializer: `bbl::js::make_gc_shared<bbl::js::LexicalBinding<${cppType}>>()`,
+        });
+        this.context.registerNativeBindingType(
+            cppName,
+            `std::shared_ptr<bbl::js::LexicalBinding<${cppType}>>`,
+        );
+        this.context.bindings.defineVariable(name, {
+            ...this.context.dataLowerer.leafValue(`${cppName}->get()`, type),
+            sharedStorageCpp: cppName,
+            nativeBinding: true,
+        });
+        this.context.staticConstants.delete(symbol);
+        return cppName;
+    }
+
+    private initializeLexicalBinding(
+        initializer: ts.Expression,
+        cppName: string,
+        type: DataType,
+    ): void {
+        const value = this.context.compileValue(initializer);
+        if (value.kind === "void" && value.abruptCompletion) {
+            this.context.emitDiscardedValue(value);
+            return;
+        }
+        this.context.emit({
+            kind: "expression",
+            code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, initializer)});`,
+        });
+    }
+
+    /**
+     * Makes a later `const` a callback names exist before the callback. When
+     * running its initializer early could change its value or reorder an
+     * effect (DOM, listeners, audio), the binding is temporal-dead-zone
+     * storage its initializer fills where the source declares it; otherwise,
+     * or without an owned data type, the declaration is materialized here and
+     * skipped when the walk reaches it.
+     */
+    public hoistForwardBinding(
+        declaration: ForwardDeclaration,
+        symbol: ts.Symbol,
+    ): void {
+        const type = this.context.evaluationOrder.isPureExpression(
+            declaration.initializer,
+        )
+            ? undefined
+            : this.lexicalBindingType(
+                  declaration.name,
+                  declaration.initializer,
+              );
+        if (type) {
+            this.forwardBindings.set(symbol, {
+                cppName: this.declareLexicalBinding(
+                    declaration.name,
+                    symbol,
+                    type,
+                ),
+                type,
+            });
+            return;
+        }
+        this.emitVariableDeclaration(declaration);
+        this.forwardBindings.set(symbol, "hoisted");
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -283,16 +389,21 @@ export class DeclarationLowerer {
         const declarationSymbol = this.context.symbols.valueSymbol(
             declaration.name,
         );
+        const forward = declarationSymbol
+            ? this.forwardBindings.get(declarationSymbol)
+            : undefined;
         if (
+            forward &&
             declarationSymbol &&
-            this.context.callbacks.hoistedCallbackBindings.has(
-                declarationSymbol,
-            ) &&
             this.context.bindings.lookupOptional(declaration.name)
         ) {
-            this.context.callbacks.hoistedCallbackBindings.delete(
-                declarationSymbol,
-            );
+            this.forwardBindings.delete(declarationSymbol);
+            if (forward !== "hoisted")
+                this.initializeLexicalBinding(
+                    declaration.initializer!,
+                    forward.cppName,
+                    forward.type,
+                );
             return;
         }
         const sourceName = declaration.name.text;
@@ -308,51 +419,24 @@ export class DeclarationLowerer {
                 declarationSymbol,
             )
         ) {
-            const type =
-                this.context.dataLowerer.dataTypeAt(declaration.name) ??
-                this.context.dataTypes.fromCheckedObjectInitializer(
-                    declaration.initializer,
-                );
+            const type = this.lexicalBindingType(
+                declaration.name,
+                declaration.initializer,
+            );
             if (!type)
                 this.context.fail(
                     declaration,
                     "A binding captured by its initializer requires an owned data type.",
                 );
-            this.context.reachJsData();
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cppName,
-                initializer: `bbl::js::make_gc_shared<bbl::js::LexicalBinding<${this.context.dataTypes.cppType(type)}>>()`,
-            });
-            this.context.registerNativeBindingType(
-                cppName,
-                `std::shared_ptr<bbl::js::LexicalBinding<${this.context.dataTypes.cppType(type)}>>`,
-            );
-            this.context.bindings.defineVariable(declaration.name, {
-                ...this.context.dataLowerer.leafValue(
-                    `${cppName}->get()`,
+            this.initializeLexicalBinding(
+                declaration.initializer,
+                this.declareLexicalBinding(
+                    declaration.name,
+                    declarationSymbol,
                     type,
                 ),
-                sharedStorageCpp: cppName,
-                nativeBinding: true,
-            });
-            this.context.staticConstants.delete(declarationSymbol);
-            const value = this.context.compileValue(declaration.initializer);
-            if (value.kind === "void" && value.abruptCompletion) {
-                this.context.emitDiscardedValue(value);
-                return;
-            }
-            const initializer =
-                this.context.dataLowerer.compileKnownValueForSink(
-                    value,
-                    type,
-                    declaration.initializer,
-                );
-            this.context.emit({
-                kind: "expression",
-                code: `${cppName}->initialize(${initializer});`,
-            });
+                type,
+            );
             return;
         }
         const sharedClosureStorage =
