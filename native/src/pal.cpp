@@ -389,11 +389,11 @@ double performance_milliseconds() {
 }
 
 double performance_time_origin() {
-    static const double origin =
-        std::chrono::duration<double, std::milli>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count() -
-        performance_milliseconds();
+    static const double origin = [] {
+        const auto epoch = std::chrono::system_clock::now().time_since_epoch();
+        return std::chrono::duration<double, std::milli>(epoch).count() -
+               performance_milliseconds();
+    }();
     return origin;
 }
 
