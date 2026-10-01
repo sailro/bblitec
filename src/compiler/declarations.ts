@@ -36,7 +36,11 @@ import {
 } from "./option-helpers.js";
 import { readProperty, type PropertyContext } from "./properties.js";
 import { walkReachedLoopNodes } from "./resource-loops.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import {
+    type CompilerSymbols,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -143,6 +147,47 @@ export type ForwardDeclaration = ts.VariableDeclaration & {
     name: ts.Identifier;
     initializer: ts.Expression;
 };
+
+/**
+ * Whether an initializer names the binding it initializes, directly or
+ * through a function it calls: a method of `const batch: Batch = {...}` that
+ * reads `batch` when it runs.
+ */
+export function initializerNamesBinding(
+    checker: ts.TypeChecker,
+    symbols: Pick<CompilerSymbols, "valueSymbol">,
+    binding: ts.Symbol,
+    initializer: ts.Expression,
+): boolean {
+    let found = false;
+    const scanned = new Set<ts.FunctionLikeDeclaration>();
+    const visit = (root: ts.Node): void =>
+        forEachAnalysisNode(root, (node) => {
+            if (found) return "skip";
+            if (
+                ts.isIdentifier(node) &&
+                symbols.valueSymbol(node) === binding
+            ) {
+                found = true;
+                return "skip";
+            }
+            if (ts.isCallExpression(node)) {
+                const called = checker.getResolvedSignature(node)?.declaration;
+                if (
+                    called &&
+                    isSupportedFunction(called) &&
+                    called.body &&
+                    !scanned.has(called)
+                ) {
+                    scanned.add(called);
+                    visit(called.body);
+                    if (found) return "skip";
+                }
+            }
+        });
+    visit(initializer);
+    return found;
+}
 
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
@@ -2451,39 +2496,14 @@ export class DeclarationLowerer {
         const declarationSymbol = ts.isIdentifier(name)
             ? this.context.symbols.valueSymbol(name)
             : undefined;
-        let initializerReferencesBinding = false;
-        const scannedFunctions = new EmissionSet<ts.FunctionLikeDeclaration>();
-        if (declarationSymbol) {
-            const visit = (root: ts.Node): void =>
-                forEachAnalysisNode(root, (node) => {
-                    if (initializerReferencesBinding) return "skip";
-                    if (
-                        ts.isIdentifier(node) &&
-                        this.context.symbols.valueSymbol(node) ===
-                            declarationSymbol
-                    ) {
-                        initializerReferencesBinding = true;
-                        return "skip";
-                    }
-                    if (ts.isCallExpression(node)) {
-                        const called =
-                            this.context.checker.getResolvedSignature(
-                                node,
-                            )?.declaration;
-                        if (
-                            called &&
-                            isSupportedFunction(called) &&
-                            called.body &&
-                            !scannedFunctions.has(called)
-                        ) {
-                            scannedFunctions.add(called);
-                            visit(called.body);
-                            if (initializerReferencesBinding) return "skip";
-                        }
-                    }
-                });
-            visit(initializer);
-        }
+        const initializerReferencesBinding =
+            declarationSymbol !== undefined &&
+            initializerNamesBinding(
+                this.context.checker,
+                this.context.symbols,
+                declarationSymbol,
+                initializer,
+            );
         // A record whose own methods name its binding (`batch.keyAt(i)` in a
         // method of `const batch: Batch = {...}`) is one shared object: the
         // methods read the binding when they run, after it is filled.

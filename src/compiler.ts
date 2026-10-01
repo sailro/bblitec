@@ -270,7 +270,10 @@ import {
 } from "./compiler/scene-manifest.js";
 import { BindingScopes } from "./compiler/binding-scopes.js";
 import { ConditionLowerer } from "./compiler/conditions.js";
-import { DeclarationLowerer } from "./compiler/declarations.js";
+import {
+    DeclarationLowerer,
+    initializerNamesBinding,
+} from "./compiler/declarations.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
@@ -1106,10 +1109,12 @@ class Compiler implements LoweringServices {
                     // function bodies are emitted so an earlier object literal
                     // cannot use value syntax for a type that a later Map/Array
                     // declaration makes reference-backed.
-                    this.dataTypes.fromTsType(
+                    const dataType = this.dataTypes.fromTsType(
                         this.checker.getTypeFromTypeNode(node.type),
                         node.type,
                     );
+                    if (this.bindingSelectsObjects(node, dataType))
+                        this.dataTypes.markStoredObjectReferences(dataType!);
                 } else if (
                     ts.isParameter(node) &&
                     (ts.isConstructorDeclaration(node.parent) ||
@@ -1150,6 +1155,37 @@ class Compiler implements LoweringServices {
         for (const source of this.sourceFiles()) {
             if (!source.isDeclarationFile) visit(source);
         }
+    }
+
+    /**
+     * A typed binding that holds one shared object rather than a copy: a
+     * record whose own methods name the binding, and a nullable record an
+     * uninitialized `let` is later pointed at (`let s: S | undefined; s =
+     * createS()`). Decided before emission, so no storage replays.
+     */
+    private bindingSelectsObjects(
+        declaration: ts.VariableDeclaration,
+        dataType: DataType | undefined,
+    ): boolean {
+        if (!ts.isIdentifier(declaration.name)) return false;
+        const symbol = this.symbols.valueSymbol(declaration.name);
+        if (!symbol) return false;
+        if (declaration.initializer)
+            return (
+                dataType?.kind === "struct" &&
+                initializerNamesBinding(
+                    this.checker,
+                    this.symbols,
+                    symbol,
+                    declaration.initializer,
+                )
+            );
+        return (
+            dataType?.kind === "optional" &&
+            dataType.inner.kind === "struct" &&
+            !this.dataTypes.isClassStruct(dataType.inner.name) &&
+            this.sharedClosures.identifierIsRebound(declaration.name)
+        );
     }
 
     private collectStaticConstants(): void {
