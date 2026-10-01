@@ -905,6 +905,9 @@ class Compiler implements LoweringServices {
         if (this.options.workers)
             this.reachFeature("platform:workers", this.sourceFile);
         this.dataTypes.registerPartialRecords(this.program.getSourceFiles());
+        this.dataTypes.registerAccessorProperties(
+            this.program.getSourceFiles(),
+        );
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
@@ -6711,6 +6714,70 @@ class Compiler implements LoweringServices {
                 this.defineThis(previousThis);
             }
         });
+    }
+
+    public compileStoredAccessor(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
+        valueType: DataType,
+    ): string {
+        const getter = ts.isGetAccessorDeclaration(accessor);
+        const valueCpp = this.dataTypes.cppType(valueType);
+        const argument = this.allocateTemporaryCppName("accessor_value");
+        const body = this.captureManagedClosureLines(() => {
+            if (getter) {
+                const value = this.compileRecordGetter(owner, accessor);
+                this.emit(
+                    `return ${this.dataLowerer.compileKnownValueForSink(value, valueType, accessor)};`,
+                );
+                return;
+            }
+            const parameterName = accessor.parameters[0]?.name;
+            if (!parameterName || !ts.isIdentifier(parameterName))
+                this.fail(accessor, "A setter takes one named parameter.");
+            const statements = accessor.body?.statements ?? [];
+            const early = firstReturn(statements);
+            if (early)
+                this.fail(
+                    early,
+                    "A stored setter with returns requires a represented result flow.",
+                );
+            this.withRecordScopes(owner, () => {
+                const previousThis = this.activeThis();
+                this.defineThis(owner);
+                try {
+                    this.bindings.withBoundParameters(
+                        [
+                            {
+                                name: parameterName,
+                                compileTime: true,
+                                value: {
+                                    ...this.dataLowerer.leafValue(
+                                        argument,
+                                        valueType,
+                                    ),
+                                    nativeCaptures: [
+                                        this.registerNativeBinding(
+                                            argument,
+                                            false,
+                                            false,
+                                            valueCpp,
+                                        ),
+                                    ],
+                                },
+                            },
+                        ],
+                        () => emitReachableStatements(this, statements),
+                    );
+                } finally {
+                    this.defineThis(previousThis);
+                }
+            });
+        });
+        this.reachJsData();
+        return getter
+            ? `bbl::js::Callback<${valueCpp}()>(${renderClosure(body, "", valueCpp)})`
+            : `bbl::js::Callback<void(${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${valueCpp} ${argument}`, "void")})`;
     }
 
     private compileStoredIntrinsicFunction(

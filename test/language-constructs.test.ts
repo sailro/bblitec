@@ -1036,6 +1036,64 @@ check(
 );
 
 check(
+    "record-accessors-are-stored-native-accessors",
+    `
+    "use strict";
+    interface Counter {
+        readonly count: number;
+        label: string;
+        add(): void;
+    }
+    function createCounter(start: number): Counter {
+        let value = start;
+        let text = "c";
+        const counter: Counter = {
+            get count() { return value; },
+            get label() { return text + counter.count; },
+            set label(next: string) { text = next; },
+            add() { value++; },
+        };
+        return counter;
+    }
+    const counters: Counter[] = [createCounter(1), { count: 7, label: "plain", add() {} }];
+    counters[0]!.add();
+    counters[0]!.add();
+    if (counters[0]!.count !== 3) throw new Error("getter through an array");
+    const { count: destructured } = counters[0]!;
+    if (destructured !== 3) throw new Error("destructured getter");
+    counters[0]!.label = "n";
+    if (counters[0]!.label !== "n3") throw new Error("setter through an array");
+    if (counters[1]!.count !== 7 || counters[1]!.label !== "plain") throw new Error("stored value in an accessor slot");
+    counters[1]!.label = "changed";
+    if (counters[1]!.label !== "changed") throw new Error("stored value write");
+    let current = createCounter(5);
+    const byName = new Map<string, Counter>([["a", current]]);
+    current.add();
+    if (byName.get("a")!.count !== 6) throw new Error("getter through a map");
+    let threw = false;
+    try { (counters[0] as { count: number }).count = 4; } catch (error) { threw = error instanceof TypeError; }
+    if (!threw || counters[0]!.count !== 3) throw new Error("getter-only write");
+
+    interface Reading { readonly count: number; name: string; }
+    function createReading(): Reading {
+        let reads = 0;
+        return { get count() { reads++; return reads; }, name: "r" };
+    }
+    const readings: Reading[] = [createReading()];
+    if (JSON.stringify(readings[0]) !== '{"count":1,"name":"r"}') throw new Error("JSON runs the getter");
+    if (readings[0]!.count !== 2) throw new Error("each read runs the getter");
+
+    class Tally implements Reading {
+        private reads = 10;
+        name = "t";
+        get count(): number { return ++this.reads; }
+    }
+    const views: Reading[] = [new Tally()];
+    if (views[0]!.count !== 11 || views[0]!.count !== 12) throw new Error("class getter through an interface");
+`,
+);
+
+check(
     "factory-records-share-their-frame-and-keep-callbacks",
     `
     interface Batch {

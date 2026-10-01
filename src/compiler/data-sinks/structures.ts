@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
-import { dataTypesEqual, type DataType } from "../data-types.js";
+import {
+    dataTypesEqual,
+    type DataStructField,
+    type DataType,
+} from "../data-types.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -278,9 +282,18 @@ function valueStruct(
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
+            "accessors",
         );
+        const record = value;
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                if (field.accessor)
+                    return accessorSlot(lowerer, field, record, node);
+                if (value.recordGetters?.[field.sourceName])
+                    lowerer.context.fail(
+                        node,
+                        `Property '${field.sourceName}' is an accessor; the native record '${dataType.name}' stores it as data.`,
+                    );
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -325,7 +338,7 @@ function valueStruct(
         const sourceType = value.dataType;
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
-                .structFields(sourceType.name, node)
+                .structFields(sourceType.name, node, "accessors")
                 .map((field) => [field.sourceName, field]),
         );
         const sourceArrow = lowerer.context.dataTypes.isReferenceStruct(
@@ -334,6 +347,7 @@ function valueStruct(
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
+            "accessors",
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
@@ -350,11 +364,22 @@ function valueStruct(
                         `Struct ${sourceType.name} is missing required destination field '${field.sourceName}'.`,
                     );
                 }
+                const sourceCpp = `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`;
+                // One object seen through two record types keeps its
+                // accessors; a stored value becomes the target's cell.
+                if (source.accessor || field.accessor) {
+                    if (
+                        source.accessor !== field.accessor ||
+                        !dataTypesEqual(source.type, field.type)
+                    )
+                        lowerer.context.fail(
+                            node,
+                            `Property '${field.sourceName}' is an accessor in one of '${sourceType.name}' and '${dataType.name}' but not the other.`,
+                        );
+                    return sourceCpp;
+                }
                 return lowerer.compileKnownValueForSink(
-                    lowerer.leafValue(
-                        `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`,
-                        source.type,
-                    ),
+                    lowerer.leafValue(sourceCpp, source.type),
                     field.type,
                     node,
                 );
@@ -393,6 +418,53 @@ function valueStruct(
             : aggregate;
     }
     return undefined;
+}
+
+/**
+ * A record's accessor-backed field: its getter (and setter), or the plain
+ * value it stores, behind a getter and a setter over one cell.
+ */
+function accessorSlot(
+    lowerer: DataSinkHost,
+    field: DataStructField,
+    record: Value,
+    node: ts.Node,
+): string {
+    const slot = lowerer.context.dataTypes.structFieldCppType(field);
+    const getter = record.recordGetters?.[field.sourceName];
+    const setter = record.recordSetters?.[field.sourceName];
+    if (getter) {
+        const parts = [
+            lowerer.context.compileStoredAccessor(record, getter, field.type),
+            ...(setter
+                ? [
+                      lowerer.context.compileStoredAccessor(
+                          record,
+                          setter,
+                          field.type,
+                      ),
+                  ]
+                : []),
+        ];
+        return `${slot}(${parts.join(", ")})`;
+    }
+    if (setter)
+        lowerer.context.fail(
+            node,
+            `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
+        );
+    const property = record.recordProperties?.[field.sourceName];
+    const stored = property
+        ? lowerer.compileKnownValueForSink(property, field.type, node)
+        : field.defaultWhenMissing
+          ? "{}"
+          : field.type.kind === "optional"
+            ? "std::nullopt"
+            : lowerer.context.fail(
+                  node,
+                  `Compile-time record is missing required field '${field.sourceName}'.`,
+              );
+    return `bbl::js::data_accessor<${lowerer.context.dataTypes.cppType(field.type)}>(${stored})`;
 }
 
 function valueEnummap(

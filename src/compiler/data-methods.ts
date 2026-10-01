@@ -897,9 +897,9 @@ function compileKnownDataMethod(
         dataType?.kind === "optional" ? dataType.inner : dataType;
     if (recordType?.kind === "struct") {
         const field = lowerer.context.dataTypes
-            .structFields(recordType.name, callee.name)
+            .structFields(recordType.name, callee.name, "accessors")
             .find((candidate) => candidate.name === method);
-        const functionType = field?.type;
+        const functionType = field?.accessor ? undefined : field?.type;
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);

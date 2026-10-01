@@ -3471,8 +3471,20 @@ export class DeclarationLowerer {
                     value.dataType.name,
                     property,
                     element,
+                    "accessors",
                 );
-                const storedFieldCpp = `${temporary}${this.context.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                const slotCpp = `${temporary}${this.context.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                // An accessor's getter runs once; the binding owns its result.
+                const storedFieldCpp = field.accessor
+                    ? this.context.allocateTemporaryCppName("accessed")
+                    : slotCpp;
+                if (field.accessor)
+                    this.context.emit({
+                        kind: "declaration",
+                        type: this.context.dataTypes.cppType(field.type),
+                        name: storedFieldCpp,
+                        initializer: `${slotCpp}.get()`,
+                    });
                 if (element.initializer && field.type.kind === "optional") {
                     // The default stands in for an absent optional field; the
                     // binding is then a value of the field's inner type.
@@ -3518,7 +3530,9 @@ export class DeclarationLowerer {
                     cppName,
                     field.type,
                 );
-                const staticField = value.recordProperties?.[property];
+                const staticField = field.accessor
+                    ? undefined
+                    : value.recordProperties?.[property];
                 if (staticField?.staticNumber !== undefined) {
                     writable(fieldValue).staticNumber =
                         staticField.staticNumber;

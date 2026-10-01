@@ -4,6 +4,7 @@
 #include <bblite/js_binding.hpp>
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
+#include <bblite/js_accessor.hpp>
 #include <bblite/dom_event_state.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic

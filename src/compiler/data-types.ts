@@ -64,6 +64,7 @@ import {
     type ClassHierarchy,
     classChain,
     classInstanceProperties,
+    isStaticMember,
 } from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
@@ -71,6 +72,16 @@ import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp } from "./types.js";
 
 type Fail = (node: ts.Node, message: string) => never;
+
+/** The callbacks an accessor-backed field stores, as the data walks see them. */
+function accessorFunctionTypes(field: DataStructField): DataType[] {
+    return [
+        { kind: "function", parameters: [], result: field.type },
+        ...(field.accessor === "get-set"
+            ? [{ kind: "function" as const, parameters: [field.type] }]
+            : []),
+    ];
+}
 
 /**
  * The value a union member's tag property is declared as, when it is one
@@ -292,7 +303,16 @@ export interface DataStructField {
     optionalProperty?: boolean;
     /** An asserted empty object can lack this otherwise required property. */
     uncheckedProperty?: boolean;
+    /**
+     * A repository object literal (or a class that `implements` the type)
+     * defines the property with `get`, and `set` when "get-set": the field
+     * is a `bbl::js::Accessor` slot whose reads run the getter.
+     */
+    accessor?: StructFieldAccessor;
 }
+
+/** The accessors an accessor-backed record field holds. */
+export type StructFieldAccessor = "get" | "get-set";
 
 export function propertyIsReadOnly(property: ts.Symbol): boolean {
     return (property.declarations ?? []).some(
@@ -736,6 +756,107 @@ export class DataTypeRegistry {
 
     public isPartialRecord(type: ts.Type): boolean {
         return this.partialRecords.has(this.structIdentity(type));
+    }
+
+    /**
+     * Property declarations a repository object literal defines with an
+     * accessor: the literal's own, and the property of its contextual type
+     * (`const batch: Batch = { get count() {...} }`, a factory returning
+     * `Batch`), plus an interface property a class `implements` with one.
+     */
+    private readonly accessorProperties = new EmissionMap<
+        ts.Node,
+        { get: boolean; set: boolean }
+    >();
+    private readonly accessorPropertyNames = new EmissionSet<string>();
+
+    public registerAccessorProperties(files: readonly ts.SourceFile[]): void {
+        const note = (declaration: ts.Node, getter: boolean): void => {
+            const known = this.accessorProperties.get(declaration) ?? {
+                get: false,
+                set: false,
+            };
+            this.accessorProperties.set(declaration, {
+                get: known.get || getter,
+                set: known.set || !getter,
+            });
+        };
+        const noteImplemented = (
+            type: ts.Type,
+            name: string,
+            getter: boolean,
+        ): void => {
+            for (const member of type.isUnion() ? type.types : [type])
+                for (const declaration of this.checker.getPropertyOfType(
+                    member,
+                    name,
+                )?.declarations ?? [])
+                    note(declaration, getter);
+        };
+        for (const file of files) {
+            if (file.isDeclarationFile) continue;
+            forEachAnalysisNode(file, (node) => {
+                if (
+                    !ts.isGetAccessorDeclaration(node) &&
+                    !ts.isSetAccessorDeclaration(node)
+                )
+                    return;
+                if (
+                    !ts.isIdentifier(node.name) &&
+                    !ts.isStringLiteral(node.name)
+                )
+                    return;
+                const name = node.name.text;
+                const getter = ts.isGetAccessorDeclaration(node);
+                this.accessorPropertyNames.add(name);
+                if (ts.isObjectLiteralExpression(node.parent)) {
+                    note(node, getter);
+                    const contextual = this.checker.getContextualType(
+                        node.parent,
+                    );
+                    if (contextual) noteImplemented(contextual, name, getter);
+                    return;
+                }
+                if (!ts.isClassDeclaration(node.parent) || isStaticMember(node))
+                    return;
+                for (const clause of node.parent.heritageClauses ?? []) {
+                    if (clause.token !== ts.SyntaxKind.ImplementsKeyword)
+                        continue;
+                    for (const implemented of clause.types)
+                        noteImplemented(
+                            this.checker.getTypeAtLocation(implemented),
+                            name,
+                            getter,
+                        );
+                }
+            });
+        }
+    }
+
+    /** Whether a repository object literal or class defines a property of this name with an accessor. */
+    public isAccessorPropertyName(name: string): boolean {
+        return this.accessorPropertyNames.has(name);
+    }
+
+    /** The accessors a struct field of this property holds, if any. */
+    private propertyAccessor(
+        property: ts.Symbol,
+        node: ts.Node,
+    ): StructFieldAccessor | undefined {
+        let get = false;
+        let set = false;
+        for (const declaration of property.declarations ?? []) {
+            const noted = this.accessorProperties.get(declaration);
+            get ||= noted?.get === true;
+            set ||= noted?.set === true;
+        }
+        if (!get && !set) return undefined;
+        if (!get)
+            this.fail(
+                node,
+                `Property '${property.name}' has a setter without a getter; a native record reads every property it stores.`,
+            );
+        return set ? "get-set" : "get";
     }
 
     /**
@@ -2349,10 +2470,12 @@ export class DataTypeRegistry {
             const mapped: DataType = this.markStoredObjectReferences(
                 optional ? this.nullableType(mappedValue) : mappedValue,
             );
+            const accessor = this.propertyAccessor(property, node);
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),
                 type: mapped,
+                ...(accessor ? { accessor } : {}),
                 ...(propertyIsReadOnly(property) ? { readOnly: true } : {}),
                 ...(optional ? { optionalProperty: true } : {}),
                 ...(partial ? { uncheckedProperty: true } : {}),
@@ -2377,7 +2500,7 @@ export class DataTypeRegistry {
         const key = `${fields
             .map(
                 (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}`,
+                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}${field.accessor ? `:${field.accessor}` : ""}`,
             )
             .join(",")}`;
         const existing = this.structsByKey.get(key);
@@ -3103,7 +3226,9 @@ export class DataTypeRegistry {
      */
     public structFieldTypes(name: string): DataType[] {
         const definition = this.structsByName.get(name);
-        return (definition?.fields ?? []).map((field) => field.type);
+        return (definition?.fields ?? []).flatMap((field) =>
+            field.accessor ? accessorFunctionTypes(field) : [field.type],
+        );
     }
 
     private registerStructDefinition(
@@ -3126,7 +3251,7 @@ export class DataTypeRegistry {
         const key = `owned-result:${stored
             .map(
                 (field) =>
-                    `${field.sourceName}:${this.typeKey(field.type)}:${field.readOnly ? "readonly" : "mutable"}:${field.defaultWhenMissing ? "default" : "required"}:${field.optionalProperty ? "optional" : "present"}:${JSON.stringify(field.presentForTags)}`,
+                    `${field.sourceName}:${this.typeKey(field.type)}:${field.readOnly ? "readonly" : "mutable"}:${field.defaultWhenMissing ? "default" : "required"}:${field.optionalProperty ? "optional" : "present"}:${JSON.stringify(field.presentForTags)}${field.accessor ? `:${field.accessor}` : ""}`,
             )
             .join(",")}`;
         const existing = this.structsByKey.get(key);
@@ -3186,13 +3311,17 @@ export class DataTypeRegistry {
         );
         const fields = fieldsFor(left.name).filter((field) => {
             const candidate = rightFields.get(field.sourceName);
-            return candidate && dataTypesEqual(candidate.type, field.type);
+            return (
+                candidate &&
+                dataTypesEqual(candidate.type, field.type) &&
+                candidate.accessor === field.accessor
+            );
         });
         if (fields.length === 0) return undefined;
         const key = fields
             .map(
                 (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:required`,
+                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:required${field.accessor ? `:${field.accessor}` : ""}`,
             )
             .join(",");
         const existing = this.structsByKey.get(key);
@@ -3203,11 +3332,14 @@ export class DataTypeRegistry {
         );
         this.registerStructDefinition(key, {
             name,
-            fields: fields.map(({ sourceName, name: fieldName, type }) => ({
-                sourceName,
-                name: fieldName,
-                type,
-            })),
+            fields: fields.map(
+                ({ sourceName, name: fieldName, type, accessor }) => ({
+                    sourceName,
+                    name: fieldName,
+                    type,
+                    ...(accessor ? { accessor } : {}),
+                }),
+            ),
         });
         return { kind: "struct", name };
     }
@@ -3226,27 +3358,56 @@ export class DataTypeRegistry {
         );
     }
 
-    public structFields(name: string, node: ts.Node): DataStructField[] {
+    /**
+     * A struct's fields. A use that reads or writes every field as stored
+     * data refuses an accessor-backed one; the uses that run accessors pass
+     * `"accessors"`.
+     */
+    public structFields(
+        name: string,
+        node: ts.Node,
+        accessors?: "accessors",
+    ): DataStructField[] {
         const definition = this.structsByName.get(name);
         if (!definition) {
             this.fail(node, `Unknown generated struct '${name}'.`);
         }
+        if (!accessors) {
+            const accessor = definition.fields.find((field) => field.accessor);
+            if (accessor) this.failAccessorField(accessor, node);
+        }
         return definition.fields;
     }
 
+    /** One struct field; an accessor-backed one only for a use that runs accessors. */
     public structField(
         name: string,
         field: string,
         node: ts.Node,
+        accessors?: "accessors",
     ): DataStructField {
-        const found = this.structFields(name, node).find(
+        const found = this.structFields(name, node, "accessors").find(
             (candidate) =>
                 candidate.sourceName === field || candidate.name === field,
         );
         if (!found) {
             this.fail(node, `Struct ${name} has no field '${field}'.`);
         }
+        if (found.accessor && !accessors) this.failAccessorField(found, node);
         return found;
+    }
+
+    private failAccessorField(field: DataStructField, node: ts.Node): never {
+        return this.fail(
+            node,
+            `Property '${field.sourceName}' is an accessor; this use reads and writes stored record fields only.`,
+        );
+    }
+
+    /** The native slot type of a struct field: its value, or the accessor pair that produces it. */
+    public structFieldCppType(field: DataStructField): string {
+        const value = this.cppType(field.type);
+        return field.accessor ? `bbl::js::Accessor<${value}>` : value;
     }
 
     /**
@@ -3504,7 +3665,19 @@ export class DataTypeRegistry {
                     }
                     this.jsonSerializedStructs.add(current.name);
                     path.push(current.name);
-                    for (const field of this.structFields(current.name, node)) {
+                    for (const field of this.structFields(
+                        current.name,
+                        node,
+                        "accessors",
+                    )) {
+                        // JSON.stringify writes what a getter returns. A
+                        // getter that may return undefined decides at run
+                        // time whether the key is written at all.
+                        if (field.accessor && field.type.kind === "optional")
+                            this.fail(
+                                node,
+                                `JSON.stringify of accessor property '${field.sourceName}' requires a getter that always returns a value.`,
+                            );
                         visit(field.type);
                     }
                     path.pop();
@@ -3605,7 +3778,7 @@ export class DataTypeRegistry {
         if (this.jsonBoxedStructs.has(type.name)) return;
         this.jsonBoxedStructs.set(type.name, node);
         this.cppType(type);
-        for (const field of this.structFields(type.name, node)) {
+        for (const field of this.structFields(type.name, node, "accessors")) {
             if (
                 field.optionalProperty ||
                 field.uncheckedProperty ||
@@ -3637,7 +3810,7 @@ export class DataTypeRegistry {
                 `inline bbl::js::JsonValue json_value_property(const ${name}& value, std::string_view key) {`,
             );
             for (const field of fields) {
-                const property = `value->${field.name}`;
+                const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
                 const cpp = this.jsonValueCpp(
                     field.type,
                     property,
@@ -3708,7 +3881,7 @@ export class DataTypeRegistry {
                 }
                 lines.push(
                     `    writer.key(${key});`,
-                    `    json_write(writer, value.${field.name});`,
+                    `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
                 );
             }
             lines.push("    writer.end_object();", "}", "");
@@ -3859,9 +4032,11 @@ export class DataTypeRegistry {
             const traceCondition = traceConditions.get(definition.name)!;
             const traceFields = definition.fields.map((field) => ({
                 field,
-                condition: tracedEdgeCondition(field.type, (name) =>
-                    traceConditions.get(name)!,
-                ),
+                condition: field.accessor
+                    ? true
+                    : tracedEdgeCondition(field.type, (name) =>
+                          traceConditions.get(name)!,
+                      ),
             }));
             lines.push(
                 `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
@@ -3871,11 +4046,12 @@ export class DataTypeRegistry {
                 // event view) have no default constructor to name.
                 ...definition.fields.map(
                     (field) =>
-                        `    ${this.cppType(field.type)} ${field.name}${
-                            field.type.kind === "number" ||
-                            field.type.kind === "boolean" ||
-                            field.type.kind === "enum" ||
-                            field.type.kind === "numberindex"
+                        `    ${this.structFieldCppType(field)} ${field.name}${
+                            !field.accessor &&
+                            (field.type.kind === "number" ||
+                                field.type.kind === "boolean" ||
+                                field.type.kind === "enum" ||
+                                field.type.kind === "numberindex")
                                 ? "{}"
                                 : ""
                         };`,
