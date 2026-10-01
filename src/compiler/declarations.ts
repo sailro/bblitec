@@ -2271,9 +2271,13 @@ export class DeclarationLowerer {
             annotated?.kind === "struct" ||
             (annotated?.kind === "optional" &&
                 annotated.inner.kind === "struct");
+        // An accessor record keeps its compile-time form, whose reads run the
+        // getters in place, unless the binding is rebound: then it is stored
+        // in a native record whose accessor slots run them.
         if (
             !declaration.type &&
             inferredPlainObject &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
             this.initializerProducesAccessorRecord(initializer)
         ) {
             return false;

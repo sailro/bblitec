@@ -1036,6 +1036,29 @@ check(
 );
 
 check(
+    "rebound-nullable-records-select-objects",
+    `
+    interface Indicator { show: (enabled: boolean) => void; hide: () => void; }
+    let shown = 0;
+    function createIndicator(step: number): Indicator {
+        let visible = false;
+        return { show: (enabled: boolean) => { visible = enabled; shown += step; }, hide: () => { visible = false; } };
+    }
+    let indicator: Indicator | undefined;
+    const later = (): void => indicator?.show(true);
+    later();
+    indicator = createIndicator(1);
+    later();
+    const first = indicator;
+    indicator = createIndicator(10);
+    later();
+    first.show(true);
+    indicator?.hide();
+    if (shown !== 12) throw new Error("rebound nullable record");
+`,
+);
+
+check(
     "record-accessors-are-stored-native-accessors",
     `
     "use strict";
@@ -1070,6 +1093,9 @@ check(
     const byName = new Map<string, Counter>([["a", current]]);
     current.add();
     if (byName.get("a")!.count !== 6) throw new Error("getter through a map");
+    const readCurrent = (): number => current.count;
+    current = createCounter(20);
+    if (readCurrent() !== 20 || byName.get("a")!.count !== 6) throw new Error("rebound accessor record");
     let threw = false;
     try { (counters[0] as { count: number }).count = 4; } catch (error) { threw = error instanceof TypeError; }
     if (!threw || counters[0]!.count !== 3) throw new Error("getter-only write");

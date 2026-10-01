@@ -7791,6 +7791,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             !optionalRebind &&
             !referenceRebind
         ) {
+            // Rebinding a nullable object to an object another binding may
+            // hold selects that object: its record becomes a shared
+            // reference (`let s: S | undefined; s = createS()`), replaying
+            // storage the record already had by value.
+            if (
+                target.dataType.kind === "optional" &&
+                target.dataType.inner.kind === "struct" &&
+                !this.context.dataTypes.isClassStruct(
+                    target.dataType.inner.name,
+                )
+            )
+                this.context.dataTypes.markStoredObjectReferences(
+                    target.dataType,
+                );
             this.context.fail(
                 expression,
                 `'${left.text}' holds a ${kind}; rebinding it would copy in native code where JavaScript would alias, so assign through a field or element instead.`,
