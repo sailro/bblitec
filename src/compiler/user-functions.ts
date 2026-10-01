@@ -4052,8 +4052,8 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
-        // Its body lowers here, into a native function value.
-        context.callbacks.hoistForwardCallbackBindings(declaration);
+        // A stored closure may be called before the later declaration runs.
+        context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);
         try {
             return this.lowerStoredDataFunction(

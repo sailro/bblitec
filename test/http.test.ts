@@ -72,7 +72,7 @@ test("runtime HTTP selects the application realm and preserves requests, respons
     const source = `
         const request = fetch;
         async function run():Promise<void> {
-            const response = await request("${base}/submit", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({message:"hello 🌍"})});
+            const response = await fetch("${base}/submit", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({message:"hello 🌍"})});
             if (!response.ok || response.status !== 201 || response.bodyUsed) throw new Error("response metadata");
             const text = await response.text();
             if (text !== '{"answer":42}' || !response.bodyUsed) throw new Error("response text");

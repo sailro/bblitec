@@ -552,16 +552,19 @@ export class CallbackLowerer {
 
     /**
      * JavaScript closures may read a binding declared later in an enclosing
-     * block, directly or through the functions and callbacks they reach,
-     * since they run after that declaration. A native callback lowers its
-     * body where it is registered, so each such binding still pending in a
+     * block, directly or through the functions and callbacks they reach.
+     * A native callback lowers its body where it is registered, so each
+     * such binding still pending in a
      * block being lowered is made to exist first, in that block's scope
      * (DeclarationLowerer.hoistForwardBinding), when emission stands at that
      * block's level. A function the callback reaches resolves by its
      * declaration and is walked rather than hoisted, and only the callback's
      * own reads run an untyped effectful initializer ahead of it.
      */
-    public hoistForwardCallbackBindings(callback: ts.Node): void {
+    public hoistForwardCallbackBindings(
+        callback: ts.Node,
+        preserveTemporalDeadZone = false,
+    ): void {
         const forward: {
             declaration: ForwardDeclaration;
             symbol: ts.Symbol;
@@ -590,15 +593,19 @@ export class CallbackLowerer {
         );
         for (const { declaration, symbol, direct, owner } of forward) {
             if (this.context.bindings.peekBinding(symbol)) continue;
-            const readsPending = [
-                ...this.context.bindings.readNames(declaration.initializer),
-            ].some((read) => this.pendingDeclaration(read) !== undefined);
+            const initializeAtDeclaration =
+                preserveTemporalDeadZone ||
+                [
+                    ...this.context.bindings.readNames(declaration.initializer),
+                ].some(
+                    (read) => this.pendingDeclaration(read, true) !== undefined,
+                );
             this.context.bindings.withScopeDepth(owner.scopeDepth, () =>
                 this.context.declarations.hoistForwardBinding(
                     declaration,
                     symbol,
                     direct,
-                    readsPending,
+                    initializeAtDeclaration,
                 ),
             );
         }
@@ -606,10 +613,12 @@ export class CallbackLowerer {
 
     /**
      * The declaration of a `let`/`const` a block being lowered has not
-     * reached yet, with the statement that block is lowering.
+     * reached yet, with the statement that block is lowering. Initializer
+     * dependencies also include its current, still-unbound declaration.
      */
     private pendingDeclaration(
         symbol: ts.Symbol,
+        includeInitializing = false,
     ):
         | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
         | undefined {
@@ -624,7 +633,9 @@ export class CallbackLowerer {
             return undefined;
         const statement = declaration.parent.parent;
         const owner = this.context.loweringStatementIn(statement.parent);
-        return owner && owner.statement.pos < statement.pos
+        return owner &&
+            (owner.statement.pos < statement.pos ||
+                (includeInitializing && owner.statement === statement))
             ? { declaration, owner }
             : undefined;
     }

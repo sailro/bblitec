@@ -106,22 +106,23 @@ test("timer callbacks read later bindings through the functions and callbacks th
         worker.terminate();
         const order: string[] = [];
         function makeLabel(prefix: string): string { order.push("label"); return prefix; }
-        interface Ring { fire(): void; }
+        interface Ring { name: string; fire(): void; }
         function createRing(options: { onCommit: (source: string) => void }): Ring {
             order.push("ring");
             setTimeout(() => options.onCommit("timer"), 1);
-            return { fire: () => options.onCommit("direct") };
+            return { name: "ring", fire: () => options.onCommit("direct") };
         }
         void (async () => {
             const ring = createRing({ onCommit: (source) => markEdited(source) });
+            const current = ring;
             let edits = 0;
             const log: string[] = [];
             const label = makeLabel("edit");
-            const markEdited = (source: string): void => { edits += 1; log.push(label + ":" + source); };
+            const markEdited = (source: string): void => { edits += 1; log.push(current.name + ":" + label + ":" + source); };
             ring.fire();
             await new Promise<void>((resolve) => setTimeout(resolve, 20));
             if (edits !== 2) throw new Error("later let");
-            if (log.join() !== "edit:direct,edit:timer") throw new Error("later const");
+            if (log.join() !== "ring:edit:direct,ring:edit:timer") throw new Error("later const");
             if (order.join() !== "ring,label") throw new Error("effect order");
             globalThis.close();
         })();

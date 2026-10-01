@@ -4070,19 +4070,25 @@ check(
 );
 
 check(
-    "a forward initializer waits for the bindings it reads",
+    "stored closures preserve the temporal dead zone of pure later bindings",
     `
     function main(): void {
-        const handlers: Array<() => void> = [];
-        handlers.push(() => {
-            if (total !== 14) throw new Error("later initializer value");
-        });
-        let refused = false;
-        try { handlers[0]!(); } catch { refused = true; }
         const seed = 7;
-        const total = seed * 2;
-        if (!refused) throw new Error("later initializer ran early");
-        handlers[0]!();
+        const readers: Array<() => number> = [];
+        readers.push(() => literal);
+        readers.push(() => reference);
+        readers.push(() => dependent);
+        let refused = 0;
+        for (const read of readers) {
+            try { read(); } catch { refused++; }
+        }
+        const literal = 7;
+        const reference = seed;
+        const laterSeed = 7;
+        const dependent = laterSeed * 2;
+        if (refused !== 3) throw new Error("later initializer ran early");
+        if (readers[0]!() !== 7 || readers[1]!() !== 7 || readers[2]!() !== 14)
+            throw new Error("later initializer value");
     }
     main();
 `,
