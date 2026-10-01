@@ -43,7 +43,28 @@ test("nullable boolean logical values retain the selected tag and operand effect
         }
     }
     const result = compileSource(
-        `let reads = 0; let effects = 0; ${cases.join("\n")}`,
+        `let reads = 0; let effects = 0; ${cases.join("\n")}
+        function readObject(value: {enabled: boolean} | undefined): {enabled: boolean} | undefined {
+            reads++; return value;
+        }
+        function objectAnd(value: {enabled: boolean} | undefined): boolean | undefined {
+            const selected = readObject(value);
+            return selected && rightUndefined(selected.enabled);
+        }
+        function nullableObjectAnd(value: {enabled: boolean} | null): boolean | null {
+            return value && rightNull(value.enabled);
+        }
+        reads = 0; effects = 0;
+        if (objectAnd(undefined) !== undefined || reads !== 1 || effects !== 0)
+            throw new Error("object absence selection");
+        if (objectAnd({enabled: false}) !== false || reads !== 2 || effects !== 1)
+            throw new Error("present false object selection");
+        if (objectAnd({enabled: true}) !== true || reads !== 3 || effects !== 2)
+            throw new Error("present true object selection");
+        if (nullableObjectAnd(null) !== null || effects !== 2 ||
+            nullableObjectAnd({enabled: false}) !== false || effects !== 3)
+            throw new Error("null object selection");
+        `,
     );
     const native = optionalNativeFixtureTools(false);
     await t.test("native", { skip: !native }, () => {

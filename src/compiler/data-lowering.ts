@@ -8556,16 +8556,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression.left,
                 "Logical boolean selection requires a truth-testable left operand.",
             );
+        // An object contributes only its absent state to `object && bool`;
+        // its present value belongs to the unselected arm, not the bool sink.
+        const absentObject =
+            operator === ts.SyntaxKind.AmpersandAmpersandToken &&
+            (this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(expression.left),
+            ).flags &
+                ts.TypeFlags.Object) !==
+                0;
         const result = this.context.allocateTemporaryCppName("logical_boolean");
         this.context.emit({
             kind: "declaration",
             type: this.context.dataTypes.cppType(type),
             name: result,
-            initializer: this.compileKnownValueForSink(
-                left,
-                type,
-                expression.left,
-            ),
+            initializer: absentObject
+                ? this.context.dataTypes.absentValue(type)
+                : this.compileKnownValueForSink(left, type, expression.left),
         });
         this.context.registerNativeBinding(result);
         this.emitGuardedStore(
