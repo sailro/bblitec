@@ -5859,6 +5859,8 @@ FileTexture load_compressed_texture_variants(Engine& engine, const std::vector<s
                                              bool invert_y);
 void set_material_base_color_file(Engine& engine, MaterialHandle material, FileTexture texture);
 void set_material_orm_file(Engine& engine, MaterialHandle material, FileTexture texture);
+void set_material_normal_file(Engine& engine, MaterialHandle material, FileTexture texture,
+                              float scale);
 MaterialHandle create_pbr_material(Engine& engine, PbrMaterialOptions options);
 MaterialHandle create_standard_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_standard_esm_shadow_material_view(Engine& engine, MaterialHandle source,

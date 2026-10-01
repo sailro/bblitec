@@ -458,6 +458,8 @@ function compileCreatePbrMaterial(
         hasBaseColorTexture,
         sourceBaseColorFactor,
         orm,
+        normal,
+        normalTextureScale,
         metallicFactor,
         roughnessFactor,
         directIntensity,
@@ -483,6 +485,7 @@ function compileCreatePbrMaterial(
         plugins,
     } = context.intrinsicOptions.compilePbrMaterialOptions(argumentAt(call, 0));
     context.expectSameEngine(baseColor, orm, call);
+    if (normal) context.expectSameEngine(baseColor, normal, call);
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
     // Typed Texture2D returns use StoredTexture even when every source return
@@ -514,6 +517,16 @@ function compileCreatePbrMaterial(
     };
     const baseColorFile = fileTexture(baseColor);
     const ormFile = fileTexture(orm);
+    // The normal slot has no creation fallback: an absent texture composes
+    // no normal-map arm, and a present one is a loaded image the pinned
+    // collector binds with its own sampler.
+    const normalFile = normal ? fileTexture(normal) : undefined;
+    if (normal && !normalFile) {
+        context.fail(
+            call,
+            "A created PBR material's normalTexture must come from loadTexture2D.",
+        );
+    }
     // A loaded base-color image pairs with the neutral white
     // factor texel and attaches after creation, carrying its own
     // encoding: upstream keeps the sRGB/linear choice on the
@@ -567,7 +580,7 @@ function compileCreatePbrMaterial(
         `.use_physical_light_falloff = ` +
         `${usePhysicalLightFalloff}, ` +
         `.composition_profile = ${scenePbrMaterialIndex}u})`;
-    if (baseColorFile || ormFile || plugins) {
+    if (baseColorFile || ormFile || normalFile || plugins) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({
             kind: "declaration",
@@ -585,6 +598,12 @@ function compileCreatePbrMaterial(
             context.emit({
                 kind: "expression",
                 code: `bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`,
+            });
+        }
+        if (normalFile) {
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_material_normal_file(${engine}, ${temporary}, ${normalFile}, ${normalTextureScale});`,
             });
         }
         if (plugins) {

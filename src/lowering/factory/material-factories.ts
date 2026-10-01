@@ -974,7 +974,7 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         };
     }
 
-    public lowerPbrMaterialFactory(): LoweredSource {
+    public lowerPbrMaterialFactory(normalTextures = false): LoweredSource {
         const pbrModule = "src/material/pbr/pbr-material.ts";
         // The opt-in setters replaced the unlit/skyboxMode options. Each is
         // one stamp plus an unconditional extension registration, and the
@@ -1111,7 +1111,24 @@ void set_material_orm_file(
         std::move(texture.data);
     ++${recordAt("engine.materials", "material")}.orm_texture_generation;
 }
-
+${
+    normalTextures
+        ? `
+// createPbrMaterial's normalTexture prop: the pinned collector binds it with
+// its own sampler, its presence composed the normal-map arm, and the pin's
+// UBO writer reads normalTextureScale for it.
+void set_material_normal_file(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture,
+    float scale) {
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.normal_texture = std::move(texture.data);
+    record.normal_texture_scale = scale;
+}
+`
+        : ""
+}
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
 // features are opt-in setters that flag an existing material and
 // register their fragment extension.

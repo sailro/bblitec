@@ -356,7 +356,8 @@ addition and its per-frame refresh are lowered from the pinned bodies; the refre
 ## Materials and material state
 
 Standard, PBR, Grid, shader and selected no-color views support reached properties. PBR layers include
-clearcoat, sheen, iridescence, anisotropy and transmission. UV/lightmap/vertex-color opt-ins remain explicit;
+clearcoat, sheen, iridescence, anisotropy and transmission. Created PBR materials take loaded base color,
+ORM and normal textures. UV/lightmap/vertex-color opt-ins remain explicit;
 lightmap binding precedes registration. Runtime texture-producer choices refuse.
 
 Public factors retain array identity/double precision. Reads require one registered scene and represented

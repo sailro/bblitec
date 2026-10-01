@@ -85,6 +85,7 @@ export interface MaterialOptionContext
             | "compileColor4"
             | "compileVec3"
             | "evaluator"
+            | "emitDiscardedValue"
         > {}
 
 /**
@@ -109,6 +110,9 @@ export interface CompiledPbrMaterialOptions {
     hasBaseColorTexture: boolean;
     sourceBaseColorFactor: string;
     orm: Value;
+    /** The authored `normalTexture`; absent composes no normal-map arm. */
+    normal?: Value;
+    normalTextureScale: string;
     metallicFactor: string;
     roughnessFactor: string;
     directIntensity: string;
@@ -444,6 +448,8 @@ export function compilePbrMaterialOptions(
             "baseColorTexture",
             "baseColorFactor",
             "ormTexture",
+            "normalTexture",
+            "normalTextureScale",
             "metallicFactor",
             "roughnessFactor",
             "directIntensity",
@@ -458,7 +464,7 @@ export function compilePbrMaterialOptions(
             "usePhysicalLightFalloff",
             "plugins",
         ],
-        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, and skybox mode.",
+        "Reached PBR lowering supports base/ORM/normal textures, the normal texture scale, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, and skybox mode.",
     );
     const baseColorExpression = context.objectProperty(
         object,
@@ -491,6 +497,31 @@ export function compilePbrMaterialOptions(
     }
     if (ormExpression) {
         context.expectKind(orm, "texture", ormExpression);
+    }
+    const normalExpression = context.objectProperty(object, "normalTexture");
+    const normal = normalExpression
+        ? context.compileValue(normalExpression)
+        : undefined;
+    if (normal && normalExpression) {
+        context.expectKind(normal, "texture", normalExpression);
+    }
+    // A UBO lane (`normalTextureScale ?? 1.0` in `_writeMaterialData`) only
+    // the normal-map arm reads, so a run-time value is admitted and, without
+    // a normal texture, is evaluated and dropped.
+    const normalScaleExpression = context.objectProperty(
+        object,
+        "normalTextureScale",
+    );
+    const normalTextureScale = pbrUniformNumber(
+        context,
+        normal ? normalScaleExpression : undefined,
+        pinnedDefaultNumber("pbrNormalTextureScale"),
+    );
+    if (!normal && normalScaleExpression) {
+        const dropped = context.compileValue(normalScaleExpression);
+        if (dropped.staticNumber === undefined) {
+            context.emitDiscardedValue(dropped);
+        }
     }
     const baseColorFactor = baseColorFactorExpression
         ? compilePbrBaseColorFactor(context, baseColorFactorExpression)
@@ -648,6 +679,7 @@ export function compilePbrMaterialOptions(
             gltfAssetsBefore: context.sceneManifest.currentGltfAssetCount(),
             hasBaseColorTexture: true,
             hasOrmTexture: true,
+            ...(normal ? { hasNormalTexture: true as const } : {}),
             ...(baseColorFactor?.value
                 ? { baseColorFactor: baseColorFactor.value }
                 : baseColorFactor
@@ -685,6 +717,8 @@ export function compilePbrMaterialOptions(
         baseColorFactor:
             baseColorFactor?.cpp ?? "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
         orm,
+        ...(normal ? { normal } : {}),
+        normalTextureScale: normalTextureScale.cpp,
         metallicFactor: metallicOption.cpp,
         roughnessFactor: roughnessOption.cpp,
         directIntensity: directOption.cpp,
