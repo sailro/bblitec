@@ -7,7 +7,13 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 
 const scene = (body: string): string => `
     import {
@@ -64,4 +70,66 @@ test("a binding of a chain continuation reads through the guard", () => {
         result.cpp,
         /\.position\.x = \(v_bblite_element_found_\d+ \? v_height : 1\.0\);/,
     );
+});
+
+test("optional-chain callback results retain intrinsic absence and identity", async (t) => {
+    const source = `
+        interface Handler { action?: (value: number) => number; }
+        const action = (value: number): number => value + 4;
+        const handlers = new Map<string, Handler>([
+            ["empty", {}], ["present", { action }],
+        ]);
+        const expected = handlers.get("present")!.action;
+        let lookups = 0;
+        function lookup(key: string): Handler | undefined {
+            lookups++;
+            return handlers.get(key);
+        }
+        const missing = lookup("missing")?.action;
+        const absent = lookup("empty")?.action;
+        const present = lookup("present")?.action;
+        if (missing !== undefined || absent !== undefined || missing || absent)
+            throw new Error("absent callback became present");
+        if (present !== expected || present?.(3) !== 7 || lookups !== 3)
+            throw new Error("callback identity or receiver evaluation");
+        let effects = 0;
+        if (lookup("empty")?.action?.(++effects) !== undefined || effects !== 0)
+            throw new Error("absent callback evaluated arguments");
+        if (lookup("empty")?.["action"] !== undefined ||
+            lookup("present")?.["action"] !== expected)
+            throw new Error("indexed callback presence");
+        interface Provider { read: () => ((value: number) => number) | undefined; }
+        const providers = new Map<string, Provider>([
+            ["empty", { read: (): ((value: number) => number) | undefined => undefined }],
+            ["present", { read: () => expected }],
+        ]);
+        if (providers.get("empty")?.read() !== undefined ||
+            providers.get("missing")?.read() !== undefined ||
+            providers.get("present")?.read() !== expected)
+            throw new Error("returned callback presence");
+        interface State { value: number | null | undefined; count?: number; }
+        const states = new Map<string, State>([
+            ["null", { value: null }], ["zero", { value: 0, count: 0 }],
+        ]);
+        if (states.get("missing")?.value !== undefined ||
+            states.get("null")?.value !== null || states.get("zero")?.value !== 0 ||
+            states.get("null")?.count !== undefined || states.get("zero")?.count !== 0)
+            throw new Error("scalar absence tags");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ESNext },
+        }).outputText,
+    );
+    const result = compileSource(source, {
+        fileName: "optional-chain-callback-presence.ts",
+    });
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "optional-chain-callback-presence",
+            result.cpp,
+        );
+    });
 });

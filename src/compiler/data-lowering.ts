@@ -1359,7 +1359,7 @@ export class DataLowerer {
 
     /**
      * Selects the non-null owner of an optional-chain access and preserves
-     * the source's absence as one flattened `Nullable<T>` result.
+     * the source's absence as one flattened nullable result.
      *
      * Data optionals use their native presence bit. Unchecked object-array
      * reads already carry `optionalFoundCpp` plus a safe default reference;
@@ -1596,15 +1596,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.registerNativeTemporary(result, type);
             return this.leafValue(result, type);
         };
-        if (
-            selectedType.kind === "struct" &&
-            this.context.dataTypes.isReferenceStruct(selectedType.name)
-        ) {
+        const nullableType = this.context.dataTypes.nullableType(selectedType);
+        if (nullableType.kind !== "optional") {
             return withSlot(
                 optionalResult(
-                    selectedType,
+                    nullableType,
                     selected.cpp,
-                    this.context.dataTypes.absentValue(selectedType),
+                    this.context.dataTypes.absentValue(nullableType),
                 ),
             );
         }
@@ -1613,10 +1611,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? selectedType
                 : checkerType?.kind === "optional"
                   ? checkerType
-                  : {
-                        kind: "optional",
-                        inner: selectedType,
-                    };
+                  : nullableType;
         const selectedCpp =
             selectedType.kind === "optional"
                 ? selected.cpp
@@ -6323,11 +6318,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         const source = copied ?? this.context.compileValue(iterable);
-        // The constructor copies the elements: a borrowed view's are read,
-        // never retained.
+        // The constructor copies the elements into a new collection, even
+        // when the source is a Set. A borrowed view is read, never retained.
         const values =
             source.kind === "data" &&
-            source.dataType?.kind === "span" &&
+            (source.dataType?.kind === "span" ||
+                source.dataType?.kind === "set") &&
             dataTypesEqual(source.dataType.element, dataType.element)
                 ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`
                 : this.compileKnownValueForSink(
