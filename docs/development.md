@@ -249,6 +249,9 @@ on diagnostics. Missing builds or matching sources are errors; lint never genera
 A build whose precompiled header is older than one of its inputs is refused: clang-tidy would
 otherwise reuse the stale header and report diagnostics against code that no longer exists.
 Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
+Equivalent source/flag/include contexts share one invocation within a run; PCH inputs must have identical
+bytes. The report retains every build context and its shared diagnostics. Aggregate and standalone scene
+units both remain checked; standalone units verify their own includes.
 
 `.clang-tidy` enables only checks that pass on maintained and generated code. By default, native lint
 checks handwritten translation units and headers. `--generated` includes the build's emitted C++ and

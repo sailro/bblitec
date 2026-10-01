@@ -9,6 +9,7 @@ import { getFileInfo } from "prettier";
 import {
     nativeCompilationFiles,
     nativeFormatFiles,
+    nativeHeaderFilter,
     newerPrecompiledHeaderInput,
     precompiledHeaderOutputs,
     standaloneSceneCommands,
@@ -22,6 +23,30 @@ import {
     jsonString,
 } from "./json.js";
 import { cppFunction } from "./native-fixture.js";
+
+test("shared lint header filters retain each owned root without repeating common roots", () => {
+    const root = resolve("artifacts/header-filter");
+    const native = resolve(root, "native/include");
+    const generated = Array.from({ length: 300 }, (_, index) =>
+        resolve(root, `generated/scene${index}`),
+    );
+    const roots = generated.flatMap((directory) => [native, directory]);
+    const filter = nativeHeaderFilter(roots);
+    assert.equal(filter, nativeHeaderFilter([native, ...generated]));
+    const pattern = new RegExp(filter);
+    for (const directory of [native, ...generated]) {
+        assert.equal(pattern.test(join(directory, "types.hpp")), true);
+        assert.equal(pattern.test(`${directory}-other/types.hpp`), false);
+    }
+    assert.equal(pattern.test(resolve(root, "third-party/types.hpp")), false);
+    const special = resolve(root, "generated/canvas+(1)");
+    assert.equal(
+        new RegExp(nativeHeaderFilter([special])).test(
+            join(special, "types.hpp"),
+        ),
+        true,
+    );
+});
 
 test("native fixture extraction preserves formatted function bodies", () => {
     const source =

@@ -17,30 +17,31 @@ import {
     clangToolsMajor,
 } from "./development-tools.js";
 import { holdDistLock } from "./dist-lock.js";
+import {
+    commandArguments,
+    commandTokens,
+    lintCompilationGroups,
+    lintEnvironmentAllowsDedup,
+    type CompilationCommand,
+} from "./lint-compilation.js";
 import { findRepositoryRoot } from "./repository-root.js";
 import { runConcurrently } from "./run-concurrently.js";
 import { sceneAggregateSources } from "./native-scene-sources.js";
 import { scenes } from "./scene-registry.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
-import { writeJsonRecord } from "./tooling/records.js";
+import { contentDigest, writeJsonRecord } from "./tooling/records.js";
 
 interface LintUnit {
     build: string;
     database: string;
     file: string;
-    headerFilter: string;
+    headerRoots: string[];
     scene: string | undefined;
     log: string;
     fixes: string;
     exitCode: number | undefined;
-}
-
-interface CompilationCommand {
-    directory: string;
-    file: string;
-    command?: string;
-    arguments?: string[];
+    command: CompilationCommand | undefined;
 }
 
 function compilationCommands(database: unknown): CompilationCommand[] {
@@ -87,8 +88,6 @@ function compilationCommands(database: unknown): CompilationCommand[] {
         };
     });
 }
-
-const commandTokens = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
 
 /** Keep the build's flags while compiling each scene implementation independently. */
 export function standaloneSceneCommands(
@@ -163,6 +162,18 @@ export function nativeFormatFiles(paths: readonly string[]): string[] {
         .sort();
 }
 
+/** Keep shared roots once when one invocation reports for several builds. */
+export function nativeHeaderFilter(roots: readonly string[]): string {
+    return `^(${[...new Set(roots)]
+        .map((path) =>
+            path
+                .split(/[\\/]/)
+                .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+                .join("[/\\\\]"),
+        )
+        .join("|")})[/\\\\]`;
+}
+
 export function nativeCompilationFiles(
     database: unknown,
     buildDirectory: string,
@@ -196,14 +207,6 @@ export function nativeCompilationFiles(
 
 /** Ninja spells a build-relative path with forward slashes. */
 const ninjaPath = (path: string): string => path.split(sep).join("/");
-
-/** A compilation database entry's arguments, from `arguments` or its quoted `command`. */
-function commandArguments(entry: CompilationCommand): string[] {
-    if (entry.arguments !== undefined) return entry.arguments;
-    return [...entry.command!.matchAll(commandTokens)].map(
-        (match) => match[1] ?? match[2] ?? match[3]!,
-    );
-}
 
 /**
  * The precompiled headers a build creates: the build target Ninja records
@@ -518,6 +521,13 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             cache?.CMAKE_MAKE_PROGRAM,
         );
         const commands = standaloneSceneCommands(database, build);
+        const commandsByFile = new Map<string, CompilationCommand[]>();
+        for (const command of commands) {
+            const key = pathKey(resolve(command.directory, command.file));
+            const existing = commandsByFile.get(key);
+            if (existing) existing.push(command);
+            else commandsByFile.set(key, [command]);
+        }
         const lintDatabase = join(logs, String(batch));
         writeJsonRecord(join(lintDatabase, "compile_commands.json"), commands);
         const nativeCache = resolve(
@@ -550,25 +560,21 @@ async function lintCommand(args: readonly string[]): Promise<void> {
                 ? [resolve(generatedDirectory), join(nativeCache, "headers")]
                 : []),
         ];
-        const headerFilter = `^(${headerRoots
-            .map((path) =>
-                path
-                    .split(/[\\/]/)
-                    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-                    .join("[/\\\\]"),
-            )
-            .join("|")})[/\\\\]`;
         return {
             build,
             database: lintDatabase,
             sources,
-            headerFilter,
+            commandsByFile,
+            headerRoots,
             scene: typeof target === "string" ? undefined : target.id,
         };
     });
     mkdirSync(logs, { recursive: true });
-    const work: LintUnit[] = batches.flatMap(
-        ({ build, database, sources, headerFilter, scene }, batch) => {
+    const units: LintUnit[] = batches.flatMap(
+        (
+            { build, database, sources, commandsByFile, headerRoots, scene },
+            batch,
+        ) => {
             console.log(
                 `clang-tidy: ${relative(root, build)} (${sources.length} translation units).`,
             );
@@ -576,13 +582,50 @@ async function lintCommand(args: readonly string[]): Promise<void> {
                 build,
                 database,
                 file,
-                headerFilter,
+                headerRoots,
                 scene,
                 log: join(logs, `${batch}-${index}-${basename(file)}.log`),
                 fixes: join(logs, `${batch}-${index}-${basename(file)}.yaml`),
                 exitCode: undefined,
+                // clang-tidy may run several commands for one source; keep such
+                // database entries independent rather than choose one silently.
+                command:
+                    commandsByFile.get(pathKey(file))?.length === 1
+                        ? commandsByFile.get(pathKey(file))![0]
+                        : undefined,
             }));
         },
+    );
+    const digests = new Map<string, string>();
+    const pchDigest = (file: string): string => {
+        let digest = digests.get(file);
+        if (digest === undefined) {
+            digest = contentDigest(file);
+            digests.set(file, digest);
+        }
+        return digest;
+    };
+    const canShare = lintEnvironmentAllowsDedup(environment);
+    const work = lintCompilationGroups(
+        units.map((unit) => (canShare ? unit.command : undefined)),
+        pchDigest,
+    ).map((indices) => {
+        const members = indices.map((index) => units[index]!);
+        const primary = members[0]!;
+        for (const member of members) {
+            member.log = primary.log;
+            member.fixes = primary.fixes;
+        }
+        return {
+            ...primary,
+            members,
+            headerFilter: nativeHeaderFilter(
+                members.flatMap((unit) => unit.headerRoots),
+            ),
+        };
+    });
+    console.log(
+        `clang-tidy: ${work.length} invocations cover ${units.length} compilation contexts.`,
     );
     try {
         await runConcurrently(
@@ -606,7 +649,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
                     log,
                     { cwd: root, env: environment },
                 );
-                item.exitCode = code;
+                for (const member of item.members) member.exitCode = code;
                 if (code !== 0) {
                     throw new Error(
                         `clang-tidy exited ${code}; ${relative(root, log)}`,
@@ -618,27 +661,30 @@ async function lintCommand(args: readonly string[]): Promise<void> {
         writeJsonRecord(join(logs, "report.json"), {
             tool,
             generated: includeGenerated,
-            passed: work.filter((item) => item.exitCode === 0).length,
-            failed: work.filter(
+            invocations: work.length,
+            passed: units.filter((item) => item.exitCode === 0).length,
+            failed: units.filter(
                 (item) => item.exitCode !== undefined && item.exitCode !== 0,
             ).length,
-            incomplete: work.filter((item) => item.exitCode === undefined)
+            incomplete: units.filter((item) => item.exitCode === undefined)
                 .length,
-            units: work.map(({ build, file, log, fixes, scene, exitCode }) => ({
-                scene,
-                build: relative(root, build),
-                file: relative(root, file),
-                log: relative(root, log),
-                fixes: relative(root, fixes),
-                exitCode: exitCode ?? null,
-            })),
+            units: units.map(
+                ({ build, file, log, fixes, scene, exitCode }) => ({
+                    scene,
+                    build: relative(root, build),
+                    file: relative(root, file),
+                    log: relative(root, log),
+                    fixes: relative(root, fixes),
+                    exitCode: exitCode ?? null,
+                }),
+            ),
         });
         console.log(
             `clang-tidy report: ${relative(root, join(logs, "report.json"))}`,
         );
     }
     console.log(
-        `clang-tidy: ${work.length} translation units checked; logs in ${relative(root, logs).split(sep).join("/")}.`,
+        `clang-tidy: ${work.length} invocations checked ${units.length} compilation contexts; logs in ${relative(root, logs).split(sep).join("/")}.`,
     );
 }
 
