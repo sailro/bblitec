@@ -3930,6 +3930,91 @@ check(
 `,
 );
 
+check(
+    "Array.sort takes a class field, property or stored function comparator",
+    `
+    class Store {
+        private readonly depth: number[] = [3, 1, 2, 0];
+        private readonly topoLess = (a: number, b: number): number => (this.depth[a]! - this.depth[b]!) || (a - b);
+        order(slots: number[]): string {
+            slots.sort(this.topoLess);
+            return slots.join(",");
+        }
+    }
+    function main(): void {
+        if (new Store().order([0, 1, 2, 3]) !== "3,1,2,0") throw new Error("class field comparator");
+        const holder = { compare: (a: number, b: number): number => b - a };
+        const values = [1, 3, 2];
+        values.sort(holder.compare);
+        if (values.join(",") !== "3,2,1") throw new Error("property comparator");
+        let picked = 0;
+        const descending = (a: number, b: number): number => b - a;
+        const ascending = (a: number, b: number): number => a - b;
+        const choose = (down: boolean): ((a: number, b: number) => number) => {
+            picked++;
+            return down ? descending : ascending;
+        };
+        const numbers = [2, 9, 4];
+        numbers.sort(choose(numbers.length > 2));
+        if (numbers.join(",") !== "9,4,2" || picked !== 1) throw new Error("evaluated once " + picked);
+    }
+    main();
+`,
+);
+
+check(
+    "Uint8Array.set copies a source into the view at an offset",
+    `
+    function grow(source: Uint8Array, length: number): Uint8Array {
+        const next = new Uint8Array(length);
+        next.set(source, 0);
+        return next;
+    }
+    function main(): void {
+        const grown = grow(new Uint8Array([7, 8, 9]), 5);
+        if (grown.join(",") !== "7,8,9,0,0") throw new Error("same-kind set " + grown.join(","));
+        const view = grown.subarray(1, 5);
+        view.set([1, 2], 2);
+        if (grown.join(",") !== "7,8,9,1,2") throw new Error("array set through a subarray " + grown.join(","));
+        let refused = false;
+        const longer = new Uint8Array(3);
+        try { view.set(longer, 2); } catch { refused = true; }
+        if (!refused) throw new Error("a run past the end refuses");
+    }
+    main();
+`,
+);
+
+check(
+    "array length growth fills absent elements of optional and object arrays",
+    `
+    interface Id { kind: string; id: number }
+    class Table {
+        private ids: Array<Id | null> = [];
+        grow(capacity: number): void {
+            const previous = this.ids.length;
+            this.ids.length = capacity;
+            for (let slot = previous; slot < capacity; slot++) this.ids[slot] = null;
+        }
+        put(slot: number, id: Id): void { this.ids[slot] = id; }
+        describe(): string { return this.ids.map((id) => (id ? id.kind + id.id : "-")).join(","); }
+    }
+    function main(): void {
+        const table = new Table();
+        table.grow(2);
+        table.put(1, { kind: "a", id: 2 });
+        table.grow(4);
+        if (table.describe() !== "-,a2,-,-") throw new Error("object array growth " + table.describe());
+        const counts: Array<number | undefined> = [1];
+        counts.length = 3;
+        if (counts.length !== 3 || counts[2] !== undefined || counts[0] !== 1) throw new Error("optional array growth");
+        counts.length = 1;
+        if (counts.length !== 1) throw new Error("truncation");
+    }
+    main();
+`,
+);
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).

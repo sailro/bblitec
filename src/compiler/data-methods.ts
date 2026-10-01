@@ -1549,20 +1549,45 @@ function compileArraySort(state: ArrayMethodState): Value {
             "Array.sort expects at most one comparator callback.",
         );
     }
-    const callback = call.arguments[0]
+    const argument = call.arguments[0]
         ? lowerer.context.unwrap(call.arguments[0])
         : undefined;
+    // Another comparator expression (a class field, a property, a call
+    // result) is evaluated once, before the sort: a compile-time callback
+    // keeps its owner's scopes, a function value is held in a temporary.
+    const evaluated =
+        argument &&
+        !ts.isIdentifier(argument) &&
+        !ts.isArrowFunction(argument) &&
+        !ts.isFunctionExpression(argument)
+            ? lowerer.context.compileValue(argument)
+            : undefined;
+    const storedCallback =
+        evaluated?.kind === "callback" ? evaluated : undefined;
     if (
-        callback &&
-        !ts.isIdentifier(callback) &&
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
+        evaluated &&
+        !storedCallback?.callbackDeclaration &&
+        evaluated.dataType?.kind !== "function"
     ) {
         lowerer.context.fail(
-            callback,
-            "Array.sort requires a local function or function literal comparator.",
+            argument!,
+            "Array.sort requires a function comparator.",
         );
     }
+    const comparatorValue =
+        evaluated && !storedCallback
+            ? lowerer.context.bindings.pinValueToTemporary(
+                  evaluated,
+                  "sort_comparator",
+              )
+            : undefined;
+    const callback =
+        argument &&
+        (ts.isIdentifier(argument) ||
+            ts.isArrowFunction(argument) ||
+            ts.isFunctionExpression(argument))
+            ? argument
+            : storedCallback?.callbackDeclaration;
     const result = lowerer.context.allocateTemporaryCppName("sort_result");
     const left = lowerer.context.allocateTemporaryCppName("sort_left");
     const right = lowerer.context.allocateTemporaryCppName("sort_right");
@@ -1580,7 +1605,7 @@ function compileArraySort(state: ArrayMethodState): Value {
     try {
         lowerer.context.enterRuntimeIteration();
         try {
-            if (!callback) {
+            if (!callback && !comparatorValue) {
                 const text = (name: string): string => {
                     if (dataType.element.kind === "string") return name;
                     if (
@@ -1605,27 +1630,39 @@ function compileArraySort(state: ArrayMethodState): Value {
                 const element = `const ${lowerer.context.dataTypes.cppType(dataType.element)}`;
                 lowerer.context.registerNativeBindingType(left, element);
                 lowerer.context.registerNativeBindingType(right, element);
-                const compared = lowerer.context.compileCallbackWithValues(
-                    callback,
-                    [
-                        {
-                            ...lowerer.leafValue(left, dataType.element),
-                            nativeCaptures: [
-                                lowerer.context.registerNativeBinding(left),
-                            ],
-                        },
-                        {
-                            ...lowerer.leafValue(right, dataType.element),
-                            nativeCaptures: [
-                                lowerer.context.registerNativeBinding(right),
-                            ],
-                        },
-                    ],
-                    call,
-                );
+                const operands = [
+                    {
+                        ...lowerer.leafValue(left, dataType.element),
+                        nativeCaptures: [
+                            lowerer.context.registerNativeBinding(left),
+                        ],
+                    },
+                    {
+                        ...lowerer.leafValue(right, dataType.element),
+                        nativeCaptures: [
+                            lowerer.context.registerNativeBinding(right),
+                        ],
+                    },
+                ];
+                const owner = storedCallback?.callbackRecordOwner;
+                const compare = (): Value =>
+                    callback
+                        ? lowerer.context.compileCallbackWithValues(
+                              callback,
+                              operands,
+                              call,
+                          )
+                        : lowerer.compileFunctionValueCall(
+                              comparatorValue!,
+                              operands,
+                              call,
+                          );
+                const compared = owner
+                    ? lowerer.context.withRecordScopes(owner, compare)
+                    : compare();
                 if (compared.kind !== "number") {
                     lowerer.context.fail(
-                        callback,
+                        argument!,
                         "Array.sort comparator must return a number.",
                     );
                 }

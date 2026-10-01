@@ -3992,13 +3992,22 @@ template <typename T> inline void array_splice_one(Array<T>& values, double inde
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
-// Length writes keep the dense-array contract; sparse growth needs slot presence.
+/** An element whose default value is its absent state: an optional value or an object reference. */
+template <typename T>
+struct HasAbsentElement : std::bool_constant<IsNullable<T>::value || IsOptional<T>::value> {};
+template <typename T> struct HasAbsentElement<Ref<T>> : std::true_type {};
+
+// Length writes keep the dense-array contract: growth fills absent elements
+// where the element type represents absence, and refuses elsewhere (a hole
+// in a number array would read as a value).
 template <typename T> inline void array_truncate(Array<T>& values, double count) {
     if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
         throw std::runtime_error("Invalid array length.");
     const auto size = array_index(count);
-    if (size > values.size()) [[unlikely]] {
-        throw std::runtime_error("Array length assignment must not grow the array.");
+    if constexpr (!HasAbsentElement<T>::value) {
+        if (size > values.size()) [[unlikely]] {
+            throw std::runtime_error("Array length assignment must not grow the array.");
+        }
     }
     values.resize(size);
 }
@@ -4635,6 +4644,16 @@ inline void typed_array_set(TypedArray<T> target, const TypedArray<T>& source, d
     const auto source_bytes = source.buffer();
     std::memmove(target_bytes.data() + target.byte_offset() + start * sizeof(T),
                  source_bytes.data() + source.byte_offset(), source.size() * sizeof(T));
+}
+
+/** The same `set` for the Uint8Array view, whose storage is its own class. */
+inline void typed_array_set(U8Array target, const U8Array& source, double offset) {
+    const auto start = array_index(offset);
+    if (start > target.size() || source.size() > target.size() - start) [[unlikely]] {
+        throw std::runtime_error("TypedArray set does not fit the target array.");
+    }
+    if (source.size() != 0)
+        std::memmove(target.data() + start, source.data(), source.size());
 }
 
 /** The same `set`, over the owned storage a lowered pinned body keeps a typed array in. */
