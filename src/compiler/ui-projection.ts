@@ -1,4 +1,5 @@
 import {
+    contextCanvas,
     isStringValue,
     optionalPresentCpp,
     presenceFlagCpp,
@@ -67,6 +68,7 @@ import {
     type UiStyleSelectorShape,
     type UiStyleSelectorKind,
 } from "../ui-style-rule.js";
+import { nativeHostUiElements } from "../native-host-ui.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
@@ -77,11 +79,15 @@ import {
 } from "./dom-listeners.js";
 import { elementInterfaceTag } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
-import { engineCanvasIds, primaryCanvasIds } from "./browser-erasure.js";
+import {
+    canvasContextIds,
+    engineCanvasIds,
+    primaryCanvasIds,
+} from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
-import type { NativeHostUiElement, Value } from "./types.js";
+import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
@@ -160,6 +166,7 @@ interface UiProjectionContext extends Pick<
     | "assets"
     | "assetOutputs"
     | "assetPayloads"
+    | "attributeRefusalsTo"
     | "allocateTemporaryCppName"
     | "sourceFile"
     | "sourceFiles"
@@ -454,6 +461,11 @@ export class UiProjection {
         ) {
             return asElement(this.context.resolveThisField(owner.name.text));
         }
+        const drawn =
+            ts.isPropertyAccessExpression(owner) && owner.name.text === "canvas"
+                ? contextCanvas(this.uiElementValue(owner.expression))
+                : undefined;
+        if (drawn) return drawn;
         if (
             ts.isPropertyAccessExpression(owner) ||
             ts.isElementAccessExpression(owner)
@@ -1604,6 +1616,42 @@ export class UiProjection {
     /** Mints `uiCanvasId` for each created retained canvas element. */
     @journaled public accessor uiCanvasIds = 0;
 
+    /** Retained canvases by element id: the primary canvas and host canvases. */
+    private readonly retainedCanvasIds = new EmissionMap<string, number>();
+
+    private retainedCanvasId(id: string): number {
+        let canvasId = this.retainedCanvasIds.get(id);
+        if (canvasId === undefined) {
+            canvasId = this.uiCanvasIds++;
+            this.retainedCanvasIds.set(id, canvasId);
+        }
+        return canvasId;
+    }
+
+    public refuseEngineCanvasContext(site: ts.Node): never {
+        return this.context.fail(
+            site,
+            "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.",
+        );
+    }
+
+    /**
+     * A host lookup of a canvas the program asks for a 2D context finds a
+     * retained canvas, one per id; a canvas handed to createEngine cannot be
+     * drawn on as well.
+     */
+    public hostCanvas(
+        id: string,
+        tag: string | undefined,
+        site: ts.Node,
+    ): Pick<Value, "uiCanvas" | "uiCanvasId"> {
+        if (tag !== "canvas" || !canvasContextIds(this.context).has(id))
+            return {};
+        if (engineCanvasIds(this.context).has(id))
+            this.refuseEngineCanvasContext(site);
+        return { uiCanvas: true, uiCanvasId: this.retainedCanvasId(id) };
+    }
+
     private uiStyleRefusal(
         site: ts.Node | undefined,
         property: string,
@@ -2667,8 +2715,12 @@ export class UiProjection {
      * percentage blocks must not reach the rule parser. Mirrors the PAL's
      * brace-depth walk.
      */
-    private static stripUiKeyframesBlocks(source: string): string {
-        let result = "";
+    private static splitUiKeyframesBlocks(source: string): {
+        rules: string;
+        keyframes: string;
+    } {
+        let rules = "";
+        let keyframes = "";
         let cursor = 0;
         let depth = 0;
         for (const index of uiCssSyntaxIndices(source)) {
@@ -2682,12 +2734,13 @@ export class UiProjection {
                 if (opening === undefined) break;
                 const end = uiCssBlockEnd(source, opening);
                 if (end === undefined) break;
-                result += source.slice(cursor, index);
+                rules += source.slice(cursor, index);
+                keyframes += source.slice(index, end);
                 cursor = end;
             } else if (source[index] === "{") depth++;
             else if (source[index] === "}") depth--;
         }
-        return result + source.slice(cursor);
+        return { rules: rules + source.slice(cursor), keyframes };
     }
 
     /**
@@ -2768,12 +2821,81 @@ export class UiProjection {
         };
     }
 
+    /**
+     * The statements that replace a retained `<style>` element's rules with
+     * those of `sheet`; the sheet text itself rides `ui_set_text`, from
+     * which the PAL reads its keyframes.
+     */
+    private uiStyleSheetRuleStatements(
+        engine: string,
+        styleElement: string,
+        sheet: string,
+        site?: ts.Node,
+        ownerId?: number,
+        origin?: RefusalSite,
+    ): string[] {
+        const statements = [
+            `bbl::ui_clear_style_rules(${engine}, ${styleElement});`,
+        ];
+        for (const rule of this.lowerUiStyleSheetLiteral(
+            sheet,
+            site,
+            ownerId,
+            origin,
+        )) {
+            statements.push(
+                (rule.kind === "class" || rule.kind === "id") &&
+                    !uiStyleRuleNeedsRuntimeMatch(rule) &&
+                    !rule.scrollbar &&
+                    !rule.range &&
+                    !rule.pseudo &&
+                    !uiStyleRuleHasConditions(rule)
+                    ? `bbl::ui_add_${rule.kind}_style(${engine}, ` +
+                          `${styleElement}, ` +
+                          `${this.context.cppString(rule.primary)}, ` +
+                          `${this.context.cppString(rule.style)});`
+                    : `bbl::ui_add_style_rule(${engine}, ${styleElement}, ` +
+                          `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}, ` +
+                          `${this.context.cppString(rule.primary)}, ` +
+                          `${this.context.cppString(rule.secondary ?? "")}, ` +
+                          `${this.context.cppString(rule.tag ?? "")}, ` +
+                          `${rule.hover ? "true" : "false"}, ` +
+                          `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
+                          `${this.context.cppString(rule.style)}` +
+                          `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
+                          `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
+                          `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
+                          `${this.uiRuleSuffix(rule)});`,
+            );
+        }
+        return statements;
+    }
+
     private lowerUiStyleSheetLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
+        origin?: RefusalSite,
     ): LoweredUiStyleRule[] {
         const rules: LoweredUiStyleRule[] = [];
+        // A host file's sheet: refusals point at the line of the rule being
+        // lowered, found in the sheet as written.
+        const at = origin && { ...origin };
+        let searched = 0;
+        const enter = (header: string): void => {
+            if (!at || !origin) return;
+            // The header as written, followed by its block's brace.
+            let offset = value.indexOf(header, searched);
+            while (
+                offset >= 0 &&
+                !/^\s*\{/.test(value.slice(offset + header.length))
+            )
+                offset = value.indexOf(header, offset + 1);
+            if (offset < 0) return;
+            searched = offset + header.length;
+            at.line =
+                origin.line + value.slice(0, offset).split("\n").length - 1;
+        };
         const refuseSelector = (selector: string): never => {
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
@@ -2784,9 +2906,9 @@ export class UiProjection {
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
-        const source = UiProjection.stripUiKeyframesBlocks(
+        const source = UiProjection.splitUiKeyframesBlocks(
             stripUiCssComments(value),
-        );
+        ).rules;
 
         const parseBlocks = (
             text: string,
@@ -2805,6 +2927,7 @@ export class UiProjection {
                     findUiCssSyntax(text, "{", cursor) ??
                     refuseSelector(text.slice(cursor).trim());
                 const header = text.slice(cursor, opening).trim();
+                enter(header);
                 const end =
                     uiCssBlockEnd(text, opening) ?? refuseSelector(header);
                 const body = text.slice(opening + 1, end - 1);
@@ -2979,7 +3102,8 @@ export class UiProjection {
                 }
             }
         };
-        parseBlocks(source);
+        if (at) this.context.attributeRefusalsTo(at, () => parseBlocks(source));
+        else parseBlocks(source);
         return rules;
     }
 
@@ -4350,50 +4474,14 @@ export class UiProjection {
                         expression.right,
                     );
                     textCpp = this.context.cppString(sheet);
-                    this.context.emit({
-                        kind: "expression",
-                        code: `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
-                    });
-                    for (const rule of this.lowerUiStyleSheetLiteral(
+                    for (const code of this.uiStyleSheetRuleStatements(
+                        engine,
+                        directElement.cpp,
                         sheet,
                         expression.right,
                         directElement.uiStaticId,
-                    )) {
-                        if (
-                            (rule.kind === "class" || rule.kind === "id") &&
-                            !uiStyleRuleNeedsRuntimeMatch(rule) &&
-                            !rule.scrollbar &&
-                            !rule.range &&
-                            !rule.pseudo &&
-                            !uiStyleRuleHasConditions(rule)
-                        ) {
-                            this.context.emit({
-                                kind: "expression",
-                                code:
-                                    `bbl::ui_add_${rule.kind}_style(${engine}, ` +
-                                    `${directElement.cpp}, ` +
-                                    `${this.context.cppString(rule.primary)}, ` +
-                                    `${this.context.cppString(rule.style)});`,
-                            });
-                        } else {
-                            this.context.emit({
-                                kind: "expression",
-                                code:
-                                    `bbl::ui_add_style_rule(${engine}, ${directElement.cpp}, ` +
-                                    `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}, ` +
-                                    `${this.context.cppString(rule.primary)}, ` +
-                                    `${this.context.cppString(rule.secondary ?? "")}, ` +
-                                    `${this.context.cppString(rule.tag ?? "")}, ` +
-                                    `${rule.hover ? "true" : "false"}, ` +
-                                    `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                                    `${this.context.cppString(rule.style)}` +
-                                    `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
-                                    `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
-                                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                                    `${this.uiRuleSuffix(rule)});`,
-                            });
-                        }
-                    }
+                    ))
+                        this.context.emit({ kind: "expression", code });
                 } else {
                     textCpp = this.uiStringCpp(
                         expression.right,
@@ -4600,7 +4688,7 @@ export class UiProjection {
                 uiTag: "canvas",
                 uiCanvas: true,
                 uiPrimaryCanvas: true,
-                uiCanvasId: this.uiCanvasIds++,
+                uiCanvasId: this.retainedCanvasId(ids[0]!),
                 truthinessCpp: "true",
             };
         }
@@ -4667,14 +4755,11 @@ export class UiProjection {
     public nativeHostUiTags(): ReadonlyMap<string, string> {
         if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;
         const tags = new EmissionMap<string, string>();
-        const visit = (element: NativeHostUiElement): void => {
+        for (const element of nativeHostUiElements(
+            this.context.options.nativeHostUi?.elements ?? [],
+        )) {
             const id = element.attributes?.id;
             if (id !== undefined) tags.set(id, element.tag.toLowerCase());
-            for (const child of element.children ?? []) visit(child);
-        };
-        for (const element of this.context.options.nativeHostUi?.elements ??
-            []) {
-            visit(element);
         }
         this.nativeHostUiTagsCache = tags;
         return tags;
@@ -4947,10 +5032,56 @@ export class UiProjection {
             );
         }
 
-        const appendElement = (
-            element: NativeHostUiElement,
-            parent?: string,
-        ): string => {
+        // The document's own sheets precede its markup, as a page's head does.
+        // Its rules are lowered here; the PAL reads only its keyframes.
+        const sheets = hostUi
+            ? (hostUi.styleSheets ?? []).map((sheet) => ({
+                  text: sheet.text,
+                  origin: { file: hostUi.sourcePath, line: sheet.line },
+              }))
+            : [];
+        for (const { text, origin } of sheets) {
+            const handle =
+                this.context.allocateTemporaryCppName("host_ui_style");
+            const { keyframes } = UiProjection.splitUiKeyframesBlocks(
+                stripUiCssComments(text),
+            );
+            emitted.push(
+                `${indent}const auto ${handle} = bbl::ui_create_element(${engine}, "style");`,
+                ...this.uiStyleSheetRuleStatements(
+                    engine,
+                    handle,
+                    text,
+                    undefined,
+                    undefined,
+                    origin,
+                ).map((statement) => indent + statement),
+                ...(keyframes
+                    ? [
+                          `${indent}bbl::ui_set_text(${engine}, ${handle}, ${this.context.cppString(keyframes)});`,
+                      ]
+                    : []),
+                `${indent}bbl::ui_append_child(${engine}, bbl::ui_document_root(${engine}, bbl::UiDocumentPart::Head), ${handle});`,
+            );
+        }
+        for (const [part, attributes] of [
+            ["Html", hostUi?.htmlAttributes],
+            ["Body", hostUi?.bodyAttributes],
+        ] as const) {
+            for (const [name, value] of Object.entries(attributes ?? {}))
+                emitted.push(
+                    `${indent}bbl::ui_set_attribute(${engine}, bbl::ui_document_root(${engine}, bbl::UiDocumentPart::${part}), ` +
+                        `${this.context.cppString(name)}, ${this.context.cppString(this.lowerUiAttributeLiteral(name, value))});`,
+                );
+        }
+
+        const appendElement = (element: NativeHostUiNode, parent?: string) => {
+            if (element.tag === undefined) {
+                emitted.push(
+                    `${indent}bbl::ui_append_text(${engine}, ${parent ?? "{}"}, ${this.context.cppString(element.text)});`,
+                );
+                return;
+            }
             const normalizedTag = element.tag.toLowerCase();
             if (!/^[a-z][a-z0-9-]*$/i.test(element.tag)) {
                 this.context.failAtFile(
@@ -4992,6 +5123,18 @@ export class UiProjection {
                     `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
                         `${this.context.cppString(name)}, ${this.context.cppString(value)});`,
                 );
+                // A canvas's width and height attributes are its backing
+                // store's size, parsed as HTML non-negative integers; an
+                // unparsable one keeps the default.
+                const size = /^[\t\n\f\r ]*\+?(\d+)/.exec(sourceValue)?.[1];
+                if (
+                    normalizedTag === "canvas" &&
+                    (name === "width" || name === "height") &&
+                    size !== undefined
+                )
+                    emitted.push(
+                        `${indent}bbl::ui_canvas_set_${name}(${engine}, ${handle}, ${doubleLiteral(Number(size))});`,
+                    );
             }
             for (const child of element.children ?? []) {
                 appendElement(child, handle);
@@ -5001,7 +5144,6 @@ export class UiProjection {
                     ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
                     : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`,
             );
-            return handle;
         };
         for (const element of hostUi?.elements ?? []) {
             appendElement(element);

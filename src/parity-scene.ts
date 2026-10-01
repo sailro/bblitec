@@ -19,6 +19,7 @@ import {
     applicationScenes,
     isRegisteredScene,
     resolveScene,
+    sceneReferencePage,
     type SceneDefinition,
     type SceneParityDefinition,
 } from "./scene-registry.js";
@@ -1012,9 +1013,7 @@ async function runSceneParity(
         ...(config.independentEngines === undefined
             ? {}
             : { independentEngines: config.independentEngines }),
-        ...(config.referenceHostPage === undefined
-            ? {}
-            : { hostPage: config.referenceHostPage }),
+        ...sceneReferencePage(scene),
         ...(scene.nativeHostUi
             ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
             : {}),

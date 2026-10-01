@@ -74,7 +74,20 @@ export interface SceneDefinition {
     buildDirectory: string;
     /** Audited host-page UI that exists outside the immutable scene module. */
     nativeHostUi?: string;
+    /**
+     * The HTML page hosting `source`: its markup is the native host and the
+     * browser reference is captured from it.
+     */
+    page?: HostPageProgram;
     parity?: SceneParityDefinition;
+}
+
+/** The browser page a scene's reference is captured from, when it has one. */
+export function sceneReferencePage(scene: SceneDefinition): {
+    hostPage?: string;
+} {
+    const page = scene.page?.path ?? scene.parity?.referenceHostPage;
+    return page === undefined ? {} : { hostPage: page };
 }
 
 /**
@@ -701,6 +714,24 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "8",
             },
+        },
+    },
+    {
+        id: "regression-host-page",
+        name: "Regression - Host Page",
+        source: "examples/regression-host-page/src/main.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Host Page",
+        page: { path: "examples/regression-host-page/page.html" },
+        // The foreground is the page's own text: the heading and canvas
+        // match exactly; text after an inline element and centred button
+        // labels sit at whole pixels where Chromium places them at
+        // fractional ones (the UI text residual, TODO.md).
+        parity: {
+            maxFullMad: 0.08,
+            maxForegroundMad: 7,
+            backgroundColor: [35, 40, 30],
+            backgroundThreshold: 30,
         },
     },
     {
@@ -5154,16 +5185,22 @@ export function resolveScene(idOrSource: string): SceneDefinition {
 
     const absoluteSource = resolve(idOrSource);
     const registeredSource = scenes.find(
-        ({ source }) => resolve(source) === absoluteSource,
+        ({ source, page }) =>
+            resolve(source) === absoluteSource ||
+            (page !== undefined && resolve(page.path) === absoluteSource),
     );
     if (registeredSource) return registeredSource;
+    // An HTML page is a source too: it names its entry and hosts it.
     if (
         !existsSync(absoluteSource) ||
         !statSync(absoluteSource).isFile() ||
-        extname(absoluteSource).toLowerCase() !== ".ts"
+        !(
+            extname(absoluteSource).toLowerCase() === ".ts" ||
+            isHostPagePath(absoluteSource)
+        )
     ) {
         throw new Error(
-            `Unknown scene or TypeScript source '${idOrSource}'. Registered scenes: ` +
+            `Unknown scene, TypeScript source or HTML page '${idOrSource}'. Registered scenes: ` +
                 scenes.map(({ id }) => id).join(", "),
         );
     }
@@ -5175,7 +5212,15 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     ) {
         throw new Error("Ad-hoc scene sources must be inside the repository.");
     }
-    const source = relativeSource.replace(/\\/g, "/");
+    const repositoryPath = (path: string): string =>
+        relative(resolve("."), path).replace(/\\/g, "/");
+    // A page's source is the entry its module script names.
+    const page = isHostPagePath(absoluteSource)
+        ? { path: repositoryPath(absoluteSource) }
+        : undefined;
+    const source = page
+        ? repositoryPath(readHostPageEntry(page))
+        : relativeSource.replace(/\\/g, "/");
     const id = basename(absoluteSource, extname(absoluteSource))
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
@@ -5192,6 +5237,7 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         id,
         name,
         source,
+        ...(page ? { page } : {}),
         output: `generated/${id}`,
         title: `Babylon Lite Native - ${name}`,
         buildDirectory: `native/build-${id}-release`,
@@ -5211,6 +5257,8 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     };
 }
 import { existsSync, statSync } from "node:fs";
+import type { HostPageProgram } from "./compiler/types.js";
+import { isHostPagePath, readHostPageEntry } from "./host-page.js";
 import {
     adHocCaptureEnvironment,
     fixedCaptureEnvironment,

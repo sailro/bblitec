@@ -20,7 +20,7 @@ import ts from "typescript";
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { canvasBakeBrowserArgs } from "../browser-harness.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { runGenerationChild } from "./generation-child.js";
+import { evaluateInSharedPage } from "./generation-child.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
@@ -182,48 +182,25 @@ export function cachedBrowserGeneratedString(
  * string it assigned to `__bbliteGeneratedString`. The subprocess
  * imports the one launch ceremony from `browser-harness.js`; like the
  * drawn-atlas Canvas2D bake it uses the capture rasterizer on Linux. The script
- * runs on the fresh page exactly as it always has (`addScriptTag` on the
- * unnavigated page — the served shell exists only because the ceremony
- * hosts one).
+ * runs as a classic script of the fresh page, as `addScriptTag` ran it.
  */
 function runCanvasHelperInChromium(
     javascript: string,
     functionName: string,
 ): string {
-    const harnessModule = new URL("../browser-harness.js", import.meta.url)
-        .href;
-    const script = `
-        import { createServer } from "node:http";
-        import { withBrowserPage } from ${JSON.stringify(harnessModule)};
-        const chunks = [];
-        for await (const chunk of process.stdin) chunks.push(chunk);
-        const code = Buffer.concat(chunks).toString("utf8");
-        const server = createServer((_request, response) => {
-            response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            response.end("<!doctype html><title>Canvas2D helper</title>");
-        });
-        const value = await withBrowserPage(
-            server,
-            {
-                serverName: "Canvas2D helper server",
-                shared: true,
-                browserRequirement: "Canvas2D texture generation requires Chromium.",
-                browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
-            },
-            async (page) => {
-                await page.addScriptTag({ content: code });
-                return page.evaluate(() => globalThis.__bbliteGeneratedString);
-            },
-        );
-        if (typeof value !== "string") throw new Error("Canvas helper did not return a string.");
-        process.stdout.write(Buffer.from(value, "utf8").toString("base64"));
-    `;
-    const stdout = runGenerationChild({
-        script,
+    return evaluateInSharedPage({
         label: `Generation-time Canvas2D call '${functionName}'`,
+        serverName: "Canvas2D helper server",
+        requirement: "Canvas2D texture generation requires Chromium.",
+        browserArgs: canvasBakeBrowserArgs,
+        evaluate: `(code) => {
+            const script = document.createElement("script");
+            script.textContent = code;
+            document.head.append(script);
+            return globalThis.__bbliteGeneratedString;
+        }`,
         input: javascript,
     });
-    return Buffer.from(stdout, "base64").toString("utf8");
 }
 
 /**

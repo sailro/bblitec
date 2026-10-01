@@ -11,9 +11,11 @@ import type {
     CompileOptions,
     NativeHostUi,
     NativeHostUiElement,
+    NativeHostUiNode,
 } from "./compiler/types.js";
 import type { SceneDefinition } from "./scene-registry.js";
 import { isUiGeneratedPart } from "./ui-generated-content.js";
+import { hostPageCompileOptions, readHostPage } from "./host-page.js";
 import {
     isUiStyleSelectorKind,
     isUiScrollbarPart,
@@ -30,6 +32,17 @@ function refuseUnknownKeys(
         if (!known.includes(key)) {
             throw new Error(`${location}: unknown key '${key}'.`);
         }
+    }
+}
+
+/** The elements of host nodes, depth first, past their text nodes. */
+export function* nativeHostUiElements(
+    nodes: readonly NativeHostUiNode[],
+): Generator<NativeHostUiElement> {
+    for (const node of nodes) {
+        if (node.tag === undefined) continue;
+        yield node;
+        yield* nativeHostUiElements(node.children ?? []);
     }
 }
 
@@ -95,7 +108,13 @@ function nativeHostUiElement(
 export function registrySceneCompileOptions(
     scene: SceneDefinition,
 ): CompileOptions {
+    const page = scene.page && readHostPage(scene.page);
+    if (page && page.entry !== resolve(scene.source))
+        throw new Error(
+            `Scene '${scene.id}' page '${scene.page?.path}' loads '${page.entry}', not its source.`,
+        );
     return {
+        ...(page ? hostPageCompileOptions(page) : {}),
         fileName: resolve(scene.source),
         title: scene.title,
         search: scene.parity?.referenceSearch ?? "",

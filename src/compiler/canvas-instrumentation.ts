@@ -366,6 +366,7 @@ export function writesUnobservedCanvasMetadata(
     const hostText = JSON.stringify([
         host.elements,
         nativeHostUiStyleRules(host),
+        host.styleSheets,
     ]);
     if (attributes.some((name) => hostText.includes(name))) return false;
     const observes = (node: ts.Node): boolean => {

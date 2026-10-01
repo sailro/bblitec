@@ -40,6 +40,75 @@ test("compiler retains dynamic Canvas2D rectangles between path operations", () 
     );
 });
 
+test("a host canvas draws through its 2D context, sized by its attributes", () => {
+    const nativeHostUi = {
+        sourcePath: "host.json",
+        elements: [
+            {
+                tag: "canvas",
+                attributes: { id: "view", width: "320", height: " 120px" },
+            },
+        ],
+    };
+    const result = compileSource(
+        `
+        const view = document.getElementById("view") as HTMLCanvasElement | null;
+        const context = view?.getContext("2d") ?? null;
+        function draw(target: CanvasRenderingContext2D): void {
+            target.fillRect(0, 0, target.canvas.width, target.canvas.height);
+            target.strokeRect(1, 2, 3, 4);
+        }
+        requestAnimationFrame(() => {
+            if (context) draw(context);
+        });
+    `,
+        { nativeHostUi },
+    );
+    assert.match(result.cpp, /ui_canvas_set_width\([^;]*, 320\.0\)/);
+    assert.match(result.cpp, /ui_canvas_set_height\([^;]*, 120\.0\)/);
+    assert.match(
+        result.cpp,
+        /ui_canvas_fill_rect\([^;]*ui_canvas_width[^;]*ui_canvas_height/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_canvas_stroke_rect\([^;]*, 1\.0, 2\.0, 3\.0, 4\.0\)/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                import { createEngine } from "babylon-lite";
+                const view = document.getElementById("view") as HTMLCanvasElement;
+                const engine = await createEngine(view);
+                view.getContext("2d");
+            `,
+                { nativeHostUi },
+            ),
+        /primary canvas already belongs to a Babylon engine/,
+    );
+    // A chained lookup draws on the same element, and a host canvas under
+    // the primary canvas's id is that element: no second canvas appears.
+    for (const id of ["view", "renderCanvas"]) {
+        const chained = compileSource(
+            `document.getElementById("${id}")!.getContext("2d")!.fillRect(0, 0, 4, 4);`,
+            {
+                nativeHostUi: {
+                    sourcePath: "host.json",
+                    elements: [{ tag: "canvas", attributes: { id } }],
+                },
+            },
+        ).cpp;
+        assert.match(
+            chained,
+            new RegExp(
+                `ui_canvas_fill_rect\\([^;]*ui_get_element_by_id\\([^;]*"${id}"`,
+            ),
+        );
+        assert.doesNotMatch(chained, /ui_primary_canvas/);
+    }
+});
+
 const nativeTools = optionalNativeFixtureTools(false);
 test("Canvas2D commands render in DOM stacking order and honor hidden ancestors", (t) => {
     runRmlUiFixture(t, "ui-canvas-stacking");

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
+import {
+    getScene,
+    resolveScene,
+    sceneReferencePage,
+    scenes,
+} from "../src/scene-registry.js";
 import { registrySceneCompileOptions } from "../src/native-host-ui.js";
 import { validateReferenceCapture } from "../src/parity-scene.js";
 
@@ -59,6 +64,7 @@ test("registers unique generated scene targets", () => {
             "audit-shader-frame-graph",
             "regression-runtime-sweep",
             "regression-sprite-layer-arms",
+            "regression-host-page",
             "regression-instanced-ground",
             "regression-morph-ground",
             "regression-light-setters",
@@ -566,6 +572,37 @@ test("resolves a registered scene by source path", () => {
         "corpus/babylon-lite/lab/lite/src/lite/scene10.ts",
     );
     assert.equal(scene.id, "scene10");
+});
+
+test("an HTML page is a scene source hosting the entry it names", () => {
+    const registered = getScene("regression-host-page");
+    assert.equal(
+        resolveScene("examples/regression-host-page/page.html"),
+        registered,
+    );
+    assert.equal(
+        registrySceneCompileOptions(registered).nativeHostUi?.sourcePath,
+        registered.page?.path,
+    );
+    assert.deepEqual(sceneReferencePage(registered), {
+        hostPage: registered.page?.path,
+    });
+    const page = ".cache/adhoc-page.html";
+    mkdirSync(".cache", { recursive: true });
+    writeFileSync(".cache/adhoc-page.ts", "export {};\n");
+    writeFileSync(
+        page,
+        '<!doctype html><script type="module" src="./adhoc-page.ts"></script>\n',
+    );
+    try {
+        const scene = resolveScene(page);
+        assert.equal(scene.id, "adhoc-page");
+        assert.equal(scene.source, ".cache/adhoc-page.ts");
+        assert.deepEqual(scene.page, { path: page });
+    } finally {
+        rmSync(page, { force: true });
+        rmSync(".cache/adhoc-page.ts", { force: true });
+    }
 });
 
 test("rejects ad-hoc sources that collide with registered scene ids", () => {

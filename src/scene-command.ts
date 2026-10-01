@@ -284,7 +284,12 @@ async function runBuffered(
 function compilerArguments(scene: SceneDefinition): string[] {
     const arguments_ = [
         resolve("dist/src/cli.js"),
-        scene.source,
+        ...(scene.page
+            ? [
+                  scene.page.path,
+                  ...(scene.page.root ? ["--site-root", scene.page.root] : []),
+              ]
+            : [scene.source]),
         "--out",
         scene.output,
         "--title",
@@ -2650,7 +2655,9 @@ async function runCapture(
 async function runSurvey(entry: string): Promise<boolean> {
     const entryPath = resolve(entry);
     if (!existsSync(entryPath) || !statSync(entryPath).isFile()) {
-        throw new Error(`survey: no TypeScript entry at ${entryPath}.`);
+        throw new Error(
+            `survey: no TypeScript entry or HTML page at ${entryPath}.`,
+        );
     }
     const directory = resolve(
         artifactDirectory(
@@ -2673,7 +2680,13 @@ async function runSurvey(entry: string): Promise<boolean> {
         console.error(`survey: census incomplete: ${(error as Error).message}`);
     }
     const { writeProjectApiReport } = await import("./api-command.js");
-    await writeProjectApiReport(entryPath, join(directory, "api"));
+    // A page's readiness is its entry's, whatever the page holds.
+    const { isHostPagePath, readHostPageEntry } =
+        await import("./host-page.js");
+    const apiEntry = isHostPagePath(entryPath)
+        ? readHostPageEntry({ path: entryPath })
+        : entryPath;
+    await writeProjectApiReport(apiEntry, join(directory, "api"));
     console.log(`Survey: ${directory}`);
     return completed;
 }
@@ -3333,7 +3346,7 @@ const COMMANDS: readonly CommandSpec[] = [
     },
     {
         name: "survey",
-        argument: "<entry.ts>",
+        argument: "<entry.ts|page.html>",
         flags: {},
         summary:
             "compile census and API readiness of an external entry into artifacts/survey/<directory>-<stem>/",

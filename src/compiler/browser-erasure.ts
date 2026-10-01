@@ -196,12 +196,15 @@ export function primaryCanvasIds(
     return ids.size > 0 ? ids : new Set([HOST_PRIMARY_CANVAS_ID]);
 }
 
-/** Explicit document IDs flowing into reached engine-creation syntax, without a host default. */
-export function engineCanvasIds(
+/**
+ * The document ids whose lookups flow into the expression `pick` takes from
+ * a program call, followed through constant bindings and through the
+ * parameters of the local functions that pass the element on.
+ */
+function documentIdsReaching(
     context: PrimaryCanvasContext,
-): ReadonlySet<string> {
-    const cached = primaryCanvasIdsByEntry.get(context.sourceFile);
-    if (cached) return cached;
+    pick: (call: ts.CallExpression) => ts.Expression | undefined,
+): Set<string> {
     const calls: ts.CallExpression[] = [];
     for (const file of context.sourceFiles()) {
         if (file.isDeclarationFile) continue;
@@ -251,14 +254,49 @@ export function engineCanvasIds(
         }
     };
     for (const call of calls) {
-        const canvas = call.arguments[0];
-        if (
-            canvas &&
-            context.symbols.importedName(call.expression) === "createEngine"
-        )
-            collect(canvas);
+        const picked = pick(call);
+        if (picked) collect(picked);
     }
+    return ids;
+}
+
+/** Explicit document IDs flowing into reached engine-creation syntax, without a host default. */
+export function engineCanvasIds(
+    context: PrimaryCanvasContext,
+): ReadonlySet<string> {
+    const cached = primaryCanvasIdsByEntry.get(context.sourceFile);
+    if (cached) return cached;
+    const ids = documentIdsReaching(context, (call) =>
+        context.symbols.importedName(call.expression) === "createEngine"
+            ? call.arguments[0]
+            : undefined,
+    );
     primaryCanvasIdsByEntry.set(context.sourceFile, ids);
+    return ids;
+}
+
+const canvasContextIdsByEntry = new WeakMap<
+    ts.SourceFile,
+    ReadonlySet<string>
+>();
+
+/** Document IDs whose elements the program asks for a 2D context. */
+export function canvasContextIds(
+    context: PrimaryCanvasContext,
+): ReadonlySet<string> {
+    const cached = canvasContextIdsByEntry.get(context.sourceFile);
+    if (cached) return cached;
+    const ids = documentIdsReaching(context, (call) => {
+        const callee = context.unwrap(call.expression);
+        const [kind] = call.arguments;
+        return ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "getContext" &&
+            kind !== undefined &&
+            stringLiteralText(context.unwrap(kind)) === "2d"
+            ? callee.expression
+            : undefined;
+    });
+    canvasContextIdsByEntry.set(context.sourceFile, ids);
     return ids;
 }
 

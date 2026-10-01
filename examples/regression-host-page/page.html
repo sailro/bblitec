@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host page</title>
+    <style>
+      :root { --accent: #d7a960; }
+      html, body { margin: 0; background: #23281e; color: #e8e4d8; font: 13px/18px sans-serif; }
+      #wrap { padding: 16px; }
+      h1 { font-size: 18px; line-height: 24px; margin: 0 0 6px; }
+      p.sub { margin: 0; }
+      p.sub b { color: var(--accent); }
+      .row { display: flex; gap: 8px; align-items: center; height: 28px; margin: 10px 0; }
+      button { box-sizing: border-box; width: 64px; height: 28px; padding: 0; background: #3a4630; color: #e8e4d8; border: 1px solid #55663f; border-radius: 6px; font: 13px/26px sans-serif; }
+      button:hover { background: #46552f; }
+      button[aria-pressed="true"] { border-color: var(--accent); }
+      #status { color: #9fb08a; }
+      canvas { display: block; width: 320px; height: 120px; background: #14170f; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <h1>Host page</h1>
+      <p class="sub">The <b>page</b> markup &amp; styles host the program.</p>
+      <div class="row">
+        <button id="pause" type="button">Pause</button>
+        <button type="button" data-preset="slow" aria-pressed="true">Slow</button>
+        <button type="button" data-preset="fast" aria-pressed="false">Fast</button>
+        <span id="status"></span>
+      </div>
+      <canvas id="renderCanvas" width="320" height="120"></canvas>
+    </div>
+    <script type="module">
+      if (location.protocol === "file:") {
+        document.getElementById("status").textContent = "Serve this page.";
+      } else {
+        await import("/src/main.ts");
+      }
+    </script>
+  </body>
+</html>

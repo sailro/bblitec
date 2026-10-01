@@ -45,6 +45,7 @@ import {
 } from "./tooling/artifacts.js";
 import {
     resolveScene,
+    sceneReferencePage,
     scenes,
     type SceneDefinition,
 } from "./scene-registry.js";
@@ -375,9 +376,7 @@ export async function runInstrumentedCapture(
     );
     const server = createSuiteSceneServer(moduleSource, {
         sourcePath: scene.source,
-        ...(scene.parity?.referenceHostPage
-            ? { hostPage: scene.parity.referenceHostPage }
-            : {}),
+        ...sceneReferencePage(scene),
         ...(referenceFrame !== undefined
             ? { fixedAnimationFrame: referenceFrame }
             : {}),

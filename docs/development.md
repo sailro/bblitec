@@ -171,7 +171,7 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript p
 | `parity <scene\|all> [--backend sdl_gpu\|dawn]` | Both backends (or one) against the reference, and their differential |
 | `check <id> [--observe]` | Declared interaction check / its browser observation |
 | `validate <scene\|all> [--cold]` | Process, parity, status checks |
-| `survey <entry.ts>` | Compile census and API readiness of an external entry |
+| `survey <entry.ts\|page.html>` | Compile census and API readiness of an external entry or HTML page |
 | `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Inspect/clean selected outputs; orphan/all/artifact cleanup prunes old native support inputs (`--cache-days 30`) |
 
 Diagnosis commands are in [debugging](debugging.md#the-ladder).
@@ -181,7 +181,8 @@ Never rebuild/delete dist during its runs. Finish generation before native build
 edits before concurrent builds. Logs belong in ignored `artifacts/`.
 
 `npm run sweep` is `validate all`; tests are separate. Ad-hoc sources use generated/build/reference
-folders by stem and have diagnostic-only comparisons without configured thresholds.
+folders by stem and have diagnostic-only comparisons without configured thresholds. An HTML page is a source
+too: generation reads its markup and the browser reference is captured from the page itself.
 
 ## Integrating a curated parity scene
 

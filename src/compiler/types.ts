@@ -9,6 +9,8 @@ export {
     objectTruthinessCpp,
     optionalPresentCpp,
     optionalValueCpp,
+    contextCanvas,
+    isPresentValue,
     presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
@@ -52,14 +54,23 @@ import type { DeploymentOptions } from "./deployment.js";
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
     tag: string;
+    /** Text before the children. */
     text?: string;
     attributes?: Record<string, string>;
-    children?: NativeHostUiElement[];
+    children?: NativeHostUiNode[];
 }
 
+/** A text node among a host element's children, in document order. */
+export interface NativeHostUiText {
+    tag?: undefined;
+    text: string;
+}
+
+export type NativeHostUiNode = NativeHostUiElement | NativeHostUiText;
+
 /**
- * Browser host-page chrome that is not present in the immutable scene module.
- * This is deliberately a retained-tree companion, not an HTML/CSS parser.
+ * Browser host-page chrome that is not present in the immutable scene module:
+ * a reviewed companion file, or the markup of the HTML page that loads it.
  */
 export interface NativeHostUi extends NativeHostUiStyleSource {
     /**
@@ -68,11 +79,55 @@ export interface NativeHostUi extends NativeHostUiStyleSource {
      * call in its own source, so the attribution must name this file.
      */
     sourcePath: string;
-    elements: NativeHostUiElement[];
+    /** A page's `<html>` and `<body>` attributes. */
+    htmlAttributes?: Record<string, string>;
+    bodyAttributes?: Record<string, string>;
+    /** A page's `<style>` sheets in order, projected into the document head. */
+    styleSheets?: NativeHostUiStyleSheet[];
+    elements: NativeHostUiNode[];
+}
+
+export interface NativeHostUiStyleSheet {
+    text: string;
+    /** The source line the text starts on, where refusals point. */
+    line: number;
+}
+
+/**
+ * A page's inline module script that dynamically imports the entry: the
+ * statements it runs before that import precede the entry's evaluation.
+ */
+export interface PageLoaderModule {
+    /** A synthesized module path beside the page. */
+    fileName: string;
+    source: string;
+    /** The import specifier naming the entry. */
+    specifier: string;
+}
+
+/** A page loader as the program checked it. */
+export interface PageLoaderProgram {
+    sourceFile: ts.SourceFile;
+    specifier: string;
+}
+
+/** The HTML page that hosts the entry. */
+export interface HostPageProgram {
+    path: string;
+    /** The site root "/" names; the page's own directory by default. */
+    root?: string;
+    loader?: PageLoaderModule;
+}
+
+/** A host file line a refusal points at when no source node does. */
+export interface RefusalSite {
+    file: string;
+    line: number;
 }
 
 export interface CompileOptions extends DeploymentOptions {
     fileName?: string;
+    hostPage?: HostPageProgram;
     title?: string;
     width?: number;
     height?: number;
@@ -2982,6 +3037,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     /** A reached constructed promise can end a synchronous activation at its await. */
     pendingActivations?: boolean;
     fileName: string;
+    /** The page's inline module script in the program, and the import of the entry it ends with. */
+    pageLoader?: PageLoaderProgram;
     title: string;
     width: number;
     height: number;

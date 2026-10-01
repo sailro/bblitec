@@ -1,0 +1,42 @@
+{
+    "angles": [
+        "reuse",
+        "simplification",
+        "efficiency",
+        "altitude"
+    ],
+    "findings": [
+        {
+            "summary": "The page parser was a fourth copy of the shared-Chromium child pattern; one `evaluateInSharedPage` helper serves it and the generated-string bake, and the parse cache keys on the parser module alone so compiler edits do not re-parse every page.",
+            "applied": true
+        },
+        {
+            "summary": "Entry and import recognition re-implemented `moduleSpecifiers`/`isRelativeSpecifier`; one `dynamicImportSpecifier` serves the page reader and the page loader, root-relative paths resolve through `deploymentAssetSource`, and one `isHostPagePath` (.html and .htm) serves the CLI, scene commands and registry.",
+            "applied": true
+        },
+        {
+            "summary": "Overlapping page types and an impossible \"missing from the program\" throw; `HostPage` extends `HostPageProgram`, the site root derives from the page unless given, the program returns the loader source file, and the child's JSON is trusted with one root check in the companion node shape.",
+            "applied": true
+        },
+        {
+            "summary": "Host canvases added a third canvas-identity path; a host canvas asked for a 2D context becomes a retained canvas at its lookup, sharing one id registry and one engine-ownership refusal with the primary canvas.",
+            "applied": true
+        },
+        {
+            "summary": "Element presence was decided by two different predicates; one `isPresentValue` drives optional access, `??` and listeners (a `?.` directly on a host lookup still re-looks the element up, because a program can remove host elements).",
+            "applied": true
+        },
+        {
+            "summary": "The empty-page check moved into the page reader, the loader's two last-statement checks became one walk, its state is journaled, host sheets ship only `@keyframes` text to the PAL, CSS refusals name each rule's line, and survey still writes the API report when a page refuses.",
+            "applied": true
+        },
+        {
+            "summary": "Companion style rules and page style sheets were two style paths with no defined order when both were present; the companion reader keeps its element-only model and a scene's host is either a page (sheets) or a companion (rules), so no host model holds both.",
+            "applied": true
+        },
+        {
+            "summary": "Host-page rendering, the host canvas and `strokeRect` had no automated native run; `regression-host-page` is registered through its page (inline loader captured), validated on both backends.",
+            "applied": true
+        }
+    ]
+}

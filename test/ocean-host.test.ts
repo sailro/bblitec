@@ -3,8 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import type { NativeHostUiElement } from "../src/compiler/types.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
+import {
+    nativeHostUiElements,
+    readNativeHostUi,
+} from "../src/native-host-ui.js";
 
 test("Ocean host retains the authored canvas, page styles and inline badge content", () => {
     const page = readFileSync(
@@ -12,12 +14,7 @@ test("Ocean host retains the authored canvas, page styles and inline badge conte
         "utf8",
     );
     const host = readNativeHostUi("ui/ocean-host.json");
-    const elements: NativeHostUiElement[] = [];
-    const visit = (element: NativeHostUiElement): void => {
-        elements.push(element);
-        element.children?.forEach(visit);
-    };
-    host.elements.forEach(visit);
+    const elements = [...nativeHostUiElements(host.elements)];
     const authoredIds = [
         ...page.matchAll(/<([a-z]+)\b[^>]*\bid="([^"]+)"/g),
     ].map((match) => [match[2], match[1]]);

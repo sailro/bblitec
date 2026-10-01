@@ -1795,21 +1795,43 @@ void ui_canvas_fill(Engine& engine, UiElementHandle element) {
     mark_canvas_changed(engine, canvas);
 }
 
-void ui_canvas_stroke(Engine& engine, UiElementHandle element) {
-    auto& canvas = ui_canvas(engine, element);
-    if (canvas.path.size() < 2)
-        return;
+namespace {
+
+void stroke_canvas_path(Engine& engine, UiElementRecord::CanvasState& canvas,
+                        std::vector<UiElementRecord::CanvasPoint> points, bool closed) {
     UiElementRecord::CanvasDrawCommand draw;
     draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Stroke;
-    draw.points = canvas.path;
+    draw.points = std::move(points);
     draw.color = canvas.stroke_style;
     draw.line_width =
         canvas.line_width * (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
-    draw.closed = canvas.path_closed;
+    draw.closed = closed;
     draw.round_join = canvas.line_join == "round";
     draw.round_cap = canvas.line_cap == "round";
     canvas.draws.push_back(std::move(draw));
     mark_canvas_changed(engine, canvas);
+}
+
+} // namespace
+
+void ui_canvas_stroke(Engine& engine, UiElementHandle element) {
+    auto& canvas = ui_canvas(engine, element);
+    if (canvas.path.size() < 2)
+        return;
+    stroke_canvas_path(engine, canvas, canvas.path, canvas.path_closed);
+}
+
+void ui_canvas_stroke_rect(Engine& engine, UiElementHandle element, double x, double y,
+                           double width, double height) {
+    // Its own closed sub-path: the current default path is untouched.
+    auto& canvas = ui_canvas(engine, element);
+    if (width == 0.0 && height == 0.0)
+        return;
+    stroke_canvas_path(engine, canvas,
+                       {canvas_point(canvas, x, y), canvas_point(canvas, x + width, y),
+                        canvas_point(canvas, x + width, y + height),
+                        canvas_point(canvas, x, y + height)},
+                       true);
 }
 
 void ui_canvas_set_image_smoothing(Engine& engine, UiElementHandle element, bool enabled) {

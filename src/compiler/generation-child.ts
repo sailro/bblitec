@@ -62,3 +62,58 @@ export function runGenerationChild(options: GenerationChildOptions): string {
     }
     return child.stdout.trim();
 }
+
+interface SharedPageEvaluation {
+    /** What the evaluation is, when it fails. */
+    label: string;
+    /** Names the page server in a failed listen. */
+    serverName: string;
+    /** Why the caller cannot proceed without Chromium. */
+    requirement: string;
+    /** Chromium flags; the generation shares one browser per flag set. */
+    browserArgs?: readonly string[];
+    /** Source text of a page function from `input` to a string. */
+    evaluate: string;
+    input: string;
+}
+
+/**
+ * Run `evaluate(input)` on a fresh page of the generation's shared Chromium
+ * and return the string it produced. The page is not navigated: the served
+ * shell exists only because the browser ceremony hosts one.
+ */
+export function evaluateInSharedPage(options: SharedPageEvaluation): string {
+    const harness = new URL("../browser-harness.js", import.meta.url).href;
+    const script = `
+        import { createServer } from "node:http";
+        import { withBrowserPage } from ${JSON.stringify(harness)};
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        const input = Buffer.concat(chunks).toString("utf8");
+        const server = createServer((_request, response) => {
+            response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            response.end("<!doctype html><title>Generation page</title>");
+        });
+        const value = await withBrowserPage(
+            server,
+            {
+                serverName: ${JSON.stringify(options.serverName)},
+                shared: true,
+                browserRequirement: ${JSON.stringify(options.requirement)},
+                browserArgs: ${JSON.stringify(options.browserArgs ?? [])},
+            },
+            (page) => page.evaluate(${options.evaluate}, input),
+        );
+        if (typeof value !== "string")
+            throw new Error(${JSON.stringify(`${options.label} produced no text.`)});
+        process.stdout.write(Buffer.from(value, "utf8").toString("base64"));
+    `;
+    return Buffer.from(
+        runGenerationChild({
+            script,
+            label: options.label,
+            input: options.input,
+        }),
+        "base64",
+    ).toString("utf8");
+}

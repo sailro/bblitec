@@ -18,6 +18,7 @@ import type {
     CompileAsset,
     DefaultRenderTaskEmission,
     Feature,
+    RefusalSite,
     ResolvedCompileOptions,
     Value,
     ValueKind,
@@ -44,6 +45,7 @@ import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
 import type { CallbackLowerer } from "./callbacks.js";
 import type { AsyncActivations } from "./async-activations.js";
+import type { PageLoader } from "./page-loader.js";
 import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
@@ -80,6 +82,7 @@ export interface LoweringServices {
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
     failAtFile(message: string): never;
+    attributeRefusalsTo<T>(site: RefusalSite, materialize: () => T): T;
     readonly sourceFile: ts.SourceFile;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
@@ -94,6 +97,8 @@ export interface LoweringServices {
     readonly propertyAccess: PropertyAccessLowerer;
     readonly callbacks: CallbackLowerer;
     readonly asyncActivations: AsyncActivations;
+    /** The host page's inline module script, when it imports the entry. */
+    readonly pageLoader: PageLoader | undefined;
     readonly engineLifecycle: EngineLifecycle;
     readonly sharedClosures: SharedClosureAnalysis;
     readonly nativeEmission: NativeEmissionRegistry;

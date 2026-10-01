@@ -15,6 +15,8 @@ import {
     waitForCapturedEngines,
 } from "./capture-engine-frames.js";
 import { nativeHostUiStyleRules, uiStyleSelector } from "./ui-style-rule.js";
+import ts from "typescript";
+import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -495,6 +497,42 @@ for (const element of hostUi.elements) document.body.appendChild(create(element)
 })();</script>\n`;
 }
 
+/**
+ * An immutable host page whose one module entry loads `entryPath`: a
+ * `src` module script, or an inline loader (`await import("/src/main.ts")`)
+ * whose one imported specifier is rewritten.
+ */
+function hostPageWithEntry(page: string, entryPath: string): string {
+    const sourced = /<script\s+type="module"\s+src="[^"]+"\s*><\/script>/g;
+    const inline = /(<script\s+type="module"\s*>)([\s\S]*?)(<\/script>)/g;
+    const sources = [...page.matchAll(sourced)].length;
+    const [loader, ...others] = page.matchAll(inline);
+    if (sources === 1 && !loader)
+        return page.replace(
+            sourced,
+            `<script type="module" src="${entryPath}"></script>`,
+        );
+    if (sources > 0 || !loader || others.length > 0)
+        throw new Error(
+            "Capture host page must have exactly one module entry.",
+        );
+    const [, open = "", script = "", close = ""] = loader;
+    const literals = moduleSpecifiers(
+        ts.createSourceFile("loader.ts", script, ts.ScriptTarget.ES2022, true),
+    );
+    if (new Set(literals.map((literal) => literal.text)).size !== 1)
+        throw new Error(
+            "Capture host page's inline module script must import one entry.",
+        );
+    let rewritten = script;
+    for (const literal of [...literals].reverse())
+        rewritten =
+            rewritten.slice(0, literal.getStart()) +
+            JSON.stringify(entryPath) +
+            rewritten.slice(literal.getEnd());
+    return page.replace(inline, () => open + rewritten + close);
+}
+
 export function createSuiteSceneServer(
     moduleSource: string,
     options: SuiteCaptureOptions = {},
@@ -537,18 +575,10 @@ ${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!import
 ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");
-        const moduleScript =
-            /<script\s+type="module"\s+src="[^"]+"\s*><\/script>/g;
-        if ([...original.matchAll(moduleScript)].length !== 1)
-            throw new Error(
-                "Capture host page must have exactly one module entry.",
-            );
-        html = original
-            .replace(
-                moduleScript,
-                `<script type="module" src="${entryPath}"></script>`,
-            )
-            .replace("<head>", `<head>${seedScript}${fixedFrameScript}`);
+        html = hostPageWithEntry(original, entryPath).replace(
+            "<head>",
+            `<head>${seedScript}${fixedFrameScript}`,
+        );
     }
     const capturedEngines = new Set<string>();
     if (
@@ -998,7 +1028,12 @@ export async function captureSuiteReference(
         server,
         {
             serverName: "parity server",
-            browserArgs: screenshotCaptureBrowserArgs,
+            // A page's own text often sits on its opaque background, where
+            // Chromium would draw subpixel (LCD) text; native text, and the
+            // harness page's text over its canvas layer, is greyscale.
+            browserArgs: options.hostPage
+                ? [...screenshotCaptureBrowserArgs, "--disable-lcd-text"]
+                : screenshotCaptureBrowserArgs,
             showScrollbars: options.showScrollbars ?? false,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Reference page error",

@@ -43,6 +43,7 @@ import { sourceProfileScope } from "./compiler/source-profile.js";
 import ts from "typescript";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
+import { PageLoader } from "./compiler/page-loader.js";
 import { EngineLifecycle } from "./compiler/engine-lifecycle.js";
 import { SharedClosureAnalysis } from "./compiler/shared-closure-analysis.js";
 import { NativeEmissionRegistry } from "./compiler/native-emission-registry.js";
@@ -246,6 +247,7 @@ import type {
     CompileResult,
     DefaultRenderTaskEmission,
     Feature,
+    RefusalSite,
     ResolvedCompileOptions,
     Value,
     ValueKind,
@@ -473,7 +475,7 @@ function compileSourceApplication(
 ): CompileResult {
     const fileName = options.fileName ?? "input.ts";
     const environment = deploymentEnvironment(options);
-    const frontend = createCompilerProgram(source, fileName);
+    const frontend = createCompilerProgram(source, fileName, options.hostPage);
     const survey = activeSurvey();
     const compile = (
         input: typeof frontend,
@@ -499,6 +501,14 @@ function compileSourceApplication(
             ...(workers ? { workers } : {}),
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
+                : {}),
+            ...(input.loaderFile && options.hostPage?.loader
+                ? {
+                      pageLoader: {
+                          sourceFile: input.loaderFile,
+                          specifier: options.hostPage.loader.specifier,
+                      },
+                  }
                 : {}),
             ...(options.sourceProfile?.length
                 ? { sourceProfile: options.sourceProfile }
@@ -646,6 +656,7 @@ class Compiler implements LoweringServices {
     public readonly asyncActivations: AsyncActivations = new AsyncActivations(
         this,
     );
+    public readonly pageLoader: PageLoader | undefined;
     /** Frame, platform, physics and stored-data callbacks. */
     public readonly callbacks: CallbackLowerer = new CallbackLowerer(this);
     private readonly statements = new StatementLowerer();
@@ -833,6 +844,9 @@ class Compiler implements LoweringServices {
         );
         this.nativeFunctions = new NativeFunctionLowerer(this);
         this.browserErasure = new BrowserErasure(this);
+        this.pageLoader = options.pageLoader
+            ? new PageLoader(this, options.pageLoader)
+            : undefined;
         this.expressions = new ExpressionLowerer(this);
         this.evaluator = new StaticEvaluator(
             this.staticConstants,
@@ -894,6 +908,9 @@ class Compiler implements LoweringServices {
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
+        // The page's script runs up to its import of the entry, which then
+        // evaluates the entry's imports and the entry itself.
+        this.pageLoader?.emit((statement) => this.emitStatement(statement));
         this.emitImportedModuleInitializers();
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
@@ -1007,7 +1024,12 @@ class Compiler implements LoweringServices {
     public readonly pendingHostUiLookups: Value[] = emissionArray([]);
 
     private emitNativeHostUi(): void {
-        const emitted = this.ui.compileHostUi();
+        const host = this.options.nativeHostUi;
+        const emitted = host
+            ? this.attributeRefusalsTo({ file: host.sourcePath, line: 1 }, () =>
+                  this.ui.compileHostUi(),
+              )
+            : this.ui.compileHostUi();
         const insertion = this.options.workers
             ? 0
             : (this.engineCreationInsertion ?? this.body.length);
@@ -7575,6 +7597,27 @@ class Compiler implements LoweringServices {
     }
 
     public failAtFile(message: string): never {
-        throw new CompileError(this.options.fileName, 1, 1, message);
+        const site = this.failureSite ?? {
+            file: this.options.fileName,
+            line: 1,
+        };
+        throw new CompileError(site.file, site.line, 1, message);
+    }
+
+    /** Where a refusal without a source node points: the entry otherwise. */
+    @journaled private accessor failureSite: RefusalSite | undefined;
+
+    /**
+     * Run `materialize` with refusals that have no source node pointing at
+     * `site`, whose line the caller may advance as it walks a host file.
+     */
+    public attributeRefusalsTo<T>(site: RefusalSite, materialize: () => T): T {
+        const previous = this.failureSite;
+        this.failureSite = site;
+        try {
+            return materialize();
+        } finally {
+            this.failureSite = previous;
+        }
     }
 }

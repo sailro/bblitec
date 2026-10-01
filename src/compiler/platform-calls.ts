@@ -8,10 +8,11 @@ import {
 } from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
-import { presenceFlagCpp, type Value } from "./types.js";
+import { isPresentValue, presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import {
     parseUiSelectorSequence,
@@ -503,6 +504,10 @@ export class PlatformCalls {
         if (nested && recurring) {
             return { kind: "void", cpp: "" };
         }
+        // Without an engine or a presentation host, frames come from the
+        // Window application's repaint clock.
+        if (!this.context.defaultEngine() && !this.context.options.workers)
+            throw new ApplicationRealmRequired();
         const engine = this.context.requireDefaultEngine(call);
         const callback = this.context.callbacks.compileFrameCallback(
             argumentAt(call, 0),
@@ -560,11 +565,7 @@ export class PlatformCalls {
                 type.inner.handle === "ui-element"
             ) {
                 const owner = this.context.compileValue(callee.expression);
-                if (
-                    owner.kind === "ui-element" &&
-                    owner.dataType?.kind !== "optional" &&
-                    presenceFlagCpp(owner) === undefined
-                )
+                if (owner.kind === "ui-element" && isPresentValue(owner))
                     return this.emitPlatformEventListener(call, owner);
                 const result = this.context.dataLowerer.optionalAccess(
                     owner,
@@ -947,12 +948,8 @@ export class PlatformCalls {
             if (
                 this.context.defaultEngine() &&
                 !this.context.hasPresentationHost()
-            ) {
-                this.context.fail(
-                    call,
-                    "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.",
-                );
-            }
+            )
+                this.ui.refuseEngineCanvasContext(call);
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
@@ -975,11 +972,13 @@ export class PlatformCalls {
                 id !== undefined
                     ? this.ui.nativeHostUiTags().get(id)
                     : undefined;
+            // A chain on the lookup itself asks again: the program may have
+            // removed the element since.
             const optionalReceiver =
                 ts.isPropertyAccessExpression(call.parent) &&
                 call.parent.expression === call &&
                 !!call.parent.questionDotToken;
-            if (!tag || optionalReceiver)
+            if (!tag || id === undefined || optionalReceiver)
                 return {
                     kind: "data",
                     cpp: `bbl::ui_find_element_by_id(${engine}, ${byId ? this.ui.uiStringCpp(argumentAt(call, 0), "element id") : this.context.cppString(id!)})`,
@@ -993,11 +992,12 @@ export class PlatformCalls {
                 kind: "ui-element",
                 cpp:
                     `bbl::ui_get_element_by_id(${engine}, ` +
-                    `${this.context.cppString(id!)})`,
+                    `${this.context.cppString(id)})`,
                 engineCpp: engine,
-                uiHostId: id!,
+                uiHostId: id,
                 uiTag: tag,
                 truthinessCpp: "true",
+                ...this.ui.hostCanvas(id, tag, call),
             };
         }
         if (
@@ -1123,6 +1123,8 @@ export class PlatformCalls {
                     return invocation("clear_rect", 4);
                 case "fillRect":
                     return invocation("fill_rect", 4);
+                case "strokeRect":
+                    return invocation("stroke_rect", 4);
                 case "beginPath":
                     return invocation("begin_path", 0);
                 case "moveTo":

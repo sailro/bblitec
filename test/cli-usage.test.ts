@@ -17,7 +17,7 @@ test("bblitec usage names exactly the options the parser accepts", () => {
     assert.equal(result.status, 2, result.stderr);
     assert.match(
         result.stderr,
-        /^Usage: bblitec <entry\.ts> \(--out <directory> \| --survey <census\.json>\) /,
+        /^Usage: bblitec <entry\.ts \| page\.html> \(--out <directory> \| --survey <census\.json>\) /,
     );
     const documented = new Set(
         [...result.stderr.matchAll(/(--[a-z-]+)/g)].map((match) => match[1]),
