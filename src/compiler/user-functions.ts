@@ -3941,7 +3941,12 @@ export class UserFunctionLowerer {
             ir.parameters.length > arguments_.length &&
             ir.parameters
                 .slice(arguments_.length)
-                .some(({ declaration: parameter }) => !parameter.initializer)
+                .some(
+                    ({ declaration: parameter }) =>
+                        !parameter.initializer &&
+                        !parameter.questionToken &&
+                        !parameter.dotDotDotToken,
+                )
         ) {
             context.fail(
                 declaration,

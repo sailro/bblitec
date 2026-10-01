@@ -125,6 +125,31 @@ test("stored pending promises compile in the application realm", (t) => {
     runNative(result, directory, t);
 });
 
+test("an awaited call may omit an optional parameter", (t) => {
+    const directory = resolve("artifacts/async-optional-parameter");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL('./worker.ts',import.meta.url),{type:'module'});worker.terminate();
+        async function readAll(buf:Uint8Array,only?:Set<string>):Promise<Map<string,number>>{
+            const out=new Map<string,number>();
+            for(let i=0;i<buf.length;i++){const key='k'+i;if(!only||only.has(key))out.set(key,buf[i]!);}
+            return out;
+        }
+        async function bytes():Promise<Uint8Array>{await Promise.resolve();return new Uint8Array([1,2,3]);}
+        void(async()=>{
+            const all=await readAll(await bytes());
+            const some=await readAll(await bytes(),new Set(['k1']));
+            if(all.size!==3||some.size!==1||some.get('k1')!==2)throw new Error('optional parameter');
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    runNative(result, directory, t);
+});
+
 test("Promise.allSettled retains ordered values and original rejection identities", (t) => {
     const directory = resolve("artifacts/async-all-settled");
     mkdirSync(directory, { recursive: true });
