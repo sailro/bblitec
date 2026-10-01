@@ -138,6 +138,21 @@ test("native Unicode normalization and collation match JavaScript", (t) => {
         try { text.localeCompare("x", "en", {localeMatcher:"invalid"}); } catch { invalid++; }
         try { text.localeCompare("x", "en", {collation:"a_b"}); } catch { invalid++; }
         if (invalid !== 5) throw new Error("invalid locale list or options");
+        const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+        const names = ["item10", "Item2", "item1"];
+        names.sort((a, b) => collator.compare(a, b));
+        if (names.join(",") !== "item1,Item2,item10") throw new Error("collator sort");
+        const swedish = Intl.Collator(locales);
+        locales[1] = "sv";
+        if (swedish.compare("ä", "z") >= 0 || new Intl.Collator(["sv"]).compare("ä", "z") <= 0) throw new Error("collator locales");
+        let order = "";
+        function first(): string { order += "1"; return "a"; }
+        function second(): string { order += "2"; return "b"; }
+        if (new Intl.Collator().compare(first(), second()) >= 0 || order !== "12") throw new Error("collator arguments");
+        let rejected = 0;
+        try { new Intl.Collator("en", {sensitivity:"invalid"}); } catch { rejected++; }
+        try { Intl.Collator("en_US"); } catch { rejected++; }
+        if (rejected !== 2) throw new Error("collator construction");
     `,
         { fileName: "test/locale-entry.ts" },
     );

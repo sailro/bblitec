@@ -28,6 +28,7 @@ import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
 import { compileTextCodecMethod } from "./text-codecs.js";
+import { compileCollatorMethod } from "./locale.js";
 import {
     compileSearchParamsMethod,
     deploymentSearchParamsValue,
@@ -458,6 +459,8 @@ export function compileDataMethodCall(
         dynamicOwner?.dataType?.kind === "text-encoder"
     )
         return compileTextCodecMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "collator")
+        return compileCollatorMethod(lowerer, call, dynamicOwner, method);
     const tupleOwnerElements: readonly Value[] | undefined =
         dynamicOwner?.kind === "tuple"
             ? (dynamicOwner.tupleElements ?? [])

@@ -36,4 +36,18 @@ template <typename T>
     return locales ? collation_locales(*locales) : std::vector<std::string>{};
 }
 
+/** An `Intl.Collator`: the locales and options each `compare` passes to `compare_strings`. */
+struct CollatorState {
+    std::vector<std::string> locales;
+    CollationOptions options;
+};
+using Collator = js::Ref<CollatorState>;
+
+/** `new Intl.Collator(locales, options)`; throws where `localeCompare` would. */
+[[nodiscard]] Collator make_collator(std::vector<std::string> locales, CollationOptions options);
+[[nodiscard]] inline double collator_compare(const Collator& collator, const std::string& left,
+                                             const std::string& right) {
+    return compare_strings(left, right, collator->locales, collator->options);
+}
+
 } // namespace bbl::pal

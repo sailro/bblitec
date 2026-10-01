@@ -99,6 +99,7 @@ interface DataKinds {
     "date-time-format": { kind: "date-time-format" };
     "text-decoder": { kind: "text-decoder" };
     "text-encoder": { kind: "text-encoder" };
+    collator: { kind: "collator" };
     number: {
         kind: "number";
     };

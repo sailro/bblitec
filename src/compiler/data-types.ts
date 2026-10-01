@@ -1076,6 +1076,11 @@ export class DataTypeRegistry {
             declaredInDomLibrary(type.symbol)
         )
             return { kind: "text-encoder" };
+        if (
+            type.symbol?.name === "Collator" &&
+            declaredInDefaultLibrary(type.symbol)
+        )
+            return { kind: "collator" };
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);

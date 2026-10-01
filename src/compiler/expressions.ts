@@ -78,6 +78,7 @@ import {
 } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
 import { compileDateTimeFormat } from "./dates.js";
+import { compileCollatorConstruction } from "./locale.js";
 import { compileSearchParams } from "./search-params.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
@@ -491,6 +492,11 @@ export class ExpressionLowerer {
                 unwrapped,
             );
             if (formatter) return formatter;
+            const collator = compileCollatorConstruction(
+                this.context.dataLowerer,
+                unwrapped,
+            );
+            if (collator) return collator;
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;

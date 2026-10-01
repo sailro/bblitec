@@ -29,6 +29,7 @@ export const scalarKinds: DataKindOperations<
     | "date-time-format"
     | "text-decoder"
     | "text-encoder"
+    | "collator"
     | "number"
     | "boolean"
     | "string"
@@ -70,6 +71,10 @@ export const scalarKinds: DataKindOperations<
     },
     "text-encoder": {
         ...leaf("bbl::js::TextEncoder", "textencoder", true, true),
+        opaqueReference: true,
+    },
+    collator: {
+        ...leaf("bbl::pal::Collator", "collator", true, true),
         opaqueReference: true,
     },
     number: leaf(CPP_SCALAR.number, "n"),
