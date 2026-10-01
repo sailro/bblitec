@@ -12,6 +12,7 @@ import ts from "typescript";
 import { collectReboundSymbols } from "./module-initializers.js";
 import {
     isSupportedFunction,
+    type SupportedFunction,
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
 import { rootIdentifier } from "./syntax.js";
@@ -28,6 +29,7 @@ interface SharedClosureContext extends Pick<
     LoweringServices,
     | "bindings"
     | "checker"
+    | "dataTypes"
     | "libraryGlobal"
     | "options"
     | "sourceFile"
@@ -182,11 +184,15 @@ export class SharedClosureAnalysis {
 
     /**
      * Whether a call keeps its argument at `index` in a retained callback:
-     * a listener or timer registration, or a repository helper that invokes
-     * that parameter from one of its own stored callbacks (freeciv's
+     * a listener or timer registration, or a repository function or class
+     * method that invokes that parameter from one of its own stored
+     * callbacks or hands it on (freeciv's
      * `installControls(engine, view, zoomCtl, hover, onMapClick)` calls
-     * `onClick` from its pointer-up listener). The helper may live in any
-     * repository module; the pinned package has no bodies to resolve.
+     * `onClick` from its pointer-up listener). The function may live in any
+     * repository module; the pinned package and the language library have
+     * no bodies to resolve. A repository function value whose body cannot be
+     * named -- an interface or record member (`hub.on(cb)` on a factory's
+     * returned record), a function-typed parameter -- may keep it.
      */
     public callRetainsArgument(
         call: ts.CallExpression,
@@ -197,25 +203,68 @@ export class SharedClosureAnalysis {
             this.retainsCallbackArgument(call, index, includeFrameRegistrations)
         )
             return true;
+        const targets = this.callTargets(call);
+        if (targets === "library") return false;
+        if (targets === "unnamed") return true;
+        return targets.some((target) => {
+            const last = target.parameters[target.parameters.length - 1];
+            const parameter =
+                last?.dotDotDotToken && index >= target.parameters.length - 1
+                    ? last
+                    : target.parameters[index];
+            if (!parameter || !ts.isIdentifier(parameter.name)) return false;
+            const symbol = this.context.symbols.valueSymbol(parameter.name);
+            const info = this.sharedClosureSymbolsFor(
+                target,
+                includeFrameRegistrations,
+            );
+            return (
+                !!symbol &&
+                !!info &&
+                (info.captured.has(symbol) || info.forwarded.has(symbol))
+            );
+        });
+    }
+
+    /**
+     * The repository bodies a call runs: a named function, or every
+     * implementation a class method dispatches to. "library" for a
+     * declaration file's function; "unnamed" for a repository function value
+     * whose body is not fixed by its declaration.
+     */
+    private callTargets(
+        call: ts.CallExpression,
+    ): readonly SupportedFunction[] | "library" | "unnamed" {
         const callee = this.context.unwrap(call.expression);
-        if (!ts.isIdentifier(callee)) return false;
-        const target = tryResolveFunctionDeclaration(
-            this.context.checker,
-            callee,
-        );
-        if (!target) return false;
-        const parameter = target.parameters[index];
-        if (!parameter || !ts.isIdentifier(parameter.name)) return false;
-        const symbol = this.context.symbols.valueSymbol(parameter.name);
-        const info = this.sharedClosureSymbolsFor(
-            target,
-            includeFrameRegistrations,
-        );
-        return (
-            !!symbol &&
-            !!info &&
-            (info.captured.has(symbol) || info.forwarded.has(symbol))
-        );
+        if (ts.isIdentifier(callee)) {
+            const target = tryResolveFunctionDeclaration(
+                this.context.checker,
+                callee,
+            );
+            if (target) return [target];
+        }
+        const declaration =
+            this.context.checker.getResolvedSignature(call)?.declaration;
+        if (!declaration) return "unnamed";
+        if (declaration.getSourceFile().isDeclarationFile) return "library";
+        if (ts.isFunctionDeclaration(declaration) && declaration.body)
+            return [declaration];
+        if (
+            ts.isMethodDeclaration(declaration) &&
+            ts.isClassLike(declaration.parent)
+        ) {
+            const implementations =
+                this.context.dataTypes.classHierarchy.implementations(
+                    declaration,
+                ) ?? [declaration];
+            return implementations.every(
+                (implementation): implementation is ts.MethodDeclaration =>
+                    implementation?.body !== undefined,
+            )
+                ? implementations
+                : "unnamed";
+        }
+        return "unnamed";
     }
 
     @journaled private accessor nativeParticleProviderUse: boolean | undefined;

@@ -1036,6 +1036,116 @@ check(
 );
 
 check(
+    "factory-records-share-their-frame-and-keep-callbacks",
+    `
+    interface Batch {
+        count(): number;
+        keyAt(index: number): number | null;
+        setTint(rgb: readonly number[]): void;
+        add(x: number): void;
+        total(): number;
+        dispose(): void;
+    }
+    const disposers: Array<() => void> = [];
+    let disposals = 0;
+    function createBatch(): Batch {
+        let box = 0;
+        let tint = 1;
+        const keys: number[] = [];
+        const keyAt = (index: number): number | null => index < box ? keys[index]! : null;
+        const batch: Batch = {
+            count: () => box,
+            keyAt,
+            setTint(rgb) { tint = rgb[0]!; },
+            add(x) { keys.push(x * tint); box++; },
+            total() { let sum = 0; for (let index = 0; index < box; index++) sum += batch.keyAt(index) ?? 0; return sum; },
+            dispose() { disposals++; },
+        };
+        disposers.push(batch.dispose);
+        return batch;
+    }
+    const wood = createBatch();
+    const stone = createBatch();
+    wood.setTint([2]);
+    wood.add(3);
+    wood.add(4);
+    stone.add(5);
+    if (wood.count() !== 2 || stone.count() !== 1 || wood.total() !== 14 || wood.keyAt(2) !== null) throw new Error("factory frames");
+    for (const dispose of disposers) dispose();
+    if (disposals !== 2) throw new Error("method value");
+
+    interface Splash {
+        setProgress: (p: number, key?: string) => void;
+        onAbout(cb: () => void): void;
+        onValue: (cb: () => void) => void;
+        about(): void;
+        caption(): string;
+    }
+    function createSplash(): Splash {
+        let target = 0;
+        let status = "sub";
+        let aboutCallback: (() => void) | null = null;
+        const listeners: Array<() => void> = [];
+        return {
+            setProgress(p: number, key?: string): void {
+                if (key) status = key;
+                target = Math.max(target, p);
+            },
+            onAbout(cb: () => void): void { aboutCallback = cb; },
+            onValue: (cb) => { listeners.push(cb); },
+            about(): void {
+                if (aboutCallback) aboutCallback();
+                for (const listener of listeners) listener();
+            },
+            caption: () => status + ":" + Math.round(target * 100),
+        };
+    }
+    const splash = createSplash();
+    const marks: string[] = [];
+    {
+        const inner = splash.setProgress;
+        splash.setProgress = (p: number, key?: string): void => { marks.push(key ?? "p"); inner(p, key); };
+    }
+    let abouts = 0;
+    let values = 0;
+    splash.onAbout(() => abouts++);
+    splash.onValue(() => { values += 2; });
+    splash.setProgress(0.25, "load");
+    splash.setProgress(0.5);
+    splash.about();
+    if (splash.caption() !== "load:50" || marks.join(",") !== "load,p") throw new Error("shared factory state");
+    if (abouts !== 1 || values !== 2) throw new Error("record member keeps its callback");
+
+    class Keeper {
+        private kept: Array<() => void> = [];
+        keep(cb: () => void): void { this.kept.push(cb); }
+        wire(cb: () => void): void { this.keep(cb); }
+        fire(): void { for (const cb of this.kept) cb(); }
+    }
+    const keeper = new Keeper();
+    let viaMethod = 0;
+    let viaThis = 0;
+    keeper.keep(() => viaMethod++);
+    keeper.wire(() => viaThis++);
+    const kept: Array<() => void> = [];
+    function forward(register: (cb: () => void) => void, step: number): void {
+        let local = 0;
+        register(() => { local += step; viaParameter = local; });
+    }
+    let viaParameter = 0;
+    forward((cb) => kept.push(cb), 3);
+    function keepAll(...callbacks: Array<() => void>): void { for (const cb of callbacks) kept.push(cb); }
+    let viaRest = 0;
+    keepAll(() => {}, () => viaRest++);
+    keeper.fire();
+    for (const cb of kept) cb();
+    for (const cb of kept) cb();
+    if (viaMethod !== 1 || viaThis !== 1) throw new Error("class method keeps its callback");
+    if (viaParameter !== 6 || viaRest !== 2) throw new Error("function value keeps its callback");
+`,
+);
+
+check(
     "record-method-rebinding-is-visible-to-retained-callbacks",
     `
     let count = 0;

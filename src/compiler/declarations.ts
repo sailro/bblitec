@@ -2480,6 +2480,11 @@ export class DeclarationLowerer {
                 });
             visit(initializer);
         }
+        // A record whose own methods name its binding (`batch.keyAt(i)` in a
+        // method of `const batch: Batch = {...}`) is one shared object: the
+        // methods read the binding when they run, after it is filled.
+        if (initializerReferencesBinding && annotated.kind === "struct")
+            this.context.dataTypes.markStoredObjectReferences(annotated);
         const selfReferentialBinding =
             initializerReferencesBinding &&
             (annotated.kind === "function" ||
