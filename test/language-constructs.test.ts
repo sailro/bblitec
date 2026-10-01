@@ -3957,6 +3957,14 @@ check(
         const numbers = [2, 9, 4];
         numbers.sort(choose(numbers.length > 2));
         if (numbers.join(",") !== "9,4,2" || picked !== 1) throw new Error("evaluated once " + picked);
+        let receiver = [3, 1];
+        const original = receiver;
+        const rebind = (): ((a: number, b: number) => number) => {
+            receiver = [8, 9];
+            return ascending;
+        };
+        receiver.sort(rebind());
+        if (original.join(",") !== "1,3" || receiver.join(",") !== "8,9") throw new Error("receiver before comparator");
     }
     main();
 `,
@@ -3985,35 +3993,29 @@ check(
 `,
 );
 
-check(
-    "array length growth fills absent elements of optional and object arrays",
-    `
-    interface Id { kind: string; id: number }
-    class Table {
-        private ids: Array<Id | null> = [];
-        grow(capacity: number): void {
-            const previous = this.ids.length;
-            this.ids.length = capacity;
-            for (let slot = previous; slot < capacity; slot++) this.ids[slot] = null;
-        }
-        put(slot: number, id: Id): void { this.ids[slot] = id; }
-        describe(): string { return this.ids.map((id) => (id ? id.kind + id.id : "-")).join(","); }
-    }
+test("dense arrays refuse sparse length growth", { skip: !native }, () => {
+    const result = compileSource(`
     function main(): void {
-        const table = new Table();
-        table.grow(2);
-        table.put(1, { kind: "a", id: 2 });
-        table.grow(4);
-        if (table.describe() !== "-,a2,-,-") throw new Error("object array growth " + table.describe());
         const counts: Array<number | undefined> = [1];
-        counts.length = 3;
-        if (counts.length !== 3 || counts[2] !== undefined || counts[0] !== 1) throw new Error("optional array growth");
-        counts.length = 1;
-        if (counts.length !== 1) throw new Error("truncation");
+        let refused = false;
+        try { counts.length = 3; } catch { refused = true; }
+        if (!refused || counts.length !== 1) throw new Error("optional sparse growth must refuse without mutation");
+        const objects: Array<{ id: number } | null> = [{ id: 2 }];
+        refused = false;
+        try { objects.length = 3; } catch { refused = true; }
+        if (!refused || objects.length !== 1) throw new Error("object sparse growth must refuse without mutation");
+        counts.length = 0;
+        objects.length = 0;
+        if (counts.length !== 0 || objects.length !== 0) throw new Error("truncation");
     }
     main();
-`,
-);
+`);
+    runGeneratedProgram(
+        native!,
+        "language-constructs/sparse-length-refusal",
+        result.cpp,
+    );
+});
 
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the

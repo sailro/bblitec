@@ -1549,6 +1549,13 @@ function compileArraySort(state: ArrayMethodState): Value {
             "Array.sort expects at most one comparator callback.",
         );
     }
+    const result = lowerer.context.allocateTemporaryCppName("sort_result");
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "auto",
+        name: result,
+        initializer: narrowed.cpp,
+    });
     const argument = call.arguments[0]
         ? lowerer.context.unwrap(call.arguments[0])
         : undefined;
@@ -1588,15 +1595,8 @@ function compileArraySort(state: ArrayMethodState): Value {
             ts.isFunctionExpression(argument))
             ? argument
             : storedCallback?.callbackDeclaration;
-    const result = lowerer.context.allocateTemporaryCppName("sort_result");
     const left = lowerer.context.allocateTemporaryCppName("sort_left");
     const right = lowerer.context.allocateTemporaryCppName("sort_right");
-    lowerer.context.emit({
-        kind: "declaration",
-        type: "auto",
-        name: result,
-        initializer: narrowed.cpp,
-    });
     lowerer.context.emit(
         `std::stable_sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`,
     );

@@ -3992,22 +3992,13 @@ template <typename T> inline void array_splice_one(Array<T>& values, double inde
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
-/** An element whose default value is its absent state: an optional value or an object reference. */
-template <typename T>
-struct HasAbsentElement : std::bool_constant<IsNullable<T>::value || IsOptional<T>::value> {};
-template <typename T> struct HasAbsentElement<Ref<T>> : std::true_type {};
-
-// Length writes keep the dense-array contract: growth fills absent elements
-// where the element type represents absence, and refuses elsewhere (a hole
-// in a number array would read as a value).
+// Length writes keep the dense-array contract; sparse growth needs slot presence.
 template <typename T> inline void array_truncate(Array<T>& values, double count) {
     if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
         throw std::runtime_error("Invalid array length.");
     const auto size = array_index(count);
-    if constexpr (!HasAbsentElement<T>::value) {
-        if (size > values.size()) [[unlikely]] {
-            throw std::runtime_error("Array length assignment must not grow the array.");
-        }
+    if (size > values.size()) [[unlikely]] {
+        throw std::runtime_error("Array length assignment must not grow the array.");
     }
     values.resize(size);
 }
