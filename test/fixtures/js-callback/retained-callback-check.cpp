@@ -181,6 +181,74 @@ void native_invocation_snapshot() {
     assert(lambda(3) == 6);
 }
 
+void native_function_storage_snapshot() {
+    using Callback = bbl::js::Callback<int(int)>;
+    auto payload = std::make_shared<int>(10);
+    std::weak_ptr<int> weak = payload;
+    Callback callback{[payload](int value) { return *payload += value; }};
+    std::function<int(int)> function = callback;
+    const auto identity = bbl::js::realm_state.callback_identity;
+    {
+        const auto selected = bbl::js::snapshot_callback(function);
+        const auto alias = selected;
+        function = [](int) { return -1; };
+        assert(callback(1) == 11);
+        callback = {};
+        payload.reset();
+        bbl::js::collect_cycles();
+        assert(!weak.expired());
+        assert(selected && selected(2) == 13 && alias(3) == 16);
+        assert(function(0) == -1);
+        assert(bbl::js::realm_state.callback_identity == identity);
+    }
+    assert(weak.expired());
+
+    bbl::js::Callback<int()> move_only{
+        [owned = std::make_unique<int>(5)]() mutable { return ++*owned; }};
+    std::function<int()> erased = move_only.body();
+    const auto move_only_identity = bbl::js::realm_state.callback_identity;
+    const auto retained = bbl::js::snapshot_callback(erased);
+    move_only = {};
+    erased = {};
+    assert(retained() == 6 && retained() == 7);
+    assert(bbl::js::realm_state.callback_identity == move_only_identity);
+
+    auto disposal_payload = std::make_shared<int>(7);
+    std::weak_ptr<int> disposal_weak = disposal_payload;
+    std::function<void()> dispose;
+    int calls = 0;
+    dispose = [disposal_payload, &disposal_weak, &dispose, &calls] {
+        dispose = {};
+        bbl::js::collect_cycles();
+        assert(!disposal_weak.expired() && *disposal_payload == 7);
+        ++calls;
+    };
+    {
+        const auto selected = bbl::js::snapshot_callback(dispose);
+        disposal_payload.reset();
+        selected();
+        assert(calls == 1 && !dispose && !disposal_weak.expired());
+    }
+    assert(disposal_weak.expired());
+    const auto absent = bbl::js::snapshot_callback(dispose);
+    assert(!absent);
+    bool failed = false;
+    try {
+        absent();
+    } catch (const std::bad_function_call&) {
+        failed = true;
+    }
+    assert(failed);
+
+    std::function<int&(int&)> reference = [](int& value) -> int& { return value; };
+    int value = 1;
+    bbl::js::snapshot_callback(reference)(value) = 9;
+    assert(value == 9);
+    std::function<std::unique_ptr<int>(std::unique_ptr<int>)> transfer =
+        [](std::unique_ptr<int> owned) { return owned; };
+    assert(*bbl::js::snapshot_callback(transfer)(std::make_unique<int>(17)) == 17);
+}
+
 int main() {
     recursive_callback_lifetime();
     recursive_callback_allocations();
@@ -189,6 +257,7 @@ int main() {
     identity_erasure_retains_recursive_owner();
     prepared_invocation_retains_once();
     native_invocation_snapshot();
+    native_function_storage_snapshot();
     using Callback = bbl::js::Callback<void(double)>;
     std::vector<Callback> callbacks;
     int steps = 0;

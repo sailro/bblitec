@@ -1956,9 +1956,10 @@ export class BindingScopes {
                 name: cpp,
                 initializer: stored.cpp,
             });
+            this.context.registerNativeTemporary(cpp, stored.dataType);
             return {
                 ...stored,
-                cpp: `std::move(${cpp})`,
+                cpp,
                 objectIdentityCpp: `${cpp}.get()`,
             };
         }
