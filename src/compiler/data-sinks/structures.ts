@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
-import { dataTypesEqual, type DataType } from "../data-types.js";
+import {
+    dataTypesEqual,
+    type DataStructField,
+    type DataType,
+} from "../data-types.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -278,9 +282,14 @@ function valueStruct(
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
+            "accessors",
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                const getter = value.recordGetters?.[field.sourceName];
+                const setter = value.recordSetters?.[field.sourceName];
+                if (getter || setter)
+                    return accessorSlot(lowerer, field, value, node);
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -298,22 +307,23 @@ function valueStruct(
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
-                if (!property) {
-                    if (field.defaultWhenMissing) {
-                        return "{}";
-                    }
-                    if (field.type.kind === "optional") {
-                        return "std::nullopt";
-                    }
-                    lowerer.context.fail(
-                        node,
-                        `Compile-time record is missing required field '${field.sourceName}'.`,
-                    );
-                }
-                return lowerer.compileKnownValueForSink(
-                    property,
-                    field.type,
-                    node,
+                const stored = property
+                    ? lowerer.compileKnownValueForSink(
+                          property,
+                          field.type,
+                          node,
+                      )
+                    : field.defaultWhenMissing
+                      ? "{}"
+                      : field.type.kind === "optional"
+                        ? "std::nullopt"
+                        : lowerer.context.fail(
+                              node,
+                              `Compile-time record is missing required field '${field.sourceName}'.`,
+                          );
+                return lowerer.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    stored,
                 );
             })
             .join(", ")}}`;
@@ -325,7 +335,7 @@ function valueStruct(
         const sourceType = value.dataType;
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
-                .structFields(sourceType.name, node)
+                .structFields(sourceType.name, node, "accessors")
                 .map((field) => [field.sourceName, field]),
         );
         const sourceArrow = lowerer.context.dataTypes.isReferenceStruct(
@@ -334,6 +344,7 @@ function valueStruct(
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
+            "accessors",
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
@@ -350,11 +361,22 @@ function valueStruct(
                         `Struct ${sourceType.name} is missing required destination field '${field.sourceName}'.`,
                     );
                 }
+                const sourceCpp = `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`;
+                // One object seen through two record types keeps its
+                // accessors; a stored value becomes the target's cell.
+                if (source.accessor || field.accessor) {
+                    if (
+                        source.accessor !== field.accessor ||
+                        !dataTypesEqual(source.type, field.type)
+                    )
+                        lowerer.context.fail(
+                            node,
+                            `Property '${field.sourceName}' is an accessor in one of '${sourceType.name}' and '${dataType.name}' but not the other.`,
+                        );
+                    return sourceCpp;
+                }
                 return lowerer.compileKnownValueForSink(
-                    lowerer.leafValue(
-                        `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`,
-                        source.type,
-                    ),
+                    lowerer.leafValue(sourceCpp, source.type),
                     field.type,
                     node,
                 );
@@ -373,19 +395,28 @@ function valueStruct(
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
+            "accessors",
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                const key = lowerer.context.cppString(field.sourceName);
+                const optional =
+                    field.type.kind === "optional" &&
+                    dataTypesEqual(sourceMap.value, field.type.inner);
+                // A closed record asserted from the open one is a view of
+                // it: reads and writes reach its entries, and a read of an
+                // absent entry refuses there, as an asserted read does.
                 if (
-                    field.type.kind !== "optional" ||
-                    !dataTypesEqual(sourceMap.value, field.type.inner)
-                ) {
-                    lowerer.context.fail(
-                        node,
-                        `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must be compatible optionals.`,
-                    );
-                }
-                return `${value.cpp}.get(${lowerer.context.cppString(field.sourceName)})`;
+                    field.accessor &&
+                    (optional || dataTypesEqual(sourceMap.value, field.type))
+                )
+                    return `bbl::js::${optional ? "optional_entry_accessor" : "entry_accessor"}<${lowerer.context.dataTypes.cppType(field.type)}>(${value.cpp}, ${key})`;
+                if (!field.accessor && optional)
+                    return `${value.cpp}.get(${key})`;
+                return lowerer.context.fail(
+                    node,
+                    `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must be compatible optionals.`,
+                );
             })
             .join(", ")}}`;
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
@@ -393,6 +424,31 @@ function valueStruct(
             : aggregate;
     }
     return undefined;
+}
+
+/** A record's accessor property: its getter and setter in the field's accessor slot. */
+function accessorSlot(
+    lowerer: DataSinkHost,
+    field: DataStructField,
+    record: Value,
+    node: ts.Node,
+): string {
+    const getter = record.recordGetters?.[field.sourceName];
+    const setter = record.recordSetters?.[field.sourceName];
+    if (!field.accessor)
+        lowerer.context.fail(
+            node,
+            `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
+        );
+    if (!getter)
+        lowerer.context.fail(
+            node,
+            `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
+        );
+    const set = setter
+        ? lowerer.context.compileStoredAccessor(record, setter, field.type)
+        : "{}";
+    return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(record, getter, field.type)}, ${set})`;
 }
 
 function valueEnummap(

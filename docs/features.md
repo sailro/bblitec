@@ -12,7 +12,7 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 ## Feature and capability selection
 
 | Input | Selects |
-| --- | --- |
+| --- | --- | --- |
 | Reached APIs/properties/globals | Generated code, PAL units, native dependencies |
 | Call options and asset loader predicates | Runtime features joined from assets, subfeatures, codecs, material variants |
 | Pinned composition | Shader arms, layouts and binding requirements |
@@ -33,7 +33,7 @@ exports, overloads, methods, fields/accessors, index signatures and reachable ty
 type dependencies. Inherited fields belong to their declaring type; external peer APIs and stripped internals are excluded.
 
 | Evidence | Scope |
-| --- | --- |
+| --- | --- | --- |
 | Exercised forms | Successful AST lowering across the full test suite and every registered scene/demo, including dynamic test inputs |
 | Source translation | Generated pinned bodies, configured bindings/specializations, and dispatched call/method/expression/statement adapters |
 | Entry adapters | Registry probes and passing source forms; imported Babylon calls require an entry adapter even when their bodies translate |
@@ -48,14 +48,14 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 
 ## Program compilation
 
-| Area | Supported | Limits |
+| Area | Supported | Limits/adaptations |
 | --- | --- | --- |
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`); methods recursing through stored instances | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; an uninitialized `let c: C \| undefined`; unsupported field storage |
-| Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups, reassigned function locals; a callback naming a later `const` whose initializer is not pure (it touches storage or calls the host) reads it through temporal-dead-zone storage, the initializer running where the source declares it | Captures need owned representations; borrowed input events, and closures reading a binding that holds one, cannot escape dispatch; such a later `const` without an owned data type is initialized ahead of the callback |
-| Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
+| Closures | Shared mutable cells, also for callbacks kept by repository functions, methods or record members; function identity, optional calls, escaping recursive groups, reassigned function locals; a callback naming a later `const` whose initializer is not pure (it touches storage or calls the host) reads it through temporal-dead-zone storage, the initializer running where the source declares it | Captures need owned representations; borrowed input events, and closures reading a binding that holds one, cannot escape dispatch; such a later `const` without an owned data type is initialized ahead of the callback |
+| Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON; stored records with `get`/`set` accessors (literal, or a class's for an `implements`ed type) | Optional own-property presence; accessor records: spreads, enumeration, narrowing conversion, worker cloning; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks; value-promise `catch` (application realm) | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created and is not settled from a timer or frame callback, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
@@ -96,10 +96,11 @@ Dynamic JSON preserves actual fields and object identity through typed locals, a
 included), conditionals, represented generic returns and record-typed function returns. Source-backed
 record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
 permit statements before a final return; early returns refuse.
-Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
+Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree;
+a typed record whose methods name its own binding is one shared object.
 
 | Promise operation | Contract |
-| --- | --- |
+| --- | --- | --- |
 | `resolve` / constructor | Object identity; synchronous executor; first settlement wins; represented promise adoption |
 | `reject` | Owned Error identity |
 | `then` / `catch` | Owned captures, queued reactions, compatible result storage; callback throws reject; `catch` and rejection callbacks bind their parameter to the caught Error |
@@ -133,7 +134,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
 | Text encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`) decoding an ArrayBuffer or view; `TextEncoder.encode` | Other encodings, streaming decode, `encodeInto` and codec properties refuse |
-| Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse |
+| Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in; a closed record asserted from an open string record (`as Record<Union, V>`) views its entries | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse; a view's read of an absent entry refuses; enum-keyed views refuse |
 | JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone; Collator(locales, options) and `compare`, as `localeCompare` | No DateTimeFormat locale/options, formatting or broader fields; Collator `resolvedOptions` and a detached `compare` refuse |
@@ -208,7 +209,7 @@ mutable inputs and runtime engine reads refuse. Live UI Canvas2D is separate.
 ### Node particles
 
 | Path | Contract |
-| --- | --- |
+| --- | --- | --- |
 | Frozen/baked | Pre-frame stepped/frozen sets without providers; retained numeric buffer reads |
 | Sprite2D sheets | Shared Uint16 cells with live writes; replacement and broader bindings refuse |
 | Native pure 2D | Supported static emission, Point/Box shapes, position/color, texture, Input/Math/Lerp/Converter and random modes |

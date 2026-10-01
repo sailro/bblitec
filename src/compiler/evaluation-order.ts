@@ -381,17 +381,8 @@ export class EvaluationOrder {
             return ts.isClassDeclaration(declaration.parent)
                 ? this.construction(declaration.parent)
                 : undefined;
-        if (ts.isMethodDeclaration(declaration)) {
-            const implementations = this.hierarchy.implementations(
-                declaration,
-            ) ?? [declaration];
-            return implementations.every(
-                (implementation): implementation is ts.MethodDeclaration =>
-                    implementation?.body !== undefined,
-            )
-                ? implementations
-                : undefined;
-        }
+        if (ts.isMethodDeclaration(declaration))
+            return this.hierarchy.dispatchBodies(declaration);
         if (ts.isAccessor(declaration))
             return declaration.body &&
                 !(
@@ -735,6 +726,24 @@ export class EvaluationOrder {
             )
                 access.reads.heap = true;
         }
+    }
+
+    /**
+     * The function bodies a call runs (`callees` without a construction's
+     * field initializers), "library" for a declaration file's function, or
+     * undefined when they cannot be named.
+     */
+    public callBodies(
+        call: ts.CallExpression,
+    ): readonly ts.FunctionLikeDeclaration[] | "library" | undefined {
+        const units = this.callees(call);
+        if (units === "library" || units === undefined) return units;
+        return units.every(
+            (unit): unit is ts.FunctionLikeDeclaration =>
+                !ts.isPropertyDeclaration(unit),
+        )
+            ? units
+            : undefined;
     }
 
     /**

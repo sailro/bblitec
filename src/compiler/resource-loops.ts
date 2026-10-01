@@ -670,13 +670,11 @@ function dispatchesToBodies(
     context: Pick<ResourceLoopContext, "dataTypes">,
     method: NonNullable<ts.Signature["declaration"]>,
 ): boolean {
-    const implementations = ts.isMethodDeclaration(method)
-        ? context.dataTypes.classHierarchy.implementations(method)
-        : undefined;
+    const hierarchy = context.dataTypes.classHierarchy;
     return (
-        implementations !== undefined &&
-        implementations.length > 0 &&
-        implementations.every((implementation) => implementation?.body)
+        ts.isMethodDeclaration(method) &&
+        hierarchy.implementations(method) !== undefined &&
+        hierarchy.dispatchBodies(method) !== undefined
     );
 }
 

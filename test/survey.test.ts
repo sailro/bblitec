@@ -95,6 +95,34 @@ test("a survey records every refusal it reaches and continues past each", () => 
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
+test("a member call through a refused binding is a cascade of its declaration", () => {
+    // `handle` is never bound: its member calls name it, not a gap of their own.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function create(name: string): { ready: number; add(value: number): void } {
+            const raw = document.getElementById(name);
+            return { ready: raw !== null ? 1 : 0, add(value: number): void { total += value; } };
+        }
+        const handle = create("mode");
+        handle.add(2);
+        (handle!).add(3);
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-member-cascade.ts") },
+    );
+    assert.equal(report.complete, true);
+    const [declaration, ...members] = report.refusals;
+    assert.ok(declaration, listed(report));
+    assert.equal(declaration.statement.line, 7);
+    assert.equal(declaration.cascade, undefined);
+    assert.equal(members.length, 2, listed(report));
+    for (const member of members) {
+        assert.match(member.message, /handle!?\)?\.add/);
+        assert.deepEqual(member.cascade, declaration.site);
+    }
+});
+
 test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
     // hole, so each declaration that calls it refuses at the one site inside

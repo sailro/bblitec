@@ -527,6 +527,15 @@ export interface LoweringServices {
         },
         owner?: Value,
     ): string;
+    /**
+     * A record accessor as the stored callback of an accessor-backed field:
+     * a getter returns `valueType`, a setter takes it.
+     */
+    compileStoredAccessor(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
+        valueType: DataType,
+    ): string;
     compilePredicateWithValues(
         declaration:
             | ts.Identifier

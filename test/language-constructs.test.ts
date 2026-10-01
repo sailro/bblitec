@@ -1036,6 +1036,308 @@ check(
 );
 
 check(
+    "open-records-asserted-as-closed-records",
+    `
+    type Drop = "seat-changed" | "gesture-end";
+    const DROPS: readonly Drop[] = Object.freeze(["seat-changed", "gesture-end"] as const);
+    const DROP_INDEX: Readonly<Record<Drop, number>> = Object.freeze(
+        Object.fromEntries(DROPS.map((code, index) => [code, index])),
+    ) as Readonly<Record<Drop, number>>;
+    const tally = [0, 0];
+    function drop(code: Drop): void { tally[DROP_INDEX[code]]!++; }
+    drop("gesture-end"); drop("gesture-end"); drop("seat-changed");
+    if (tally.join(",") !== "1,2") throw new Error("asserted closed record");
+    type Action = "jump" | "run" | "crouch";
+    type Profile = Record<Action, string>;
+    const DEFINITIONS: readonly { action: Action; key: string }[] = [{ action: "jump", key: "Space" }, { action: "run", key: "Shift" }];
+    function profileFromDefaults(): Profile {
+        return Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.key])) as Profile;
+    }
+    // "crouch" is never read, so its absence never refuses.
+    const profile = profileFromDefaults();
+    if (profile.jump !== "Space" || profile.run !== "Shift") throw new Error("asserted closed record");
+    const entries: Record<string, string> = {};
+    const view: Profile = entries as Profile;
+    entries["jump"] = "J";
+    view.run = "R";
+    if (view.jump !== "J" || entries["run"] !== "R") throw new Error("the view and its record share entries");
+    const alias = entries as Profile;
+    entries["crouch"] = "C";
+    if (alias.crouch !== "C" || view.crouch !== "C") throw new Error("a later entry reads through the view");
+    function rebind(profile: Profile, action: Action, key: string): void { profile[action] = key; }
+    rebind(view, Date.now() > 0 ? "jump" : "run", "K");
+    view["run"] = "L";
+    if (entries["jump"] !== "K" || entries["run"] !== "L") throw new Error("keyed writes through the view");
+    const partial: Partial<Profile> = entries as Partial<Profile>;
+    partial.run = undefined;
+    if (partial.jump !== "K" || partial.run !== undefined || entries["run"] !== undefined) throw new Error("optional view");
+`,
+);
+
+check(
+    "rebound-nullable-records-select-objects",
+    `
+    interface Indicator { show: (enabled: boolean) => void; hide: () => void; }
+    let shown = 0;
+    function createIndicator(step: number): Indicator {
+        let visible = false;
+        return { show: (enabled: boolean) => { visible = enabled; shown += step; }, hide: () => { visible = false; } };
+    }
+    let indicator: Indicator | undefined;
+    const later = (): void => indicator?.show(true);
+    later();
+    indicator = createIndicator(1);
+    later();
+    const first = indicator;
+    indicator = createIndicator(10);
+    later();
+    first.show(true);
+    indicator?.hide();
+    if (shown !== 12) throw new Error("rebound nullable record");
+`,
+);
+
+check(
+    "record-accessors-are-stored-native-accessors",
+    `
+    "use strict";
+    interface Counter {
+        readonly count: number;
+        label: string;
+        add(): void;
+    }
+    function createCounter(start: number): Counter {
+        let value = start;
+        let text = "c";
+        const counter: Counter = {
+            get count() { return value; },
+            get label() { return text + counter.count; },
+            set label(next: string) { text = next; },
+            add() { value++; },
+        };
+        return counter;
+    }
+    const counters: Counter[] = [createCounter(1), { count: 7, label: "plain", add() {} }];
+    counters[0]!.add();
+    counters[0]!.add();
+    if (counters[0]!.count !== 3) throw new Error("getter through an array");
+    const { count: destructured } = counters[0]!;
+    if (destructured !== 3) throw new Error("destructured getter");
+    counters[0]!.label = "n";
+    if (counters[0]!.label !== "n3") throw new Error("setter through an array");
+    if (counters[1]!.count !== 7 || counters[1]!.label !== "plain") throw new Error("stored value in an accessor slot");
+    counters[1]!.label = "changed";
+    if (counters[1]!.label !== "changed") throw new Error("stored value write");
+    let current = createCounter(5);
+    const byName = new Map<string, Counter>([["a", current]]);
+    current.add();
+    if (byName.get("a")!.count !== 6) throw new Error("getter through a map");
+    const readCurrent = (): number => current.count;
+    current = createCounter(20);
+    if (readCurrent() !== 20 || byName.get("a")!.count !== 6) throw new Error("rebound accessor record");
+    interface Sized { size: number; }
+    let side = 3;
+    const sizes: Sized[] = [{ get size() { return side; } }];
+    let threw = false;
+    try { sizes[0]!.size = 4; } catch (error) { threw = error instanceof TypeError; }
+    side = 5;
+    if (!threw || sizes[0]!.size !== 5) throw new Error("getter-only write");
+    interface Mixed { a: number; b: number; }
+    let backing = 0;
+    const mixed: Mixed[] = [{ a: 1, get b() { return backing; }, set b(next: number) { backing = next; } }];
+    function put(record: Mixed, key: "a" | "b", next: number): void { record[key] = next; }
+    put(mixed[0]!, Date.now() > 0 ? "a" : "b", 5);
+    put(mixed[0]!, Date.now() > 0 ? "b" : "a", 6);
+    if (mixed[0]!.a !== 5 || backing !== 6 || mixed[0]!["b"] !== 6) throw new Error("keyed accessor writes");
+    function read(record: Mixed, key: "a" | "b"): number { return record[key]; }
+    if (read(mixed[0]!, Date.now() > 0 ? "b" : "a") !== 6) throw new Error("keyed accessor read");
+
+    interface Reading { readonly count: number; name: string; }
+    function createReading(): Reading {
+        let reads = 0;
+        return { get count() { reads++; return reads; }, name: "r" };
+    }
+    const readings: Reading[] = [createReading()];
+    if (JSON.stringify(readings[0]) !== '{"count":1,"name":"r"}') throw new Error("JSON runs the getter");
+    if (readings[0]!.count !== 2) throw new Error("each read runs the getter");
+
+    class Tally implements Reading {
+        private reads = 10;
+        name = "t";
+        get count(): number { return ++this.reads; }
+    }
+    const views: Reading[] = [new Tally()];
+    if (views[0]!.count !== 11 || views[0]!.count !== 12) throw new Error("class getter through an interface");
+`,
+);
+
+check(
+    "kept-callbacks-through-wrappers-share-caller-bindings",
+    `
+    const kept: Array<() => void> = [];
+    function keep(cb: () => void): void { kept.push(cb); }
+    let ready = true;
+    const noop = (): void => {};
+    let viaAs = 0, viaSatisfies = 0, viaParens = 0, viaArm = 0, viaCoalesce = 0, viaLocal = 0, viaCalled = 0;
+    keep((() => { viaAs++; }) as () => void);
+    keep((() => { viaSatisfies++; }) satisfies () => void);
+    keep((() => { viaParens++; }));
+    keep(ready ? () => { viaArm++; } : noop);
+    const missing: (() => void) | undefined = ready ? undefined : noop;
+    keep(missing ?? (() => { viaCoalesce++; }));
+    const local = ready ? () => { viaLocal++; } : noop;
+    keep(local);
+    const chosen = missing ?? (() => { viaCalled++; });
+    chosen();
+    for (const cb of kept) cb();
+    ready = false;
+    if (viaAs !== 1 || viaSatisfies !== 1 || viaParens !== 1) throw new Error("wrapped argument");
+    if (viaArm !== 1 || viaCoalesce !== 1 || viaLocal !== 1) throw new Error("selected argument");
+    if (viaCalled !== 1) throw new Error("selected callback called in place");
+`,
+);
+
+check(
+    "kept-callbacks-through-cycles-and-awaits",
+    `
+    class Relay {
+        private kept: Array<() => void> = [];
+        a(cb: () => void, depth: number): void {
+            if (depth > 0) this.b(() => cb(), depth - 1);
+            else this.kept.push(cb);
+        }
+        b(cb: () => void, depth: number): void { this.a(() => cb(), depth); }
+        fire(): void { for (const cb of this.kept) cb(); }
+    }
+    async function later(cb: () => void): Promise<void> {
+        await Promise.resolve(0);
+        cb();
+    }
+    async function main(): Promise<void> {
+        let viaA = 0, viaB = 0, viaAwait = 0;
+        const relay = new Relay();
+        relay.a(() => { viaA++; }, 2);
+        relay.b(() => { viaB++; }, 2);
+        relay.fire();
+        if (viaA !== 1 || viaB !== 1) throw new Error("mutual recursion");
+        await later(() => { viaAwait++; });
+        if (viaAwait !== 1) throw new Error("callback after an await");
+    }
+    void main();
+`,
+);
+
+check(
+    "factory-records-share-their-frame-and-keep-callbacks",
+    `
+    interface Batch {
+        count(): number;
+        keyAt(index: number): number | null;
+        setTint(rgb: readonly number[]): void;
+        add(x: number): void;
+        total(): number;
+        dispose(): void;
+    }
+    const disposers: Array<() => void> = [];
+    let disposals = 0;
+    function createBatch(): Batch {
+        let box = 0;
+        let tint = 1;
+        const keys: number[] = [];
+        const keyAt = (index: number): number | null => index < box ? keys[index]! : null;
+        const batch: Batch = {
+            count: () => box,
+            keyAt,
+            setTint(rgb) { tint = rgb[0]!; },
+            add(x) { keys.push(x * tint); box++; },
+            total() { let sum = 0; for (let index = 0; index < box; index++) sum += batch.keyAt(index) ?? 0; return sum; },
+            dispose() { disposals++; },
+        };
+        disposers.push(batch.dispose);
+        return batch;
+    }
+    const wood = createBatch();
+    const stone = createBatch();
+    wood.setTint([2]);
+    wood.add(3);
+    wood.add(4);
+    stone.add(5);
+    if (wood.count() !== 2 || stone.count() !== 1 || wood.total() !== 14 || wood.keyAt(2) !== null) throw new Error("factory frames");
+    for (const dispose of disposers) dispose();
+    if (disposals !== 2) throw new Error("method value");
+
+    interface Splash {
+        setProgress: (p: number, key?: string) => void;
+        onAbout(cb: () => void): void;
+        onValue: (cb: () => void) => void;
+        about(): void;
+        caption(): string;
+    }
+    function createSplash(): Splash {
+        let target = 0;
+        let status = "sub";
+        let aboutCallback: (() => void) | null = null;
+        const listeners: Array<() => void> = [];
+        return {
+            setProgress(p: number, key?: string): void {
+                if (key) status = key;
+                target = Math.max(target, p);
+            },
+            onAbout(cb: () => void): void { aboutCallback = cb; },
+            onValue: (cb) => { listeners.push(cb); },
+            about(): void {
+                if (aboutCallback) aboutCallback();
+                for (const listener of listeners) listener();
+            },
+            caption: () => status + ":" + Math.round(target * 100),
+        };
+    }
+    const splash = createSplash();
+    const marks: string[] = [];
+    {
+        const inner = splash.setProgress;
+        splash.setProgress = (p: number, key?: string): void => { marks.push(key ?? "p"); inner(p, key); };
+    }
+    let abouts = 0;
+    let values = 0;
+    splash.onAbout(() => abouts++);
+    splash.onValue(() => { values += 2; });
+    splash.setProgress(0.25, "load");
+    splash.setProgress(0.5);
+    splash.about();
+    if (splash.caption() !== "load:50" || marks.join(",") !== "load,p") throw new Error("shared factory state");
+    if (abouts !== 1 || values !== 2) throw new Error("record member keeps its callback");
+
+    class Keeper {
+        private kept: Array<() => void> = [];
+        keep(cb: () => void): void { this.kept.push(cb); }
+        wire(cb: () => void): void { this.keep(cb); }
+        fire(): void { for (const cb of this.kept) cb(); }
+    }
+    const keeper = new Keeper();
+    let viaMethod = 0;
+    let viaThis = 0;
+    keeper.keep(() => viaMethod++);
+    keeper.wire(() => viaThis++);
+    const kept: Array<() => void> = [];
+    function forward(register: (cb: () => void) => void, step: number): void {
+        let local = 0;
+        register(() => { local += step; viaParameter = local; });
+    }
+    let viaParameter = 0;
+    forward((cb) => kept.push(cb), 3);
+    function keepAll(...callbacks: Array<() => void>): void { for (const cb of callbacks) kept.push(cb); }
+    let viaRest = 0;
+    keepAll(() => {}, () => viaRest++);
+    keeper.fire();
+    for (const cb of kept) cb();
+    for (const cb of kept) cb();
+    if (viaMethod !== 1 || viaThis !== 1) throw new Error("class method keeps its callback");
+    if (viaParameter !== 6 || viaRest !== 2) throw new Error("function value keeps its callback");
+`,
+);
+
+check(
     "record-method-rebinding-is-visible-to-retained-callbacks",
     `
     let count = 0;

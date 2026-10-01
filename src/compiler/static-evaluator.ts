@@ -57,7 +57,7 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { isJsonValue } from "./json-bridge.js";
-import { excludesObjectColour } from "./type-facts.js";
+import { excludesObjectColour, isNullable } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -1205,6 +1205,14 @@ export class StaticEvaluator {
             if (isJsonValue(value) || presenceCpp(value) !== undefined) {
                 return undefined;
             }
+            // A stored callback or shared object spells its absence inside
+            // the value (an empty callback, a null reference): the operator
+            // tests it where it runs.
+            if (
+                value.kind === "data" &&
+                isNullable(this.checker.getTypeAtLocation(left))
+            )
+                return undefined;
             return expression.left;
         }
         if (ts.isPropertyAccessExpression(left)) {

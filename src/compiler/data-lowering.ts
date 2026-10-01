@@ -87,6 +87,7 @@ import {
     typedArrayStem,
     typedArrayStoreExpression,
     type DataIterationElement,
+    type DataStructField,
     type DataType,
     type TypedArrayKind,
 } from "./data-types.js";
@@ -255,6 +256,7 @@ interface DataLoweringContext extends Pick<
     | "withRecordScopes"
     | "compilePredicateWithValues"
     | "compileStoredDataFunction"
+    | "compileStoredAccessor"
     | "compileSpriteAtlasRecord"
     | "resolveThisField"
     | "resolveRecordMember"
@@ -1064,6 +1066,14 @@ export class DataLowerer {
                     ],
                 };
             }
+            if (
+                mode === "write" &&
+                this.accessorField(owner, unwrapped.name.text, unwrapped)
+            )
+                this.context.fail(
+                    unwrapped,
+                    `Accessor property '${unwrapped.name.text}' takes a plain assignment through its setter.`,
+                );
             // A call can yield an intrinsic record or engine handle rather
             // than native data. Its owner has already been evaluated, so
             // continue through the shared property reader before declining
@@ -1102,6 +1112,211 @@ export class DataLowerer {
             return this.elementRead(owner, unwrapped, mode);
         }
         return undefined;
+    }
+
+    /** `record.property = value` through an accessor-backed field's setter. */
+    private emitAccessorAssignment(
+        left: ts.PropertyAccessExpression,
+        right: ts.Expression,
+    ): boolean {
+        const property = this.context.checker.getSymbolAtLocation(left.name);
+        if (
+            !property ||
+            !this.context.dataTypes.isAccessorProperty(
+                property,
+                this.context.checker.getTypeAtLocation(left.expression),
+            )
+        )
+            return false;
+        // One evaluation of the receiver, kept when it stores the property
+        // in an accessor slot.
+        const accessorOwner = (owner: Value | undefined): boolean =>
+            owner !== undefined &&
+            this.accessorField(owner, left.name.text, left) !== undefined;
+        const owner = this.context.probeEmission(() => {
+            const path = this.compileDataPath(left.expression, "read");
+            return path && this.narrowOptional(path, left.expression);
+        }, accessorOwner);
+        const type = owner?.dataType;
+        const field = owner && this.accessorField(owner, left.name.text, left);
+        if (!owner || type?.kind !== "struct" || !field) return false;
+        // A shared record is pinned before the value is evaluated; a record
+        // stored inline is written in place.
+        const reference = this.context.dataTypes.isReferenceStruct(type.name);
+        const target = reference
+            ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
+            : `${owner.cpp}.`;
+        const value = this.compileForSink(right, field.type);
+        this.context.emit({
+            kind: "expression",
+            code: `${target}${field.name}.set(${value});`,
+        });
+        if (owner.recordProperties)
+            delete writable(owner.recordProperties)[left.name.text];
+        return true;
+    }
+
+    /**
+     * `record[key] = value` on a record that stores fields in accessor
+     * slots: the selected field's setter runs, a data field is assigned.
+     * The receiver, the key and the value evaluate once, in that order.
+     */
+    private emitAccessorElementAssignment(
+        left: ts.ElementAccessExpression,
+        right: ts.Expression,
+    ): boolean {
+        if (
+            !this.context.dataTypes.isAccessorRecordType(
+                this.context.checker.getTypeAtLocation(left.expression),
+            )
+        )
+            return false;
+        const owner = this.context.probeEmission(
+            () => {
+                const path = this.compileDataPath(left.expression, "read");
+                return path && this.narrowOptional(path, left.expression);
+            },
+            (candidate) =>
+                candidate?.dataType?.kind === "struct" &&
+                this.context.dataTypes
+                    .structFields(candidate.dataType.name, left, "accessors")
+                    .some((field) => field.accessor),
+        );
+        const type = owner?.dataType;
+        if (!owner || type?.kind !== "struct") return false;
+        const target = this.context.dataTypes.isReferenceStruct(type.name)
+            ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
+            : `${owner.cpp}.`;
+        const write = (field: DataStructField, value: string): string =>
+            field.accessor
+                ? `${target}${field.name}.set(${value});`
+                : `${target}${field.name} = ${value};`;
+        // A key generation knows (a literal, or an expanded loop's element)
+        // selects its field here.
+        const staticName = this.context.probeEmission(() => {
+            const key = this.context.compileValue(left.argumentExpression);
+            const keyType = this.context.checker.getTypeAtLocation(
+                left.argumentExpression,
+            );
+            const name =
+                key.staticString ??
+                (keyType.isStringLiteral() ? keyType.value : undefined);
+            if (name !== undefined) this.context.emitDiscardedValue(key);
+            return name;
+        });
+        if (staticName !== undefined) {
+            const field = this.context.dataTypes.structField(
+                type.name,
+                staticName,
+                left,
+                "accessors",
+            );
+            this.context.emit({
+                kind: "expression",
+                code: write(field, this.compileForSink(right, field.type)),
+            });
+            return true;
+        }
+        const keyData = this.dataTypeAt(left.argumentExpression);
+        if (keyData?.kind !== "enum")
+            this.context.fail(
+                left.argumentExpression,
+                "Dynamic struct access requires a finite string-literal key union.",
+            );
+        const members = this.context.dataTypes.enumMembers(keyData.name);
+        const fields = members.map((member) =>
+            this.context.dataTypes.structField(
+                type.name,
+                member,
+                left,
+                "accessors",
+            ),
+        );
+        const commonType = fields[0]?.type;
+        if (
+            !commonType ||
+            fields.some((field) => !dataTypesEqual(field.type, commonType))
+        )
+            this.context.fail(
+                left,
+                "Dynamic struct keys must select fields with one common data type.",
+            );
+        const slot = this.context.dataTypes.keyedSlotMember(
+            type.name,
+            keyData,
+            left,
+        );
+        if (slot) {
+            // The selection is evaluated before the value: C++ sequences a
+            // call's postfix expression before its arguments.
+            const keyCpp = this.compileEnumIndex(
+                left.argumentExpression,
+                keyData.name,
+            );
+            this.context.emit({
+                kind: "expression",
+                code: `${target}${slot}(${keyCpp}).set(${this.compileForSink(right, commonType)});`,
+            });
+            return true;
+        }
+        const key = this.context.allocateTemporaryCppName("property_key");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: key,
+            initializer: this.compileEnumIndex(
+                left.argumentExpression,
+                keyData.name,
+            ),
+        });
+        const value = this.context.allocateTemporaryCppName("property_value");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: value,
+            initializer: this.compileForSink(right, commonType),
+        });
+        members.forEach((member, index) =>
+            this.context.emit(
+                `${index === 0 ? "" : "else "}if (${key} == ${this.context.dataTypes.enumMemberCpp(keyData, member, left)}) ${write(fields[index]!, value)}`,
+            ),
+        );
+        return true;
+    }
+
+    /**
+     * A read of an accessor slot runs its getter on every read; a write
+     * reaches it only through `=`, which runs the setter.
+     */
+    private accessorRead(
+        slot: string,
+        type: DataType,
+        mode: "read" | "write",
+        node: ts.Node,
+    ): Value {
+        if (mode === "write")
+            this.context.fail(
+                node,
+                "An accessor property takes a plain assignment, which runs its setter.",
+            );
+        return { ...this.leafValue(`${slot}.get()`, type), impure: true };
+    }
+
+    /** The accessor-backed field a native record value stores under `property`. */
+    private accessorField(
+        owner: Value,
+        property: string,
+        node: ts.Node,
+    ): DataStructField | undefined {
+        const type =
+            owner.dataType?.kind === "optional"
+                ? owner.dataType.inner
+                : owner.dataType;
+        if (type?.kind !== "struct") return undefined;
+        const field = this.context.dataTypes
+            .structFields(type.name, node, "accessors")
+            .find((candidate) => candidate.sourceName === property);
+        return field?.accessor ? field : undefined;
     }
 
     /**
@@ -2645,13 +2860,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType.name,
                 property,
                 access,
+                "accessors",
             );
-            const value = this.leafValue(
-                this.context.dataTypes.isReferenceStruct(dataType.name)
-                    ? `${owner.cpp}->${field.name}`
-                    : `${owner.cpp}.${field.name}`,
-                field.type,
-            );
+            const slot = this.context.dataTypes.isReferenceStruct(dataType.name)
+                ? `${owner.cpp}->${field.name}`
+                : `${owner.cpp}.${field.name}`;
+            // An accessor-backed field runs its getter on every read.
+            if (field.accessor)
+                return {
+                    ...this.leafValue(`${slot}.get()`, field.type),
+                    impure: true,
+                };
+            const value = this.leafValue(slot, field.type);
             writable(value).nativeLvalue = true;
             if (field.uncheckedProperty)
                 writable(value).preserveUncheckedLookup = true;
@@ -3215,12 +3435,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType.name,
                     name,
                     access,
+                    "accessors",
                 );
                 const arrow = this.context.dataTypes.isReferenceStruct(
                     dataType.name,
                 )
                     ? "->"
                     : ".";
+                if (field.accessor)
+                    return this.accessorRead(
+                        `${owner.cpp}${arrow}${field.name}`,
+                        field.type,
+                        mode,
+                        access,
+                    );
                 return withNativeMetadata(
                     {
                         ...this.leafValue(
@@ -3255,11 +3483,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType.name,
                     member,
                     access,
+                    "accessors",
                 ),
             );
-            const fieldType = fields[0]!.type;
+            const commonType = fields[0]!.type;
+            if (mode === "write" && fields.some((field) => field.accessor))
+                this.accessorRead("", commonType, mode, access);
             if (
-                fields.some((field) => !dataTypesEqual(field.type, fieldType))
+                fields.some((field) => !dataTypesEqual(field.type, commonType))
             ) {
                 this.context.fail(
                     access,
@@ -3270,14 +3501,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access.argumentExpression,
                 keyType.name,
             );
-            const keyTemporary =
-                this.context.allocateTemporaryCppName("property_key");
             const arrow = this.context.dataTypes.isReferenceStruct(
                 dataType.name,
             )
                 ? "->"
                 : ".";
-            let selected = `${owner.cpp}${arrow}${fields.at(-1)!.name}`;
+            const slot = fields.some((field) => field.accessor)
+                ? this.context.dataTypes.keyedSlotMember(
+                      dataType.name,
+                      keyType,
+                      access,
+                  )
+                : undefined;
+            if (slot)
+                return this.accessorRead(
+                    `${owner.cpp}${arrow}${slot}(${key})`,
+                    commonType,
+                    mode,
+                    access,
+                );
+            const keyTemporary =
+                this.context.allocateTemporaryCppName("property_key");
+            // An accessor slot answers its getter's value.
+            const read = (field: DataStructField): string =>
+                `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
+            let selected = read(fields.at(-1)!);
             for (let index = members.length - 2; index >= 0; --index) {
                 const member = members[index]!;
                 const memberCpp = this.context.dataTypes.enumMemberCpp(
@@ -3287,13 +3535,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 selected =
                     `(${keyTemporary} == ${memberCpp} ? ` +
-                    `${owner.cpp}${arrow}${fields[index]!.name} : ${selected})`;
+                    `${read(fields[index]!)} : ${selected})`;
             }
             return {
                 ...this.leafValue(
                     `([&](const auto ${keyTemporary}) -> decltype(auto) { ` +
                         `return ${selected}; })(${key})`,
-                    fieldType,
+                    commonType,
                 ),
                 ...(fields.some((field) => field.uncheckedProperty)
                     ? { preserveUncheckedLookup: true as const }
@@ -7306,9 +7554,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "struct" },
     ): string {
+        // Accessors close over the literal's record, which the record sink
+        // turns into the struct's accessor slots.
+        if (literal.properties.some(ts.isAccessor))
+            return this.compileKnownValueForSink(
+                this.context.compileValue(literal),
+                dataType,
+                literal,
+            );
         const fields = this.context.dataTypes.structFields(
             dataType.name,
             literal,
+            "accessors",
         );
         const provided = new EmissionMap<
             string,
@@ -7352,12 +7609,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const parts = fields.map((field) => {
             const initializer = provided.get(field.sourceName);
             if (!initializer) {
-                if (field.defaultWhenMissing) {
-                    return "{}";
-                }
-                if (field.type.kind === "optional") {
-                    return "std::nullopt";
-                }
+                const absent = field.defaultWhenMissing
+                    ? "{}"
+                    : field.type.kind === "optional"
+                      ? "std::nullopt"
+                      : undefined;
+                if (absent !== undefined)
+                    return this.context.dataTypes.structFieldInitializerCpp(
+                        field,
+                        absent,
+                    );
                 this.context.fail(
                     literal,
                     `Struct literal is missing field '${field.sourceName}'.`,
@@ -7376,7 +7637,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field.type,
                 );
             }
-            return this.compileForSink(initializer, field.type);
+            return this.context.dataTypes.structFieldInitializerCpp(
+                field,
+                this.compileForSink(initializer, field.type),
+            );
         });
         if (provided.size > 0) {
             this.context.fail(
@@ -8683,6 +8947,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return true;
             }
         }
+        if (
+            operator === "=" &&
+            (ts.isPropertyAccessExpression(left)
+                ? this.emitAccessorAssignment(left, expression.right)
+                : this.emitAccessorElementAssignment(left, expression.right))
+        )
+            return true;
         const target = this.context.probeEmission(() => {
             const path = this.compileDataPath(left, "write");
             // A getter returning an owning wrapper is not a writable field.
