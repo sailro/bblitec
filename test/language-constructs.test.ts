@@ -1694,25 +1694,16 @@ check(
 );
 
 check(
-    "constructed-receiver-properties",
-    `
-    interface Request { readonly clips: readonly string[] }
-    function unique(request: Request): boolean { return new Set(request.clips).size === request.clips.length; }
-    const pairs: [string, number][] = [["a", 1], ["b", 2], ["a", 3]];
-    if (!unique({ clips: ["p", "q"] }) || unique({ clips: ["p", "p"] })) throw new Error("set size");
-    if (new Map(pairs).size !== 2 || new Float32Array([1, 2]).length !== 2) throw new Error("constructed sizes");
-    if (new Uint8Array(new ArrayBuffer(8), 2).byteOffset !== 2) throw new Error("constructed view");
-`,
-);
-
-check(
-    "set-copies-take-the-copied-element-type",
+    "set-copies-and-constructed-receivers",
     `
     interface Request { readonly clips: readonly string[] }
     function unique(request: Request): boolean {
         return Array.isArray(request.clips) && new Set(request.clips).size === request.clips.length;
     }
     if (!unique({ clips: ["a", "b"] }) || unique({ clips: ["a", "a"] })) throw new Error("literal requests");
+    const pairs: [string, number][] = [["a", 1], ["b", 2], ["a", 3]];
+    if (new Map(pairs).size !== 2 || new Float32Array([1, 2]).length !== 2) throw new Error("constructed sizes");
+    if (new Uint8Array(new ArrayBuffer(8), 2).byteOffset !== 2) throw new Error("constructed view");
     const requests: Request[] = [{ clips: ["p"] }, { clips: ["q", "q"] }];
     if (requests.map(unique).join(",") !== "true,false") throw new Error("stored requests");
     function distinct(values: readonly number[]): number {
@@ -1896,7 +1887,7 @@ check(
     const bytes = Uint8Array.from(pair);
     const copy = Int16Array.from(floats);
     copy[0] = 5;
-    if (floats[0] !== 0 || floats[2] !== -2 || floats.length !== 3 || copy[1] !== 1 || floats[0] !== 0) throw new Error("from copies");
+    if (floats[0] !== 0 || floats[2] !== -2 || floats.length !== 3 || copy[1] !== 1) throw new Error("from copies");
     if (widened[0] !== Math.fround(0.1) || words[0] !== 4294967295 || words[1] !== 2 || bytes[0] !== 0 || bytes[1] !== 255) throw new Error("from converts");
     const of = Int32Array.of(4, -2.7, positions[1]!);
     const wrapped = Uint8Array.of(300);
@@ -1991,12 +1982,18 @@ test("typed-array from refuses sources it reads differently from the constructor
             "const xs = [1, 2]; const t = Int32Array.of(...xs); const unused = t.length;",
             /Int32Array\.of takes its elements as separate arguments/,
         ],
-        [
-            "const f = new Float32Array(2); f.forEach((v, i, a) => { a[i] = v + 1; });",
-            /typed array's forEach callback takes no array parameter/,
-        ],
     ] as const)
         assert.throws(() => compileSource(source), message);
+});
+
+test("typed-array callbacks refuse the array parameter", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const f = new Float32Array(2); f.forEach((v, i, a) => { a[i] = v + 1; });",
+            ),
+        /typed array's forEach callback takes no array parameter/,
+    );
 });
 
 check(
