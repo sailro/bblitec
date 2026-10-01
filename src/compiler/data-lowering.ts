@@ -1102,6 +1102,10 @@ export class DataLowerer {
             // Static tables materialize only under runtime indices; static
             // indices keep the legacy compile-time tuple folding so existing
             // generated scenes stay byte-identical.
+            const receiver = this.context.unwrap(unwrapped.expression);
+            const bound = ts.isIdentifier(receiver)
+                ? this.context.bindings.lookupOptional(receiver)
+                : undefined;
             const owner =
                 this.compileDataPath(unwrapped.expression, mode) ??
                 (unwrapped.questionDotToken &&
@@ -1111,7 +1115,10 @@ export class DataLowerer {
                 (this.isStaticIndex(unwrapped.argumentExpression)
                     ? undefined
                     : (this.materializeStaticTable(unwrapped.expression) ??
-                      this.materializeConstantArray(unwrapped.expression)));
+                      this.materializeConstantArray(unwrapped.expression) ??
+                      (bound?.kind === "tuple"
+                          ? this.materializeKnownTuple(receiver, bound)
+                          : undefined)));
             if (!owner) {
                 return undefined;
             }
@@ -1831,7 +1838,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.knownValueFitsSink(entry, element, expression, false),
             )
         ) {
-            return undefined;
+            // Runtime storage can represent callback literals before they
+            // have a native value. Probe the actual sink without leaking its
+            // emitted statements or generated types into the chosen path.
+            const fits = this.context.probeEmission(
+                () => {
+                    try {
+                        for (const entry of known.tupleElements ?? [])
+                            this.compileKnownValueForSink(
+                                entry,
+                                element,
+                                expression,
+                            );
+                        return true;
+                    } catch (error) {
+                        if (error instanceof CompileError) return false;
+                        throw error;
+                    }
+                },
+                () => false,
+            );
+            if (!fits) return undefined;
         }
         return element;
     }
