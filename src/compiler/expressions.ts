@@ -1247,6 +1247,18 @@ export class ExpressionLowerer {
             ts.isBinaryExpression(unwrapped) &&
             (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                 unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken)
+        ) {
+            const logical =
+                this.context.dataLowerer.compileOptionalBooleanLogicalValue(
+                    unwrapped,
+                );
+            if (logical) return logical;
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken) &&
             (this.context.checker.getTypeAtLocation(unwrapped).flags &
                 ts.TypeFlags.StringLike) !==

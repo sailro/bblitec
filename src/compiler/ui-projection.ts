@@ -470,6 +470,14 @@ export class UiProjection {
                 if (inner?.kind === "event-target")
                     value = this.context.compileValue(owner);
             }
+            // Tree reads can produce a nullable element directly rather than
+            // a stored data path. Its presence and handle share one evaluation.
+            if (value?.dataType?.kind === "optional")
+                value = this.context.bindings.pinValueToTemporary(
+                    value,
+                    "ui_receiver",
+                    owner,
+                );
             return asElement(value);
         }
         if (ts.isElementAccessExpression(owner)) {

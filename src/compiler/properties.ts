@@ -3183,6 +3183,16 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        if (
+            owner.kind === "ui-element" &&
+            UI_TREE_READS.has(expression.name.text)
+        )
+            return this.elementProperty(
+                owner,
+                expression.name.text,
+                expression.expression,
+                expression,
+            );
         const media = readMediaQueryProperty(this.context, owner, expression);
         if (media) return media;
         const character = readCharacterProperty(

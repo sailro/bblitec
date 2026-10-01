@@ -6865,6 +6865,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        if (
+            dataType.kind === "optional" &&
+            dataType.inner.kind === "boolean" &&
+            ts.isBinaryExpression(unwrapped)
+        ) {
+            const logical = this.compileOptionalBooleanLogicalValue(unwrapped);
+            if (logical)
+                return this.compileKnownValueForSink(
+                    logical,
+                    dataType,
+                    unwrapped,
+                );
+        }
         const nullableLogicalSink =
             dataType.kind === "optional" ||
             (dataType.kind === "struct" &&
@@ -8517,6 +8530,57 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         for (const line of lines) this.context.emit(line);
         this.context.decreaseIndent();
         this.context.emit({ kind: "close", code: "}" });
+    }
+
+    /** Nullable boolean selection keeps absence distinct from false. */
+    public compileOptionalBooleanLogicalValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        const operator = expression.operatorToken.kind;
+        if (
+            operator !== ts.SyntaxKind.AmpersandAmpersandToken &&
+            operator !== ts.SyntaxKind.BarBarToken
+        )
+            return undefined;
+        const type = this.dataTypeAt(expression);
+        if (type?.kind !== "optional" || type.inner.kind !== "boolean")
+            return undefined;
+        const left = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(expression.left),
+            "logical_left",
+            expression.left,
+        );
+        const condition = this.truthinessCondition(left);
+        if (condition === undefined)
+            this.context.fail(
+                expression.left,
+                "Logical boolean selection requires a truth-testable left operand.",
+            );
+        const result = this.context.allocateTemporaryCppName("logical_boolean");
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: result,
+            initializer: this.compileKnownValueForSink(
+                left,
+                type,
+                expression.left,
+            ),
+        });
+        this.context.registerNativeBinding(result);
+        this.emitGuardedStore(
+            operator === ts.SyntaxKind.AmpersandAmpersandToken
+                ? condition
+                : `!(${condition})`,
+            () => {
+                const right = this.compileForSink(expression.right, type);
+                this.context.emit({
+                    kind: "expression",
+                    code: `${result} = ${right};`,
+                });
+            },
+        );
+        return this.leafValue(result, type);
     }
 
     /** String-valued logical operators keep the selected value and a lazy RHS. */

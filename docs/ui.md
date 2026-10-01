@@ -78,6 +78,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 
 Queries use current attributes/order, including detached subtrees. Single queries return null; lists
 are ordered snapshots. Dynamic traversal into innerHTML throws without an authored markup tree.
+Optional tree receivers preserve absence through class predicates and short-circuit boolean values.
 Generated boxes are excluded. Root documentElement/head/body identities are distinct.
 Window applications create the implicit engine canvas before entry evaluation; explicitly authored host canvases are reused.
 
