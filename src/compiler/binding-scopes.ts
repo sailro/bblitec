@@ -690,8 +690,13 @@ export class BindingScopes {
         const binding = owner.get(symbol)!;
         // Opaque handles with no generation-time payload carry their complete
         // identity in native storage. Conditional writes need no static rebind.
+        // A resource value (a storage buffer) is such a handle without
+        // naming its data type.
         if (
-            binding.value.dataType?.kind === "handle" &&
+            (binding.value.dataType?.kind === "handle" ||
+                (binding.value.dataType === undefined &&
+                    value.kind === binding.value.kind &&
+                    isHandleKind(binding.value.kind))) &&
             metadataFieldsForKind(binding.value.kind).length === 0 &&
             !binding.value.pickingEngineKnown &&
             !value.pickingEngineKnown

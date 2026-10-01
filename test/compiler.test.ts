@@ -20372,6 +20372,60 @@ test("retains a whole typed-array buffer behind an escaping byte view", () => {
     );
 });
 
+test("a storage buffer a nested callback replaces is read through its shared cell", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createStorageBuffer,
+            disposeStorageBuffer,
+            updateStorageBuffer,
+            type EngineContext,
+            type StorageBuffer,
+        } from "babylon-lite";
+
+        function makePalette(engine: EngineContext): { grow(need: number): void; flush(): void } {
+            let slots = 4;
+            let data = new Float32Array(slots * 4);
+            let buffer: StorageBuffer = createStorageBuffer(engine, data, "palette");
+            const ensure = (need: number): void => {
+                if (need <= slots) return;
+                const grown = new Float32Array(need * 4);
+                grown.set(data);
+                const retired = buffer;
+                data = grown;
+                slots = need;
+                buffer = createStorageBuffer(engine, data, "palette");
+                disposeStorageBuffer(retired);
+            };
+            return {
+                grow(need: number): void { ensure(need); },
+                flush(): void { updateStorageBuffer(engine, buffer, data); },
+            };
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const palette = makePalette(engine);
+            palette.grow(8);
+            palette.flush();
+        }
+
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\*v_fn\d+_buffer\) = bbl::create_storage_buffer\(/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::update_storage_buffer\(v_engine, \(\*v_fn\d+_buffer\), /,
+    );
+});
+
 test("refuses a TypedArray.set source that is not a numeric sequence", () => {
     // A bound container of the wrong element type reaches the shared
     // conversion and is refused by the sink rather than by luck.
