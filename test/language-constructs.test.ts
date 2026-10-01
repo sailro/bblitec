@@ -4285,3 +4285,19 @@ check(
     if (names(doc) !== "7=1,walk=2,idle=undefined" || names(JSON.parse("[1]")) !== "none") throw new Error(names(doc));
 `,
 );
+
+check(
+    "number-predicates-as-callbacks",
+    `
+    interface Pose { x: number; y: number; z: number; yaw: number }
+    function admitted(origin: Readonly<Pose>): boolean {
+        return [origin.x, origin.y, origin.z, origin.yaw].every(Number.isFinite);
+    }
+    const values = [1, 2.5, Number.NaN, 4];
+    const isFinite = Number.isInteger;
+    if (!admitted({ x: 1, y: 2, z: 3, yaw: 0 }) || admitted({ x: 1, y: Number.POSITIVE_INFINITY, z: 3, yaw: 0 }))
+        throw new Error("every");
+    if (values.filter(Number.isFinite).length !== 3 || !values.some(Number.isNaN) || values.filter(isFinite).length !== 2)
+        throw new Error("predicates");
+`,
+);

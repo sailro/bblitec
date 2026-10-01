@@ -45,6 +45,7 @@ import {
     compileNumberPredicate,
     numberConstant,
     numberConstantValue,
+    numberPredicateFunction,
 } from "./number-intrinsics.js";
 import {
     compileAudioMethodCall,
@@ -765,6 +766,13 @@ export class ExpressionLowerer {
             );
             if (numericConstant !== undefined)
                 return numberConstantValue(numericConstant);
+            const predicate = numberPredicateFunction(unwrapped, (owner) =>
+                this.context.libraryGlobal(owner),
+            );
+            if (predicate) {
+                this.context.reachJsData();
+                return predicate;
+            }
             // A read that descends into a parsed document has no static
             // shape to consult, so it is answered before the typed data
             // path tries to give it one.

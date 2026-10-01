@@ -549,31 +549,39 @@ export function compileDataMethodCall(
             };
         }
     }
+    const predicateMethod =
+        method === "some" ||
+        method === "every" ||
+        method === "filter" ||
+        method === "find" ||
+        method === "findIndex";
     if (
         tupleOwnerElements &&
         dynamicOwner &&
-        (method === "some" ||
-            method === "every" ||
-            method === "filter" ||
-            method === "find" ||
-            method === "findIndex")
+        predicateMethod &&
+        call.arguments.length !== 1
     ) {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                `Tuple Array.${method} requires exactly one callback.`,
-            );
-        }
-        const callback = lowerer.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isIdentifier(callback) &&
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)
-        ) {
-            // Stored expressions are evaluated once by the runtime callback
-            // path; speculative folding must not re-run their getters.
-            return undefined;
-        }
+        lowerer.context.fail(
+            call,
+            `Tuple Array.${method} requires exactly one callback.`,
+        );
+    }
+    // A callback that is not a local function -- a stored expression, a
+    // library function -- is evaluated once by the run-time callback path;
+    // speculative folding must not re-run its getters.
+    const callback =
+        call.arguments.length === 1
+            ? lowerer.context.unwrap(argumentAt(call, 0))
+            : undefined;
+    if (
+        tupleOwnerElements &&
+        dynamicOwner &&
+        predicateMethod &&
+        callback &&
+        (ts.isIdentifier(callback) ||
+            ts.isArrowFunction(callback) ||
+            ts.isFunctionExpression(callback))
+    ) {
         const folded = lowerer.promiseCallbackType(callback)
             ? undefined
             : lowerer.context.probeEmission((): Value | undefined => {
