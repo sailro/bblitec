@@ -586,8 +586,13 @@ export class DeclarationLowerer {
                 this.context.staticConstants.delete(symbol);
             }
         }
+        // A function a later assignment replaces is storage of its type,
+        // whether that type is written or inferred from the initializer.
         if (
-            declaration.type &&
+            (declaration.type ||
+                this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                )) &&
             (ts.isArrowFunction(declaration.initializer) ||
                 ts.isFunctionExpression(declaration.initializer)) &&
             this.emitAnnotatedDataDeclaration(
@@ -2268,10 +2273,16 @@ export class DeclarationLowerer {
             mutablePlainObject &&
             (this.context.defaultEngine() !== undefined ||
                 this.context.options.workers !== undefined);
+        const inferredReboundFunction =
+            !declaration.type &&
+            annotated?.kind === "function" &&
+            ts.isIdentifier(name) &&
+            this.context.sharedClosures.identifierIsRebound(name);
         if (
             !declaration.type &&
             !inferredMutableArray &&
-            !inferredMutableObject
+            !inferredMutableObject &&
+            !inferredReboundFunction
         ) {
             return false;
         }

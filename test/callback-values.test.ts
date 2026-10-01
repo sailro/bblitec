@@ -289,3 +289,42 @@ test("a stored callback reaching a signature its storage cannot serve refuses in
         /re-enters its own lowering/,
     );
 });
+
+test("a reassigned function local takes storage of its inferred type", (t) =>
+    nativeCheck(
+        "reassigned-function-local",
+        `
+    const pending: Array<() => void> = [];
+    function listen(close: () => void): () => void {
+        pending.push(close);
+        return () => {
+            const index = pending.indexOf(close);
+            if (index >= 0) pending.splice(index, 1);
+        };
+    }
+    let shown = false;
+    let hides = 0;
+    let release = (): void => {};
+    function hide(): void {
+        if (!shown) return;
+        shown = false;
+        hides++;
+        release();
+        release = () => {};
+    }
+    function show(): void {
+        if (shown) return;
+        shown = true;
+        release = listen(hide);
+    }
+    show();
+    if (pending.length !== 1) throw new Error("listener registered");
+    pending[0]!();
+    if (hides !== 1 || pending.length !== 0) throw new Error("released on hide");
+    release();
+    show();
+    hide();
+    if (hides !== 2 || pending.length !== 0) throw new Error("replaced release");
+    `,
+        t,
+    ));
