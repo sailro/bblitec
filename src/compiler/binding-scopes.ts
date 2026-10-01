@@ -71,6 +71,7 @@ interface BindingScopesContext extends Pick<
     | "fail"
     | "sharedClosures"
     | "options"
+    | "probeEmission"
     | "reachJsData"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
@@ -1791,68 +1792,75 @@ export class BindingScopes {
             Object.keys(value.recordSetters ?? {}).length !== 0
         )
             return undefined;
-        const mutableContainer = this.recordHasMutableContainer(value);
-        const storedCallbacks = Object.values(
-            value.recordProperties ?? {},
-        ).some(
-            (field) =>
-                field.kind === "callback" ||
-                field.dataType?.kind === "function",
-        );
-        if (
-            !mutableContainer &&
-            !storedCallbacks &&
-            !Object.values(value.recordProperties ?? {}).some(
+        return this.context.probeEmission(() => {
+            const mutableContainer = this.recordHasMutableContainer(value);
+            const storedCallbacks = Object.values(
+                value.recordProperties ?? {},
+            ).some(
                 (field) =>
-                    field.kind === "tuple" && field.tupleElements?.length === 0,
-            )
-        )
-            return undefined;
-        const sourceType = nativeReturnTsType(
-            this.context.checker,
-            this.context.checker.getContextualType(node) ??
-                this.context.checker.getTypeAtLocation(node),
-        );
-        if (!sourceType) return undefined;
-        const stored = storedCallbacks
-            ? this.context.dataTypes.fromStoredTsType(sourceType, node)
-            : this.context.dataTypes.fromTsType(sourceType, node);
-        // An empty callback list has no element values from which to infer
-        // storage. Its declared element type still requires a shared container
-        // when a returned record is captured and populated by another closure.
-        const callbackContainer =
-            stored?.kind === "struct" &&
-            this.context.dataTypes
-                .structFields(stored.name, node)
-                .some(
-                    (field) =>
-                        field.type.kind === "vector" &&
-                        field.type.element.kind === "function",
-                );
-        if (!mutableContainer && !callbackContainer && !storedCallbacks)
-            return undefined;
-        if ((callbackContainer || storedCallbacks) && stored)
-            this.context.dataTypes.markStoredObjectReferences(stored);
-        if (
-            stored?.kind !== "struct" ||
-            !this.context.dataTypes.isReferenceStruct(stored.name) ||
-            (this.context.dataTypes.carriesFunction(stored) &&
+                    field.kind === "callback" ||
+                    field.dataType?.kind === "function",
+            );
+            const sourceType = nativeReturnTsType(
+                this.context.checker,
+                this.context.checker.getContextualType(node) ??
+                    this.context.checker.getTypeAtLocation(node),
+            );
+            if (!sourceType) return undefined;
+            const stored = storedCallbacks
+                ? this.context.dataTypes.fromStoredTsType(sourceType, node)
+                : this.context.dataTypes.fromTsType(sourceType, node);
+            // An empty callback list has no element values from which to infer
+            // storage. Its declared element type still requires a shared container
+            // when a returned record is captured and populated by another closure.
+            const callbackContainer =
+                stored?.kind === "struct" &&
+                this.context.dataTypes
+                    .structFields(stored.name, node)
+                    .some(
+                        (field) =>
+                            field.type.kind === "vector" &&
+                            field.type.element.kind === "function",
+                    );
+            if (
+                !mutableContainer &&
                 !callbackContainer &&
-                !storedCallbacks)
-        )
-            return undefined;
-        const projected = this.context.dataLowerer.leafValue(
-            this.context.dataLowerer.compileKnownValueForSink(
-                value,
+                !storedCallbacks &&
+                !(
+                    stored?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(stored.name) &&
+                    !this.context.dataTypes.carriesHandle(stored) &&
+                    this.context.dataLowerer.knownValueFitsSink(
+                        value,
+                        stored,
+                        node,
+                    )
+                )
+            )
+                return undefined;
+            if ((callbackContainer || storedCallbacks) && stored)
+                this.context.dataTypes.markStoredObjectReferences(stored);
+            if (
+                stored?.kind !== "struct" ||
+                !this.context.dataTypes.isReferenceStruct(stored.name) ||
+                (this.context.dataTypes.carriesFunction(stored) &&
+                    !callbackContainer &&
+                    !storedCallbacks)
+            )
+                return undefined;
+            const projected = this.context.dataLowerer.leafValue(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    stored,
+                    node,
+                ),
                 stored,
-                node,
-            ),
-            stored,
-        );
-        // This expression constructs an object; it cannot be a missing
-        // element. Do not snapshot a redundant presence bit at each binding.
-        delete writable(projected).optionalFoundCpp;
-        return { ...projected, freshData: true };
+            );
+            // This expression constructs an object; it cannot be a missing
+            // element. Do not snapshot a redundant presence bit at each binding.
+            delete writable(projected).optionalFoundCpp;
+            return { ...projected, freshData: true };
+        });
     }
 
     private recordHasMutableContainer(
