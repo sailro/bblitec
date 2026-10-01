@@ -1064,9 +1064,13 @@ check(
     const alias = entries as Profile;
     entries["crouch"] = "C";
     if (alias.crouch !== "C" || view.crouch !== "C") throw new Error("a later entry reads through the view");
+    function rebind(profile: Profile, action: Action, key: string): void { profile[action] = key; }
+    rebind(view, Date.now() > 0 ? "jump" : "run", "K");
+    view["run"] = "L";
+    if (entries["jump"] !== "K" || entries["run"] !== "L") throw new Error("keyed writes through the view");
     const partial: Partial<Profile> = entries as Partial<Profile>;
     partial.run = undefined;
-    if (partial.jump !== "J" || partial.run !== undefined || entries["run"] !== undefined) throw new Error("optional view");
+    if (partial.jump !== "K" || partial.run !== undefined || entries["run"] !== undefined) throw new Error("optional view");
 `,
 );
 
@@ -1138,6 +1142,13 @@ check(
     try { sizes[0]!.size = 4; } catch (error) { threw = error instanceof TypeError; }
     side = 5;
     if (!threw || sizes[0]!.size !== 5) throw new Error("getter-only write");
+    interface Mixed { a: number; b: number; }
+    let backing = 0;
+    const mixed: Mixed[] = [{ a: 1, get b() { return backing; }, set b(next: number) { backing = next; } }];
+    function put(record: Mixed, key: "a" | "b", next: number): void { record[key] = next; }
+    put(mixed[0]!, Date.now() > 0 ? "a" : "b", 5);
+    put(mixed[0]!, Date.now() > 0 ? "b" : "a", 6);
+    if (mixed[0]!.a !== 5 || backing !== 6 || mixed[0]!["b"] !== 6) throw new Error("keyed accessor writes");
 
     interface Reading { readonly count: number; name: string; }
     function createReading(): Reading {

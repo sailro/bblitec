@@ -876,6 +876,23 @@ export class DataTypeRegistry {
         );
     }
 
+    /** Whether a record type stores a field in an accessor slot. */
+    public isAccessorRecordType(type: ts.Type): boolean {
+        const record = this.checker.getNonNullableType(type);
+        return (
+            this.recordViews.has(this.structIdentity(record)) ||
+            this.checker
+                .getPropertiesOfType(record)
+                .some((property) =>
+                    (property.declarations ?? []).some(
+                        (declaration) =>
+                            this.getterProperties.has(declaration) ||
+                            this.setterProperties.has(declaration),
+                    ),
+                )
+        );
+    }
+
     /** The accessors a struct field of this property holds, if any. */
     private propertyAccessor(
         property: ts.Symbol,

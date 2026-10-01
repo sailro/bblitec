@@ -1157,8 +1157,108 @@ export class DataLowerer {
     }
 
     /**
+     * `record[key] = value` on a record that stores fields in accessor
+     * slots: the selected field's setter runs, a data field is assigned.
+     * The receiver, the key and the value evaluate once, in that order.
+     */
+    private emitAccessorElementAssignment(
+        left: ts.ElementAccessExpression,
+        right: ts.Expression,
+    ): boolean {
+        if (
+            !this.context.dataTypes.isAccessorRecordType(
+                this.context.checker.getTypeAtLocation(left.expression),
+            )
+        )
+            return false;
+        const owner = this.context.probeEmission(
+            () => {
+                const path = this.compileDataPath(left.expression, "read");
+                return path && this.narrowOptional(path, left.expression);
+            },
+            (candidate) =>
+                candidate?.dataType?.kind === "struct" &&
+                this.context.dataTypes
+                    .structFields(candidate.dataType.name, left, "accessors")
+                    .some((field) => field.accessor),
+        );
+        const type = owner?.dataType;
+        if (!owner || type?.kind !== "struct") return false;
+        const target = this.context.dataTypes.isReferenceStruct(type.name)
+            ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
+            : `${owner.cpp}.`;
+        const write = (field: DataStructField, value: string): string =>
+            field.accessor
+                ? `${target}${field.name}.set(${value});`
+                : `${target}${field.name} = ${value};`;
+        const keyType = this.context.checker.getTypeAtLocation(
+            left.argumentExpression,
+        );
+        if (keyType.isStringLiteral()) {
+            const field = this.context.dataTypes.structField(
+                type.name,
+                keyType.value,
+                left,
+                "accessors",
+            );
+            this.context.emit({
+                kind: "expression",
+                code: write(field, this.compileForSink(right, field.type)),
+            });
+            return true;
+        }
+        const keyData = this.dataTypeAt(left.argumentExpression);
+        if (keyData?.kind !== "enum")
+            this.context.fail(
+                left.argumentExpression,
+                "Dynamic struct access requires a finite string-literal key union.",
+            );
+        const members = this.context.dataTypes.enumMembers(keyData.name);
+        const fields = members.map((member) =>
+            this.context.dataTypes.structField(
+                type.name,
+                member,
+                left,
+                "accessors",
+            ),
+        );
+        const commonType = fields[0]?.type;
+        if (
+            !commonType ||
+            fields.some((field) => !dataTypesEqual(field.type, commonType))
+        )
+            this.context.fail(
+                left,
+                "Dynamic struct keys must select fields with one common data type.",
+            );
+        const key = this.context.allocateTemporaryCppName("property_key");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: key,
+            initializer: this.compileEnumIndex(
+                left.argumentExpression,
+                keyData.name,
+            ),
+        });
+        const value = this.context.allocateTemporaryCppName("property_value");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: value,
+            initializer: this.compileForSink(right, commonType),
+        });
+        members.forEach((member, index) =>
+            this.context.emit(
+                `${index === 0 ? "" : "else "}if (${key} == ${this.context.dataTypes.enumMemberCpp(keyData, member, left)}) ${write(fields[index]!, value)}`,
+            ),
+        );
+        return true;
+    }
+
+    /**
      * A read of an accessor slot runs its getter on every read; a write
-     * reaches it only through `=` on a named property, which runs the setter.
+     * reaches it only through `=`, which runs the setter.
      */
     private accessorRead(
         slot: string,
@@ -1169,7 +1269,7 @@ export class DataLowerer {
         if (mode === "write")
             this.context.fail(
                 node,
-                "An accessor property takes a plain assignment to a named property, which runs its setter.",
+                "An accessor property takes a plain assignment, which runs its setter.",
             );
         return { ...this.leafValue(`${slot}.get()`, type), impure: true };
     }
@@ -8806,9 +8906,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         }
         if (
-            ts.isPropertyAccessExpression(left) &&
             operator === "=" &&
-            this.emitAccessorAssignment(left, expression.right)
+            (ts.isPropertyAccessExpression(left)
+                ? this.emitAccessorAssignment(left, expression.right)
+                : this.emitAccessorElementAssignment(left, expression.right))
         )
             return true;
         const target = this.context.probeEmission(() => {
