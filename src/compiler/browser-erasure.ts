@@ -408,6 +408,10 @@ export function browserEnvironmentValue(
                         result: { kind: "number" },
                     },
                 },
+                timeOrigin: {
+                    kind: "number",
+                    cpp: "bbl::pal::performance_time_origin()",
+                },
             },
         };
     if (global !== "navigator") return undefined;

@@ -140,6 +140,23 @@ export function compileEngineIntrinsic(
             };
         }
 
+        case "resizeEngine": {
+            // The pin's render loop runs this at the head of every frame;
+            // native frame loops already refresh every surface's extent from
+            // its window, so the call only evaluates its engine.
+            context.expectArgumentCount(call, 1, 1);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            return { kind: "void", cpp: "" };
+        }
+
+        case "enableShaderMaterialUniformCaching": {
+            // The pin swaps in writers that memoize each material's write
+            // plan; native shader-material writers are planned at generation.
+            context.expectArgumentCount(call, 0, 0);
+            return { kind: "void", cpp: "" };
+        }
+
         case "createSceneContext": {
             context.expectArgumentCount(call, 1, 2);
             const engine = context.compileValue(argumentAt(call, 0));
