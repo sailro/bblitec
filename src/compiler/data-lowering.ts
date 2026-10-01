@@ -5569,6 +5569,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public prepareCallbackValue(
         callback: ts.Expression,
         label: string,
+        /** The value of a non-local `callback` its caller already read. */
+        read?: Value,
     ): Value | undefined {
         const boundary = this.context.nativeBindingCheckpoint();
         const local =
@@ -5578,7 +5580,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const value = ts.isIdentifier(callback)
             ? this.context.bindings.lookupOptional(callback)
             : !local
-              ? this.context.compileValue(callback)
+              ? (read ?? this.context.compileValue(callback))
               : undefined;
         const type =
             value?.dataType?.kind === "function"

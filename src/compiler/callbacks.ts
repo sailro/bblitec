@@ -1,13 +1,10 @@
-import { forEachAnalysisNode } from "./analysis-walk.js";
-import {
-    emissionArray,
-    EmissionMap,
-    EmissionSet,
-} from "./emission-transaction.js";
+import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { emitReachableStatements } from "./loop-control.js";
-import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { isDeclaredInside } from "./syntax.js";
+import {
+    functionOfDeclaration,
+    tryResolveFunctionDeclaration,
+} from "./user-functions.js";
 import type {
     CapturedClosure,
     ClosureCaptures,
@@ -26,7 +23,10 @@ import {
     physicsEventInfoType,
     physicsEventInfoValue,
 } from "./intrinsics/physics.js";
-import type { LoweringServices } from "./lowering-services.js";
+import type {
+    LoweringServices,
+    LoweringStatement,
+} from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
 
 /** What callback lowering reads of the compiler. */
@@ -49,9 +49,11 @@ interface CallbackContext extends Pick<
     | "emitDiscardedValue"
     | "emitExpressionAsStatement"
     | "emitStatement"
+    | "emitsAtLevelOf"
     | "endNativeFunctionBody"
     | "engineLifecycle"
     | "fail"
+    | "loweringStatementIn"
     | "nativeEmission"
     | "options"
     | "probeEmission"
@@ -124,6 +126,7 @@ export class CallbackLowerer {
         signature: FrameCallbackSignature = "delta",
         retainCaptures = false,
     ): string {
+        this.hoistForwardCallbackBindings(expression);
         const unwrapped = this.context.unwrap(expression);
         const asyncType =
             this.context.dataLowerer.promiseCallbackType(unwrapped);
@@ -292,16 +295,6 @@ export class CallbackLowerer {
             ? this.context.allocateTemporaryCppName("frame_delta")
             : undefined;
 
-        // Everything the outermost frame callback pushes lives on its own
-        // stack frame; a deferred body may not reach into it.
-        const previousFrameFloor =
-            this.context.bindings.frameCallbackScopeFloor;
-        if (this.context.frameCallbackDepth === 0) {
-            this.context.bindings.frameCallbackScopeFloor =
-                this.context.bindings.variableScopes.length;
-        }
-        const previousDeferredScopes =
-            this.context.bindings.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
             this.context.bindings.escapingPlatformEventCaptureFloor;
         if (this.context.frameCallbackDepth > 0) {
@@ -309,15 +302,6 @@ export class CallbackLowerer {
                 this.context.bindings.variableScopes.length;
         }
         this.context.bindings.refuseEscapingPlatformEventCapturesIn(unwrapped);
-        this.context.bindings.deferredCaptureScopes =
-            (signature === "void" || signature === "interval") &&
-            this.context.bindings.frameCallbackScopeFloor !== undefined
-                ? new EmissionSet(
-                      this.context.bindings.variableScopes.slice(
-                          this.context.bindings.frameCallbackScopeFloor,
-                      ),
-                  )
-                : undefined;
         this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         // This body is emitted into a real native callback lambda. A source
         // `return` therefore leaves that lambda directly, including when it
@@ -366,11 +350,8 @@ export class CallbackLowerer {
         } finally {
             this.context.endNativeFunctionBody();
             this.context.bindings.popScope();
-            this.context.bindings.deferredCaptureScopes =
-                previousDeferredScopes;
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
-            this.context.bindings.frameCallbackScopeFloor = previousFrameFloor;
         }
         // A source callback may name its delta and then not reach it --
         // most often because a branch the scene's own query folds away was
@@ -484,8 +465,6 @@ export class CallbackLowerer {
             signature === "interval"
                 ? undefined
                 : this.context.allocateTemporaryCppName("frame_callback_value");
-        const previousDeferredScopes =
-            this.context.bindings.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
             this.context.bindings.escapingPlatformEventCaptureFloor;
         if (this.context.frameCallbackDepth > 0) {
@@ -493,16 +472,6 @@ export class CallbackLowerer {
                 this.context.bindings.variableScopes.length;
         }
         this.context.bindings.refuseEscapingPlatformEventCapturesIn(identifier);
-        if (signature === "interval") {
-            this.context.bindings.deferredCaptureScopes =
-                this.context.bindings.frameCallbackScopeFloor === undefined
-                    ? undefined
-                    : new EmissionSet(
-                          this.context.bindings.variableScopes.slice(
-                              this.context.bindings.frameCallbackScopeFloor,
-                          ),
-                      );
-        }
         const captureByValue =
             retainCaptures ||
             !!this.context.options.workers ||
@@ -556,8 +525,6 @@ export class CallbackLowerer {
             );
         } finally {
             this.context.frameCallbackDepth -= 1;
-            this.context.bindings.deferredCaptureScopes =
-                previousDeferredScopes;
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }
@@ -584,40 +551,98 @@ export class CallbackLowerer {
     }
 
     /**
-     * JavaScript closures may name a `const` declared later in the same
-     * function. Native callback lambdas need that storage to exist before
-     * registration (DeclarationLowerer.hoistForwardBinding).
+     * JavaScript closures may read a binding declared later in an enclosing
+     * block, directly or through the functions and callbacks they reach.
+     * A native callback lowers its body where it is registered, so each
+     * such binding still pending in a
+     * block being lowered is made to exist first, in that block's scope
+     * (DeclarationLowerer.hoistForwardBinding), when emission stands at that
+     * block's level. A function the callback reaches resolves by its
+     * declaration and is walked rather than hoisted, and only the callback's
+     * own reads run an untyped effectful initializer ahead of it.
      */
     public hoistForwardCallbackBindings(
-        callback: ts.Expression,
-        before: number,
+        callback: ts.Node,
+        preserveTemporalDeadZone = false,
     ): void {
-        const candidates = new EmissionMap<ts.Symbol, ForwardDeclaration>();
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (ts.isIdentifier(node)) {
-                    const symbol = this.context.symbols.valueSymbol(node);
-                    const declaration = symbol?.valueDeclaration;
-                    if (
-                        symbol &&
-                        declaration &&
-                        ts.isVariableDeclaration(declaration) &&
-                        declaration.initializer &&
-                        declaration.pos > before &&
-                        ts.isIdentifier(declaration.name) &&
-                        !isDeclaredInside(declaration, callback) &&
-                        !this.context.bindings.lookupOptional(declaration.name)
-                    ) {
-                        candidates.set(
-                            symbol,
-                            declaration as ForwardDeclaration,
-                        );
-                    }
-                }
+        const forward: {
+            declaration: ForwardDeclaration;
+            symbol: ts.Symbol;
+            direct: boolean;
+            owner: LoweringStatement;
+        }[] = [];
+        const reads = this.context.bindings.unboundClosureReads(callback);
+        for (const [symbol, { direct }] of reads) {
+            const pending = this.pendingDeclaration(symbol);
+            if (
+                !pending ||
+                !pending.declaration.initializer ||
+                (!direct && functionOfDeclaration(pending.declaration)) ||
+                !this.context.emitsAtLevelOf(pending.owner)
+            )
+                continue;
+            forward.push({
+                declaration: pending.declaration as ForwardDeclaration,
+                symbol,
+                direct,
+                owner: pending.owner,
             });
-        visit(callback);
-        for (const [symbol, declaration] of candidates)
-            this.context.declarations.hoistForwardBinding(declaration, symbol);
+        }
+        forward.sort(
+            (left, right) => left.declaration.pos - right.declaration.pos,
+        );
+        for (const { declaration, symbol, direct, owner } of forward) {
+            if (this.context.bindings.peekBinding(symbol)) continue;
+            const initialization = preserveTemporalDeadZone
+                ? "temporal-dead-zone"
+                : [
+                        ...this.context.bindings.readNames(
+                            declaration.initializer,
+                        ),
+                    ].some(
+                        (read) =>
+                            this.pendingDeclaration(read, true) !== undefined,
+                    )
+                  ? "declaration"
+                  : "early";
+            this.context.bindings.withScopeDepth(owner.scopeDepth, () =>
+                this.context.declarations.hoistForwardBinding(
+                    declaration,
+                    symbol,
+                    direct,
+                    initialization,
+                ),
+            );
+        }
+    }
+
+    /**
+     * The declaration of a `let`/`const` a block being lowered has not
+     * reached yet, with the statement that block is lowering. Initializer
+     * dependencies also include its current, still-unbound declaration.
+     */
+    private pendingDeclaration(
+        symbol: ts.Symbol,
+        includeInitializing = false,
+    ):
+        | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
+        | undefined {
+        const declaration = symbol.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableStatement(declaration.parent.parent) ||
+            this.context.bindings.peekBinding(symbol)
+        )
+            return undefined;
+        const statement = declaration.parent.parent;
+        const owner = this.context.loweringStatementIn(statement.parent);
+        return owner &&
+            (owner.statement.pos < statement.pos ||
+                (includeInitializing && owner.statement === statement))
+            ? { declaration, owner }
+            : undefined;
     }
 
     /**
@@ -738,14 +763,9 @@ export class CallbackLowerer {
             };
         }
         const previousHidden = this.context.platformDocumentHiddenCpp;
-        const previousFrameFloor =
-            this.context.bindings.frameCallbackScopeFloor;
         const previousPlatformEventCaptureFloor =
             this.context.bindings.escapingPlatformEventCaptureFloor;
-        if (this.context.frameCallbackDepth === 0) {
-            this.context.bindings.frameCallbackScopeFloor =
-                this.context.bindings.variableScopes.length;
-        } else {
+        if (this.context.frameCallbackDepth > 0) {
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 this.context.bindings.variableScopes.length;
         }
@@ -882,7 +902,6 @@ export class CallbackLowerer {
         } finally {
             this.context.frameCallbackDepth -= 1;
             this.context.platformDocumentHiddenCpp = previousHidden;
-            this.context.bindings.frameCallbackScopeFloor = previousFrameFloor;
             this.context.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }
@@ -954,7 +973,7 @@ export class CallbackLowerer {
             `physics_${event}`,
         );
         if (this.context.options.workers) {
-            this.hoistForwardCallbackBindings(callback, expression.pos);
+            this.hoistForwardCallbackBindings(callback);
             return this.compilePlatformCallback(
                 callback,
                 { cppType: `const ${infoType}&`, name: eventName },

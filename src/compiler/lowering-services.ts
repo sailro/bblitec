@@ -62,6 +62,15 @@ export type NativeReturnValueCompiler = (
 ) => string;
 
 /** Execution facts for one native function body. */
+/** A statement being lowered, with where its lowering began. */
+export interface LoweringStatement {
+    readonly statement: ts.Statement;
+    /** The binding scope depth its declarations bind at. */
+    readonly scopeDepth: number;
+    readonly emissionScope: number;
+    readonly indentLevel: number;
+}
+
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
     /** A namespace-scope definition: the entry's bindings, its engine among them, are out of scope. */
@@ -131,6 +140,10 @@ export interface LoweringServices {
     defaultRenderTaskAdapted: boolean;
     isNativeHostUiLookup(call: ts.CallExpression): boolean;
     emitStatement(statement: ts.Statement): void;
+    /** The innermost statement being lowered directly in `container`. */
+    loweringStatementIn(container: ts.Node): LoweringStatement | undefined;
+    /** Whether emission is at the top level of the block `statement` is lowering in. */
+    emitsAtLevelOf(statement: LoweringStatement): boolean;
     statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     emitExpressionAsStatement(expression: ts.Expression): void;
     compileTextMutation(expression: ts.Expression): Value | undefined;

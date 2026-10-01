@@ -4,7 +4,7 @@
 // the promise later; the lowering unwinds it (`js_synchronous_promise.hpp`)
 // to the statement that discarded its promise. Every other use of such an
 // activation's promise needs a pending value the synchronous lowering does
-// not have, so it refuses where the lowering reaches it.
+// not have; reaching one compiles the program in the application realm.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { libraryGlobal, resolvedSymbol } from "./symbols.js";
@@ -85,16 +85,6 @@ function enclosingStatement(node: ts.Node): ts.Statement | undefined {
     return undefined;
 }
 
-const STORED_MESSAGE =
-    "A call that can await a pending constructed promise is awaited, " +
-    "returned or discarded as a statement; the synchronous lowering has no " +
-    "pending promise value to store.";
-const CALLBACK_MESSAGE =
-    "A function that can await a pending constructed promise is called " +
-    "where it is named; as a callback, the activation that ends at its " +
-    "await has no statement to end at. Start it with `void f()` inside a " +
-    "synchronous callback.";
-
 /** The activation of the promise `node` produces, through reaction chains. */
 function chainedCall(expression: ts.Expression): ts.CallExpression | undefined {
     let node = unwrapExpression(expression);
@@ -117,14 +107,12 @@ export class PendingActivations {
     /** @unjournaled Filled by the constructor from the program; never written after. */
     private readonly suspending = new Set<Activation>();
     /**
-     * Each use that needs a pending promise value, by the node lowering
-     * reaches first. @unjournaled Filled by the constructor from the program;
-     * never written after.
+     * Each use that needs a pending promise value (a stored call, a
+     * suspending function used as a callback), by the node lowering reaches
+     * first. @unjournaled Filled by the constructor from the program; never
+     * written after.
      */
-    private readonly misuses = new Map<
-        ts.Node,
-        { site: ts.Node; message: string }
-    >();
+    private readonly misuses = new Set<ts.Node>();
 
     /**
      * `handledElsewhere` answers the Promise constructions another lowering
@@ -187,34 +175,27 @@ export class PendingActivations {
                 this.suspending.has(callee) &&
                 promiseUse(call) === "stored"
             )
-                this.record(call, STORED_MESSAGE);
+                this.record(call);
         }
         for (const reference of references) {
-            if (this.escapes(reference))
-                this.record(reference, CALLBACK_MESSAGE);
+            if (this.escapes(reference)) this.record(reference);
         }
     }
 
     /**
-     * Refuses a use that needs a pending promise value once the lowering
-     * reaches it: the use itself as a value, or the statement around it
-     * (a callback registration may lower its argument without evaluating
-     * it). Unreached code refuses nothing.
+     * Whether lowering `node` reaches a use that needs a pending promise
+     * value: the use itself as a value, or the statement around it (a
+     * callback registration may lower its argument without evaluating it).
+     * Unreached code needs none.
      */
-    public refuseReached(
-        node: ts.Node,
-        fail: (node: ts.Node, message: string) => never,
-    ): void {
-        const misuse = this.misuses.get(node);
-        if (misuse) fail(misuse.site, misuse.message);
+    public needsPendingValue(node: ts.Node): boolean {
+        return this.misuses.has(node);
     }
 
-    private record(site: ts.Node, message: string): void {
-        const misuse = { site, message };
-        this.misuses.set(site, misuse);
+    private record(site: ts.Node): void {
+        this.misuses.add(site);
         const statement = enclosingStatement(site);
-        if (statement && !this.misuses.has(statement))
-            this.misuses.set(statement, misuse);
+        if (statement) this.misuses.add(statement);
     }
 
     /**

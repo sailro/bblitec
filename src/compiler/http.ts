@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type HttpContext = Pick<LoweringServices, "unwrap" | "libraryGlobal">;
 
@@ -91,11 +92,8 @@ export function compileHttpCall(
                 )))
     )
         return undefined;
-    if (!context.options.workers)
-        context.fail(
-            call,
-            "Runtime fetch requires an asynchronous application realm.",
-        );
+    // Runtime transport settles on the application realm's task queue.
+    if (!context.options.workers) throw new ApplicationRealmRequired();
     context.expectArgumentCount(call, 1, 2);
     context.reachFeature("platform:http", call);
     context.reachJsData();

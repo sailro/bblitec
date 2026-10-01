@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { CompileError, compileSource } from "../src/compiler.js";
+import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -149,13 +149,14 @@ test("constructed promises settle, reject and end pending activations natively",
     assert.equal(execution.status, 0);
 });
 
-test("pending activations refuse uses that need a pending promise value", () => {
-    const refusal = (source: string, pattern: RegExp): void =>
-        assert.throws(
-            () => compileSource(source, { fileName: "examples/pending.ts" }),
-            (error: unknown) =>
-                error instanceof CompileError && pattern.test(error.message),
-        );
+test("uses that need a pending promise value compile in the application realm", () => {
+    const realm = (source: string): void => {
+        const result = compileSource(source, {
+            fileName: "examples/pending.ts",
+        });
+        assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+        assert.match(result.cpp, /bbl::js::Promise</);
+    };
     const never = `
         function never(): Promise<number> {
             return new Promise(() => {});
@@ -163,49 +164,45 @@ test("pending activations refuse uses that need a pending promise value", () => 
         async function wait(): Promise<number> {
             return await never();
         }`;
-    refusal(
+    realm(
         `${never}
         async function main(): Promise<void> {
             const pending = wait();
             await pending;
         }
         void main();`,
-        /awaited, returned or discarded as a statement/,
     );
-    refusal(
+    realm(
         `import { createEngine, startEngine } from "@babylonjs/lite";
         ${never}
         async function main(): Promise<void> {
-            const engine = await createEngine({});
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
             window.addEventListener("keydown", wait);
             await startEngine(engine);
         }
         void main();`,
-        /is called where it is named/,
     );
-    refusal(
+    realm(
         `async function main(): Promise<void> {
             const executor = new Promise<number>((resolve) => resolve(1));
             await executor;
         }
         void main();`,
-        /awaited or returned where it is created/,
     );
-    refusal(
+    realm(
         `async function main(): Promise<void> {
             await new Promise<number>(async (resolve) => resolve(1));
         }
         void main();`,
-        /async Promise executor/,
     );
-    refusal(
+    realm(
         `async function main(): Promise<void> {
             await new Promise<void>((resolve) => setTimeout(resolve, 10));
         }
         void main();`,
-        /settled from a timer or frame callback/,
     );
-    refusal(
+    realm(
         `async function main(): Promise<void> {
             let polls = 0;
             await new Promise<void>((resolve) => {
@@ -220,11 +217,10 @@ test("pending activations refuse uses that need a pending promise value", () => 
             });
         }
         void main();`,
-        /settled from a timer or frame callback/,
     );
 });
 
-test("pending-activation refusals are scoped to reached code", () => {
+test("the application realm is required only by reached pending uses", () => {
     const source = (reached: boolean): string => `
         function never(): Promise<number> {
             return new Promise(() => {});
@@ -246,15 +242,11 @@ test("pending-activation refusals are scoped to reached code", () => {
     });
     assert.match(result.cpp, /bbl::js::SynchronousPromise<double>/);
     assert.doesNotMatch(result.cpp, /stores/);
-    assert.throws(
-        () =>
-            compileSource(source(true), {
-                fileName: "examples/pending-reached.ts",
-            }),
-        (error: unknown) =>
-            error instanceof CompileError &&
-            /awaited, returned or discarded as a statement/.test(error.message),
-    );
+    const reached = compileSource(source(true), {
+        fileName: "examples/pending-reached.ts",
+    });
+    assert.doesNotMatch(reached.cpp, /SynchronousPromise/);
+    assert.match(reached.cpp, /bbl::js::Promise<double>/);
 });
 
 test("absent global members fold through aliases and typeof", () => {

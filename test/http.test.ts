@@ -12,7 +12,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("runtime HTTP preserves request bytes, response status, body consumption and rejection", async (t) => {
+test("runtime HTTP selects the application realm and preserves requests, responses and rejection", async (t) => {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
@@ -69,13 +69,10 @@ test("runtime HTTP preserves request bytes, response status, body consumption an
     const base = `http://127.0.0.1:${address.port}`;
     const directory = resolve("artifacts/runtime-http");
     mkdirSync(directory, { recursive: true });
-    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
     const source = `
-        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
-        worker.terminate();
         const request = fetch;
         async function run():Promise<void> {
-            const response = await request("${base}/submit", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({message:"hello 🌍"})});
+            const response = await fetch("${base}/submit", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({message:"hello 🌍"})});
             if (!response.ok || response.status !== 201 || response.bodyUsed) throw new Error("response metadata");
             const text = await response.text();
             if (text !== '{"answer":42}' || !response.bodyUsed) throw new Error("response text");

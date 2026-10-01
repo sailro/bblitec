@@ -18231,25 +18231,22 @@ test("parks a continuation behind a promise a scene callback resolves", () => {
     assert.doesNotMatch(result.cpp, /__bblite_start_continuation_until__/);
 });
 
-test("refuses a promise executor that does more than let resolve escape", () => {
+test("a promise executor that does more than let resolve escape compiles in the application realm", () => {
     // The narrowness is the point: an executor that also schedules or
     // calls `resolve` is a different claim about WHEN the wait ends, and
-    // falls through to the constructor refusal the other shapes leave in
-    // place.
-    assert.throws(
-        () =>
-            compileSource(
-                escapingResolveScene(
-                    `(resolve) => {
+    // falls through to the constructor the application realm keeps pending.
+    const result = compileSource(
+        escapingResolveScene(
+            `(resolve) => {
         resolveReady = resolve;
         resolve();
     }`,
-                    "    await ready;",
-                ),
-                frameYieldFile,
-            ),
-        /no pending promise value to store/,
+            "    await ready;",
+        ),
+        frameYieldFile,
     );
+    assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+    assert.match(result.cpp, /bbl::js::Promise<bbl::js::PromiseVoid>/);
 });
 
 test("still erases a frame yield before the loop exists", () => {
@@ -18698,23 +18695,35 @@ test("lets recurring timers read persistent factory closure state", () => {
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
 });
 
-test("refuses recurring timers that capture an outer frame local", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            import { createEngine, startEngine } from "babylon-lite";
-            async function main(): Promise<void> {
-                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-                const engine = await createEngine(canvas);
-                await startEngine(engine);
-                requestAnimationFrame(() => {
-                    let frameLocal = 0;
-                    setInterval(() => { frameLocal += 1; }, 30);
-                });
-            }
-            main();
-        `),
-        /deferred callback cannot name 'frameLocal'/,
+test("a recurring timer owns the frame local it captures", () => {
+    // The frame callback returns before the timer runs: the timer's
+    // environment owns the local's shared cell rather than borrowing it.
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            await startEngine(engine);
+            requestAnimationFrame(() => {
+                let frameLocal = 0;
+                setInterval(() => { frameLocal += 1; }, 30);
+            });
+        }
+        main();
+    `);
+    assert.match(
+        result.cpp,
+        /auto (v_\w*frameLocal) = bbl::js::make_gc_shared<double>\(0\.0\);[\s\S]*bbl::set_interval\(v_engine, bbl::js::make_closure\(bblscene::(bbl_environment_\w+)\{\1/,
+    );
+    const environment =
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(bblscene::(bbl_environment_\w+)\{/.exec(
+            result.cpp,
+        )![1]!;
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `struct ${environment} \\{\\s+std::decay_t<std::shared_ptr<double>> capture0\\{\\};`,
+        ),
     );
 });
 
@@ -18841,17 +18850,15 @@ test("does not erase a bounded wait through a shadowed RAF", () => {
     );
 });
 
-test("refuses a nested frame yield whose result is retained", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                frameYieldScene(
-                    "    const timestamp = await new Promise<number>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));\n    canvas.dataset.timestamp = String(timestamp);",
-                ),
-                frameYieldFile,
-            ),
-        /settled from a timer or frame callback/,
+test("compiles a retained nested frame yield in the application realm", () => {
+    const result = compileSource(
+        frameYieldScene(
+            "    const timestamp = await new Promise<number>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));\n    canvas.dataset.timestamp = String(timestamp);",
+        ),
+        frameYieldFile,
     );
+    assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+    assert.match(result.cpp, /bbl::js::Promise<double>/);
 });
 
 // ---------------------------------------------------------------------------
@@ -20371,6 +20378,60 @@ test("retains a whole typed-array buffer behind an escaping byte view", () => {
         new RegExp(
             `bbl::update_storage_buffer\\([^;]+, ${bytes[3]}, 0\\.0f\\)`,
         ),
+    );
+});
+
+test("a storage buffer a nested callback replaces is read through its shared cell", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createStorageBuffer,
+            disposeStorageBuffer,
+            updateStorageBuffer,
+            type EngineContext,
+            type StorageBuffer,
+        } from "babylon-lite";
+
+        function makePalette(engine: EngineContext): { grow(need: number): void; flush(): void } {
+            let slots = 4;
+            let data = new Float32Array(slots * 4);
+            let buffer: StorageBuffer = createStorageBuffer(engine, data, "palette");
+            const ensure = (need: number): void => {
+                if (need <= slots) return;
+                const grown = new Float32Array(need * 4);
+                grown.set(data);
+                const retired = buffer;
+                data = grown;
+                slots = need;
+                buffer = createStorageBuffer(engine, data, "palette");
+                disposeStorageBuffer(retired);
+            };
+            return {
+                grow(need: number): void { ensure(need); },
+                flush(): void { updateStorageBuffer(engine, buffer, data); },
+            };
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const palette = makePalette(engine);
+            palette.grow(8);
+            palette.flush();
+        }
+
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\*v_fn\d+_buffer\) = bbl::create_storage_buffer\(/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::update_storage_buffer\(v_engine, \(\*v_fn\d+_buffer\), /,
     );
 });
 

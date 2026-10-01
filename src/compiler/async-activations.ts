@@ -2,6 +2,7 @@ import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
 import { framePollExecutor } from "./frame-poll.js";
 import { PendingActivations } from "./pending-activations.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { DataType } from "./data-types.js";
 import {
     tryResolveFunctionDeclaration,
@@ -111,12 +112,17 @@ export class AsyncActivations {
         return this.pendingActivationAnalysis;
     }
 
-    /** Refuses a reached use of a waiting function that needs a pending promise value. */
-    public refusePendingActivationUse(node: ts.Node): void {
-        if (this.context.options.pendingActivations)
-            this.pendingActivations().refuseReached(node, (site, message) =>
-                this.context.fail(site, message),
-            );
+    /**
+     * A reached use of a waiting function that needs a pending promise
+     * value compiles the program in the application realm, whose promises
+     * keep one.
+     */
+    public requirePendingActivationRealm(node: ts.Node): void {
+        if (
+            this.context.options.pendingActivations &&
+            this.pendingActivations().needsPendingValue(node)
+        )
+            throw new ApplicationRealmRequired();
     }
 
     /**

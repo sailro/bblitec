@@ -70,7 +70,6 @@ interface BindingScopesContext extends Pick<
     | "emit"
     | "fail"
     | "sharedClosures"
-    | "isInFrameCallback"
     | "options"
     | "reachJsData"
     | "registerNativeBindingType"
@@ -121,20 +120,6 @@ export class BindingScopes {
         ReadonlySet<ts.Symbol>
     >();
     private readonly cppNamePrefixes: string[] = emissionArray([""]);
-
-    /**
-     * The scope depth the outermost enclosing frame callback started at.
-     *
-     * Everything at or above it lives on that callback's own stack frame.
-     * A deferred (`setTimeout`) callback runs AFTER that frame has
-     * returned, so naming one of those locals would emit a reference to
-     * dead storage -- which is why `deferredCaptureScopes` refuses it.
-     */
-    @journaled public accessor frameCallbackScopeFloor: number | undefined;
-
-    /** Expired frame scopes, tracked by identity across lexical scope restoration. */
-    @journaled public accessor deferredCaptureScopes:
-        ReadonlySet<Map<ts.Symbol, VariableBinding>> | undefined;
 
     /**
      * Scope depth at which a nested persistent callback begins. Platform event
@@ -250,11 +235,6 @@ export class BindingScopes {
         ) {
             const binding = this.variableScopes[index]!.get(symbol);
             if (binding) {
-                this.refuseDeadDeferredCapture(
-                    identifier,
-                    index,
-                    binding.frameLocal === true,
-                );
                 this.refuseEscapingPlatformEventCapture(
                     identifier,
                     index,
@@ -283,18 +263,6 @@ export class BindingScopes {
         ) {
             const binding = this.variableScopes[index]!.get(symbol);
             if (binding) {
-                // A deferred callback runs after the frame that created
-                // it has returned, so a name bound inside that frame is
-                // dead storage by then. The emitted lambda captures by
-                // reference, so this would compile clean and read freed
-                // memory; it refuses instead. Escaping captures of frame
-                // locals are not supported in general, and this is the
-                // one place the reached slice can walk into them.
-                this.refuseDeadDeferredCapture(
-                    identifier,
-                    index,
-                    binding.frameLocal === true,
-                );
                 this.refuseEscapingPlatformEventCapture(
                     identifier,
                     index,
@@ -330,29 +298,6 @@ export class BindingScopes {
                 "on whether that callback ran. Read it inside the callback, " +
                 "or keep the new handle in its own name.",
         );
-    }
-
-    private refuseDeadDeferredCapture(
-        identifier: ts.MemberName,
-        scopeIndex: number,
-        frameLocal: boolean,
-    ): void {
-        // Worker-enabled callbacks own their captures, including shared cells
-        // for mutable bindings. Borrowed platform-event checks still apply.
-        if (this.context.options.workers) return;
-        if (
-            frameLocal &&
-            this.deferredCaptureScopes?.has(this.variableScopes[scopeIndex]!)
-        ) {
-            this.context.fail(
-                identifier,
-                `A deferred callback cannot name '${identifier.text}': ` +
-                    "it is bound inside the callback that queued the " +
-                    "timer, and that frame has returned by the time " +
-                    "the timer runs. Bind it outside the enclosing " +
-                    "callback.",
-            );
-        }
     }
 
     /**
@@ -448,6 +393,81 @@ export class BindingScopes {
         }
         this.closureReadSets.set(root, read);
         return read;
+    }
+
+    /** The innermost binding of a symbol, read without using it. */
+    public peekBinding(symbol: ts.Symbol): VariableBinding | undefined {
+        return this.bindingScope(symbol)?.get(symbol);
+    }
+
+    /**
+     * Runs `work` with the scopes above `depth` set aside, so it binds and
+     * names in the scope a statement at that depth declares into.
+     */
+    public withScopeDepth<T>(depth: number, work: () => T): T {
+        const scopes = this.variableScopes.splice(depth);
+        const prefixes = this.cppNamePrefixes.splice(depth);
+        try {
+            return work();
+        } finally {
+            this.variableScopes.push(...scopes);
+            this.cppNamePrefixes.push(...prefixes);
+        }
+    }
+
+    /**
+     * The names no scope binds yet that a callback's code reads when it
+     * runs: its own reads (`direct`), then those of the functions it calls
+     * or names and of the callbacks a bound value it reads carries
+     * (`options.onClose()`). Each maps to its first read.
+     */
+    public unboundClosureReads(
+        root: ts.Node,
+    ): Map<ts.Symbol, { read: ts.Identifier; direct: boolean }> {
+        const unbound = new Map<
+            ts.Symbol,
+            { read: ts.Identifier; direct: boolean }
+        >();
+        const visited = new Set<ts.Node>();
+        const visitedValues = new Set<Value>();
+        const pending: ts.Node[] = [root];
+        const followValue = (value: Value): void => {
+            if (visitedValues.has(value)) return;
+            visitedValues.add(value);
+            if (value.callbackDeclaration)
+                pending.push(value.callbackDeclaration);
+            pending.push(...Object.values(value.recordMethods ?? {}));
+            for (const member of Object.values(value.recordProperties ?? {}))
+                if (member.callbackDeclaration)
+                    pending.push(member.callbackDeclaration);
+        };
+        for (let code = pending.pop(); code; code = pending.pop()) {
+            if (visited.has(code)) continue;
+            visited.add(code);
+            const reads = this.codeReads(code);
+            for (const [symbol, identifier] of reads.names) {
+                const binding = this.peekBinding(symbol);
+                if (binding) {
+                    followValue(binding.value);
+                    continue;
+                }
+                if (!unbound.has(symbol))
+                    unbound.set(symbol, {
+                        read: identifier,
+                        direct: code === root,
+                    });
+                const declaration = symbol.valueDeclaration;
+                const body = declaration && functionOfDeclaration(declaration);
+                if (body) pending.push(body);
+            }
+            pending.push(...reads.functions, ...reads.calls);
+        }
+        return unbound;
+    }
+
+    /** The names declared outside a piece of code that it reads. */
+    public readNames(code: ts.Node): Iterable<ts.Symbol> {
+        return this.codeReads(code).names.keys();
     }
 
     /** What one piece of code reads and reaches, without following either. */
@@ -690,8 +710,13 @@ export class BindingScopes {
         const binding = owner.get(symbol)!;
         // Opaque handles with no generation-time payload carry their complete
         // identity in native storage. Conditional writes need no static rebind.
+        // A resource value (a storage buffer) is such a handle without
+        // naming its data type.
         if (
-            binding.value.dataType?.kind === "handle" &&
+            (binding.value.dataType?.kind === "handle" ||
+                (binding.value.dataType === undefined &&
+                    value.kind === binding.value.kind &&
+                    isHandleKind(binding.value.kind))) &&
             metadataFieldsForKind(binding.value.kind).length === 0 &&
             !binding.value.pickingEngineKnown &&
             !value.pickingEngineKnown
@@ -867,7 +892,6 @@ export class BindingScopes {
         scope.set(symbol, {
             name: identifier.text,
             value,
-            ...(this.context.isInFrameCallback() ? { frameLocal: true } : {}),
         });
     }
 

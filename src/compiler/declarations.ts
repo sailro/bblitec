@@ -339,20 +339,29 @@ export class DeclarationLowerer {
     }
 
     /**
-     * Makes a later `const` a callback names exist before the callback. When
+     * Makes a later binding a callback reads exist before the callback. When
      * running its initializer early could change its value or reorder an
-     * effect (DOM, listeners, audio), the binding is temporal-dead-zone
-     * storage its initializer fills where the source declares it; otherwise,
-     * or without an owned data type, the declaration is materialized here and
-     * skipped when the walk reaches it.
+     * effect (DOM, listeners, audio), or its caller requires declaration-time
+     * initialization, the binding is temporal-dead-zone storage its
+     * initializer fills where the source declares it; otherwise the
+     * declaration is materialized here and skipped when the walk reaches it.
+     * A stored closure requires represented temporal-dead-zone storage.
+     * A native callback without an owned data type initializes here too,
+     * unless `initializeAhead` is false: then nothing is hoisted.
      */
     public hoistForwardBinding(
         declaration: ForwardDeclaration,
         symbol: ts.Symbol,
+        initializeAhead = true,
+        initialization:
+            "early" | "declaration" | "temporal-dead-zone" = "early",
     ): void {
-        const type = this.context.evaluationOrder.isPureExpression(
-            declaration.initializer,
-        )
+        const pure =
+            initialization === "early" &&
+            this.context.evaluationOrder.isPureExpression(
+                declaration.initializer,
+            );
+        const type = pure
             ? undefined
             : this.lexicalBindingType(
                   declaration.name,
@@ -369,6 +378,12 @@ export class DeclarationLowerer {
             });
             return;
         }
+        if (initialization === "temporal-dead-zone")
+            this.context.fail(
+                declaration,
+                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
+            );
+        if (!pure && !initializeAhead) return;
         this.emitVariableDeclaration(declaration);
         this.forwardBindings.set(symbol, "hoisted");
     }

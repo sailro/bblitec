@@ -4087,10 +4087,7 @@ export class UiProjection {
             );
         const handler = nullish ? undefined : assignment.right;
         if (handler)
-            this.context.callbacks.hoistForwardCallbackBindings(
-                handler,
-                assignment.pos,
-            );
+            this.context.callbacks.hoistForwardCallbackBindings(handler);
         if (
             (type === "change" || type === "input") &&
             this.isUiFormControl(element, receiver)

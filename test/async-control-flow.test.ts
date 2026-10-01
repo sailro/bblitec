@@ -97,6 +97,88 @@ test("a value promise's catch outside a realm compiles in the application realm"
     runNative(result, directory, t);
 });
 
+test("stored pending promises compile in the application realm", (t) => {
+    const directory = resolve("artifacts/async-stored-pending-realm");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        type Mode='creative'|'god';
+        function later(value:number):Promise<number>{return new Promise<number>((resolve)=>{setTimeout(()=>resolve(value*2),1);});}
+        async function twice(value:number):Promise<number>{const doubled=await later(value);return doubled+1;}
+        function ready(auto:boolean):Promise<Mode|'continue'>{if(auto)return Promise.resolve('creative');return Promise.resolve('continue');}
+        void(async()=>{
+            const [a,b]=await Promise.all([twice(1),twice(2)]);
+            if(a!==3||b!==5)throw new Error('stored pending');
+            const modes:Promise<Mode|'continue'>[]=[ready(true),ready(false),Promise.resolve('god')];
+            const settled=await Promise.all(modes);
+            if(settled.join()!=='creative,continue,god')throw new Error('literal union');
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /SynchronousPromise/);
+    assert.match(
+        result.cpp,
+        /Promise<bblscene::Enum\d+>::resolved\(bblscene::Enum\d+::creative\)/,
+    );
+    runNative(result, directory, t);
+});
+
+test("Promise.resolve preserves existing promise identity and settlement", (t) => {
+    const directory = resolve("artifacts/async-promise-resolve-adoption");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        const fulfilled: Promise<number> = Promise.resolve(7);
+        const adopted: Promise<number> = Promise.resolve(fulfilled);
+        const pending = new Promise<number>((resolve) => setTimeout(() => resolve(9), 1));
+        const adoptedPending: Promise<number> = Promise.resolve(pending);
+        const reason = new Error("rejected");
+        const rejected: Promise<number> = Promise.reject(reason);
+        const adoptedRejected: Promise<number> = Promise.resolve(rejected);
+        const recovered = adoptedRejected.catch((error) => {
+            if (error !== reason) throw new Error("rejection identity");
+            return 11;
+        });
+        void (async () => {
+            if (adopted !== fulfilled || adoptedPending !== pending || adoptedRejected !== rejected)
+                throw new Error("promise identity");
+            const values = await Promise.all([adopted, adoptedPending, recovered]);
+            if (values.join() !== "7,9,11") throw new Error("adopted settlement");
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    runNative(result, directory, t);
+});
+
+test("an awaited call may omit an optional parameter", (t) => {
+    const directory = resolve("artifacts/async-optional-parameter");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL('./worker.ts',import.meta.url),{type:'module'});worker.terminate();
+        async function readAll(buf:Uint8Array,only?:Set<string>):Promise<Map<string,number>>{
+            const out=new Map<string,number>();
+            for(let i=0;i<buf.length;i++){const key='k'+i;if(!only||only.has(key))out.set(key,buf[i]!);}
+            return out;
+        }
+        async function bytes():Promise<Uint8Array>{await Promise.resolve();return new Uint8Array([1,2,3]);}
+        void(async()=>{
+            const all=await readAll(await bytes());
+            const some=await readAll(await bytes(),new Set(['k1']));
+            if(all.size!==3||some.size!==1||some.get('k1')!==2)throw new Error('optional parameter');
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    runNative(result, directory, t);
+});
+
 test("Promise.allSettled retains ordered values and original rejection identities", (t) => {
     const directory = resolve("artifacts/async-all-settled");
     mkdirSync(directory, { recursive: true });

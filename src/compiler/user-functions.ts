@@ -834,8 +834,9 @@ function writesSharedBinding(
 }
 
 /**
- * The function a declaration binds: a function declaration with a body, or a
- * variable initialized with a function literal.
+ * The function a declaration binds: a function declaration with a body, a
+ * named function expression (its own name), or a variable initialized with a
+ * function literal.
  */
 export function functionOfDeclaration(
     declaration: ts.Declaration,
@@ -845,6 +846,9 @@ export function functionOfDeclaration(
     | ts.FunctionExpression
     | undefined {
     if (ts.isFunctionDeclaration(declaration) && declaration.body)
+        return declaration;
+    // A named function expression is its own name's declaration.
+    if (ts.isFunctionExpression(declaration) && declaration.name)
         return declaration;
     if (
         ts.isVariableDeclaration(declaration) &&
@@ -1213,6 +1217,7 @@ export interface UserFunctionContext
         Pick<
             LoweringServices,
             | "classLowerer"
+            | "callbacks"
             | "evaluationOrder"
             | "cppString"
             | "options"
@@ -3941,7 +3946,12 @@ export class UserFunctionLowerer {
             ir.parameters.length > arguments_.length &&
             ir.parameters
                 .slice(arguments_.length)
-                .some(({ declaration: parameter }) => !parameter.initializer)
+                .some(
+                    ({ declaration: parameter }) =>
+                        !parameter.initializer &&
+                        !parameter.questionToken &&
+                        !parameter.dotDotDotToken,
+                )
         ) {
             context.fail(
                 declaration,
@@ -4042,6 +4052,8 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
+        // A stored closure may be called before the later declaration runs.
+        context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);
         try {
             return this.lowerStoredDataFunction(
