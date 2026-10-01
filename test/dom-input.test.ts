@@ -104,7 +104,7 @@ test("generated DOM listeners receive retained SDL paths and control native defa
     });
 });
 
-test("Window and Document listen through EventTarget-typed names", () => {
+test("elements, Window and Document listen through EventTarget-typed names", () => {
     const directory = resolve("artifacts/dom-input-event-target");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
@@ -121,18 +121,22 @@ test("Window and Document listen through EventTarget-typed names", () => {
             target.addEventListener("pointerdown", onDown, { capture: true });
             return () => target.removeEventListener("pointerdown", onDown, { capture: true });
         }
+        const panel = document.createElement("div");
+        document.body.appendChild(panel);
+        const releasePanel = intercept(panel);
         const releaseWindow = intercept(window);
         const releaseDocument = intercept(document);
+        releasePanel();
         releaseWindow();
         releaseDocument();
     `,
         { fileName: join(directory, "entry.ts") },
     );
-    for (const target of ["window", "document"]) {
+    for (const target of ["node(", "window()", "document()"]) {
         for (const call of ["on", "off"]) {
             assert.ok(
                 cpp.includes(
-                    `bbl::${call}_dom_pointer(bbl::pal::window_document_engine(), bbl::DomEventTarget::${target}(), "pointerdown"`,
+                    `bbl::${call}_dom_pointer(bbl::pal::window_document_engine(), bbl::DomEventTarget::${target}`,
                 ),
                 `${call} ${target}`,
             );
