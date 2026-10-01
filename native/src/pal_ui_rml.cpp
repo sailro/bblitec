@@ -948,29 +948,6 @@ bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view 
     return ui_element(engine, element).attributes.contains(std::string(name));
 }
 
-bool ui_contains(Engine& engine, UiElementHandle ancestor, UiElementHandle node) {
-    static_cast<void>(ui_element(engine, ancestor));
-    for (auto cursor = node; cursor.value != invalid_handle;) {
-        if (cursor == ancestor)
-            return true;
-        const auto& record = ui_element(engine, cursor);
-        if (record.attached_to_root)
-            return false;
-        cursor = record.parent.value != invalid_handle ? record.parent : record.markup_owner;
-    }
-    return false;
-}
-
-bool ui_is_connected(Engine& engine, UiElementHandle element) {
-    for (auto cursor = element; cursor.value != invalid_handle;) {
-        const auto& record = ui_element(engine, cursor);
-        if (record.attached_to_root)
-            return true;
-        cursor = record.parent.value != invalid_handle ? record.parent : record.markup_owner;
-    }
-    return false;
-}
-
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
     const std::string normalized = js::string_lower(std::string(name));
     auto& record = ui_element(engine, element);
@@ -1067,7 +1044,10 @@ std::string ui_remove_style_property(Engine& engine, UiElementHandle element,
     return previous;
 }
 
-void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, bool enabled) {
+namespace {
+/** classList.toggle: `force` selects presence, else the class flips; returns presence. */
+bool toggle_ui_class(Engine& engine, UiElementHandle element, std::string name,
+                     std::optional<bool> force) {
     if (name.empty()) {
         throw std::runtime_error("Native UI class name cannot be empty.");
     }
@@ -1082,8 +1062,9 @@ void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, 
         present = present || token == name;
         classes.push_back(std::move(token));
     }
+    const bool enabled = force.value_or(!present);
     if (present == enabled)
-        return;
+        return enabled;
     if (enabled) {
         classes.push_back(std::move(name));
     } else {
@@ -1097,16 +1078,20 @@ void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, 
     }
     record.attributes.insert_or_assign("class", std::move(joined));
     mark_ui_changed(engine);
+    return enabled;
+}
+} // namespace
+
+void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, bool enabled) {
+    static_cast<void>(toggle_ui_class(engine, element, std::move(name), enabled));
+}
+
+bool ui_toggle_class(Engine& engine, UiElementHandle element, std::string name) {
+    return toggle_ui_class(engine, element, std::move(name), std::nullopt);
 }
 
 bool ui_has_class(Engine& engine, UiElementHandle element, std::string_view name) {
     return ui_record_has_class(ui_element(engine, element), name);
-}
-
-bool ui_toggle_class(Engine& engine, UiElementHandle element, std::string name) {
-    const bool enabled = !ui_has_class(engine, element, name);
-    ui_toggle_class(engine, element, std::move(name), enabled);
-    return enabled;
 }
 
 void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string class_name,
@@ -1370,12 +1355,7 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
         if (first_summary != children.end() && *first_summary == element) {
             ui_set_boolean_attribute(engine, parent, "open",
                                      !ui_has_attribute(engine, parent, "open"));
-            const auto& events = ui_element(engine, parent).event_callbacks;
-            if (const auto found = events.find("toggle"); found != events.end()) {
-                const auto toggle_callbacks = found->second;
-                for (const auto& callback : toggle_callbacks)
-                    callback(PlatformMouseEvent{});
-            }
+            dispatch_ui_listeners(ui_element(engine, parent), "toggle", PlatformMouseEvent{});
         }
     }
 #if BBLITE_HAS_BROWSER_FILE
@@ -1433,12 +1413,7 @@ void dispatch_ui_focus(Engine& engine, UiElementHandle element, std::string type
                                : std::optional{DomEventTarget::node(related.value)});
     event.dom->trusted = true;
     dispatch_dom_pointer(engine, event);
-    const auto& events = ui_element(engine, element).event_callbacks;
-    if (const auto found = events.find(type); found != events.end()) {
-        const auto callbacks = found->second;
-        for (const auto& callback : callbacks)
-            callback(event);
-    }
+    dispatch_ui_listeners(ui_element(engine, element), type, event);
 }
 } // namespace
 
@@ -1520,6 +1495,12 @@ void ui_set_file_input(Engine& engine, UiElementHandle element) {
     }
     record.file_input = true;
     record.attributes["type"] = "file";
+    // Listeners stay on the element: its change listeners become the picker's.
+    if (const auto change = record.event_callbacks.find("change");
+        change != record.event_callbacks.end()) {
+        record.file_change_callbacks = std::move(change->second);
+        record.event_callbacks.erase(change);
+    }
     mark_ui_changed(engine);
 }
 
@@ -1533,50 +1514,59 @@ void ui_set_file_accept(Engine& engine, UiElementHandle element, std::string acc
     mark_ui_changed(engine);
 }
 
-void ui_on_file_change(Engine& engine, UiElementHandle element, std::function<void()> callback) {
-    UiElementRecord& record = ui_element(engine, element);
-    if (record.tag != "input" || !record.file_input || !callback) {
-        throw std::runtime_error(
-            "Native file change registration requires an <input type=\"file\"> and callback.");
-    }
-    record.file_change_callbacks.push_back(std::move(callback));
-    mark_ui_changed(engine);
-}
-
-void ui_set_file_change_handler(Engine& engine, UiElementHandle element,
-                                std::function<void()> callback) {
-    UiElementRecord& record = ui_element(engine, element);
-    if (record.tag != "input" || !record.file_input)
-        throw std::runtime_error("Native file change handlers require an <input type=\"file\">.");
-    set_ui_event_handler(record.file_change_callbacks, record.file_change_handler,
-                         std::move(callback));
-    mark_ui_changed(engine);
-}
 #endif
 
-void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
-                 std::function<void(const PlatformMouseEvent&)> callback) {
-    if (event.empty() || !callback) {
-        throw std::runtime_error("Native UI event registration is invalid.");
+namespace {
+/** The list `event` listeners join; a file input's change belongs to its picker. */
+std::shared_ptr<UiEventListeners>* ui_listener_slot(UiElementRecord& record,
+                                                    const std::string& event, bool create) {
+    if (event.empty())
+        throw std::runtime_error("Native UI event listeners require an event name.");
+    if (record.file_input) {
+        if (event != "change")
+            throw std::runtime_error("A native file input dispatches only change.");
+        return &record.file_change_callbacks;
     }
-    UiElementRecord& record = ui_element(engine, element);
-    record.event_callbacks[std::move(event)].push_back(std::move(callback));
-    mark_ui_changed(engine);
+    if (create)
+        return &record.event_callbacks[event];
+    const auto found = record.event_callbacks.find(event);
+    return found == record.event_callbacks.end() ? nullptr : &found->second;
 }
 
-void ui_set_event_handler(Engine& engine, UiElementHandle element, std::string event,
-                          std::function<void(const PlatformMouseEvent&)> callback) {
-    if (event.empty())
-        throw std::runtime_error("Native UI event handlers require an event name.");
+} // namespace
+
+void ui_on_event(Engine& engine, UiElementHandle element, const std::string& event,
+                 UiEventListeners::Callback callback) {
+    if (!callback)
+        throw std::runtime_error("Native UI event registration requires a callback.");
+    auto& listeners = *ui_listener_slot(ui_element(engine, element), event, true);
+    const bool listening = static_cast<bool>(listeners);
+    if (!listening)
+        listeners = std::make_shared<UiEventListeners>();
+    listeners->add(std::move(callback));
+    if (!listening)
+        mark_ui_changed(engine);
+}
+
+void ui_set_event_handler(Engine& engine, UiElementHandle element, const std::string& event,
+                          UiEventListeners::Callback callback) {
     UiElementRecord& record = ui_element(engine, element);
-    if (record.file_input)
-        throw std::runtime_error(
-            "A file input's change handler requires its static type='file' at the assignment.");
-    set_ui_event_handler(record.event_callbacks[event], record.event_handlers[event],
-                         std::move(callback));
-    if (!record.event_handlers[event])
-        record.event_handlers.erase(event);
-    mark_ui_changed(engine);
+    auto* listeners = ui_listener_slot(record, event, static_cast<bool>(callback));
+    if (!listeners || (!*listeners && !callback))
+        return;
+    const bool listening = static_cast<bool>(*listeners);
+    if (!listening)
+        *listeners = std::make_shared<UiEventListeners>();
+    (*listeners)->set_handler(std::move(callback));
+    // An emptied list stops listening; a list a dispatch still walks empties once it returns.
+    const bool emptied = (*listeners)->empty();
+    if (emptied && record.file_input)
+        listeners->reset();
+    else if (emptied)
+        record.event_callbacks.erase(event);
+    // Only a first handler or the last removal changes the listened events.
+    if (listening == emptied)
+        mark_ui_changed(engine);
 }
 
 namespace {
@@ -1971,12 +1961,7 @@ public:
                 if ((event_type == "color-input" && std::string_view(name) != "input") ||
                     (event_type == "color-change" && std::string_view(name) != "change"))
                     continue;
-                const auto& callbacks = ui_element(engine, element).event_callbacks;
-                if (const auto found = callbacks.find(name); found != callbacks.end()) {
-                    const auto snapshot = found->second;
-                    for (const auto& callback : snapshot)
-                        callback(PlatformMouseEvent{});
-                }
+                dispatch_ui_listeners(ui_element(engine, element), name, PlatformMouseEvent{});
             }
             event.StopPropagation();
             return;
@@ -1986,7 +1971,6 @@ public:
                       << " element=" << element.value << " tag=" << ui_element(engine, element).tag
                       << '\n';
         }
-        // Copy the callback list so a callback may safely mutate UI state.
         if (event_type == "click") {
             bool first_listener = true;
             for (auto* cursor = event.GetTargetElement();
@@ -2025,9 +2009,7 @@ public:
                 .client_y = static_cast<double>(
                     event.GetParameter<int>("mouse_y", static_cast<int>(fallback_y))),
             };
-            const auto callbacks = ui_element(engine, element).event_callbacks.at(event_type);
-            for (const auto& callback : callbacks)
-                callback(pointer);
+            dispatch_ui_listeners(ui_element(engine, element), event_type, pointer);
             if (pointer.default_prevented) {
                 default_prevented = true;
             }
@@ -4469,8 +4451,7 @@ struct UiRmlRuntime {
             projected.click_listener_attached = true;
         }
         for (const auto& [event, callbacks] : record.event_callbacks) {
-            if (callbacks.empty() || event == "toggle" ||
-                projected.event_listeners_attached[event] ||
+            if (event == "toggle" || projected.event_listeners_attached[event] ||
                 (editable && (event == "input" || event == "change"))) {
                 continue;
             }

@@ -63,10 +63,6 @@ std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::strin
 js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle element,
                                            std::string_view name);
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name);
-/** Node.contains over retained parents and markup owners; an invalid node is not contained. */
-bool ui_contains(Engine& engine, UiElementHandle ancestor, UiElementHandle node);
-/** Node.isConnected: the parent/markup-owner chain reaches the document. */
-bool ui_is_connected(Engine& engine, UiElementHandle element);
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name,
                               bool present);
@@ -122,16 +118,13 @@ void ui_set_download_url(Engine& engine, UiElementHandle element, ObjectUrlHandl
 void ui_set_download_name(Engine& engine, UiElementHandle element, std::string name);
 void ui_set_file_input(Engine& engine, UiElementHandle element);
 void ui_set_file_accept(Engine& engine, UiElementHandle element, std::string accept);
-void ui_on_file_change(Engine& engine, UiElementHandle element, std::function<void()> callback);
-/** `input.onchange` of a file input; an empty callback removes the handler. */
-void ui_set_file_change_handler(Engine& engine, UiElementHandle element,
-                                std::function<void()> callback);
 #endif
-void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
-                 std::function<void(const PlatformMouseEvent&)> callback);
+/** A form-control listener; a file input's change listeners are its picker's. */
+void ui_on_event(Engine& engine, UiElementHandle element, const std::string& event,
+                 UiEventListeners::Callback callback);
 /** A form control's `on<event>` handler; an empty callback removes it. */
-void ui_set_event_handler(Engine& engine, UiElementHandle element, std::string event,
-                          std::function<void(const PlatformMouseEvent&)> callback);
+void ui_set_event_handler(Engine& engine, UiElementHandle element, const std::string& event,
+                          UiEventListeners::Callback callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
 UiElementHandle ui_primary_canvas(Engine&, std::string_view id);

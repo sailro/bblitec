@@ -219,18 +219,20 @@ inline void on_dom_keyboard(Engine& engine, DomEventTarget target, std::string t
 /** `target.on<type> = callback`; an empty callback removes the handler. */
 inline void set_dom_pointer_handler(Engine& engine, DomEventTarget target, std::string type,
                                     DomEventListeners<PlatformMouseEvent>::Callback callback) {
-    if (!callback && !engine.dom_input)
+    if (callback)
+        listen_dom_pointer(engine, target, type);
+    else if (!engine.dom_input)
         return;
-    auto& input = callback ? listen_dom_pointer(engine, target, type) : *engine.dom_input;
-    input.pointer.set_handler(target, std::move(type), std::move(callback));
+    engine.dom_input->pointer.set_handler(target, std::move(type), std::move(callback));
 }
 
 inline void set_dom_keyboard_handler(Engine& engine, DomEventTarget target, std::string type,
                                      DomEventListeners<PlatformKeyboardEvent>::Callback callback) {
-    if (!callback && !engine.dom_input)
+    if (callback)
+        listen_dom_keyboard(engine, type);
+    else if (!engine.dom_input)
         return;
-    auto& input = callback ? listen_dom_keyboard(engine, type) : *engine.dom_input;
-    input.keyboard.set_handler(target, std::move(type), std::move(callback));
+    engine.dom_input->keyboard.set_handler(target, std::move(type), std::move(callback));
 }
 
 inline void off_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
@@ -422,15 +424,13 @@ inline bool dom_target_is_element(const js::Nullable<DomEventTargetValue>& value
 
 inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHandle target) {
     std::vector<DomEventTarget> path;
-    while (target.value != invalid_handle) {
-        const auto& record = handle_at(engine.ui_elements, target);
+    for (; target.value != invalid_handle;
+         target = ui_tree_parent(handle_at(engine.ui_elements, target)))
         path.push_back(DomEventTarget::node(target.value));
-        if (record.attached_to_root) {
-            path.push_back(DomEventTarget::document());
-            path.push_back(DomEventTarget::window());
-            break;
-        }
-        target = record.parent.value != invalid_handle ? record.parent : record.markup_owner;
+    if (!path.empty() &&
+        handle_at(engine.ui_elements, UiElementHandle{path.back().element}).attached_to_root) {
+        path.push_back(DomEventTarget::document());
+        path.push_back(DomEventTarget::window());
     }
     return path;
 }
@@ -440,11 +440,7 @@ inline bool dom_target_within(Engine& engine, UiElementHandle ancestor,
                               const js::Nullable<DomEventTargetValue>& value) {
     if (!value.has_value() || value->engine != &engine)
         return false;
-    const auto node = dom_target_retained_element(*value);
-    if (node.value == invalid_handle)
-        return false;
-    const auto path = dom_ui_path(engine, node);
-    return std::find(path.begin(), path.end(), DomEventTarget::node(ancestor.value)) != path.end();
+    return ui_contains(engine, ancestor, dom_target_retained_element(*value));
 }
 #endif
 

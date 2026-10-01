@@ -10,7 +10,10 @@ const realm = `
     worker.terminate();
 `;
 
-function compileEntry(directory: string, body: string): string {
+const directory = resolve("artifacts/dom-element-surface");
+
+function compileEntry(body: string): string {
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     return compileSource(`${realm}${body}`, {
         fileName: join(directory, "entry.ts"),
@@ -18,10 +21,7 @@ function compileEntry(directory: string, body: string): string {
 }
 
 test("element event handler properties, containment, connection and layout extents run natively", (t) => {
-    const directory = resolve("artifacts/dom-element-surface");
-    mkdirSync(directory, { recursive: true });
     const cpp = compileEntry(
-        directory,
         `
         const log = document.createElement("div");
         log.id = "log";
@@ -36,6 +36,7 @@ test("element event handler properties, containment, connection and layout exten
         button.style.cssText = "position:absolute;left:0;top:0;width:80px;height:40px;padding:4px;border:3px solid black;box-sizing:content-box";
         let clicks = 0;
         button.addEventListener("click", () => record("A"));
+        // Each handler replaces or removes itself during its own dispatch.
         button.onclick = () => {
             record("H");
             button.onclick = () => { record("I"); button.onclick = null; };
@@ -52,8 +53,14 @@ test("element event handler properties, containment, connection and layout exten
         box.onchange = () => record(box.checked ? "C" : "c");
         box.onchange = () => record(box.checked ? "D" : "d");
         box.addEventListener("blur", () => record("b"));
+        const guard = document.createElement("input");
+        guard.type = "checkbox";
+        guard.id = "guard";
+        guard.style.cssText = "position:absolute;left:300px;top:0;width:30px;height:30px;margin:0";
+        guard.onclick = () => { record("g"); return false; };
+        guard.onchange = () => record("G");
         const detached = document.createElement("span");
-        document.body.append(button, box);
+        document.body.append(button, box, guard);
         record(button.isConnected && !detached.isConnected ? "1" : "0");
         record(document.body.contains(button) && !button.contains(document.body) && !button.contains(null) ? "2" : "0");
         record(button.id === "button" && button.hasAttribute("id") && button.getAttribute("title") === null ? "3" : "0");
@@ -76,7 +83,7 @@ test("element event handler properties, containment, connection and layout exten
     `,
     );
     writeFileSync(join(directory, "program.hpp"), cpp);
-    assert.doesNotMatch(cpp, /record\("X"\)|"X"/);
+    assert.doesNotMatch(cpp, /"X"/);
     assert.match(cpp, /bbl::set_dom_pointer_handler\([^;]+"click", \{\}\)/);
     assert.match(cpp, /bbl::ui_set_event_handler\([^;]+"change"/);
     assert.match(cpp, /bbl::dom_target_is_element\([^;]+, true\)/);
@@ -89,16 +96,13 @@ test("element event handler properties, containment, connection and layout exten
     });
 });
 
-test("element layout extents read the retained client rectangle", () => {
-    const directory = resolve("artifacts/dom-element-surface");
-    mkdirSync(directory, { recursive: true });
+test("element layout extents and rectangles read the retained border box", () => {
     const cpp = compileEntry(
-        directory,
         `
         const panel = document.createElement("div");
         document.body.appendChild(panel);
         void panel.offsetWidth;
-        const size = panel.offsetHeight + panel.clientWidth + panel.clientHeight;
+        const size = panel.offsetHeight + panel.clientWidth + panel.clientHeight + panel.getBoundingClientRect().width;
         panel.textContent = String(size);
         globalThis.close();
     `,
@@ -114,18 +118,27 @@ test("element layout extents read the retained client rectangle", () => {
                 `std::round\\(bbl::ui_get_client_rect\\([^;]+\\)\\.${field}\\)`,
             ),
         );
+    assert.match(cpp, /v_bblite_ui_rect_\d+\.offset_width/);
+});
+
+test("record-field controls take their declared interface's tag", () => {
+    const cpp = compileEntry(`
+        const fields: { input: HTMLInputElement } = { input: document.createElement("input") };
+        fields.input.type = "range";
+        fields.input.min = "1";
+        fields.input.addEventListener("change", () => { fields.input.max = fields.input.min; });
+        fields.input.oninput = () => { document.title = fields.input.value; };
+        document.body.appendChild(fields.input);
+        globalThis.close();
+    `);
+    assert.match(cpp, /bbl::ui_set_attribute\([^;]+"min"/);
+    assert.match(cpp, /bbl::ui_on_event\([^;]+"change"/);
+    assert.match(cpp, /bbl::ui_set_event_handler\([^;]+"input"/);
 });
 
 test("element event handler properties refuse what they cannot represent", () => {
-    const directory = resolve("artifacts/dom-element-surface");
-    mkdirSync(directory, { recursive: true });
     const refusal = (body: string, pattern: RegExp): void =>
-        assert.throws(() => compileEntry(directory, body), pattern);
-    refusal(
-        `const button = document.createElement("button");
-         button.onclick = () => false;`,
-        /cannot return false/,
-    );
+        assert.throws(() => compileEntry(body), pattern);
     refusal(
         `const panel = document.createElement("div");
          panel.onscroll = () => {};`,
@@ -141,10 +154,7 @@ test("element event handler properties refuse what they cannot represent", () =>
 });
 
 test("Window observer presence guards select the constructed observer", () => {
-    const directory = resolve("artifacts/dom-element-surface");
-    mkdirSync(directory, { recursive: true });
     const cpp = compileEntry(
-        directory,
         `
         const panel = document.createElement("div");
         document.body.appendChild(panel);

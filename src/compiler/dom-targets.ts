@@ -70,19 +70,67 @@ export function domTargetIdentity(
     return { target, engine };
 }
 
+/** What an element interface's `instanceof` tests on a native DOM target. */
+type ElementInterfaceTest =
+    | { readonly kind: "tag"; readonly tag: string }
+    | { readonly kind: "element"; readonly html: boolean };
+
+type WindowInterface =
+    | { readonly kind: "observer" }
+    | { readonly kind: "element"; readonly test: ElementInterfaceTest };
+
 /**
- * Element interfaces native DOM targets answer `instanceof` for: a tag, or
- * any element (`Element`) or any HTML-namespace element (`HTMLElement`).
+ * The Window interfaces native represents: element interfaces `instanceof`
+ * answers by tag or namespace, and observers an application realm builds.
  */
-export const DOM_ELEMENT_INTERFACES: ReadonlyMap<string, string> = new Map([
-    ["Element", "element"],
-    ["HTMLElement", "html-element"],
-    ["HTMLInputElement", "input"],
-    ["HTMLSelectElement", "select"],
-    ["HTMLTextAreaElement", "textarea"],
-    ["HTMLButtonElement", "button"],
-    ["HTMLCanvasElement", "canvas"],
+const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
+    string,
+    WindowInterface
+>([
+    ["Element", { kind: "element", test: { kind: "element", html: false } }],
+    ["HTMLElement", { kind: "element", test: { kind: "element", html: true } }],
+    ...(
+        [
+            ["HTMLInputElement", "input"],
+            ["HTMLSelectElement", "select"],
+            ["HTMLTextAreaElement", "textarea"],
+            ["HTMLButtonElement", "button"],
+            ["HTMLCanvasElement", "canvas"],
+        ] as const
+    ).map(([name, tag]): [string, WindowInterface] => [
+        name,
+        { kind: "element", test: { kind: "tag", tag } },
+    ]),
+    ["MutationObserver", { kind: "observer" }],
+    ["ResizeObserver", { kind: "observer" }],
 ]);
+
+export function isWindowObserver(name: string | undefined): boolean {
+    return WINDOW_INTERFACES.get(name ?? "")?.kind === "observer";
+}
+
+/**
+ * `typeof` of a represented Window interface: function where the Window is,
+ * undefined in a dedicated worker. Outside an application realm an observer
+ * is undecided, since only that realm builds one.
+ */
+export function windowInterfaceTypeof(
+    name: string | undefined,
+    workers: { readonly namespace: string | undefined } | undefined,
+): "function" | "undefined" | undefined {
+    const entry = WINDOW_INTERFACES.get(name ?? "");
+    if (!entry) return undefined;
+    if (workers?.namespace) return "undefined";
+    return entry.kind === "observer" && !workers ? undefined : "function";
+}
+
+/** The tag a declared element interface names. */
+export function elementInterfaceTag(name: string): string | undefined {
+    const entry = WINDOW_INTERFACES.get(name);
+    return entry?.kind === "element" && entry.test.kind === "tag"
+        ? entry.test.tag
+        : undefined;
+}
 
 /** Retained HTML element interfaces follow the element's tag and document identity. */
 export function compileDomInstanceOf(
@@ -98,10 +146,10 @@ export function compileDomInstanceOf(
         expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword
     )
         return undefined;
-    const tag = DOM_ELEMENT_INTERFACES.get(
+    const entry = WINDOW_INTERFACES.get(
         context.libraryGlobal(expression.right) ?? "",
     );
-    if (!tag) return undefined;
+    if (entry?.kind !== "element") return undefined;
     const value = context.compileValue(expression.left);
     const type = value.dataType;
     if (
@@ -119,7 +167,7 @@ export function compileDomInstanceOf(
         type?.kind === "optional" && type.inner.kind === "event-target"
             ? value.cpp
             : eventTargetCpp(context, value, expression.left);
-    return tag === "element" || tag === "html-element"
-        ? `bbl::dom_target_is_element(${target}, ${tag === "html-element"})`
-        : `bbl::dom_target_has_tag(${target}, ${context.cppString(tag)})`;
+    return entry.test.kind === "element"
+        ? `bbl::dom_target_is_element(${target}, ${entry.test.html})`
+        : `bbl::dom_target_has_tag(${target}, ${context.cppString(entry.test.tag)})`;
 }

@@ -634,6 +634,9 @@ export class CallbackLowerer {
         documentHiddenCpp?: string,
         captureByValue = true,
         assignIdentity = true,
+        /** Receives a compiled callback's result; native stored callbacks return none. */
+        consumeResult: (result: Value) => void = (result) =>
+            this.context.emitDiscardedValue(result),
     ): { cpp: string; identity: string } {
         const asynchronous = this.context.dataLowerer.promiseCallbackType(
             callback,
@@ -706,7 +709,7 @@ export class CallbackLowerer {
                         );
                     }
                     this.context.useNativeBinding(binding);
-                    this.context.emitDiscardedValue(
+                    consumeResult(
                         this.context.dataLowerer.compileFunctionValueCall(
                             { ...stored, cpp: snapshot },
                             values,
@@ -872,7 +875,7 @@ export class CallbackLowerer {
                               compile,
                           )
                         : compile();
-                    this.context.emitDiscardedValue(result);
+                    consumeResult(result);
                 },
                 captureByValue ? false : "entry",
             );

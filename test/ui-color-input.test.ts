@@ -17,7 +17,7 @@ test("color input values and edit events use the retained form control", () => {
     assert.match(result.cpp, /ui_get_form_value\(/);
     assert.match(result.cpp, /ui_on_event\([^;]+"input"/);
     assert.match(result.cpp, /ui_on_event\([^;]+"change"/);
-    assert.doesNotMatch(result.cpp, /ui_on_file_change|ui_set_file_input/);
+    assert.doesNotMatch(result.cpp, /ui_set_file_input/);
 });
 
 test("native color picker previews edits, commits, cancels and normalizes opaque sRGB", (t) => {

@@ -6,6 +6,7 @@ import { declaredInDefaultLibrary } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { requireWindowHost } from "./window-events.js";
+import { isWindowObserver, windowInterfaceTypeof } from "./dom-targets.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 export interface CanvasContext
@@ -61,12 +62,6 @@ export function readMediaQueryProperty(
     };
 }
 
-/** Observer interfaces only an application realm's Window provides. */
-const WINDOW_OBSERVERS: readonly string[] = [
-    "MutationObserver",
-    "ResizeObserver",
-];
-
 export function compileCanvasValue(
     context: CanvasContext,
     expression: ts.Expression,
@@ -75,9 +70,7 @@ export function compileCanvasValue(
     if (!context.options.workers) {
         if (
             ((ts.isNewExpression(node) || ts.isTypeOfExpression(node)) &&
-                WINDOW_OBSERVERS.includes(
-                    context.libraryGlobal(node.expression) ?? "",
-                )) ||
+                isWindowObserver(context.libraryGlobal(node.expression))) ||
             (ts.isCallExpression(node) &&
                 context.libraryGlobal(node.expression) === "matchMedia")
         )
@@ -141,20 +134,18 @@ export function compileCanvasValue(
             };
         }
     }
-    if (
-        ts.isTypeOfExpression(node) &&
-        WINDOW_OBSERVERS.includes(context.libraryGlobal(node.expression) ?? "")
-    ) {
-        // Observers are Window interfaces; dedicated workers have none.
-        const type = context.options.workers.namespace
-            ? "undefined"
-            : "function";
+    const windowInterface = ts.isTypeOfExpression(node)
+        ? windowInterfaceTypeof(
+              context.libraryGlobal(node.expression),
+              context.options.workers,
+          )
+        : undefined;
+    if (windowInterface)
         return {
             kind: "string",
-            cpp: `std::string(${JSON.stringify(type)})`,
-            staticString: type,
+            cpp: `std::string(${JSON.stringify(windowInterface)})`,
+            staticString: windowInterface,
         };
-    }
     if (
         ts.isTypeOfExpression(node) &&
         context.libraryGlobal(node.expression) === "Worker"

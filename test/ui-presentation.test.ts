@@ -58,6 +58,13 @@ test("keyword transform origins in either order and numeral font features projec
         () => compile(`.c{font-feature-settings:"liga" 0}`),
         /Retained UI style property 'font-feature-settings'/,
     );
+    const write = compileSource(
+        `${prefix}const panel=document.createElement("div");panel.style.transformOrigin="bottom left";document.body.appendChild(panel);`,
+    );
+    assert.match(
+        write.cpp,
+        /ui_set_style_property\([^;]+"transform-origin", "left bottom"\)/,
+    );
 });
 
 test("native presentation styles preserve box edges, formatting and live replacement", (t) => {

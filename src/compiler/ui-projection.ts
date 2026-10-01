@@ -73,8 +73,9 @@ import { documentEngine } from "./window-events.js";
 import {
     elementDomHandlerFamily,
     emitDomEventHandler,
+    eventHandlerResult,
 } from "./dom-listeners.js";
-import { DOM_ELEMENT_INTERFACES } from "./dom-targets.js";
+import { elementInterfaceTag } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
 import { engineCanvasIds, primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -174,6 +175,7 @@ interface UiProjectionContext extends Pick<
     | "dataLowerer"
     | "defaultEngine"
     | "emit"
+    | "emitDiscardedValue"
     | "evaluator"
     | "expectKind"
     | "expectSameEngine"
@@ -199,6 +201,26 @@ interface UiProjectionContext extends Pick<
     | "symbols"
     | "unwrap"
 > {}
+
+/** String IDL attributes reflecting one content attribute. */
+interface UiReflectedAttribute {
+    attribute: string;
+    readable: boolean;
+    tag?: string;
+}
+const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
+    new Map<string, UiReflectedAttribute>([
+        ["id", { attribute: "id", readable: true }],
+        ["className", { attribute: "class", readable: true }],
+        ["lang", { attribute: "lang", readable: true }],
+        ["type", { attribute: "type", readable: false }],
+        ...["min", "max", "step"].map(
+            (name): [string, UiReflectedAttribute] => [
+                name,
+                { attribute: name, readable: true, tag: "input" },
+            ],
+        ),
+    ]);
 
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
@@ -501,14 +523,13 @@ export class UiProjection {
         expression: ts.Expression,
     ): string | undefined {
         if (element.uiTag !== undefined) return element.uiTag;
-        const tag = DOM_ELEMENT_INTERFACES.get(
+        return elementInterfaceTag(
             this.context.checker
                 .getNonNullableType(
                     this.context.checker.getTypeAtLocation(expression),
                 )
                 .getSymbol()?.name ?? "",
         );
-        return tag === "element" || tag === "html-element" ? undefined : tag;
     }
 
     /** Evaluate helper receivers at admitted operations, not during erasure probes. */
@@ -1387,6 +1408,7 @@ export class UiProjection {
         new EmissionSet<string>([
             "-webkit-backdrop-filter",
             "backdrop-filter",
+            "font-feature-settings",
             "font-variant-numeric",
         ]);
 
@@ -1394,21 +1416,26 @@ export class UiProjection {
      * CSS admits two transform-origin keywords in either order; RmlUi's
      * shorthand reads the horizontal one first.
      */
+    private static readonly UI_TRANSFORM_ORIGIN_KEYWORDS =
+        /^\s*(left|center|right|top|bottom)\s+(left|center|right|top|bottom)(\s+[^\s]+)?\s*$/i;
+
     private static canonicalUiTransformOrigin(value: string): string {
-        const keywords =
-            /^\s*(left|center|right|top|bottom)\s+(left|center|right|top|bottom)(\s+[^\s]+)?\s*$/i.exec(
-                value,
-            );
+        const keywords = UiProjection.UI_TRANSFORM_ORIGIN_KEYWORDS.exec(value);
         if (!keywords) return value;
         const [, first, second, depth] = keywords;
-        const vertical = (keyword: string): boolean =>
-            /^(?:top|bottom)$/i.test(keyword);
-        const horizontal = (keyword: string): boolean =>
-            /^(?:left|right)$/i.test(keyword);
-        return vertical(first!) || horizontal(second!)
+        return /^(?:top|bottom)$/i.test(first!) ||
+            /^(?:left|right)$/i.test(second!)
             ? `${second!} ${first!}${depth ?? ""}`
             : value;
     }
+
+    /** font-feature-settings naming only the numeral variants font-variant-numeric covers. */
+    private static readonly UI_NUMERAL_FEATURES = (() => {
+        const feature = String.raw`["'](?:tnum|lnum|pnum|onum)["'](?:\s+(?:on|off|0|1))?`;
+        return new RegExp(
+            String.raw`^(?:normal|${feature}(?:\s*,\s*${feature})*)$`,
+        );
+    })();
 
     private static supportedBackdropFilter(value: string): boolean {
         return /^(?:none|blur\(\s*(?:\d+(?:\.\d+)?|\.\d+)px\s*\))$/i.test(
@@ -1859,24 +1886,16 @@ export class UiProjection {
             ) {
                 return;
             }
+            if (
+                property === "font-feature-settings" &&
+                !UiProjection.UI_NUMERAL_FEATURES.test(literalValue)
+            )
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only normal and the numeral variant features tnum, lnum, pnum and onum are accepted, with a recorded degradation",
+                );
             if (UiProjection.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
-                this.uiDegradedStyleProperties.add(property);
-                return;
-            }
-            if (property === "font-feature-settings") {
-                // The numeral variants font-variant-numeric names; RmlUi has none.
-                const feature = String.raw`["'](?:tnum|lnum|pnum|onum)["'](?:\s+(?:on|off|0|1))?`;
-                if (
-                    literalValue !== "normal" &&
-                    !new RegExp(
-                        String.raw`^${feature}(?:\s*,\s*${feature})*$`,
-                    ).test(literalValue)
-                )
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "only normal and the numeral variant features tnum, lnum, pnum and onum are accepted, with a recorded degradation",
-                    );
                 this.uiDegradedStyleProperties.add(property);
                 return;
             }
@@ -2248,6 +2267,23 @@ export class UiProjection {
         return effects.length > 0 ? effects.join(",") : undefined;
     }
 
+    /** Properties whose values RmlUi reads in its own grammar. */
+    private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
+        "border-image",
+        "transform-origin",
+    ]);
+
+    /** One property value in RmlUi's grammar, for declaration lists and style writes. */
+    private lowerUiStyleValue(
+        property: string,
+        value: string,
+        site?: ts.Node,
+    ): string {
+        return property === "border-image"
+            ? this.lowerUiBorderImage(value, site)
+            : UiProjection.canonicalUiTransformOrigin(value);
+    }
+
     private lowerUiBorderImage(value: string, site?: ts.Node): string {
         const image = /__BBLITE_UI_STYLE_\d+__/.test(value)
             ? undefined
@@ -2311,10 +2347,11 @@ export class UiProjection {
                 let lowered = declaration;
                 if (colon >= 0 && property === "-webkit-appearance") {
                     lowered = `appearance:${declaration.slice(colon + 1)}`;
-                } else if (colon >= 0 && property === "transform-origin") {
-                    lowered = `transform-origin:${UiProjection.canonicalUiTransformOrigin(declaration.slice(colon + 1))}`;
-                } else if (colon >= 0 && property === "border-image") {
-                    lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
+                } else if (
+                    colon >= 0 &&
+                    UiProjection.UI_LOWERED_STYLE_VALUES.has(property)
+                ) {
+                    lowered = `${property}:${this.lowerUiStyleValue(property, declaration.slice(colon + 1), site)}`;
                 } else if (colon >= 0 && isUiLayoutProperty(property)) {
                     lowered = `${property}:${declaration
                         .slice(colon + 1)
@@ -3863,82 +3900,26 @@ export class UiProjection {
                 assignment.right,
                 `Native UI event handler property '${property}' requires a function or null.`,
             );
-        if (
-            handlerType.getCallSignatures().some((signature) => {
-                const result =
-                    this.context.checker.getReturnTypeOfSignature(signature);
-                return (result.isUnion() ? result.types : [result]).some(
-                    (member) =>
-                        (member.flags &
-                            (ts.TypeFlags.BooleanLike |
-                                ts.TypeFlags.Any |
-                                ts.TypeFlags.Unknown)) !==
-                        0,
-                );
-            })
-        )
-            this.context.fail(
-                assignment.right,
-                `Native UI event handler property '${property}' requires a handler that cannot return false; a false result cancels the event and is not lowered.`,
-            );
         const handler = nullish ? undefined : assignment.right;
         if (handler)
             this.context.callbacks.hoistForwardCallbackBindings(
                 handler,
                 assignment.pos,
             );
-        const tag = this.declaredUiTag(element, receiver);
-        const formEvent =
+        if (
             (type === "change" || type === "input") &&
-            ["input", "textarea", "select"].includes(tag ?? "");
-        if (formEvent && element.uiFileInput) {
-            if (type !== "change")
+            this.isUiFormControl(element, receiver)
+        ) {
+            if (element.uiFileInput && type !== "change")
                 this.context.fail(
                     assignment.left,
                     "A native file input dispatches only change.",
                 );
-            const callback = handler
-                ? this.context.callbacks.compilePlatformCallback(
-                      handler,
-                      undefined,
-                      [],
-                      undefined,
-                      true,
-                      false,
-                  ).cpp
-                : "{}";
-            this.context.reachFeature("browser:file", assignment);
+            if (element.uiFileInput)
+                this.context.reachFeature("browser:file", assignment);
             this.context.emit({
                 kind: "expression",
-                code: `bbl::ui_set_file_change_handler(${engine}, ${element.cpp}, ${callback});`,
-            });
-            return;
-        }
-        if (formEvent) {
-            const parameter =
-                this.context.allocateTemporaryCppName("ui_pointer_event");
-            const callback = handler
-                ? this.context.callbacks.compilePlatformCallback(
-                      handler,
-                      {
-                          cppType: "const bbl::PlatformMouseEvent&",
-                          name: parameter,
-                      },
-                      [
-                          {
-                              kind: "platform-mouse-event",
-                              cpp: parameter,
-                              readOnly: true,
-                          },
-                      ],
-                      undefined,
-                      true,
-                      false,
-                  ).cpp
-                : "{}";
-            this.context.emit({
-                kind: "expression",
-                code: `bbl::ui_set_event_handler(${engine}, ${element.cpp}, ${this.context.cppString(type)}, ${callback});`,
+                code: `bbl::ui_set_event_handler(${engine}, ${element.cpp}, ${this.context.cppString(type)}, ${handler ? this.compileUiElementCallback(handler, true) : "{}"});`,
             });
             return;
         }
@@ -3956,6 +3937,60 @@ export class UiProjection {
             handler,
             receiver,
         );
+    }
+
+    /**
+     * The content attribute a string IDL attribute reflects. `type` is an
+     * enumerated attribute whose missing value is not empty, so only its
+     * writes reflect; min/max/step belong to inputs.
+     */
+    public reflectedUiAttribute(
+        element: Value,
+        property: string,
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): UiReflectedAttribute | undefined {
+        const reflected = UI_REFLECTED_ATTRIBUTES.get(property);
+        if (
+            reflected?.tag !== undefined &&
+            this.declaredUiTag(element, receiver) !== reflected.tag
+        )
+            this.context.fail(
+                site,
+                `UI ${property} requires an ${reflected.tag} element.`,
+            );
+        return reflected;
+    }
+
+    /** Retained controls dispatching input and change from their own state. */
+    public isUiFormControl(element: Value, expression: ts.Expression): boolean {
+        return ["input", "textarea", "select"].includes(
+            this.declaredUiTag(element, expression) ?? "",
+        );
+    }
+
+    /**
+     * A per-element listener or handler outside shared DOM dispatch (form
+     * input/change, a file input's change): it receives a borrowed mouse
+     * event view. A handler's false result cancels its event.
+     */
+    public compileUiElementCallback(
+        callback: ts.Expression,
+        handler = false,
+    ): string {
+        const parameter =
+            this.context.allocateTemporaryCppName("ui_pointer_event");
+        return this.context.callbacks.compilePlatformCallback(
+            callback,
+            { cppType: "const bbl::PlatformMouseEvent&", name: parameter },
+            [{ kind: "platform-mouse-event", cpp: parameter, readOnly: true }],
+            undefined,
+            true,
+            false,
+            handler
+                ? eventHandlerResult(this.context, parameter, callback)
+                : undefined,
+        ).cpp;
     }
 
     public compileUiBrowserFileAttribute(
@@ -4117,18 +4152,6 @@ export class UiProjection {
                 directElement,
                 expression.left,
             );
-            if (["min", "max", "step"].includes(property)) {
-                if (directElement.uiTag !== "input")
-                    this.context.fail(
-                        expression.left,
-                        `UI ${property} requires an input element.`,
-                    );
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(property)}, ${this.uiStringCpp(expression.right, `Input ${property}`)});`,
-                });
-                return true;
-            }
             if (property === "checked") {
                 if (directElement.uiTag && directElement.uiTag !== "input")
                     this.context.fail(
@@ -4398,14 +4421,12 @@ export class UiProjection {
                 });
                 return true;
             }
-            const attribute =
-                property === "className"
-                    ? "class"
-                    : property === "id" ||
-                        property === "type" ||
-                        property === "lang"
-                      ? property
-                      : undefined;
+            const attribute = this.reflectedUiAttribute(
+                directElement,
+                property,
+                expression.left.expression,
+                expression.left,
+            )?.attribute;
             if (attribute) {
                 if (attribute === "class" || attribute === "id") {
                     this.recordUiStaticAttribute(
@@ -4485,9 +4506,12 @@ export class UiProjection {
         );
         const engine = this.context.requireEngine(styleElement, site);
         if (
-            ["filter", "overflow-wrap", "word-break"].includes(
-                nativeProperty,
-            ) ||
+            [
+                "filter",
+                "overflow-wrap",
+                "word-break",
+                "transform-origin",
+            ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {
             const value = this.tryUiStaticString(valueExpression);
@@ -4502,11 +4526,20 @@ export class UiProjection {
             nativeProperty,
             valueExpression,
         );
-        const styleValue =
+        // Border images lower only from static text; other lowered values
+        // pass a runtime string through as written.
+        const staticValue =
             nativeProperty === "border-image"
+                ? this.context.compileStringLiteral(valueExpression)
+                : UiProjection.UI_LOWERED_STYLE_VALUES.has(nativeProperty)
+                  ? this.tryUiStaticString(valueExpression)
+                  : undefined;
+        const styleValue =
+            staticValue !== undefined
                 ? this.context.cppString(
-                      this.lowerUiBorderImage(
-                          this.context.compileStringLiteral(valueExpression),
+                      this.lowerUiStyleValue(
+                          nativeProperty,
+                          staticValue,
                           valueExpression,
                       ),
                   )

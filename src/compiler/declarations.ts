@@ -57,6 +57,7 @@ import {
     type ValueKind,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
+import { nullableResourceEngine } from "./window-events.js";
 import {
     inferPromiseRejectStorage,
     inferUninitializedHandle,
@@ -479,11 +480,11 @@ export class DeclarationLowerer {
                         cpp: sharedClosureStorage
                             ? `(**${cppName})`
                             : optionalValueCpp(cppName),
-                        ...((resource.kind === "ui-element" ||
-                            resource.kind === "pointer-drag") &&
-                        this.context.defaultEngineCpp
-                            ? { engineCpp: this.context.defaultEngineCpp }
-                            : {}),
+                        ...nullableResourceEngine(
+                            resource.kind,
+                            this.context.options.workers,
+                            this.context.defaultEngineCpp,
+                        ),
                         optionalFoundCpp: sharedClosureStorage
                             ? `${cppName}->has_value()`
                             : optionalPresentCpp(cppName),
@@ -668,11 +669,11 @@ export class DeclarationLowerer {
                 sharedClosureStorage,
                 valueForKind(nullableResource.kind, {
                     cpp: "",
-                    ...((nullableResource.kind === "ui-element" ||
-                        nullableResource.kind === "pointer-drag") &&
-                    this.context.defaultEngineCpp
-                        ? { engineCpp: this.context.defaultEngineCpp }
-                        : {}),
+                    ...nullableResourceEngine(
+                        nullableResource.kind,
+                        this.context.options.workers,
+                        this.context.defaultEngineCpp,
+                    ),
                 }),
             );
             return;

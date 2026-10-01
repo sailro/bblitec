@@ -11552,7 +11552,8 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
     )?.[1];
     assert.ok(rect);
     assert.match(result.cpp, new RegExp(`${rect}\\.left`));
-    assert.match(result.cpp, new RegExp(`${rect}\\.width`));
+    // DOMRect sizes are the border box.
+    assert.match(result.cpp, new RegExp(`${rect}\\.offset_width`));
     assert.equal(result.cpp.match(/bbl::ui_get_client_rect\(/g)?.length, 1);
     assert.doesNotMatch(result.cpp, /hasPointerCapture|getBoundingClientRect/);
 });

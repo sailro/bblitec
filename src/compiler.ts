@@ -88,6 +88,7 @@ import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
 import {
     compileWindowIdentity,
     emitWindowLocationAssignment,
+    nullableResourceEngine,
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { WindowProperties } from "./compiler/window-properties.js";
@@ -4447,11 +4448,11 @@ class Compiler implements LoweringServices {
                 name,
                 valueForKind(nullableResource.kind, {
                     cpp: `(*${storage})`,
-                    ...((nullableResource.kind === "ui-element" ||
-                        nullableResource.kind === "pointer-drag") &&
-                    this.defaultEngineCpp
-                        ? { engineCpp: this.defaultEngineCpp }
-                        : {}),
+                    ...nullableResourceEngine(
+                        nullableResource.kind,
+                        this.options.workers,
+                        this.defaultEngineCpp,
+                    ),
                     optionalFoundCpp: optionalPresentCpp(storage),
                     optionalStorageCpp: storage,
                     ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
@@ -4512,11 +4513,11 @@ class Compiler implements LoweringServices {
         });
         const value: Value = valueForKind(resource.kind, {
             cpp: `(*${storage})`,
-            ...((resource.kind === "ui-element" ||
-                resource.kind === "pointer-drag") &&
-            this.defaultEngineCpp
-                ? { engineCpp: this.defaultEngineCpp }
-                : {}),
+            ...nullableResourceEngine(
+                resource.kind,
+                this.options.workers,
+                this.defaultEngineCpp,
+            ),
             optionalFoundCpp: optionalPresentCpp(storage),
             optionalStorageCpp: storage,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
@@ -4574,11 +4575,11 @@ class Compiler implements LoweringServices {
         });
         const value: Value = valueForKind(resource.kind, {
             cpp: `(*${cppName})`,
-            ...((resource.kind === "ui-element" ||
-                resource.kind === "pointer-drag") &&
-            this.defaultEngineCpp
-                ? { engineCpp: this.defaultEngineCpp }
-                : {}),
+            ...nullableResourceEngine(
+                resource.kind,
+                this.options.workers,
+                this.defaultEngineCpp,
+            ),
             optionalFoundCpp: optionalPresentCpp(cppName),
             optionalStorageCpp: cppName,
         });
@@ -7072,10 +7073,6 @@ class Compiler implements LoweringServices {
     }
 
     public requireEngine(value: Value, node: ts.Node): string {
-        // Retained elements belong to the document, whose engine every
-        // realm names even where the value's storage dropped it.
-        if (!value.engineCpp && value.kind === "ui-element")
-            return this.ui.documentEngine(node);
         if (!value.engineCpp) {
             this.fail(
                 node,

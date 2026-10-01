@@ -18,7 +18,7 @@ test("checkbox properties and change listeners use retained input state", () => 
     assert.match(result.cpp, /ui_set_checked\([^;]+true\)/);
     assert.match(result.cpp, /ui_get_checked\(/);
     assert.match(result.cpp, /ui_on_event\([^;]+"change"/);
-    assert.doesNotMatch(result.cpp, /ui_on_file_change|ui_set_file_input/);
+    assert.doesNotMatch(result.cpp, /ui_set_file_input/);
     assert.throws(
         () =>
             compileSource(

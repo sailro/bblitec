@@ -24,8 +24,8 @@ Check them before adding an implementation. Source rejection does not imply miss
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution, reduced-motion and pointer/hover matchMedia queries retain identity/current matches and
   zero-argument change listeners with identity-based removal. Pointer/hover admits conjunctions and
-  follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable; `typeof` Window
-  observers is `function` in the Window realm.
+  follows SDL device capabilities. Wider queries and event payloads refuse. ResizeObserver entries are unavailable;
+  `typeof` MutationObserver/ResizeObserver is `function` in the Window realm.
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - MutationObserver supports microtask attribute notifications, static attribute filters and disconnect.
   Mutation records, old values, child-list changes and subtree observation refuse.
@@ -50,11 +50,11 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Area | Supported | Limits |
 | --- | --- | --- |
 | Construction | Static tags, appendChild, mixed text/element append, remove, retained roots | No general DOM implementation |
-| Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes, id/className/getAttribute/hasAttribute reads | Compound text writes; unsupported root replacement/removal |
+| Content | textContent/innerText, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute | Compound text writes; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
-| Handler properties | Element `on<event>` for represented pointer, keyboard and form-control events: HTML listener position, in-place replacement, `null` removal | Handlers that can return false; events without an element listener |
+| Handler properties | Element `on<event>` for represented pointer, keyboard and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Focus/forms | Focus/blur, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
 | Disclosure | details.open and summary activation | Broader disclosure-group behavior |
@@ -102,8 +102,7 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
-live cap and per-file limits. Completion may occur before click returns. A file input's `onchange`
-property is its change handler. FileReader reads a
+live cap and per-file limits. Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
 assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.
 Multiple files/directories, unsupported accept values, arbitrary source paths, file-input type

@@ -80,15 +80,83 @@ const serviceNames = new Set([
     "animationcancel",
 ]);
 
+const keyboardNames = new Set(["keydown", "keyup"]);
+
 /** These names already carry a distinct native payload/service contract. */
 export function isCustomDomEventName(type: string): boolean {
     return (
         !pointerNames.has(type) &&
         !serviceNames.has(type) &&
-        type !== "keydown" &&
-        type !== "keyup" &&
+        !keyboardNames.has(type) &&
         type !== "pagehide"
     );
+}
+
+type DomListenerFamily = "custom" | "keyboard" | "pointer";
+
+/** The shared dispatch family a DOM event name joins, if any. */
+function domListenerFamily(type: string): DomListenerFamily | undefined {
+    if (keyboardNames.has(type)) return "keyboard";
+    if (pointerNames.has(type)) return "pointer";
+    return isCustomDomEventName(type) ? "custom" : undefined;
+}
+
+/** The DOM listener family an element `on<type>` handler joins, if any. */
+export function elementDomHandlerFamily(
+    type: string,
+): "keyboard" | "pointer" | undefined {
+    const family = domListenerFamily(type);
+    return family === "custom" || type === "resize" ? undefined : family;
+}
+
+/** Each family's borrowed event view. */
+const DOM_CALLBACK_EVENTS = {
+    custom: {
+        cppType: "const bbl::PlatformCustomEvent&",
+        kind: "custom-event",
+    },
+    keyboard: {
+        cppType: "const bbl::PlatformKeyboardEvent&",
+        kind: "platform-keyboard-event",
+    },
+    pointer: {
+        cppType: "const bbl::PlatformMouseEvent&",
+        kind: "platform-mouse-event",
+    },
+} as const;
+
+/**
+ * HTML's event handler processing: a handler that returns false cancels
+ * its event. Other results are discarded; a result that may be false
+ * without a boolean representation refuses.
+ */
+export function eventHandlerResult(
+    context: Pick<Context, "emit" | "emitDiscardedValue" | "fail">,
+    eventCpp: string,
+    site: ts.Node,
+): (result: Value) => void {
+    return (result) => {
+        const type = result.dataType;
+        const inner = type?.kind === "optional" ? type.inner : type;
+        if (result.kind === "boolean" || inner?.kind === "boolean") {
+            context.emit({
+                kind: "open",
+                code: `if ((${result.cpp}) == false) {`,
+            });
+            context.emit({
+                kind: "expression",
+                code: `${eventCpp}.prevent_default();`,
+            });
+            context.emit({ kind: "close", code: "}" });
+            return;
+        }
+        if (inner?.kind === "json")
+            context.fail(
+                site,
+                "An event handler result that may be false requires a boolean representation.",
+            );
+        context.emitDiscardedValue(result);
+    };
 }
 
 export function listenerOptions(
@@ -155,34 +223,28 @@ function pinDetached(
     return context.bindings.pinValueToTemporary(snapshot, label, node);
 }
 
-type DomListenerFamily = "custom" | "keyboard" | "pointer";
-
 function compileDomCallback(
-    context: Pick<Context, "allocateTemporaryCppName" | "callbacks">,
+    context: Pick<
+        Context,
+        | "allocateTemporaryCppName"
+        | "callbacks"
+        | "emit"
+        | "emitDiscardedValue"
+        | "fail"
+    >,
     callback: ts.Expression,
     family: DomListenerFamily,
     engine: string,
+    handler = false,
 ): { cpp: string; identity: string } {
     const name = context.allocateTemporaryCppName("dom_event");
+    const event = DOM_CALLBACK_EVENTS[family];
     return context.callbacks.compilePlatformCallback(
         callback,
-        {
-            cppType:
-                family === "custom"
-                    ? "const bbl::PlatformCustomEvent&"
-                    : family === "keyboard"
-                      ? "const bbl::PlatformKeyboardEvent&"
-                      : "const bbl::PlatformMouseEvent&",
-            name,
-        },
+        { cppType: event.cppType, name },
         [
             {
-                kind:
-                    family === "custom"
-                        ? "custom-event"
-                        : family === "keyboard"
-                          ? "platform-keyboard-event"
-                          : "platform-mouse-event",
+                kind: event.kind,
                 cpp: name,
                 readOnly: true,
                 engineCpp: engine,
@@ -196,15 +258,11 @@ function compileDomCallback(
                     : {}),
             },
         ],
+        undefined,
+        true,
+        true,
+        handler ? eventHandlerResult(context, name, callback) : undefined,
     );
-}
-
-/** The DOM listener family an element `on<type>` handler joins, if any. */
-export function elementDomHandlerFamily(
-    type: string,
-): "keyboard" | "pointer" | undefined {
-    if (type === "keydown" || type === "keyup") return "keyboard";
-    return pointerNames.has(type) && type !== "resize" ? "pointer" : undefined;
 }
 
 /**
@@ -221,6 +279,8 @@ export function emitDomEventHandler(
         | "allocateTemporaryCppName"
         | "callbacks"
         | "emit"
+        | "emitDiscardedValue"
+        | "fail"
         | "cppString"
     >,
     element: Value,
@@ -233,7 +293,7 @@ export function emitDomEventHandler(
     const owner = pinDetached(context, element, "event_target", site);
     context.reachFeature("input:dom", site);
     const listener = handler
-        ? compileDomCallback(context, handler, family, engine).cpp
+        ? compileDomCallback(context, handler, family, engine, true).cpp
         : "{}";
     context.emit({
         kind: "expression",
@@ -347,10 +407,10 @@ export function emitDomEventListener(
                 target === "bbl::DomEventTarget::canvas()"))
     )
         return false;
-    const keyboard = type === "keydown" || type === "keyup";
-    const custom = isCustomDomEventName(type);
-    if (!keyboard && !pagehide && !pointerNames.has(type) && !custom)
-        return false;
+    // Page transitions dispatch through the pointer family's Window path.
+    const family = pagehide ? "pointer" : domListenerFamily(type);
+    if (!family) return false;
+    const custom = family === "custom";
     if (
         custom &&
         target !== "bbl::DomEventTarget::window()" &&
@@ -365,7 +425,6 @@ export function emitDomEventListener(
     const callback = call.arguments[1]!;
     context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
     const removing = callee.name.text === "removeEventListener";
-    const family = custom ? "custom" : keyboard ? "keyboard" : "pointer";
     let identity: string;
     let listener: string | undefined;
     if (removing) {

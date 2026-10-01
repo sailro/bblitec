@@ -85,6 +85,12 @@ int main() {
         // Only the replacing change handler runs.
         click(215, 15);
         assert(ui_element(engine, log).text == "12345b67MPAHBAIBABABJD");
+        // A click handler returning false cancels the checkbox activation;
+        // the press still moves focus off the first checkbox.
+        const auto guard = ui_get_element_by_id(engine, "guard");
+        click(315, 15);
+        assert(!ui_get_checked(engine, guard));
+        assert(ui_element(engine, log).text == "12345b67MPAHBAIBABABJDbg");
         const auto body = ui_element(engine, button).parent;
         assert(ui_contains(engine, body, button) && !ui_contains(engine, button, body));
         assert(ui_is_connected(engine, body) && ui_contains(engine, button, button));

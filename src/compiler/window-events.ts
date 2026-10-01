@@ -92,6 +92,27 @@ export function requireWindowHost(
     context.reachFeature("ui:rml", node);
 }
 
+/**
+ * The engine a nullable resource binding records: DOM handles belong to the
+ * Window document in an application realm (a worker has none), pointer drags
+ * and synchronous scenes' handles to the default engine. Reaches nothing.
+ */
+export function nullableResourceEngine(
+    kind: string,
+    workers: { readonly namespace: string | undefined } | undefined,
+    defaultEngineCpp: string | undefined,
+): { engineCpp: string } | Record<string, never> {
+    const engineCpp =
+        kind === "ui-element" && workers
+            ? workers.namespace
+                ? undefined
+                : "bbl::pal::window_document_engine()"
+            : kind === "ui-element" || kind === "pointer-drag"
+              ? defaultEngineCpp
+              : undefined;
+    return engineCpp ? { engineCpp } : {};
+}
+
 /** DOM handles belong to the Window document in application realms, even when
  * that realm also owns a rendering engine. Synchronous scenes use their engine. */
 export function documentEngine(

@@ -2244,16 +2244,16 @@ export class PropertyAccessLowerer {
                     type,
                 );
             }
-            if (property === "lang")
+            const reflected = this.context.ui.reflectedUiAttribute(
+                owner,
+                property,
+                ownerExpression,
+                expression,
+            );
+            if (reflected?.readable)
                 return {
                     kind: "string",
-                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, "lang")`,
-                    dataType: { kind: "string" },
-                };
-            if (property === "id" || property === "className")
-                return {
-                    kind: "string",
-                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${property === "id" ? '"id"' : '"class"'})`,
+                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(reflected.attribute)})`,
                     dataType: { kind: "string" },
                     freshData: true,
                 };
@@ -2273,19 +2273,6 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "number" },
                     impure: true,
                 };
-            if (["min", "max", "step"].includes(property)) {
-                if (owner.uiTag !== "input")
-                    this.context.fail(
-                        expression,
-                        `UI ${property} requires an input element.`,
-                    );
-                return {
-                    kind: "string",
-                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(property)})`,
-                    dataType: { kind: "string" },
-                    freshData: true,
-                };
-            }
             const attribute = this.context.ui.booleanAttribute(
                 owner,
                 property,
