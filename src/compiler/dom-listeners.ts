@@ -454,7 +454,7 @@ export function emitDomEventListener(
     context.reachFeature("input:dom", call);
     if (custom) context.reachFeature("data:json", call);
     const callback = call.arguments[1]!;
-    context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
+    context.callbacks.hoistForwardCallbackBindings(callback);
     const removing = callee.name.text === "removeEventListener";
     let identity: string;
     let listener: string | undefined;

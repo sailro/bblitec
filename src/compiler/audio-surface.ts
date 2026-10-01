@@ -583,10 +583,7 @@ function compileAudioReceiverMethod(
                         "Only scheduled audio source ended listeners are represented.",
                     );
                 const callback = argumentAt(call, 1);
-                context.callbacks.hoistForwardCallbackBindings(
-                    callback,
-                    call.pos,
-                );
+                context.callbacks.hoistForwardCallbackBindings(callback);
                 const removing = method === "removeEventListener";
                 const callbackType =
                     context.checker.getTypeAtLocation(callback);
@@ -847,7 +844,7 @@ export function emitAudioPropertyAssignment(
                 right,
                 "Audio ended event payloads are not represented yet.",
             );
-        context.callbacks.hoistForwardCallbackBindings(right, expression.pos);
+        context.callbacks.hoistForwardCallbackBindings(right);
         const callback = absent
             ? "{}"
             : context.callbacks.compilePlatformCallback(right, undefined, [])

@@ -1,4 +1,3 @@
-import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     emissionArray,
     EmissionMap,
@@ -6,8 +5,10 @@ import {
 } from "./emission-transaction.js";
 import ts from "typescript";
 import { emitReachableStatements } from "./loop-control.js";
-import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { isDeclaredInside } from "./syntax.js";
+import {
+    functionOfDeclaration,
+    tryResolveFunctionDeclaration,
+} from "./user-functions.js";
 import type {
     CapturedClosure,
     ClosureCaptures,
@@ -26,7 +27,10 @@ import {
     physicsEventInfoType,
     physicsEventInfoValue,
 } from "./intrinsics/physics.js";
-import type { LoweringServices } from "./lowering-services.js";
+import type {
+    LoweringServices,
+    LoweringStatement,
+} from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
 
 /** What callback lowering reads of the compiler. */
@@ -49,9 +53,11 @@ interface CallbackContext extends Pick<
     | "emitDiscardedValue"
     | "emitExpressionAsStatement"
     | "emitStatement"
+    | "emitsAtLevelOf"
     | "endNativeFunctionBody"
     | "engineLifecycle"
     | "fail"
+    | "loweringStatementIn"
     | "nativeEmission"
     | "options"
     | "probeEmission"
@@ -124,6 +130,7 @@ export class CallbackLowerer {
         signature: FrameCallbackSignature = "delta",
         retainCaptures = false,
     ): string {
+        this.hoistForwardCallbackBindings(expression);
         const unwrapped = this.context.unwrap(expression);
         const asyncType =
             this.context.dataLowerer.promiseCallbackType(unwrapped);
@@ -584,40 +591,64 @@ export class CallbackLowerer {
     }
 
     /**
-     * JavaScript closures may name a `const` declared later in the same
-     * function. Native callback lambdas need that storage to exist before
-     * registration (DeclarationLowerer.hoistForwardBinding).
+     * JavaScript closures may read a binding declared later in an enclosing
+     * block, directly or through the functions and callbacks they reach,
+     * since they run after that declaration. A native callback lowers its
+     * body where it is registered, so each such binding still pending in a
+     * block being lowered is made to exist first, in that block's scope
+     * (DeclarationLowerer.hoistForwardBinding), when emission stands at that
+     * block's level. A function the callback reaches resolves by its
+     * declaration and is walked rather than hoisted, and only the callback's
+     * own reads run an untyped effectful initializer ahead of it.
      */
-    public hoistForwardCallbackBindings(
-        callback: ts.Expression,
-        before: number,
-    ): void {
-        const candidates = new EmissionMap<ts.Symbol, ForwardDeclaration>();
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (ts.isIdentifier(node)) {
-                    const symbol = this.context.symbols.valueSymbol(node);
-                    const declaration = symbol?.valueDeclaration;
-                    if (
-                        symbol &&
-                        declaration &&
-                        ts.isVariableDeclaration(declaration) &&
-                        declaration.initializer &&
-                        declaration.pos > before &&
-                        ts.isIdentifier(declaration.name) &&
-                        !isDeclaredInside(declaration, callback) &&
-                        !this.context.bindings.lookupOptional(declaration.name)
-                    ) {
-                        candidates.set(
-                            symbol,
-                            declaration as ForwardDeclaration,
-                        );
-                    }
-                }
+    public hoistForwardCallbackBindings(callback: ts.Expression): void {
+        const forward: {
+            declaration: ForwardDeclaration;
+            symbol: ts.Symbol;
+            direct: boolean;
+            owner: LoweringStatement;
+        }[] = [];
+        const reads = this.context.bindings.unboundClosureReads(callback);
+        for (const [symbol, { direct }] of reads) {
+            const declaration = symbol.valueDeclaration;
+            if (
+                !declaration ||
+                !ts.isVariableDeclaration(declaration) ||
+                !declaration.initializer ||
+                !ts.isIdentifier(declaration.name) ||
+                !ts.isVariableStatement(declaration.parent.parent) ||
+                (!direct && functionOfDeclaration(declaration))
+            )
+                continue;
+            const statement = declaration.parent.parent;
+            // The statement its block is lowering; a later one is pending.
+            const owner = this.context.loweringStatementIn(statement.parent);
+            if (
+                !owner ||
+                owner.statement.pos >= statement.pos ||
+                !this.context.emitsAtLevelOf(owner)
+            )
+                continue;
+            forward.push({
+                declaration: declaration as ForwardDeclaration,
+                symbol,
+                direct,
+                owner,
             });
-        visit(callback);
-        for (const [symbol, declaration] of candidates)
-            this.context.declarations.hoistForwardBinding(declaration, symbol);
+        }
+        forward.sort(
+            (left, right) => left.declaration.pos - right.declaration.pos,
+        );
+        for (const { declaration, symbol, direct, owner } of forward) {
+            if (this.context.bindings.peekBinding(symbol)) continue;
+            this.context.bindings.withScopeDepth(owner.scopeDepth, () =>
+                this.context.declarations.hoistForwardBinding(
+                    declaration,
+                    symbol,
+                    direct,
+                ),
+            );
+        }
     }
 
     /**
@@ -954,7 +985,7 @@ export class CallbackLowerer {
             `physics_${event}`,
         );
         if (this.context.options.workers) {
-            this.hoistForwardCallbackBindings(callback, expression.pos);
+            this.hoistForwardCallbackBindings(callback);
             return this.compilePlatformCallback(
                 callback,
                 { cppType: `const ${infoType}&`, name: eventName },

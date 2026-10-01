@@ -750,10 +750,7 @@ export class PlatformCalls {
                 );
             }
             const callback = argumentAt(call, 1);
-            this.context.callbacks.hoistForwardCallbackBindings(
-                callback,
-                call.pos,
-            );
+            this.context.callbacks.hoistForwardCallbackBindings(callback);
             const engine = this.context.requireEngine(uiElement, call);
             if (event === "contextmenu") {
                 // Native has no browser context menu to suppress.
@@ -800,7 +797,7 @@ export class PlatformCalls {
             argumentAt(call, 0),
         );
         const callback = argumentAt(call, 1);
-        this.context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
+        this.context.callbacks.hoistForwardCallbackBindings(callback);
         let once = false;
         if (!removing && call.arguments[2]) {
             const options = this.context.unwrap(call.arguments[2]);

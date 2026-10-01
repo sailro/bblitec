@@ -25,6 +25,7 @@ import {
 } from "./compiler/emission-transaction.js";
 import type {
     LoweringServices,
+    LoweringStatement,
     NativeFunctionBodyOptions,
 } from "./compiler/lowering-services.js";
 import type { ApplicationCpp } from "./compiler/source-units.js";
@@ -841,6 +842,12 @@ class Compiler implements LoweringServices {
     >();
     public readonly statementDependencies: Set<NativeCaptureBinding>[] =
         emissionArray([]);
+    /**
+     * The statements being lowered, outermost first, with the binding scope
+     * depth and emission position each began at. @unjournaled Pushed and
+     * popped around each statement's lowering.
+     */
+    private readonly loweringStatements: LoweringStatement[] = [];
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
@@ -1539,12 +1546,40 @@ class Compiler implements LoweringServices {
         this.emissionSource =
             statement.getSourceFile()?.fileName ?? previousSource;
         this.statementDependencies.push(new EmissionSet());
+        this.loweringStatements.push({
+            statement,
+            scopeDepth: this.bindings.variableScopes.length,
+            emissionScope: this.activeEmissionScope,
+            indentLevel: this.indentLevel,
+        });
         try {
             this.statements.emit(this, statement);
         } finally {
+            this.loweringStatements.pop();
             this.popDependencies(this.statementDependencies);
             this.emissionSource = previousSource;
         }
+    }
+
+    public loweringStatementIn(
+        container: ts.Node,
+    ): LoweringStatement | undefined {
+        for (
+            let index = this.loweringStatements.length - 1;
+            index >= 0;
+            index--
+        ) {
+            const entry = this.loweringStatements[index]!;
+            if (entry.statement.parent === container) return entry;
+        }
+        return undefined;
+    }
+
+    public emitsAtLevelOf(statement: LoweringStatement): boolean {
+        return (
+            this.activeEmissionScope === statement.emissionScope &&
+            this.indentLevel === statement.indentLevel
+        );
     }
 
     public statementTerminatesAfterLowering(statement: ts.Statement): boolean {

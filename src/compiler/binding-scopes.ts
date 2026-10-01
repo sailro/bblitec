@@ -450,6 +450,93 @@ export class BindingScopes {
         return read;
     }
 
+    /** The innermost binding of a symbol, read without using it. */
+    public peekBinding(symbol: ts.Symbol): VariableBinding | undefined {
+        return this.bindingScope(symbol)?.get(symbol);
+    }
+
+    /**
+     * Runs `work` with the scopes above `depth` set aside, so it binds and
+     * names in the scope a statement at that depth declares into.
+     */
+    public withScopeDepth<T>(depth: number, work: () => T): T {
+        const scopes = this.variableScopes.splice(depth);
+        const prefixes = this.cppNamePrefixes.splice(depth);
+        try {
+            return work();
+        } finally {
+            this.variableScopes.push(...scopes);
+            this.cppNamePrefixes.push(...prefixes);
+        }
+    }
+
+    /**
+     * The names no scope binds yet that a callback's code reads when it
+     * runs: its own reads (`direct`), then those of the functions it calls
+     * or names and of the callbacks a bound value it reads carries
+     * (`options.onClose()`). Each maps to its first read.
+     */
+    public unboundClosureReads(
+        root: ts.Node,
+    ): Map<ts.Symbol, { read: ts.Identifier; direct: boolean }> {
+        const unbound = new Map<
+            ts.Symbol,
+            { read: ts.Identifier; direct: boolean }
+        >();
+        const visited = new Set<ts.Node>();
+        const visitedValues = new Set<Value>();
+        const pending: ts.Node[] = [root];
+        const followValue = (value: Value): void => {
+            if (visitedValues.has(value)) return;
+            visitedValues.add(value);
+            if (value.callbackDeclaration)
+                pending.push(value.callbackDeclaration);
+            pending.push(...Object.values(value.recordMethods ?? {}));
+            for (const member of Object.values(value.recordProperties ?? {}))
+                if (member.callbackDeclaration)
+                    pending.push(member.callbackDeclaration);
+        };
+        for (let code = pending.pop(); code; code = pending.pop()) {
+            if (visited.has(code)) continue;
+            visited.add(code);
+            const reads = this.codeReads(code);
+            for (const [symbol, identifier] of reads.names) {
+                const binding = this.peekBinding(symbol);
+                if (binding) {
+                    followValue(binding.value);
+                    continue;
+                }
+                if (!unbound.has(symbol))
+                    unbound.set(symbol, {
+                        read: identifier,
+                        direct: code === root,
+                    });
+                const declaration = symbol.valueDeclaration;
+                const body = declaration && functionOfDeclaration(declaration);
+                if (body) pending.push(body);
+            }
+            pending.push(...reads.functions, ...reads.calls);
+        }
+        return unbound;
+    }
+
+    /** Whether code reads a source variable no scope binds yet. */
+    public readsUnboundVariable(code: ts.Node): boolean {
+        for (const symbol of this.codeReads(code).names.keys()) {
+            const declaration = symbol.valueDeclaration;
+            if (
+                declaration &&
+                (ts.isVariableDeclaration(declaration) ||
+                    ts.isParameter(declaration) ||
+                    ts.isBindingElement(declaration)) &&
+                !declaration.getSourceFile().isDeclarationFile &&
+                !this.peekBinding(symbol)
+            )
+                return true;
+        }
+        return false;
+    }
+
     /** What one piece of code reads and reaches, without following either. */
     private codeReads(code: ts.Node): CodeReads {
         const cached = this.codeReadsByNode.get(code);
