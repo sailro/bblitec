@@ -154,7 +154,7 @@ HttpResponseData perform_http_request(const std::string& url, HttpRequest reques
     require(WinHttpQueryOption(message.value, WINHTTP_OPTION_URL, final_url.data(), &url_length));
     response.url = narrow(final_url.data(),
                           static_cast<int>(std::char_traits<wchar_t>::length(final_url.data())));
-    std::array<std::uint8_t, 16384> chunk;
+    std::array<std::uint8_t, 16384> chunk{};
     for (;;) {
         if (stop.stop_requested())
             throw std::runtime_error("HTTP request canceled.");

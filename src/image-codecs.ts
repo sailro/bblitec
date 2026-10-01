@@ -33,8 +33,9 @@ function encodedImageCodec(bytes: Buffer | undefined): string | undefined {
 export function reachedImageCodecs(
     outputPath: string,
     assets: readonly CompileAsset[],
+    declared: readonly string[] = [],
 ): string[] {
-    const reached = new Set<string>();
+    const reached = new Set<string>(declared);
     for (const asset of assets) {
         const materialized = resolve(outputPath, "assets", asset.output);
         const bytes = existsSync(materialized)

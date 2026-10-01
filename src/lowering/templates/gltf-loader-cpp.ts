@@ -1516,10 +1516,10 @@ const AccessorInfo& gltf_setup_accessor(
 }
 
 /**
- * The CPU geometry of mesh-plan primitive \`index\` in its source winding: the
- * vertex, morph-target and index streams, validated, and the pin's local
- * bounds. It reads the file alone, so prepare_gltf decodes it off the realm;
- * load_gltf decodes any it did not, from the same inputs.
+ * The CPU geometry of mesh-plan primitive \`primitive_index\` in its source
+ * winding: the vertex, morph-target and index streams, validated, and the
+ * pin's local bounds. It reads the file alone, so prepare_gltf decodes it off
+ * the realm; load_gltf decodes any it did not, from the same inputs.
  */
 ModelGeometry decode_planned_primitive(
     const ts::ArrayBuffer& buffer,
@@ -1527,8 +1527,8 @@ ModelGeometry decode_planned_primitive(
     const std::vector<BufferViewInfo>& views,
     const std::vector<AccessorInfo>& accessors,
     const JsonObject& mesh_plan,
-    std::size_t index) {
-    const auto& planned = required(mesh_plan, "meshes").as_array().at(index).as_object();
+    std::size_t primitive_index) {
+    const auto& planned = required(mesh_plan, "meshes").as_array().at(primitive_index).as_object();
     const auto& setup = required(planned, "setup").as_object();
     const std::string& topology = required(setup, "topology").as_string();
     const auto& planned_geometry =

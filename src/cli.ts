@@ -13,6 +13,8 @@ import {
     surveySource,
     compileSource,
 } from "./compiler.js";
+import { isLibraryDescription } from "./library-description.js";
+import { compileLibrary } from "./library-manifest.js";
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
@@ -847,12 +849,19 @@ async function main(): Promise<void> {
             ? { sourceProfile: options.sourceProfile }
             : {}),
     };
+    const library = isLibraryDescription(inputPath);
     if (options.target.kind === "survey") {
+        if (library)
+            throw new Error("A library description has no program to survey.");
         writeSurvey(resolve(options.target.census), source, compileOptions);
         return;
     }
     const outputPath = resolve(options.target.output);
-    const result = compileSource(source, compileOptions);
+    // A library description (`lite/library.json`) goes through the same
+    // writer as a program: only what the tree is specialized to differs.
+    const result = library
+        ? compileLibrary(source, inputPath)
+        : compileSource(source, compileOptions);
 
     // The frozen node-particle bake is a Chromium run that nothing between
     // here and the emitters depends on, so it is started rather than
@@ -1459,6 +1468,19 @@ async function main(): Promise<void> {
             result.manifest.featureSites,
         );
     }
+    // Each renders through its own pinned pipeline set, and the emitter
+    // takes one set.
+    if (
+        result.manifest.features.includes("text:renderable") &&
+        result.manifest.features.includes("renderer:text")
+    ) {
+        refuseGeneration(
+            "renderer:text",
+            "Text renderables and the standalone text renderer are not " +
+                "lowered together: generation deploys one text pipeline set.",
+            result.manifest.featureSites,
+        );
+    }
     const emitOptions: UpstreamEmitOptions = {
         ...(result.manifest.features.includes("text:renderable")
             ? { textPipelines: await composeDefaultTextPipelines() }
@@ -1606,7 +1628,11 @@ async function main(): Promise<void> {
     ).cmake;
     for (const [path, cpp] of result.cppFiles) tree.write(path, cpp);
     tree.prune("sources");
-    const imageCodecs = reachedImageCodecs(outputPath, result.manifest.assets);
+    const imageCodecs = reachedImageCodecs(
+        outputPath,
+        result.manifest.assets,
+        result.manifest.imageCodecs,
+    );
     const imageCodecLines = imageCodecs
         .map((codec) => `    "${codec}"`)
         .join("\n");

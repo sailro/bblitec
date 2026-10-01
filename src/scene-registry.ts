@@ -5137,10 +5137,11 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     if (
         !existsSync(absoluteSource) ||
         !statSync(absoluteSource).isFile() ||
-        extname(absoluteSource).toLowerCase() !== ".ts"
+        (extname(absoluteSource).toLowerCase() !== ".ts" &&
+            !isLibraryDescription(absoluteSource))
     ) {
         throw new Error(
-            `Unknown scene or TypeScript source '${idOrSource}'. Registered scenes: ` +
+            `Unknown scene, TypeScript source or library description '${idOrSource}'. Registered scenes: ` +
                 scenes.map(({ id }) => id).join(", "),
         );
     }
@@ -5192,6 +5193,7 @@ import {
     adHocCaptureEnvironment,
     fixedCaptureEnvironment,
 } from "./capture-timing.js";
+import { isLibraryDescription } from "./library-description.js";
 import {
     basename,
     extname,

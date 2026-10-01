@@ -355,6 +355,8 @@ endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
 set(BBLITE_ENTRY_SOURCE "${BBLITE_GENERATED_DIR}/main.cpp")
+# The target the executable link options apply to.
+set(BBLITE_EXECUTABLE bblite_native)
 # The platform wrapper includes main.cpp; every other application unit is compiled normally.
 set(BBLITE_APPLICATION_UNITS ${BBLITE_APPLICATION_SOURCES})
 list(REMOVE_ITEM BBLITE_APPLICATION_UNITS "${BBLITE_GENERATED_DIR}/main.cpp")
@@ -366,7 +368,18 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
 else()
     set(BBLITE_GENERATED_UNITS ${BBLITE_GENERATED_SOURCES})
 endif()
-if(ANDROID)
+if(NOT BBLITE_APPLICATION_SOURCES)
+    # A tree without a program is the C++ library (src/library-manifest.ts):
+    # the runtime and the generated modules, built with a C++ client of it.
+    add_library(bblite_native STATIC)
+    set_target_properties(bblite_native PROPERTIES OUTPUT_NAME babylon_lite)
+    # The executable link options below (the minimal-size trim among them)
+    # belong to the client: a static library has no link step.
+    set(BBLITE_EXECUTABLE babylon_lite_sample)
+    set(BBLITE_LIBRARY_SAMPLE_SOURCE "${BBLITE_NATIVE_ROOT}/../lite/sample/main.cpp")
+    add_executable(babylon_lite_sample "${BBLITE_LIBRARY_SAMPLE_SOURCE}")
+    target_link_libraries(babylon_lite_sample PRIVATE bblite_native bblite_features)
+elseif(ANDROID)
     set(BBLITE_ENTRY_SOURCE "${BBLITE_NATIVE_ROOT}/src/pal_android_main.cpp")
     add_library(bblite_native SHARED "${BBLITE_ENTRY_SOURCE}")
     set_target_properties(bblite_native PROPERTIES OUTPUT_NAME main)
@@ -1012,44 +1025,52 @@ if(BBLITE_MINSIZE)
             target_compile_options(bblite_core INTERFACE /clang:-Oz /clang:-flto /Gy /Gw /Zc:inline
             )
             target_link_options(
-                bblite_native
+                ${BBLITE_EXECUTABLE}
                 PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
         elseif(APPLE)
             target_compile_options(bblite_core INTERFACE -Oz -flto)
-            target_link_options(bblite_native PRIVATE -flto -Wl,-dead_strip)
+            target_link_options(${BBLITE_EXECUTABLE} PRIVATE -flto -Wl,-dead_strip)
         else()
             find_program(BBLITE_LLD NAMES ld.lld REQUIRED)
             target_compile_options(bblite_core INTERFACE -Oz -flto -ffunction-sections
                 -fdata-sections
             )
             target_link_options(
-                bblite_native PRIVATE -flto "-fuse-ld=${BBLITE_LLD}" -Wl,--gc-sections
+                ${BBLITE_EXECUTABLE} PRIVATE -flto "-fuse-ld=${BBLITE_LLD}" -Wl,--gc-sections
             )
         endif()
     elseif(MSVC)
         # The scene command configures Release even for this opt-in shape.
         # Override Release's /O2 /Ob2 for the application just as the trimmed
         # dependency builds do; the later options win in MSVC's command line.
-        target_compile_options(bblite_core INTERFACE /O1 /Ob1 /GL /Gw /Zc:inline
-        )
+        # Whole-program code generation (/GL, /LTCG) only where the tree
+        # links its own program: a library's objects must be machine code any
+        # client's linker takes. /O1 keeps per-function sections (/Gy) and /Gw
+        # per-datum ones, so the client's /OPT:REF still drops what it never
+        # references.
+        target_compile_options(bblite_core INTERFACE /O1 /Ob1 /Gw /Zc:inline)
+        if(BBLITE_APPLICATION_SOURCES)
+            target_compile_options(bblite_core INTERFACE /GL)
+            target_link_options(${BBLITE_EXECUTABLE} PRIVATE /LTCG)
+        endif()
         # /MAP emits the linker map beside the executable for
         # tools/map-size-report.mjs attribution.
         target_link_options(
-            bblite_native
-            PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
+            ${BBLITE_EXECUTABLE}
+            PRIVATE /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
         )
     else()
         target_compile_options(bblite_core INTERFACE -Os -ffunction-sections -fdata-sections
         )
-        target_link_options(bblite_native PRIVATE -Wl,--gc-sections)
+        target_link_options(${BBLITE_EXECUTABLE} PRIVATE -Wl,--gc-sections)
     endif()
     if(MSVC)
         # Lowered static data can create a large initializer frame. Reserve
         # virtual address space explicitly instead of relying on Windows'
         # 1 MiB default; pages remain demand-committed. One option for both
         # Microsoft-ABI compilers, whose linker is the same.
-        target_link_options(bblite_native PRIVATE /STACK:8388608)
+        target_link_options(${BBLITE_EXECUTABLE} PRIVATE /STACK:8388608)
     endif()
 endif()
 
@@ -1132,6 +1153,7 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
         "${BBLITE_ENTRY_SOURCE}"
         "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
         ${BBLITE_APPLICATION_UNITS}
+        ${BBLITE_LIBRARY_SAMPLE_SOURCE}
         PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
     bblite_cache_unit_headers(
         TARGETS bblite_pal_common bblite_native

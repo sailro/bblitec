@@ -1,0 +1,85 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "compileLibrary takes the description text the CLI already read, parsed by src/library-description.ts with json-fields guards, so a malformed description refuses by name instead of throwing a TypeError, and the tests pass JSON text instead of temporary files.",
+            "applied": true
+        },
+        {
+            "summary": "The library's feature list is closed over impliedFeatures, the way the compiler's reach and the asset join close theirs.",
+            "applied": true
+        },
+        {
+            "summary": "adaptations come from featureKeyedAdaptations(features), so fidelity.json keeps the rows the feature list alone decides (the substituted physics solver, the gizmo and splat rows).",
+            "applied": true
+        },
+        {
+            "summary": "Drop what composition never reads for a library: the copied light-kind list (sceneLightKinds is read only when lights are static), sceneMaterialGltfAssetsBefore (its default is the same [0]) and the Standard test on the one scene-mesh row.",
+            "applied": true
+        },
+        {
+            "summary": "The manifest records the description repository-relative, as program inputs are, so the generation stamp matches across checkouts.",
+            "applied": true
+        },
+        {
+            "summary": "One isLibraryDescription classifier serves the CLI and resolveScene (the two extension checks disagreed on case), and --survey refuses a library before parsing it as TypeScript.",
+            "applied": true
+        },
+        {
+            "summary": "The description declares its image codecs, validated against the codec table, instead of the library hard-coding every codec.",
+            "applied": true
+        },
+        {
+            "summary": "text:renderable beside renderer:text composed both pipeline sets and kept only the second; generation now refuses the pair, and the library bundles text:renderable.",
+            "applied": true
+        },
+        {
+            "summary": "native/CMakeLists.txt: the library branch comes first so Android and iOS trees without a program build it too, the sample source joins the application units' per-source generated include instead of a second include directory, and the unused BBLITE_LIBRARY_SAMPLE cache variable is gone.",
+            "applied": true
+        },
+        {
+            "summary": "Under BBLITE_MINSIZE the library was compiled with /GL, which archived intermediate code (a 1.5 GB babylon_lite.lib bound to one MSVC version) and redid code generation on every client link; /GL and /LTCG now apply only to a tree that links its own program, and the archive is 76 MB.",
+            "applied": true
+        },
+        {
+            "summary": "docs/development.md states which features the library leaves out and which compile without anything to draw, matching lite/library.json.",
+            "applied": true
+        },
+        {
+            "summary": "Emit the flow-graph table through CppDefinitions.table.",
+            "applied": false,
+            "blockedBy": "Declined: CppDefinitions.table emits a constexpr std::array, and FlowGraphAssetGraphs rows hold a std::vector of lambdas, which is not a constant expression.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Move (void)task into the unconditional block of write_post_process_uniforms.",
+            "applied": false,
+            "blockedBy": "Declined: it adds a line to the generated post-process unit of every scene that reaches a pass; keeping it in the no-pass branch leaves scene output byte-identical.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Include the SDL storage-buffer header from pal_sdl_gpu_shared.hpp, mirroring Dawn's shared header.",
+            "applied": false,
+            "blockedBy": "Declined: pal_sdl_gpu_storage_buffer.hpp includes pal_sdl_gpu_shared.hpp, so the mirror would be an include cycle; the unit that names SdlStorageBuffer includes it.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Route the executable link options through bblite_core INTERFACE to drop BBLITE_EXECUTABLE.",
+            "applied": false,
+            "blockedBy": "Declined: the whole-program switch depends on whether the tree links its own program, so the options need the one target they reach named; an interface target would carry them to every consumer.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Give generated trees and scene definitions an explicit program/library kind, so program-only commands refuse a library and executable properties (Linux/macOS BUILD_RPATH, deploy directories) follow the program target.",
+            "applied": false,
+            "blockedBy": "No library build exists off Windows to exercise the rpath and deploy paths, and program-only commands are stated as not applying.",
+            "filedIn": "docs/development.md (C++ library)"
+        },
+        {
+            "summary": "Features whose content comes from call sites or assets (PBR variants, shadow generators, post-process and geometry-output tasks, flow graphs) have empty populations in a library; key those populations on features or refuse them.",
+            "applied": false,
+            "blockedBy": "Keying a population on features needs a composition of each family without a program's materials or tasks, which does not exist yet.",
+            "filedIn": "docs/development.md (C++ library)"
+        }
+    ]
+}
