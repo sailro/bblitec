@@ -14,6 +14,63 @@ export function compileHttpFunction(
         : undefined;
 }
 
+/**
+ * The request cache modes native fetches honour. Native transport and
+ * packaged responses keep no HTTP cache, so each of these reads the network
+ * or the package, as with an empty browser cache; `only-if-cached` would
+ * fail there and refuses.
+ */
+const CACHE_MODES: ReadonlySet<string> = new Set([
+    "default",
+    "no-store",
+    "reload",
+    "no-cache",
+    "force-cache",
+]);
+
+function expectCacheMode(
+    context: Pick<LoweringServices, "fail">,
+    mode: string | undefined,
+    site: ts.Node,
+): void {
+    if (mode === undefined || !CACHE_MODES.has(mode))
+        context.fail(
+            site,
+            `fetch option 'cache' must be a static ${[...CACHE_MODES].join("/")} mode.`,
+        );
+}
+
+/**
+ * Whether request options carry only a cache mode, which a packaged
+ * response answers as a one-argument fetch does. The mode is validated.
+ */
+export function cacheOnlyRequestOptions(
+    context: Pick<
+        LoweringServices,
+        "unwrap" | "propertyName" | "compileValue" | "fail"
+    >,
+    options: ts.Expression | undefined,
+): boolean {
+    const object = options && context.unwrap(options);
+    if (!object || !ts.isObjectLiteralExpression(object)) return false;
+    const assignments = object.properties.filter(ts.isPropertyAssignment);
+    if (
+        assignments.length === 0 ||
+        assignments.length !== object.properties.length ||
+        !assignments.every(
+            (property) => context.propertyName(property.name) === "cache",
+        )
+    )
+        return false;
+    for (const property of assignments)
+        expectCacheMode(
+            context,
+            context.compileValue(property.initializer).staticString,
+            property.initializer,
+        );
+    return true;
+}
+
 /** Calls with request options or a retained fetch function use runtime transport. */
 export function compileHttpCall(
     lowerer: DataLowerer,
@@ -24,7 +81,13 @@ export function compileHttpCall(
     const callee = context.unwrap(call.expression);
     const global = context.libraryGlobal(callee) === "fetch";
     if (!global && hostFunction !== "fetch") return undefined;
-    if (global && call.arguments.length === 1) return undefined;
+    if (
+        global &&
+        (call.arguments.length === 1 ||
+            (call.arguments.length === 2 &&
+                cacheOnlyRequestOptions(context, call.arguments[1])))
+    )
+        return undefined;
     if (!context.options.workers)
         context.fail(
             call,
@@ -65,11 +128,13 @@ export function compileHttpCall(
         );
     const fields = options?.recordProperties ?? {};
     for (const name of Object.keys(fields))
-        if (!["method", "headers", "body"].includes(name))
+        if (!["method", "headers", "body", "cache"].includes(name))
             context.fail(
                 optionsNode!,
                 `fetch option '${name}' is not lowered.`,
             );
+    if (fields.cache)
+        expectCacheMode(context, fields.cache.staticString, optionsNode!);
     const method = fields.method
         ? snapshot(fields.method, optionsNode!, "http_method")
         : '"GET"';

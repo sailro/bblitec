@@ -86,7 +86,7 @@ test("runtime HTTP preserves request bytes, response status, body consumption an
             if (missing.ok || missing.status !== 404) throw new Error("HTTP status became rejection");
             const document = await missing.json();
             if (document.answer !== 42) throw new Error("response JSON");
-            const redirected = await request("${base}/redirect", {method:"POST", body:"body"});
+            const redirected = await request("${base}/redirect", {method:"POST", body:"body", cache:"no-store"});
             if (redirected.url !== "${base}/final") throw new Error("redirect URL");
             const binary = await request("${base}/bytes");
             if (await binary.text() !== "a���") throw new Error("UTF-8 replacement decoding");
@@ -145,4 +145,23 @@ test("runtime HTTP preserves request bytes, response status, body consumption an
         requests.find((request) => request.path === "/redirect")?.contentType,
         "text/plain;charset=UTF-8",
     );
+});
+
+test("fetch refuses a cache mode a native response cannot honour", () => {
+    for (const options of [
+        `{cache:"only-if-cached"}`,
+        `{method:"POST", cache:mode}`,
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+                    worker.terminate();
+                    const mode = Math.random() > 0.5 ? "reload" : "no-store";
+                    async function run():Promise<void> { await fetch("https://example.com/data", ${options}); }
+                    run();
+                `),
+            /fetch option 'cache' must be a static/,
+        );
+    }
 });

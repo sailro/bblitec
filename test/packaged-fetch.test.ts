@@ -60,6 +60,8 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             if(text!=="a���") throw new Error("UTF-8 replacement and BOM");
             const document=await fetch("/files/document.json").then(value=>value.json());
             if(document.answer!==42) throw new Error("owned JSON response");
+            const uncached=await fetch("/files/document.json",{cache:"no-store"}).then(value=>value.json());
+            if(uncached.answer!==42) throw new Error("cache mode on a packaged response");
             const responses:Response[]=[await load("bytes.bin"),await load("text.txt")];
             const stored=responses[0];
             const storedBytes=await stored.arrayBuffer();
