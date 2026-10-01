@@ -29,7 +29,7 @@ import {
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
-    "propertyName" | "fail" | "staticSpreadObject"
+    "propertyName" | "fail" | "objectProperties"
 > {}
 
 export function validateObjectProperties(
@@ -39,17 +39,7 @@ export function validateObjectProperties(
     message: string,
 ): void {
     const supportedNames = new EmissionSet(supported);
-    for (const property of object.properties) {
-        // A spread generation settles to a record contributes its own
-        // properties, which `objectProperty` reads in source order.
-        const spread = ts.isSpreadAssignment(property)
-            ? context.staticSpreadObject(property)
-            : undefined;
-        if (spread) {
-            validateObjectProperties(context, spread, supported, message);
-            traceSourceNode(property);
-            continue;
-        }
+    for (const property of context.objectProperties(object)) {
         const name =
             ts.isPropertyAssignment(property) ||
             ts.isShorthandPropertyAssignment(property)
@@ -210,6 +200,10 @@ export interface StaticFoldContext extends Omit<
     "bindings"
 > {
     readonly bindings: BindingLookup;
+    /** A static record field's number; a fold that leaves it out reads none. */
+    readonly staticProperty?: (
+        expression: ts.PropertyAccessExpression,
+    ) => number | undefined;
 }
 
 export function compilePositiveInteger(
@@ -406,6 +400,11 @@ export function staticJsonValue(
         }
         return values;
     }
+    return jsonScalarLiteral(node);
+}
+
+/** The JSON scalar a literal node spells, or `notJson`. */
+export function jsonScalarLiteral(node: ts.Expression): unknown {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
         return node.text;
     }
@@ -550,6 +549,9 @@ export function staticNumberValue(
             }
         }
         return undefined;
+    }
+    if (ts.isPropertyAccessExpression(node) && context.staticProperty) {
+        return context.staticProperty(node);
     }
     if (ts.isIdentifier(node)) {
         const global = context.libraryGlobal(node);

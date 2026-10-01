@@ -2,18 +2,23 @@ import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
-import { validateObjectProperties } from "../option-helpers.js";
+import {
+    validateObjectProperties,
+    type ObjectValidationContext,
+} from "../option-helpers.js";
 import type { PhysicsIntrinsicContext } from "./physics.js";
 
-interface CharacterOptionsContext extends Pick<
-    LoweringServices,
-    | "expectObjectLiteral"
-    | "objectProperty"
-    | "compileNumber"
-    | "fail"
-    | "propertyName"
-    | "staticSpreadObject"
-> {}
+interface CharacterOptionsContext
+    extends
+        ObjectValidationContext,
+        Pick<
+            LoweringServices,
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "compileNumber"
+            | "fail"
+            | "propertyName"
+        > {}
 
 export interface CharacterIntrinsicContext
     extends

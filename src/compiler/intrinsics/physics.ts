@@ -1741,7 +1741,7 @@ function compileShapeProximity(
         "Unsupported physics shape query option.",
     );
     const fields = new EmissionMap<string, string>();
-    for (const property of argument.properties) {
+    for (const property of context.objectProperties(argument)) {
         if (
             !ts.isPropertyAssignment(property) &&
             !ts.isShorthandPropertyAssignment(property)
@@ -1906,7 +1906,7 @@ function compilePhysicsRaycast(
         // Compile and pin each initializer before the next one can emit a
         // mutation. Object property order is observable independently of the
         // positional order of the generated native query's filter arguments.
-        for (const property of options.properties) {
+        for (const property of context.objectProperties(options)) {
             if (
                 !ts.isPropertyAssignment(property) &&
                 !ts.isShorthandPropertyAssignment(property)

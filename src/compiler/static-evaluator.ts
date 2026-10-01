@@ -46,9 +46,16 @@ import {
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
 import {
+    jsonScalarLiteral,
+    notJson,
     selectedStaticExpression,
     staticNumberValue,
+    type StaticFoldContext,
 } from "./option-helpers.js";
+import {
+    resolveFunctionDeclaration,
+    type SupportedFunction,
+} from "./user-functions.js";
 import { isJsonValue } from "./json-bridge.js";
 import { excludesObjectColour } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
@@ -66,7 +73,6 @@ import {
 import {
     JS_BITWISE_FUNCTIONS,
     PINNED_ARITHMETIC_OPERATORS,
-    foldNumericBinary,
     jsBitwiseCall,
 } from "../lowering/pinned-operators.js";
 import {
@@ -77,64 +83,21 @@ import {
 } from "./math-intrinsics.js";
 
 /**
- * The body of a source function declared at module scope with no
- * parameters, as a `function` declaration or a `const` arrow/function
- * expression; undefined for anything else, including async and generator
- * functions, overloads and declarations from `.d.ts` files.
+ * The function a module-scope declaration names: a `function` or a `const`
+ * arrow/function expression whose statement sits in the source file.
  */
-function parameterlessModuleFunctionBody(
-    symbol: ts.Symbol,
-): ts.ConciseBody | undefined {
-    const [declaration, ...others] = symbol.declarations ?? [];
-    if (!declaration || others.length > 0) return undefined;
-    let fn:
-        | ts.FunctionDeclaration
-        | ts.ArrowFunction
-        | ts.FunctionExpression
-        | undefined;
-    if (
-        ts.isFunctionDeclaration(declaration) &&
-        ts.isSourceFile(declaration.parent)
-    ) {
-        fn = declaration;
-    } else if (
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer)) &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        ts.isSourceFile(declaration.parent.parent.parent)
-    ) {
-        fn = declaration.initializer;
+function isModuleScopeFunction(declaration: SupportedFunction): boolean {
+    if (ts.isFunctionDeclaration(declaration)) {
+        return ts.isSourceFile(declaration.parent);
     }
-    if (
-        !fn?.body ||
-        fn.parameters.length > 0 ||
-        fn.asteriskToken ||
-        fn.getSourceFile().isDeclarationFile ||
-        ts
-            .getModifiers(fn)
-            ?.some(({ kind }) => kind === ts.SyntaxKind.AsyncKeyword)
-    ) {
-        return undefined;
-    }
-    return fn.body;
-}
-
-/** The initializer of a `const` binding declared once with one. */
-function constInitializer(
-    symbol: ts.Symbol | undefined,
-): ts.Expression | undefined {
-    const [declaration, ...others] = symbol?.declarations ?? [];
-    return declaration &&
-        others.length === 0 &&
-        ts.isVariableDeclaration(declaration) &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-        ? declaration.initializer
-        : undefined;
+    const binding = declaration.parent;
+    return (
+        ts.isVariableDeclaration(binding) &&
+        ts.isVariableDeclarationList(binding.parent) &&
+        (binding.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        ts.isVariableStatement(binding.parent.parent) &&
+        ts.isSourceFile(binding.parent.parent.parent)
+    );
 }
 
 /** Whether an expression reads its function's `this`, `arguments` or `new.target`. */
@@ -154,14 +117,7 @@ function isStaticLiteral(expression: ts.Expression): boolean {
     return (
         ts.isArrayLiteralExpression(expression) ||
         ts.isObjectLiteralExpression(expression) ||
-        ts.isStringLiteral(expression) ||
-        ts.isNoSubstitutionTemplateLiteral(expression) ||
-        ts.isNumericLiteral(expression) ||
-        (ts.isPrefixUnaryExpression(expression) &&
-            expression.operator === ts.SyntaxKind.MinusToken &&
-            ts.isNumericLiteral(expression.operand)) ||
-        expression.kind === ts.SyntaxKind.TrueKeyword ||
-        expression.kind === ts.SyntaxKind.FalseKeyword
+        jsonScalarLiteral(expression) !== notJson
     );
 }
 
@@ -257,7 +213,14 @@ export class StaticEvaluator {
         private readonly generationText: (
             expression: ts.Expression,
         ) => string | undefined,
+        /** `Compiler.objectProperties`: spreads generation settles, expanded. */
+        private readonly objectProperties: (
+            object: ts.ObjectLiteralExpression,
+        ) => readonly ts.ObjectLiteralElementLike[],
     ) {}
+
+    /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
+    private readonly constantTexts = new Map<ts.Symbol, string>();
 
     /**
      * The two operands of a numeric binary operator, compiled in order. The
@@ -1202,6 +1165,8 @@ export class StaticEvaluator {
                     .join(separator);
             }
         }
+        const folded = this.generationText(unwrapped);
+        if (folded !== undefined) return folded;
         this.fail(
             unwrapped,
             "Expected a string literal.",
@@ -1508,11 +1473,26 @@ export class StaticEvaluator {
         const symbol = ts.isIdentifier(callee)
             ? this.resolveSymbol(callee)
             : undefined;
-        if (!symbol || resolving.has(symbol)) {
+        if (!ts.isIdentifier(callee) || !symbol || resolving.has(symbol)) {
             return undefined;
         }
-        const body = parameterlessModuleFunctionBody(symbol);
-        const returned = body && soleReturnedExpression(body);
+        const declaration = resolveFunctionDeclaration(
+            this.checker,
+            callee,
+            (node, message) => this.fail(node, message),
+        );
+        if (
+            !declaration?.body ||
+            declaration.parameters.length > 0 ||
+            declaration.getSourceFile().isDeclarationFile ||
+            !isModuleScopeFunction(declaration) ||
+            ts
+                .getModifiers(declaration)
+                ?.some(({ kind }) => kind === ts.SyntaxKind.AsyncKeyword)
+        ) {
+            return undefined;
+        }
+        const returned = soleReturnedExpression(declaration.body);
         if (!returned || readsInvocationContext(returned)) {
             return undefined;
         }
@@ -1646,22 +1626,22 @@ export class StaticEvaluator {
 
     /** Fold current numeric facts without treating live canvas size as constant. */
     public staticNumberValue(expression: ts.Expression): number | undefined {
-        return staticNumberValue(
-            {
-                libraryGlobal: this.libraryGlobal,
-                resolveStaticExpression: (value: ts.Expression) =>
-                    this.resolveStaticExpression(value),
-                bindings: {
-                    lookup: (identifier: ts.Identifier) =>
-                        this.lookup(identifier),
-                    lookupOptional: (identifier: ts.Identifier) =>
-                        this.lookupOptional(identifier),
-                },
-                fail: (node: ts.Node, message: string): never =>
-                    this.fail(node, message),
+        return staticNumberValue(this.staticFoldContext(), expression);
+    }
+
+    private staticFoldContext(): StaticFoldContext {
+        return {
+            libraryGlobal: this.libraryGlobal,
+            resolveStaticExpression: (value: ts.Expression) =>
+                this.resolveStaticExpression(value),
+            bindings: {
+                lookup: (identifier: ts.Identifier) => this.lookup(identifier),
+                lookupOptional: (identifier: ts.Identifier) =>
+                    this.lookupOptional(identifier),
             },
-            expression,
-        );
+            fail: (node: ts.Node, message: string): never =>
+                this.fail(node, message),
+        };
     }
 
     public staticTextValue(expression: ts.Expression): string | undefined {
@@ -1745,39 +1725,30 @@ export class StaticEvaluator {
     private staticText(expression: ts.Expression): string {
         const value = this.staticTextValue(expression);
         if (value !== undefined) return value;
-        // A position that needs the text reads through what the probe above
-        // leaves to the value path: nested templates, string concatenation
-        // and builder calls (`const HEADER = headerWgsl()`), which run.
-        const resolved = this.resolveStaticExpression(expression);
-        const initializer = ts.isIdentifier(resolved)
-            ? constInitializer(this.resolveSymbol(resolved))
+        // A module constant (`const HEADER = headerWgsl()`) is read once,
+        // through its own binding's initializer, as JS evaluates it once.
+        const unwrapped = this.unwrap(expression);
+        const symbol = ts.isIdentifier(unwrapped)
+            ? this.resolveSymbol(unwrapped)
             : undefined;
-        if (initializer) return this.staticText(initializer);
-        if (ts.isTemplateExpression(resolved)) {
-            return (
-                resolved.head.text +
-                resolved.templateSpans
-                    .map(
-                        (span) =>
-                            this.staticText(span.expression) +
-                            span.literal.text,
-                    )
-                    .join("")
-            );
-        }
-        if (
-            ts.isBinaryExpression(resolved) &&
-            resolved.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.checker.getTypeAtLocation(resolved).flags &
-                ts.TypeFlags.StringLike) !==
-                0
-        ) {
-            return (
-                this.staticText(resolved.left) + this.staticText(resolved.right)
-            );
-        }
-        if (ts.isConditionalExpression(resolved)) {
-            const selected = selectedStaticExpression(
+        const constant =
+            symbol && this.staticConstants.has(symbol) ? symbol : undefined;
+        const known = constant && this.constantTexts.get(constant);
+        if (known !== undefined) return known;
+        const text = this.requiredText(expression);
+        if (constant) this.constantTexts.set(constant, text);
+        return text;
+    }
+
+    /**
+     * What a template substitution that needs text reads past the probe
+     * above: a settled conditional, a static number (record fields
+     * included), the string forms `compileStringLiteral` reads, and a value
+     * or builder call `generationText` folds.
+     */
+    private requiredText(expression: ts.Expression): string {
+        const resolved =
+            selectedStaticExpression(
                 {
                     conditions: {
                         compileCondition: (node) => this.compileCondition(node),
@@ -1785,12 +1756,28 @@ export class StaticEvaluator {
                     resolveStaticExpression: (node) =>
                         this.resolveStaticExpression(node),
                 },
-                resolved,
-            );
-            if (selected) return this.staticText(selected);
-        }
-        const number = this.requiredNumber(resolved);
+                expression,
+            ) ?? this.resolveStaticExpression(expression);
+        const number = staticNumberValue(
+            {
+                ...this.staticFoldContext(),
+                staticProperty: (access) => {
+                    const value = this.resolveProperty(access);
+                    return value?.kind === "number" && !value.parameterBinding
+                        ? value.staticNumber
+                        : undefined;
+                },
+            },
+            resolved,
+        );
         if (number !== undefined) return String(number);
+        if (
+            (this.checker.getTypeAtLocation(resolved).flags &
+                ts.TypeFlags.StringLike) !==
+            0
+        ) {
+            return this.compileStringLiteral(resolved);
+        }
         const folded = this.generationText(resolved);
         if (folded !== undefined) return folded;
         this.fail(
@@ -1800,44 +1787,12 @@ export class StaticEvaluator {
         );
     }
 
-    /**
-     * The number a required-text position reads: a static fold, a static
-     * record field, or arithmetic over those.
-     */
-    private requiredNumber(expression: ts.Expression): number | undefined {
-        const folded = this.staticNumberValue(expression);
-        if (folded !== undefined) return folded;
-        const node = this.resolveStaticExpression(expression);
-        if (ts.isPropertyAccessExpression(node)) {
-            const value = this.resolveProperty(node);
-            return value?.kind === "number" && !value.parameterBinding
-                ? value.staticNumber
-                : undefined;
-        }
-        if (ts.isParenthesizedExpression(node)) {
-            return this.requiredNumber(node.expression);
-        }
-        if (
-            ts.isBinaryExpression(node) &&
-            (this.checker.getTypeAtLocation(node).flags &
-                ts.TypeFlags.NumberLike) !==
-                0
-        ) {
-            const left = this.requiredNumber(node.left);
-            const right = this.requiredNumber(node.right);
-            return left === undefined || right === undefined
-                ? undefined
-                : foldNumericBinary(node.operatorToken.kind, left, right);
-        }
-        return undefined;
-    }
-
     private requiredObjectNumber(
         object: ts.ObjectLiteralExpression,
         name: string,
         precision: "float" | "double" = "float",
     ): string {
-        const value = objectProperty(object, name);
+        const value = objectProperty(this.objectProperties(object), name);
         if (!value) {
             this.fail(
                 object,

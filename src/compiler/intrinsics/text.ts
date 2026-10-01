@@ -552,7 +552,7 @@ export function compileTextIntrinsic(
                 "Text layout options must be a direct static object literal; retained or dynamic option records are not materialized.",
             );
         layout.options = {};
-        for (const property of object.properties) {
+        for (const property of context.objectProperties(object)) {
             if (
                 !ts.isPropertyAssignment(property) ||
                 (!ts.isIdentifier(property.name) &&

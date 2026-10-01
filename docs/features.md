@@ -61,10 +61,11 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
 Local JavaScript implementations take precedence over companion declarations. Type-only imports do not
-run initializers. Generation-known positions (option records, shader lists) read through `const` literals,
-settled conditionals and spreads, and parameterless module functions whose body returns a literal.
-`declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
+run initializers. `declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
 A module executed at generation may import its relative siblings without an extension.
+
+Generation-known positions (option records, shader lists) read through `const` literals, settled
+conditionals and spreads, and parameterless module functions whose body returns a literal.
 
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,
 `SSR=false`. `BASE_URL` follows deployment. Custom string fields use `--env NAME=value` or
@@ -369,9 +370,9 @@ environment rotation and wider metallic-reflectance fields remain limited.
 Shader materials admit bounded 2D/array samplers, float/depth/comparison sampling, storage buffers and
 selected uniform/system matrices; uniform writes take arrays, tuples and typed arrays. Wider descriptors,
 pipeline state and live composition profiles refuse.
-A source or plugin `getCustomCode` a scene builds with a function is run at generation over
-generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a runtime
-value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.
+A source, template text or plugin `getCustomCode` a scene builds with a function is run at generation
+over generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a
+runtime value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.
 
 ### Node materials
 

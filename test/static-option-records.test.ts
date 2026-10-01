@@ -55,19 +55,26 @@ test("reads the literal a parameterless module function returns", () => {
 });
 
 test("leaves calls the static reader cannot replace to their own refusal", () => {
-    for (const prelude of [
+    for (const [prelude, call] of [
         // A parameter, a body with more than a return, recursion and an
         // async function all keep the call.
-        `function uniforms(name: string) { return [name] as const; }`,
-        `function uniforms() { const list = ["worldViewProjection"] as const; return list; }`,
-        `function uniforms(): readonly string[] { return uniforms(); }`,
-        `async function uniforms() { return ["worldViewProjection"] as const; }`,
-    ]) {
-        const call = prelude.includes("name: string")
-            ? `uniforms("worldViewProjection")`
-            : prelude.startsWith("async")
-              ? `await uniforms()`
-              : "uniforms()";
+        [
+            `function uniforms(name: string) { return [name] as const; }`,
+            `uniforms("worldViewProjection")`,
+        ],
+        [
+            `function uniforms() { const list = ["worldViewProjection"] as const; return list; }`,
+            "uniforms()",
+        ],
+        [
+            `function uniforms(): readonly string[] { return uniforms(); }`,
+            "uniforms()",
+        ],
+        [
+            `async function uniforms() { return ["worldViewProjection"] as const; }`,
+            "await uniforms()",
+        ],
+    ] as const) {
         assert.throws(
             () => program(prelude, `uniforms: ${call},`),
             /Expected a static array literal/,
@@ -113,5 +120,42 @@ test("refuses a spread whose record generation cannot settle", () => {
             ...(Math.random() > 0.5 ? { depthWrite: false } : {}),`,
             ),
         /Reached shader materials support/,
+    );
+});
+
+test("composes required shader text through builders, constants and record arithmetic", () => {
+    const { manifest } = compileSource(`
+        import { createBox, createEngine, createShaderMaterial, wgsl } from "@babylonjs/lite";
+
+        const LANES = { fog: 18 };
+        export function paletteWgsl(
+            read: (index: string) => string = (index) => \`vec4<f32>(0.8, 0.5, 0.3, \${index})\`,
+            alpha = "1.0",
+        ): string {
+            return \`fn ccPalette() -> vec4<f32> { return \${read(alpha)}; }\`;
+        }
+        const PALETTE_WGSL = paletteWgsl();
+        const HEADER_WGSL = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+const FOG_LANE: u32 = \${LANES.fog + 1}u;\`;
+        const VS = \`@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+        const FS = \`@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return ccPalette();}\`;
+
+        async function main() {
+            const engine = await createEngine({});
+            const material = createShaderMaterial({
+                vertexSource: wgsl\`\${\`\${HEADER_WGSL}\\n\${VS}\`}\`,
+                fragmentSource: wgsl\`\${\`\${HEADER_WGSL}\\n\${PALETTE_WGSL}\\n\${FS}\`}\`,
+                attributes: ["position"],
+                uniforms: ["worldViewProjection"],
+            });
+            const box = createBox(engine);
+            box.material = material;
+        }
+    `);
+    const [compiled] = manifest.customShaderPrograms;
+    assert.match(compiled!.vertexSource, /FOG_LANE: u32 = 19u/);
+    assert.match(
+        compiled!.fragmentSource,
+        /return vec4<f32>\(0\.8, 0\.5, 0\.3, 1\.0\);/,
     );
 });

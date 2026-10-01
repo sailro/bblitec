@@ -17,4 +17,5 @@ export interface IntrinsicCallContext extends Pick<
     | "reachFeature"
     | "sceneManifest"
     | "isRuntimeResourceConstruction"
+    | "objectProperties"
 > {}

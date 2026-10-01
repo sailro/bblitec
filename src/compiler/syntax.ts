@@ -337,28 +337,26 @@ export function propertyNameText(name: ts.PropertyName): string | undefined {
 }
 
 /**
- * The initializer an object literal gives a named property, or the
- * shorthand identifier that stands for one. A method or an accessor carries
- * no initializer to read and is skipped; so is a spread, unless
- * `spreadObject` names the record it contributes, whose property then
- * replaces an earlier one as the spread does.
+ * The initializer an object literal (or its properties, spreads already
+ * expanded) gives a named property, or the shorthand identifier that stands
+ * for one; a later write wins. A spread, a method or an accessor carries no
+ * initializer to read and is skipped.
  *
  * `propertyName` says what a key spells: the literal text by default, and
  * the compiler's own resolver where a computed key folded at generation
  * (`{ [key]: value }` with a static `key`) must be found too.
  */
 export function objectProperty(
-    object: ts.ObjectLiteralExpression,
+    object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
     name: string,
     propertyName: (
         name: ts.PropertyName,
     ) => string | undefined = propertyNameText,
-    spreadObject?: (
-        spread: ts.SpreadAssignment,
-    ) => ts.ObjectLiteralExpression | undefined,
 ): ts.Expression | undefined {
     let found: ts.Expression | undefined;
-    for (const property of object.properties) {
+    for (const property of "properties" in object
+        ? object.properties
+        : object) {
         if (
             ts.isPropertyAssignment(property) &&
             propertyName(property.name) === name
@@ -369,12 +367,6 @@ export function objectProperty(
             property.name.text === name
         ) {
             found = property.name;
-        } else if (ts.isSpreadAssignment(property)) {
-            const spread = spreadObject?.(property);
-            const value =
-                spread &&
-                objectProperty(spread, name, propertyName, spreadObject);
-            if (value) found = value;
         }
     }
     return found;

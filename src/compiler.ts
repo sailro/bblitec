@@ -779,6 +779,11 @@ class Compiler implements LoweringServices {
         emissionRecord({});
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
+    /** @unjournaled Results of closed generation runs, a function of their inputs alone. */
+    private readonly generationRuns = new Map<
+        ts.FunctionLikeDeclaration,
+        Map<string, unknown>
+    >();
     @journaled public accessor hasMainEntry = false;
     @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
@@ -874,6 +879,7 @@ class Compiler implements LoweringServices {
                     this.dataLowerer.armExpression(node, lines, cpp, type),
             },
             (expression) => this.generationText(expression),
+            (object) => this.objectProperties(object),
         );
     }
 
@@ -2847,15 +2853,23 @@ class Compiler implements LoweringServices {
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined {
-        return objectProperty(
-            object,
-            name,
-            (key) => this.propertyName(key),
-            (spread) => this.staticSpreadObject(spread),
+        return objectProperty(this.objectProperties(object), name, (key) =>
+            this.propertyName(key),
         );
     }
 
-    public staticSpreadObject(
+    public objectProperties(
+        object: ts.ObjectLiteralExpression,
+    ): readonly ts.ObjectLiteralElementLike[] {
+        return object.properties.flatMap((property) => {
+            const settled = ts.isSpreadAssignment(property)
+                ? this.staticSpreadObject(property)
+                : undefined;
+            return settled ? this.objectProperties(settled) : [property];
+        });
+    }
+
+    private staticSpreadObject(
         spread: ts.SpreadAssignment,
     ): ts.ObjectLiteralExpression | undefined {
         // A probe: a spread generation cannot settle leaves no trace.
@@ -3588,63 +3602,15 @@ class Compiler implements LoweringServices {
                 dynamicUniforms: [],
             };
         }
+        // A builder called with generation-known arguments is run: its text
+        // is what the browser compiles.
+        const built = this.runGenerationBuilder(resolved);
+        if (built !== undefined) return { source: built, dynamicUniforms: [] };
         const declaration = resolveFunctionDeclaration(
             this.checker,
             callee,
             (node, message) => this.fail(node, message),
         );
-        const body = declaration?.body;
-        if (
-            declaration &&
-            ts.isFunctionDeclaration(declaration) &&
-            body &&
-            ts.isBlock(body)
-        ) {
-            // A builder called with generation-known arguments is run: its
-            // text is what the browser compiles.
-            const args: Array<ExecutedScalar | undefined> = [];
-            let allStatic = true;
-            declaration.parameters.forEach((parameter, index) => {
-                if (!ts.isIdentifier(parameter.name)) {
-                    allStatic = false;
-                    return;
-                }
-                const argument =
-                    resolved.arguments[index] ?? parameter.initializer;
-                if (!argument) {
-                    args.push(undefined);
-                    return;
-                }
-                const value = this.staticScalar(
-                    this.alwaysUsedParameterDefault(argument) ?? argument,
-                );
-                if (value === undefined) {
-                    allStatic = false;
-                    return;
-                }
-                args.push(value);
-            });
-            if (allStatic) {
-                const source = executeApplicationFunction(
-                    {
-                        checker: this.checker,
-                        fail: (node, message) => this.fail(node, message),
-                        foldEnclosing: (identifier) =>
-                            this.staticScalar(identifier),
-                    },
-                    declaration,
-                    args,
-                    `Shader builder '${callee.text}'`,
-                );
-                if (typeof source !== "string") {
-                    this.fail(
-                        resolved,
-                        `Shader builder '${callee.text}' returned ${typeof source}, not WGSL text.`,
-                    );
-                }
-                return { source, dynamicUniforms: [] };
-            }
-        }
         const returned = this.builderReturn(declaration);
         const template =
             returned &&
@@ -3719,11 +3685,8 @@ class Compiler implements LoweringServices {
 
     /**
      * The text a required-text position reads from an expression: the
-     * string or number its value carries at generation, or what a source
-     * function returns when run there over generation-known scalar arguments
-     * (an omitted one takes the function's own default as it runs). Only a
-     * position that would otherwise refuse asks, so a function that cannot
-     * run refuses with its own reason.
+     * string or number its value carries at generation, or the text a
+     * builder call returns when run there (`runGenerationBuilder`).
      */
     private generationText(expression: ts.Expression): string | undefined {
         const carried = this.probeEmission(() => {
@@ -3736,8 +3699,20 @@ class Compiler implements LoweringServices {
             );
         });
         if (carried !== undefined) return carried;
-        if (!ts.isCallExpression(expression)) return undefined;
-        const call = expression;
+        return ts.isCallExpression(expression)
+            ? this.runGenerationBuilder(expression)
+            : undefined;
+    }
+
+    /**
+     * The text a call to a source function returns when generation runs it:
+     * every argument, or the default an omitted one takes, folds to a
+     * generation-known scalar (a wrapper parameter every call omits folds to
+     * its default); an omitted function-valued default runs where it is
+     * declared. Undefined for any other call; a function that runs and
+     * returns anything but text refuses.
+     */
+    private runGenerationBuilder(call: ts.CallExpression): string | undefined {
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return undefined;
         const declaration = resolveFunctionDeclaration(
@@ -3745,30 +3720,88 @@ class Compiler implements LoweringServices {
             callee,
             (node, message) => this.fail(node, message),
         );
-        if (!declaration?.body || declaration.getSourceFile().isDeclarationFile)
+        if (
+            !declaration?.body ||
+            declaration.getSourceFile().isDeclarationFile ||
+            call.arguments.length > declaration.parameters.length ||
+            declaration.parameters.some(
+                (parameter) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.dotDotDotToken,
+            )
+        ) {
             return undefined;
-        const args: ExecutedScalar[] = [];
-        for (const argument of call.arguments) {
-            const value = ts.isSpreadElement(argument)
+        }
+        const args: Array<ExecutedScalar | undefined> = [];
+        for (const [index, parameter] of declaration.parameters.entries()) {
+            const argument = call.arguments[index];
+            const initializer = parameter.initializer;
+            if (
+                !argument &&
+                initializer &&
+                (ts.isArrowFunction(initializer) ||
+                    ts.isFunctionExpression(initializer))
+            ) {
+                args.push(undefined);
+                continue;
+            }
+            const settled = argument ?? initializer;
+            if (!settled) {
+                args.push(undefined);
+                continue;
+            }
+            const value = ts.isSpreadElement(settled)
                 ? undefined
-                : this.staticScalar(argument);
+                : this.staticScalar(
+                      this.alwaysUsedParameterDefault(settled) ?? settled,
+                  );
             if (value === undefined) return undefined;
             args.push(value);
         }
-        const label = `Text builder '${callee.text}'`;
-        const text = executeApplicationFunction(
+        const label = `Builder '${callee.text}'`;
+        const text = this.runGenerationFunction(declaration, args, label);
+        if (typeof text === "string") return text;
+        if (typeof text === "number") return String(text);
+        return this.fail(call, `${label} returned ${typeof text}, not text.`);
+    }
+
+    /**
+     * An application function run at generation (`executeApplicationFunction`),
+     * once per declaration and arguments when it folds no enclosing binding:
+     * the realm is fresh and closed, so one run is every run.
+     */
+    public runGenerationFunction(
+        declaration: ts.FunctionLikeDeclaration,
+        args: readonly (ExecutedScalar | undefined)[],
+        label: string,
+    ): unknown {
+        const key = JSON.stringify(
+            args.map((value) => (value === undefined ? [] : value)),
+        );
+        let runs = this.generationRuns.get(declaration);
+        if (!runs) {
+            runs = new Map();
+            this.generationRuns.set(declaration, runs);
+        }
+        if (runs.has(key)) return runs.get(key);
+        // A run that folds an enclosing function's bindings depends on the
+        // specialization it was reached in, so only a closed one is kept.
+        let closed = true;
+        const result = executeApplicationFunction(
             {
                 checker: this.checker,
                 fail: (node, message) => this.fail(node, message),
-                foldEnclosing: (identifier) => this.staticScalar(identifier),
+                foldEnclosing: (identifier) => {
+                    closed = false;
+                    return this.staticScalar(identifier);
+                },
             },
             declaration,
             args,
             label,
         );
-        if (typeof text === "string") return text;
-        if (typeof text === "number") return String(text);
-        return this.fail(call, `${label} returned ${typeof text}, not text.`);
+        if (closed) runs.set(key, result);
+        return result;
     }
 
     /** The generation-known scalar an expression folds to, if any. */

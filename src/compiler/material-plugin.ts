@@ -11,7 +11,6 @@ import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { executeApplicationFunction } from "./executed-application-function.js";
 import type {
     MaterialPluginManifest,
     MaterialPluginSamplerManifest,
@@ -40,6 +39,7 @@ interface MaterialPluginContext extends Pick<
     | "compileStoredDataFunction"
     | "dataLowerer"
     | "dataValue"
+    | "runGenerationFunction"
     | "fail"
 > {}
 
@@ -1448,19 +1448,7 @@ function foldCustomCode(
     shaderType: "fragment" | "vertex",
     accepted: ReadonlySet<string>,
 ): Readonly<Record<string, string>> | undefined {
-    const value = executeApplicationFunction(
-        {
-            checker: context.checker,
-            fail: (node, message) => context.fail(node, message),
-            foldEnclosing: (identifier) => {
-                const folded = context.compileValue(identifier);
-                return (
-                    folded.staticString ??
-                    folded.staticBoolean ??
-                    folded.staticNumber
-                );
-            },
-        },
+    const value = context.runGenerationFunction(
         declaration,
         [shaderType],
         "getCustomCode",
