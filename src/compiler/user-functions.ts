@@ -35,6 +35,7 @@ import {
 import {
     passesByReference,
     dataTypesEqual,
+    isOpaqueReference,
     isHandleKind,
     tupleComponents,
     type DataType,
@@ -52,6 +53,7 @@ import {
     isStoringDataCall,
 } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -2965,8 +2967,10 @@ export class UserFunctionLowerer {
             // methods and functions must retain the caller's object identity.
             if (
                 !recursive &&
-                argumentType?.kind === "struct" &&
+                (argumentType?.kind === "struct" ||
+                    isOpaqueReference(argumentType)) &&
                 parameterType?.kind === "struct" &&
+                argumentType !== undefined &&
                 !dataTypesEqual(argumentType, parameterType)
             )
                 throw new SharedCallRequiresInline();
@@ -4101,6 +4105,14 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
+        if (
+            dataType.undefinedCompletion &&
+            !hasUndefinedCompletion(this.checker, declaration)
+        )
+            context.fail(
+                expression,
+                "A stored callback requires a proven undefined completion.",
+            );
         // A stored closure may be called before the later declaration runs.
         context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);

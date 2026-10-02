@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_dawn_string.hpp"
 #include <bblite/runtime.hpp>
 #include <bblite/gpu.hpp>
 #include <webgpu/webgpu.h>
@@ -78,13 +79,6 @@ struct DawnGpuDevice : GpuDevice {
                                  {extent->width, extent->height, extent->depthOrArrayLayers});
     }
 };
-
-inline std::string view_text(WGPUStringView view) {
-    if (!view.data)
-        return {};
-    return view.length == WGPU_STRLEN ? std::string(view.data)
-                                      : std::string(view.data, view.length);
-}
 
 /** Owns one API reference; raw construction and assignment adopt that reference. */
 template <typename Handle, auto Release, auto AddRef = nullptr> class DawnOwned {

@@ -92,9 +92,12 @@ export type TypedArrayKind =
     | "u32array"
     | "i32array";
 interface DataKinds {
+    undefined: { kind: "undefined" };
     error: { kind: "error" };
     "event-target": { kind: "event-target" };
     "http-response": { kind: "http-response" };
+    "gpu-adapter": { kind: "gpu-adapter" };
+    "gpu-adapter-info": { kind: "gpu-adapter-info" };
     "search-params": { kind: "search-params" };
     promise: { kind: "promise"; result?: DataType };
     "weak-ref": { kind: "weak-ref"; target: DataType };
@@ -141,6 +144,8 @@ interface DataKinds {
         /** Native parameter index of the final, freshly packed rest array. */
         restParameter?: number;
         result?: DataType;
+        /** The represented callable's source completion is provably undefined. */
+        undefinedCompletion?: true;
         /**
          * The container this function is stored in observes its JavaScript
          * identity -- a Set membership, a Map key. Such a value carries the

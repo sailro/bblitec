@@ -4,9 +4,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import {
+    cppFunction,
     optionalNativeFixtureTools,
     nativeFixtureVcpkgRoot,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
@@ -186,6 +190,99 @@ test("awaited file textures retain the owned texture carrier through helper and 
     assert.match(result.cpp, /Promise<bbl::StoredTexture>/);
     // A realm decodes the image in a native job; the load settles its promise.
     assert.match(result.cpp, /co_await bbl::pal::load_realm_file_texture\(/);
+});
+
+test("async texture payloads preserve nullable snapshots, tuple leaves and factory counts", (t) => {
+    const directory = resolve("artifacts/async-texture-payloads");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        import {createEngine,createSolidTexture2D,type Texture2D} from "@babylonjs/lite";
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+        const engine=await createEngine(new OffscreenCanvas(1,1));
+        const original=createSolidTexture2D(engine,.25,.5,.75,1);
+        let calls=0;
+        async function make():Promise<Texture2D> {
+            await Promise.resolve();
+            calls++;
+            return createSolidTexture2D(engine,.25,.5,.75,1);
+        }
+        async function retained(value:Texture2D|null):Promise<Texture2D|null> {
+            await Promise.resolve();
+            return value;
+        }
+        const selection:{current:Texture2D|null}={current:original};
+        const present=retained(selection.current);
+        selection.current=null;
+        const absent=retained(selection.current);
+        selection.current=original;
+        if(await present!==original || await absent!==null) throw new Error("texture argument snapshot");
+        const boxed=await Promise.resolve(original);
+        const fresh=await make();
+        if(boxed!==original || fresh===original || calls!==1) throw new Error("texture boxing and factory count");
+        async function pair(value:Texture2D|null):Promise<readonly [Texture2D,Texture2D|null]> {
+            await Promise.resolve();
+            return [original,value] as const;
+        }
+        const [first,second]=await pair(null);
+        if(first!==original || second!==null) throw new Error("texture tuple payload");
+        const textures:Texture2D[]=[original];
+        async function selected(index:number):Promise<Texture2D|undefined> {
+            return textures[index];
+        }
+        if(await selected(0)!==original || await selected(1)!==undefined)
+            throw new Error("texture indexed presence");
+        async function describe([label,texture]:readonly [string,Texture2D|null]):Promise<string> {
+            const read=()=>texture;
+            await Promise.resolve();
+            return label+(read()===original?":present":":absent");
+        }
+        const rows=[["first",original],["second",null]] as const;
+        const descriptions=await Promise.all(rows.map(describe));
+        if(descriptions.join(",")!=="first:present,second:absent")
+            throw new Error("optional texture tuple argument captures");
+        const reaction=await Promise.resolve(["reaction",original] as const).then(async ([label,texture])=>{
+            await Promise.resolve();
+            return describe([label,texture]);
+        });
+        if(reaction!=="reaction:present")throw new Error("texture tuple reaction captures");
+        globalThis.close();
+    `,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const factory = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerFileTextureFactory().source;
+    runGeneratedProgram(
+        tools,
+        "async-texture-payloads",
+        `
+#include <bblite/pal_async_engine.hpp>
+namespace bbl::pal {
+std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) {
+    return std::make_shared<Engine>();
+}
+}
+${result.cpp}
+namespace bbl {
+${cppFunction(factory, "[[maybe_unused]] static TextureData solid_texture_data(")}
+${cppFunction(factory, "[[maybe_unused]] static FileTexture retained_solid_texture(")}
+${cppFunction(factory, "SolidTexture create_solid_texture(")}
+${cppFunction(factory, "FileTexture solid_texture_file(")}
+}
+`,
+        {
+            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
 });
 
 test("async records own arrays of opaque material handles", () => {

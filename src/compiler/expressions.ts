@@ -1,4 +1,5 @@
 import { requireWindowHost } from "./window-events.js";
+import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { EmissionSet, writable } from "./emission-transaction.js";
@@ -335,6 +336,8 @@ export function stringConcatPart(
         return `(${slotFoundCpp} ? ${text} : std::string("undefined"))`;
     }
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
+    if (value.dataType?.kind === "undefined")
+        return `(static_cast<void>(${value.cpp}), "undefined")`;
     if (
         value.nativeError &&
         value.recordProperties?.name &&
@@ -1343,6 +1346,12 @@ export class ExpressionLowerer {
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
                 : compiledOperand;
+            if (operand.dataType?.kind === "undefined") {
+                this.context.emitDiscardedValue(operand);
+                return staticStringValue("undefined", (text) =>
+                    this.context.cppString(text),
+                );
+            }
             if (operand.kind === "json-null") {
                 return staticStringValue(
                     operand.cpp === "std::nullopt" ? "undefined" : "object",
@@ -2523,6 +2532,12 @@ export class ExpressionLowerer {
             hostFunction,
         );
         if (windowService) return windowService;
+        const gpuAdapter = compileGpuAdapterCall(
+            this.context.dataLowerer,
+            call,
+            hostFunction,
+        );
+        if (gpuAdapter) return gpuAdapter;
         const imported = this.context.symbols.importedName(call.expression);
         const boundIntrinsic = ts.isIdentifier(target)
             ? this.context.bindings.lookupOptional(target)?.intrinsicName
@@ -2964,6 +2979,7 @@ export class ExpressionLowerer {
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
+                value.dataType?.kind === "undefined" ||
                 // An absent value spells "undefined" or "null", as in a
                 // concatenation.
                 value.dataType?.kind === "optional"

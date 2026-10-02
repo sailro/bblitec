@@ -5,14 +5,19 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import { renderClosure, type CapturedClosure } from "./closure-captures.js";
+import { provenUndefinedValue } from "./undefined-values.js";
+import {
+    renderClosure,
+    type CapturedClosure,
+    type NativeCaptureBinding,
+} from "./closure-captures.js";
 import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
 import { declaredSymbol } from "./symbols.js";
-import type { Value } from "./types.js";
+import { presenceFlagCpp, valueForKind, type Value } from "./types.js";
 import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
     propertyIsReadOnly,
@@ -116,10 +121,10 @@ export class AsyncLowerer {
             if (value.promiseType === expected) return value.cpp;
             const name = context.allocateTemporaryCppName("adopted_result");
             const conversion = context.captureManagedClosureLines(() => {
-                context.registerNativeBinding(name);
+                const binding = context.registerNativeBinding(name);
                 const result = type
                     ? convert(
-                          this.resultAt(value.promiseResult!, name),
+                          this.resultAt(value.promiseResult!, name, binding),
                           type,
                           expression,
                       )
@@ -201,7 +206,13 @@ export class AsyncLowerer {
             );
             const settled = awaited.promiseResult!;
             if (settled.kind === "void")
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                    ...(!provenUndefinedValue(context, node)
+                        ? { erasedVoidCompletion: true as const }
+                        : {}),
+                };
             // The settled data belongs to the expression awaiting it, so a
             // declaration it initializes takes it rather than copying it.
             if (settled.dataType !== undefined || settled.kind === "string")
@@ -209,10 +220,7 @@ export class AsyncLowerer {
                     temporary,
                     settled.dataType ?? { kind: "string" },
                 );
-            return {
-                ...this.resultAt(settled, temporary),
-                nativeCaptures: [binding],
-            };
+            return this.resultAt(settled, temporary, binding);
         }
         if (
             ts.isNewExpression(node) &&
@@ -430,6 +438,7 @@ export class AsyncLowerer {
             this.pinArgument(
                 context.compileValue(argument),
                 "async_argument",
+                argument,
                 declaration.parameters[index],
             ),
         );
@@ -458,6 +467,7 @@ export class AsyncLowerer {
             this.pinArgument(
                 value,
                 "async_argument",
+                node,
                 declaration.parameters[index],
             ),
         );
@@ -467,10 +477,25 @@ export class AsyncLowerer {
     private pinArgument(
         value: Value,
         label: string,
+        node: ts.Node,
         parameter?: ts.ParameterDeclaration,
     ): Value {
         const context = this.context;
-        if (!value.cpp) return value;
+        // An activation snapshots an argument before the caller can rebind it.
+        // Nullable resources must copy their presence along with the handle.
+        if (
+            isHandleKind(value.kind) ||
+            value.kind === "tuple" ||
+            value.kind === "json-null" ||
+            (value.dataType?.kind === "optional" &&
+                value.dataType.inner.kind === "handle")
+        )
+            value = this.ownResult(
+                value,
+                node,
+                context.checker.getTypeAtLocation(parameter ?? node),
+            );
+        if (!value.cpp && value.kind !== "tuple") return value;
         if (value.kind === "engine")
             return context.bindings.pinValueToTemporary(value, label);
         // A scalar folded at generation is its constant at the call: the
@@ -488,27 +513,27 @@ export class AsyncLowerer {
                 : undefined;
         if (constant) return constant;
         const temporary = context.allocateTemporaryCppName(label);
-        const type = value.dataType
-            ? context.dataTypes.cppType(value.dataType)
-            : value.kind === "number"
-              ? "double"
-              : value.kind === "boolean"
-                ? "bool"
-                : value.kind === "string"
-                  ? "std::string"
-                  : "auto";
+        const type =
+            value.kind === "tuple"
+                ? this.cppType(value, node)
+                : value.dataType
+                  ? context.dataTypes.cppType(value.dataType)
+                  : value.kind === "number"
+                    ? "double"
+                    : value.kind === "boolean"
+                      ? "bool"
+                      : value.kind === "string"
+                        ? "std::string"
+                        : "auto";
         context.emit({
             kind: "declaration",
             type,
             name: temporary,
-            initializer: value.cpp,
+            initializer: this.resultCpp(value, node),
             attributes: "[[maybe_unused]] ",
         });
         const binding = context.registerNativeBinding(temporary);
-        return {
-            ...this.resultAt(value, temporary),
-            nativeCaptures: [binding],
-        };
+        return this.resultAt(value, temporary, binding);
     }
 
     private activate(
@@ -588,6 +613,7 @@ export class AsyncLowerer {
                                 result.value = this.ownResult(
                                     result.value,
                                     node,
+                                    context.checker.getTypeAtLocation(node),
                                 );
                                 if (
                                     result.value.kind === "void" &&
@@ -858,9 +884,8 @@ export class AsyncLowerer {
             return output.kind === "void"
                 ? { kind: "void", cpp: settled, nativeCaptures: [binding] }
                 : {
-                      ...this.resultAt(output, settled),
+                      ...this.resultAt(output, settled, binding),
                       impure: true,
-                      nativeCaptures: [binding],
                   };
         }
         return {
@@ -881,7 +906,11 @@ export class AsyncLowerer {
             );
         const argument = unwrapExpression(argumentAt(call, 0));
         const pin = (value: Value, source: ts.Node = call): Value =>
-            this.pinArgument(this.asPromise(value, source), "race_input");
+            this.pinArgument(
+                this.asPromise(value, source),
+                "race_input",
+                source,
+            );
         let promises: Value[];
         if (ts.isArrayLiteralExpression(argument))
             promises = argument.elements.map((element) => {
@@ -1018,10 +1047,15 @@ export class AsyncLowerer {
                       input,
                       () => context.compileValue(input),
                   );
-        const pin = (value: Value): Value => {
+        const pin = (
+            value: Value,
+            source: ts.Node,
+            expected?: ts.Type,
+        ): Value => {
             const promise = this.pinArgument(
-                this.asPromise(value, call),
+                this.asPromise(value, source, expected),
                 "all_input",
+                source,
             );
             if (!settled) return promise;
             const output = promise.promiseResult!;
@@ -1055,13 +1089,17 @@ export class AsyncLowerer {
                     ts.isOmittedExpression(element)
                         ? { kind: "void", cpp: "" }
                         : compileInput(element),
+                    element,
                 );
             });
         } else {
             const value = compileInput(argument);
-            if (value.kind === "tuple")
-                promises = (value.tupleElements ?? []).map(pin);
-            else {
+            if (value.kind === "tuple") {
+                const type = context.checker.getTypeAtLocation(argument);
+                promises = (value.tupleElements ?? []).map((element, index) =>
+                    pin(element, argument, this.elementType(type, index)),
+                );
+            } else {
                 const type = value.dataType;
                 if (type?.kind !== "vector")
                     return context.fail(
@@ -1216,13 +1254,11 @@ export class AsyncLowerer {
                                       nativeCaptures: [binding],
                                   },
                               )
-                            : {
-                                  ...this.resultAt(
-                                      promise.promiseResult!,
-                                      name,
-                                  ),
-                                  nativeCaptures: [binding],
-                              },
+                            : this.resultAt(
+                                  promise.promiseResult!,
+                                  name,
+                                  binding,
+                              ),
                     );
                 }
                 result.value = stored
@@ -1265,6 +1301,12 @@ export class AsyncLowerer {
                         expected,
                     );
                 }
+                if (!cleanup)
+                    result.value = this.ownResult(
+                        result.value,
+                        node,
+                        context.checker.getTypeAtLocation(node),
+                    );
                 if (result.value.kind === "void") {
                     if (result.value.cpp)
                         context.emit({
@@ -1339,16 +1381,25 @@ export class AsyncLowerer {
             `Promise result '${value.kind}' has no owned asynchronous representation.`,
         );
     }
-    private resultAt(value: Value, cpp: string): Value {
+    private resultAt(
+        source: Value,
+        cpp: string,
+        binding: NativeCaptureBinding,
+    ): Value {
+        const { ownedCpp, ...value } = source;
         if (value.kind === "tuple")
             return {
                 ...value,
                 cpp,
                 tupleElements: (value.tupleElements ?? []).map(
                     (element, index) =>
-                        this.resultAt(element, `std::get<${index}>(${cpp})`),
+                        this.resultAt(
+                            element,
+                            `std::get<${index}>(${cpp})`,
+                            binding,
+                        ),
                 ),
-                nativeCaptures: [],
+                nativeCaptures: [binding],
             };
         if (value.kind === "engine")
             return {
@@ -1356,9 +1407,9 @@ export class AsyncLowerer {
                 cpp: `(*${cpp})`,
                 engineCpp: `(*${cpp})`,
                 ownedEngineCpp: cpp,
-                nativeCaptures: [],
+                nativeCaptures: [binding],
                 nativeCompanionCaptures: {
-                    engineCpp: [this.context.registerNativeBinding(cpp)],
+                    engineCpp: [binding],
                 },
             };
         if (
@@ -1369,6 +1420,7 @@ export class AsyncLowerer {
             return {
                 kind: value.kind,
                 cpp,
+                nativeCaptures: [binding],
                 ...(value.dataType ? { dataType: value.dataType } : {}),
                 ...(value.staticString !== undefined
                     ? { staticString: value.staticString }
@@ -1383,7 +1435,7 @@ export class AsyncLowerer {
                     ? { packagedBodySource: value.packagedBodySource }
                     : {}),
             };
-        return { ...value, cpp, nativeCaptures: [] };
+        return { ...value, cpp, nativeCaptures: [binding] };
     }
     private withoutConstants(value: Value): Value {
         const {
@@ -1474,14 +1526,18 @@ export class AsyncLowerer {
             expected,
         );
     }
-    private asPromise(value: Value, node: ts.Node): Value {
+    private asPromise(
+        value: Value,
+        node: ts.Node,
+        source = this.context.checker.getTypeAtLocation(node),
+    ): Value {
         if (value.kind === "promise") return value;
         value = this.normalizeUndefined(
             value,
             this.context.checker.getTypeAtLocation(node),
         );
         this.refuseThenable(value, node);
-        value = this.ownResult(value, node);
+        value = this.ownResult(value, node, source);
         const type = this.cppType(value, node);
         if (value.kind === "void") {
             this.context.emitDiscardedValue(value);
@@ -1498,43 +1554,136 @@ export class AsyncLowerer {
             promiseType: type,
         };
     }
-    private ownResult(value: Value, node: ts.Node): Value {
-        if (value.kind === "texture" && value.dataType?.kind !== "handle") {
-            const type = { kind: "handle", handle: "texture" } as const;
+    private elementType(
+        type: ts.Type | undefined,
+        index: number,
+    ): ts.Type | undefined {
+        if (!type) return undefined;
+        const checker = this.context.checker;
+        return checker.isTupleType(type)
+            ? checker.getTypeArguments(type as ts.TypeReference)[index]
+            : checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    }
+
+    private withoutProducerStorage(value: Value): Value {
+        const {
+            optionalFoundCpp,
+            optionalStorageCpp,
+            slotFoundCpp,
+            truthinessCpp,
+            optionalChainShortCircuited,
+            sharedStorageCpp,
+            ownedCpp,
+            nativeLvalue,
+            nativeOwnedRvalue,
+            builtFrom,
+            objectIdentityCpp,
+            nativeCompanionCaptures,
+            ...owned
+        } = value;
+        const {
+            optionalFoundCpp: _found,
+            optionalStorageCpp: _storage,
+            slotFoundCpp: _slot,
+            truthinessCpp: _truthiness,
+            ...companions
+        } = nativeCompanionCaptures ?? {};
+        return { ...owned, nativeCompanionCaptures: companions };
+    }
+
+    private ownOptionalResource(
+        value: Value,
+        type: DataType<"optional">,
+        cpp: string,
+    ): Value {
+        return valueForKind("data", {
+            ...this.withoutProducerStorage(value),
+            ...this.context.dataLowerer.leafValue(cpp, type),
+            ...(type.inner.kind === "handle" && type.inner.handle === "texture"
+                ? { textureStorage: "stored" as const }
+                : {}),
+        });
+    }
+
+    private ownResult(
+        value: Value,
+        node: ts.Node,
+        source: ts.Type | undefined,
+    ): Value {
+        const awaited =
+            source && (this.context.checker.getAwaitedType(source) ?? source);
+        if (value.kind === "tuple")
             return {
                 ...value,
-                cpp: this.context.dataLowerer.compileKnownValueForSink(
+                cpp: "",
+                tupleElements: (value.tupleElements ?? []).map(
+                    (element, index) =>
+                        this.ownResult(
+                            element,
+                            node,
+                            this.elementType(awaited, index),
+                        ),
+                ),
+            };
+        if (
+            value.dataType?.kind === "optional" &&
+            value.dataType.inner.kind === "handle"
+        )
+            return this.ownOptionalResource(
+                value,
+                value.dataType,
+                value.ownedCpp ?? `bbl::js::snapshot_value(${value.cpp})`,
+            );
+        let result =
+            awaited && this.context.dataTypes.fromTsType(awaited, node);
+        if (
+            result?.kind === "optional" &&
+            result.inner.kind === "handle" &&
+            (value.kind === result.inner.handle ||
+                value.kind === "json-null" ||
+                value.kind === "void")
+        )
+            return this.ownOptionalResource(
+                value,
+                result,
+                this.context.dataLowerer.compileKnownValueForSink(
                     value,
-                    type,
+                    result,
                     node,
                 ),
-                dataType: type,
-                textureStorage: "stored",
-            };
-        }
+            );
         if (isHandleKind(value.kind) && value.kind !== "engine") {
+            if (
+                presenceFlagCpp(value) !== undefined &&
+                presenceFlagCpp(value) !== "true" &&
+                !(result?.kind === "handle" && result.handle === value.kind)
+            )
+                return this.context.fail(
+                    node,
+                    "Nullable asynchronous resources require a represented payload type.",
+                );
             const type = { kind: "handle", handle: value.kind } as const;
-            return {
-                ...value,
+            // A settled owned handle has left its producer's local slot.
+            // Nullable results carry their presence in the payload instead.
+            return valueForKind(value.kind, {
+                ...this.withoutProducerStorage(value),
                 cpp: this.context.dataLowerer.compileKnownValueForSink(
                     value,
                     type,
                     node,
                 ),
                 dataType: type,
-            };
+                ...(value.kind === "texture"
+                    ? { textureStorage: "stored" as const }
+                    : {}),
+            });
         }
         if (value.kind !== "record") return value;
         this.refuseThenable(value, node);
-        const declared = this.context.dataLowerer.dataTypeAt(node);
-        let result = declared?.kind === "promise" ? declared.result : declared;
         if (!result) {
-            const source = this.context.checker.getTypeAtLocation(node);
-            const awaited =
-                this.context.checker.getAwaitedType(source) ?? source;
             const fields: Omit<DataStructField, "name">[] = [];
             for (const property of this.context.checker.getPropertiesOfType(
-                awaited,
+                awaited ?? this.context.checker.getTypeAtLocation(node),
             )) {
                 const fieldType =
                     this.context.checker.getTypeOfSymbolAtLocation(
@@ -1606,6 +1755,6 @@ export class AsyncLowerer {
             return `std::string{${value.cpp}}`;
         return value.kind === "tuple" && !value.cpp
             ? `${this.cppType(value, node)}{${(value.tupleElements ?? []).map((element) => this.resultCpp(element, node)).join(", ")}}`
-            : (value.ownedEngineCpp ?? value.cpp);
+            : (value.ownedEngineCpp ?? value.ownedCpp ?? value.cpp);
     }
 }

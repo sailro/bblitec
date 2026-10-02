@@ -50,6 +50,7 @@ import {
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
+import { gpuAdapterProperty } from "./gpu-adapter.js";
 import { errorValue, thrownMessage } from "./error-values.js";
 import {
     renderClosure,
@@ -228,6 +229,7 @@ interface DataLoweringContext extends Pick<
     | "checker"
     | "evaluationOrder"
     | "bindings"
+    | "sharedClosures"
     | "dataTypes"
     | "classLowerer"
     | "compileValue"
@@ -261,6 +263,7 @@ interface DataLoweringContext extends Pick<
     | "resolveThisField"
     | "resolveRecordMember"
     | "resolveRecordValue"
+    | "knownValueWithoutEvaluation"
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
     | "isInRuntimeControlFlow"
@@ -1036,6 +1039,19 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            const ownerType =
+                owner.dataType?.kind === "optional"
+                    ? owner.dataType.inner
+                    : owner.dataType;
+            if (
+                mode === "write" &&
+                (ownerType?.kind === "gpu-adapter" ||
+                    ownerType?.kind === "gpu-adapter-info")
+            )
+                this.context.fail(
+                    unwrapped,
+                    "GPU adapter metadata is read-only.",
+                );
             if (mode === "write" && owner.nativeError)
                 this.context.fail(
                     unwrapped,
@@ -1624,7 +1640,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.registerNativeTemporary(result, type);
             return this.leafValue(result, type);
         };
-        const nullableType = this.context.dataTypes.nullableType(selectedType);
+        // A required undefined field and a short-circuited read have the same
+        // value; owner presence must not turn that value into an engaged payload.
+        const nullableType =
+            selectedType.kind === "undefined"
+                ? selectedType
+                : this.context.dataTypes.nullableType(selectedType);
         if (nullableType.kind !== "optional") {
             return withSlot(
                 optionalResult(
@@ -2435,6 +2456,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression.left,
                     )
                   : computed;
+        if (left.dataType?.kind === "undefined") {
+            this.context.emitDiscardedValue(left);
+            return this.context.compileValue(expression.right);
+        }
         if (left.kind === "json-null") {
             return this.context.compileValue(expression.right);
         }
@@ -2836,6 +2861,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
+        const gpu = gpuAdapterProperty(this, owner, property);
+        if (gpu) return gpu;
         const dataType =
             owner.dataType ??
             (owner.kind === "string"
@@ -8475,6 +8502,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : ".";
             const slot = `${narrowed.cpp}${access}${field.name}`;
             // A union arm's field is narrowed by its tag, not its storage.
+            if (field.presentForTags && field.type.kind === "undefined")
+                this.context.fail(
+                    ownerNode,
+                    "A tagged undefined field requires its discriminant for own-property membership.",
+                );
             if (field.presentForTags)
                 return field.type.kind === "optional"
                     ? optionalPresentCpp(slot)
@@ -10415,6 +10447,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * whatever it holds -- is `presenceCpp`'s.
      */
     public truthinessCondition(value: Value): string | undefined {
+        if (value.dataType?.kind === "undefined")
+            return `(static_cast<void>(${value.cpp}), false)`;
         if (value.kind === "promise")
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
@@ -10774,6 +10808,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     literal === undefined ||
                     (value.cpp === "std::nullopt" ? "undefined" : "null") ===
                         literal;
+                return equal !== negated ? "true" : "false";
+            }
+            if (value.dataType?.kind === "undefined") {
+                this.context.emitDiscardedValue(value);
+                const equal =
+                    loose || literal === undefined || literal === "undefined";
                 return equal !== negated ? "true" : "false";
             }
             if (value?.kind === "data" && value.dataType?.kind === "optional") {
@@ -11283,6 +11323,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (isOpaqueReference(value.dataType) ||
                 value.dataType.kind === "event-target" ||
                 value.dataType.kind === "iterator" ||
+                value.dataType.kind === "undefined" ||
                 value.dataType.kind === "function" ||
                 value.dataType?.kind === "enum" ||
                 value.dataType?.kind === "string" ||

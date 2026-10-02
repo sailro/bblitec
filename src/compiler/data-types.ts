@@ -61,6 +61,7 @@ import {
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
     type ClassHierarchy,
     classChain,
@@ -732,6 +733,11 @@ export class DataTypeRegistry {
         DataType & { kind: "struct" }
     >();
     private readonly referenceStructNames = new EmissionSet<string>();
+    private readonly substitutedStructIdentities = new EmissionMap<
+        ts.Type,
+        readonly { frames: GenericFunctionDemand["frames"]; key: string }[]
+    >();
+    @journaled private accessor nextSubstitutedStructIdentity = 0;
     private readonly genericFunctions = new EmissionMap<
         string,
         {
@@ -1425,6 +1431,12 @@ export class DataTypeRegistry {
                     : declaredInDefaultLibrary(type.symbol)),
         );
         if (libraryObject) return { kind: libraryObject[2] };
+        if (declaredIn(type.symbol, "dom", "webgpu")) {
+            if (type.symbol?.name === "GPUAdapterInfo")
+                return { kind: "gpu-adapter-info" };
+            if (type.symbol?.name === "GPUAdapter")
+                return { kind: "gpu-adapter" };
+        }
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);
@@ -1715,7 +1727,7 @@ export class DataTypeRegistry {
         node: ts.Node,
         storedClassField = false,
         parameterOverrides?: readonly (ts.Type | undefined)[],
-        resultOverride?: ts.Type,
+        resultOverride?: ts.Signature,
     ): DataType | undefined {
         const signatures = type.getCallSignatures();
         if (signatures.length !== 1) return undefined;
@@ -1788,9 +1800,7 @@ export class DataTypeRegistry {
                               declaration ?? node,
                               false,
                               undefined,
-                              this.checker.getReturnTypeOfSignature(
-                                  actualSignature,
-                              ),
+                              actualSignature,
                           )
                         : this.fromStoredTsType(
                               parameterType,
@@ -1813,7 +1823,7 @@ export class DataTypeRegistry {
             return undefined;
         }
         const signatureResult = this.resolveTypeParameter(
-            resultOverride ?? this.checker.getReturnTypeOfSignature(signature),
+            this.checker.getReturnTypeOfSignature(resultOverride ?? signature),
         );
         const resultType =
             this.asynchronous &&
@@ -1844,6 +1854,10 @@ export class DataTypeRegistry {
                     : parameter,
             ),
             ...(result ? { result } : {}),
+            ...(resultOverride &&
+            hasUndefinedCompletion(this.checker, resultOverride.declaration)
+                ? { undefinedCompletion: true as const }
+                : {}),
             ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
         };
     }
@@ -2218,8 +2232,12 @@ export class DataTypeRegistry {
                         node,
                 ),
             );
-            const candidates = memberTypes.map((memberType) =>
-                this.fromTsType(memberType, node),
+            const candidates = memberTypes.map((memberType, index) =>
+                this.fromRecordFieldType(
+                    memberType,
+                    node,
+                    memberProperties[index],
+                ),
             );
             const first = candidates[0];
             if (
@@ -2427,8 +2445,12 @@ export class DataTypeRegistry {
                     ),
                 );
             } else {
-                const candidates = propertyTypes.map((propertyType) =>
-                    this.fromTsType(propertyType, node),
+                const candidates = propertyTypes.map((propertyType, index) =>
+                    this.fromRecordFieldType(
+                        propertyType,
+                        node,
+                        memberProperties[index],
+                    ),
                 );
                 const first = candidates[0];
                 if (
@@ -2443,7 +2465,7 @@ export class DataTypeRegistry {
                     // property's union instead of choosing one arm's representation.
                     const sharedProperty = type.getProperty(propertyName);
                     mapped = sharedProperty
-                        ? this.fromTsType(
+                        ? this.fromRecordFieldType(
                               this.checker.getTypeOfSymbolAtLocation(
                                   sharedProperty,
                                   node,
@@ -2883,6 +2905,25 @@ export class DataTypeRegistry {
     }
 
     private structIdentity(type: ts.Type): ts.Symbol | ts.Type | string {
+        // A generic alias inside its own body still names the same checker
+        // type under different substitutions; resolve that distinction first.
+        if (this.mentionsSubstitution(type)) {
+            const frames = this.typeArgumentFrames();
+            const identities = this.substitutedStructIdentities.get(type) ?? [];
+            const existing = identities.find((identity) =>
+                sameTypeFrames(identity.frames, frames),
+            );
+            if (existing) return existing.key;
+            const key = `substituted:${this.nextSubstitutedStructIdentity++}`;
+            this.substitutedStructIdentities.set(type, [
+                ...identities,
+                {
+                    frames: frames.map((frame) => new Map(frame)),
+                    key,
+                },
+            ]);
+            return key;
+        }
         // A generic alias symbol names the factory, not one instantiation.
         // `Record<ClosedKeys, T>` and `Record<string, U>` therefore share the
         // global `Record` symbol while exposing different property sets. Key
@@ -2891,13 +2932,6 @@ export class DataTypeRegistry {
         // retain their stable symbol identity.
         if (type.aliasSymbol && (type.aliasTypeArguments?.length ?? 0) > 0) {
             return type;
-        }
-        // Two instantiations of one generic declaration are spelled the same
-        // inside its own body: `Hit<P>` under a `Workspace<Part>` and under a
-        // `Workspace<Other>` are the same checker type. Fold the substitution
-        // into the key so the second does not read back the first's struct.
-        if (this.mentionsSubstitution(type)) {
-            return `${this.checker.typeToString(type)}<${this.activeTypeArgumentKey}>`;
         }
         // The same collision exists one level down, where a generic interface
         // or class is instantiated rather than aliased: `WorkspaceRaycastHit<P>`
@@ -2925,6 +2959,26 @@ export class DataTypeRegistry {
             return type;
         }
         return type.aliasSymbol ?? type.symbol ?? type;
+    }
+
+    /** Required undefined fields own a key independently of their payload. */
+    private fromRecordFieldType(
+        type: ts.Type,
+        node: ts.Node,
+        property?: ts.Symbol,
+    ): DataType | undefined {
+        if (
+            (this.resolveTypeParameter(type).flags &
+                (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) ===
+            0
+        )
+            return this.fromTsType(type, node);
+        if (property && (property.flags & ts.SymbolFlags.Optional) !== 0)
+            this.fail(
+                node,
+                "Optional undefined-only fields require separate own-property presence storage.",
+            );
+        return { kind: "undefined" };
     }
 
     private fromStructTypeInner(
@@ -2972,12 +3026,20 @@ export class DataTypeRegistry {
                       // mouse and the dragger -- is a compile-time record, and giving
                       // each of those a runtime object because a field names them would
                       // turn every one of them into a shared allocation nothing shares.
-                      this.fromTsType(propertyType, declaration ?? node);
+                      this.fromRecordFieldType(
+                          propertyType,
+                          declaration ?? node,
+                      );
             if (!mappedValue) {
                 return undefined;
             }
             const optional =
                 partial || (property.flags & ts.SymbolFlags.Optional) !== 0;
+            if (optional && mappedValue.kind === "undefined")
+                this.fail(
+                    declaration ?? node,
+                    "Optional undefined-only fields require separate own-property presence storage.",
+                );
             const mapped: DataType = this.markStoredObjectReferences(
                 markIdentityFunctions(
                     optional ? this.nullableType(mappedValue) : mappedValue,
@@ -4330,6 +4392,7 @@ export class DataTypeRegistry {
                 case "string":
                 case "tuple":
                 case "json":
+                case "undefined":
                     return;
                 default:
                     this.fail(
@@ -4378,9 +4441,14 @@ export class DataTypeRegistry {
             )
                 return undefined;
         } else if (
-            !["json", "string", "number", "boolean", "tuple"].includes(
-                type.kind,
-            )
+            ![
+                "json",
+                "string",
+                "number",
+                "boolean",
+                "tuple",
+                "undefined",
+            ].includes(type.kind)
         )
             return undefined;
         return `bbl::js::json_value(${cpp})`;
@@ -4500,6 +4568,12 @@ export class DataTypeRegistry {
                 "    writer.begin_object();",
             );
             for (const field of definition?.fields ?? []) {
+                if (field.type.kind === "undefined") {
+                    lines.push(
+                        `    static_cast<void>(value.${field.name}${field.accessor ? ".get()" : ""});`,
+                    );
+                    continue;
+                }
                 const key = stringLiteral(field.sourceName);
                 // An `f?: T` property is JavaScript's `undefined` when it is not
                 // set, and `JSON.stringify` drops such a member outright. An

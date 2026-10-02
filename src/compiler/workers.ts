@@ -55,6 +55,7 @@ function uncloneablePosition(
     const refuse = (name: string): string =>
         `'${path}' is ${name}, which has no native structured-clone codec`;
     switch (type.kind) {
+        case "undefined":
         case "number":
         case "boolean":
         case "string":
@@ -148,6 +149,10 @@ function uncloneablePosition(
             return refuse("an EventTarget");
         case "http-response":
             return refuse("a Response");
+        case "gpu-adapter":
+            return refuse("a GPUAdapter");
+        case "gpu-adapter-info":
+            return refuse("a GPUAdapterInfo");
         case "search-params":
             return refuse("a URLSearchParams");
         case "promise":

@@ -1978,6 +1978,8 @@ export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
 /** Field types for payloads; producers use the discriminated Value type. */
 export interface ValueFields {
+    /** Awaited void may hide a value erased by a source callback annotation. */
+    erasedVoidCompletion?: true;
     /** Exact immutable packaged response bytes retained by a text result. */
     packagedBodySource?: string;
     /** Closed packaged candidates of a generation-time Response. */
@@ -2117,7 +2119,11 @@ export interface ValueFields {
     builtFrom?: { readonly node: ts.Expression; readonly cpp: string };
     /** A pinned function retained as a compile-time alias of its intrinsic. */
     intrinsicName?: string;
-    hostFunction?: "fetch" | "clipboard-write";
+    hostFunction?: "fetch" | "clipboard-write" | "gpu-request-adapter";
+    /** Platform receiver brand; copying one of its methods does not copy the receiver. */
+    nativeGpu?: true;
+    /** Reading this host capability requires realm-owned native service state. */
+    requiresApplicationRealm?: true;
     /** Known RegExp grammar determines the positional replacement callback arguments. */
     regexpCaptureCount?: number;
     callbackDeclaration?:

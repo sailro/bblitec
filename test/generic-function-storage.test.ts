@@ -178,8 +178,11 @@ test("generic storage retains unsupported native boundaries", () => {
         /Stored generic function conversion requires matching concrete signature families/,
     );
     assert.throws(
-        () => compileSource(prefix + `state.read(()=>({value:undefined}));`),
-        /Stored generic function instantiation requires a fully represented native signature/,
+        () =>
+            compileSource(
+                prefix + `state.read(()=>({} as {value?:undefined}));`,
+            ),
+        /Optional undefined-only fields require separate own-property presence storage/,
     );
 });
 

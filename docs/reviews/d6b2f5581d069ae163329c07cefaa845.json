@@ -1,0 +1,13 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        { "summary": "Reuse source graph analysis per checked program and propagate aliases through a work queue.", "applied": true },
+        { "summary": "Bound replacement URL candidates during iteration instead of allocating the Cartesian product.", "applied": true },
+        { "summary": "Reuse the shared return traversal for packaged URL helper bodies.", "applied": true },
+        { "summary": "Share Dawn string-view conversion between adapter metadata and resources.", "applied": true },
+        { "summary": "Use the native fixture runner for async texture execution.", "applied": true },
+        { "summary": "Share nullable async resource projection and defer type mapping past already-owned and tuple cases.", "applied": true },
+        { "summary": "Combine equivalent undefined-completion refusal guards.", "applied": true },
+        { "summary": "Compute queried markup subtree bounds only when materializing a retained handle.", "applied": true }
+    ]
+}

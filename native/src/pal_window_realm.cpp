@@ -179,6 +179,9 @@ struct WindowServices final : CanvasProvider {
         return animation_frames;
     }
     const void* graphics_identity() const override { return graphics.get(); }
+    std::optional<GpuAdapterInfo> graphics_adapter_info() const override {
+        return graphics ? graphics->adapter_info() : std::nullopt;
+    }
     std::shared_ptr<CanvasEndpoint> create_endpoint(std::uint64_t width,
                                                     std::uint64_t height) override {
         if (width > 16384 || height > 16384)

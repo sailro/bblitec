@@ -4596,11 +4596,13 @@ class Compiler implements LoweringServices {
     ): Value | undefined {
         const ownerExpression = this.unwrap(expression.expression);
         const owner = ts.isIdentifier(ownerExpression)
-            ? this.bindings.lookupOptional(ownerExpression)
+            ? (this.bindings.lookupOptional(ownerExpression) ??
+              browserEnvironmentValue(this, ownerExpression))
             : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
               ? this.activeThis()
               : ts.isPropertyAccessExpression(ownerExpression)
                 ? (this.resolveRecordMember(ownerExpression) ??
+                  browserEnvironmentValue(this, ownerExpression) ??
                   this.propertyAccess.lookupRecordProperty(ownerExpression))
                 : undefined;
         if (owner?.kind !== "record") {
@@ -5665,6 +5667,8 @@ class Compiler implements LoweringServices {
     );
 
     public useNativeValue(value: Value): void {
+        if (value.requiresApplicationRealm && !this.options.workers)
+            throw new ApplicationRealmRequired();
         for (const binding of this.nativeValueCaptures.bindingsOf(value))
             this.useNativeBinding(binding);
     }
@@ -6300,19 +6304,13 @@ class Compiler implements LoweringServices {
     ): boolean {
         const storage = target.optionalStorageCpp;
         if (!storage) return false;
-        const right = this.unwrap(expression.right);
-        if (right.kind === ts.SyntaxKind.NullKeyword) {
-            this.emit({ kind: "expression", code: `${storage}.reset();` });
-            delete writable(target).spriteDepthMode;
-            return true;
-        }
-        const value = this.compileValue(right);
+        const value = this.compileValue(expression.right);
         if (value.kind === "json-null") {
             this.emit({ kind: "expression", code: `${storage}.reset();` });
             delete writable(target).spriteDepthMode;
             return true;
         }
-        this.assignOptionalResourceValue(target, value, right);
+        this.assignOptionalResourceValue(target, value, expression.right);
         return true;
     }
 

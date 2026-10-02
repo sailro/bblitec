@@ -2,6 +2,7 @@
 
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/gpu.hpp>
+#include <bblite/pal_gpu_adapter.hpp>
 
 #include <bblite/pal_compute_texture.hpp>
 #include <bblite/pal_compute_mipmaps.hpp>
@@ -33,6 +34,7 @@ struct OffscreenCompletion {
 
 struct OffscreenDevice : GpuDevice {
     virtual ~OffscreenDevice() = default;
+    virtual std::optional<GpuAdapterInfo> adapter_info() const { return std::nullopt; }
     virtual bool supports_gpu_timestamps() const { return false; }
     virtual std::shared_ptr<GpuTimestampQuerySet> create_gpu_timestamp_query_set(std::uint32_t) {
         throw std::runtime_error("This device does not provide GPU timestamps.");

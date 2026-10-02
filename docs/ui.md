@@ -43,8 +43,10 @@ Check them before adding an implementation. Source rejection does not imply miss
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - MutationObserver supports microtask attribute notifications, static attribute filters and disconnect.
   Mutation records, old values, child-list changes and subtree observation refuse.
-- Navigator and graphics guards follow the [environment contract](fidelity.md#semantic-contract). Heap
-  snapshots, GPU adapter requests and GPU API instrumentation are unsupported.
+- Navigator and graphics guards follow the [environment contract](fidelity.md#semantic-contract).
+  GPU adapter requests expose the selected host device's vendor, architecture, device and description;
+  info retains identity. Plain options admit the default/high-performance core device; fallback,
+  low-power, compatibility and XR selections reject. Heap snapshots, raw devices and GPU API instrumentation refuse.
 - Location follows deployment. A query value the deployment answers folds to a constant (alone, beside
   native operands in comparisons, arithmetic and logical chains, or as a native string method receiver),
   including short-circuits it decides; other reads, such as run-time keys, parse the deployment query
@@ -143,7 +145,8 @@ Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path
 conditional fragments select parsed alternatives; immutable aliases and helpers retain one runtime text span
 inside fixed authored fragments. Runtime text is escaped and stored text is read from its captured value.
 Queries on the markup owner preserve selected order, absence and live attributes; mixed retained/markup subtree queries
-and removing, reparenting or replacing queried markup trees refuse. Queried leaf text remains writable.
+and removing or reparenting queried markup nodes refuse. Queried nodes accept text or closed markup replacement while
+their descendants have no retained handles; later queries exclude replaced content.
 Scripts, event attributes, unbounded attributes and malformed nesting refuse. SVG rasterizes at CSS size;
 mixed currentColor/literal paints and queries inside static SVG markup refuse.
 

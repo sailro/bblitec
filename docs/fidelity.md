@@ -23,7 +23,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Assets/producers | Generation-time loading, query folding and Chromium bakes |
 | Workers/Window | AOT factories, typed cloning, realm loops, layout snapshots; 16 ms ResizeObserver polling |
 | Data | Typed storage, checked access, bounded sparse/JSON representation |
-| Typed records | An optional property holding undefined is absent; keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
+| Typed records | Required undefined fields retain their keys and are omitted by JSON; an optional property holding undefined is absent; keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data. Locale case conversion validates and selects only the first requested tag, matching Chromium |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections and WeakRef | Keys and targets retained strongly |
@@ -35,8 +35,10 @@ Artifact paths are relative to `generated/<id>/`.
 | HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS or HTTP cache; buffered 32 MiB request/response cap |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect/30 s request |
 | HTTP teardown | Realm close cancels requests and joins transport threads |
+| Inferred packaged URLs | 256 candidates; fixed non-root local directory; uncertain mutations, dynamic queries, traversal and encoded separators refuse |
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate; `performance.timeOrigin` is the epoch time of `performance.now()`'s zero, one per process |
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
+| GPU adapter information | Requests settle on the requesting realm and describe the already selected host device before engine creation. Dawn copies adapter info; SDL copies description and patched device/vendor IDs, with an empty architecture. Metal exposes Apple vendor identity only for the Apple GPU family; unavailable IDs remain blank. No additional device selection |
 | Compute limits | Dawn queries device limits; SDL_GPU has no numeric shader-resource queries and uses 256-byte uniform offsets |
 | Engine disposal | A Window engine invalidates its run and releases its GPU lease; the shared native transport remains available to other engines |
 | GPU task timing | Pinned frame-graph task snapshots use asynchronous hardware timestamp readback; [backend capability](backends.md#backend-comparison) determines availability. Dawn attaches a task's timestamps to its passes as the source does; SDL_GPU writes them outside passes, at each source pass's boundaries. A pass this port omits, such as thin-instance culling's, is not timed |

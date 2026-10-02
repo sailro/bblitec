@@ -20,10 +20,10 @@ test("application errors dispatch before engine creation with native cancellatio
         function counted(value:boolean):boolean { predicateCalls++; return value; }
         function hostFeature():boolean {
             const agent = navigator.userAgent;
-            const extension = (globalThis as {optionalHost?: {enabled?:boolean}}).optionalHost;
-            if (extension?.enabled === true) return true;
             return /^optional-shell\\//i.test(agent);
         }
+        const extension = (globalThis as {optionalHost?: {enabled?:boolean}}).optionalHost;
+        if (extension?.enabled !== undefined) throw new Error("initial host extension absence");
         function unavailableOperation():void { eval("unsupported runtime script"); }
         function initializeFeature():void { if (!hostFeature()) return; unavailableOperation(); }
         interface Service { initialize():void; change(value:boolean):boolean; }
