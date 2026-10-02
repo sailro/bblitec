@@ -20,6 +20,8 @@ struct CollationOptions {
 };
 
 [[nodiscard]] std::string normalize_string(const std::string& value, const std::string& form);
+[[nodiscard]] std::string locale_string_case(const std::string& value,
+                                             const std::vector<std::string>& locales, bool upper);
 [[nodiscard]] double compare_strings(const std::string& left, const std::string& right,
                                      const std::vector<std::string>& locales,
                                      const CollationOptions& options);

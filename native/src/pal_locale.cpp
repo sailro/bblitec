@@ -14,6 +14,7 @@
 #include <unicode/uenum.h>
 #include <unicode/unum.h>
 #include <unicode/unumsys.h>
+#include <unicode/ustring.h>
 #endif
 
 namespace bbl::pal {
@@ -368,6 +369,32 @@ std::string format_number(double value, const std::vector<std::string>& locales,
     }
     check_icu(status);
     output.resize(static_cast<std::size_t>(length));
+    return js::string_from_code_units(output);
+}
+
+std::string locale_string_case(const std::string& value, const std::vector<std::string>& locales,
+                               bool upper) {
+    // TransformCase validates the whole list but selects only its first tag;
+    // unlike collation, an unavailable first locale never tries a later one.
+    std::string locale = uloc_getDefault();
+    for (std::size_t index = 0; index < locales.size(); ++index) {
+        auto id = locale_id(locales[index]);
+        if (index == 0)
+            locale = std::move(id);
+    }
+    const auto input = js::string_code_units(value);
+    const auto length = icu_length(input.size());
+    const auto convert = upper ? &u_strToUpper : &u_strToLower;
+    UErrorCode status = U_ZERO_ERROR;
+    std::u16string output(input.size(), u'\0');
+    const auto size = convert(output.data(), length, input.data(), length, locale.c_str(), &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+        output.resize(static_cast<std::size_t>(size));
+        status = U_ZERO_ERROR;
+        convert(output.data(), size, input.data(), length, locale.c_str(), &status);
+    }
+    check_icu(status);
+    output.resize(static_cast<std::size_t>(size));
     return js::string_from_code_units(output);
 }
 

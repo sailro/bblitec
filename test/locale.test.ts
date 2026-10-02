@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
@@ -297,6 +298,97 @@ test("native number formatting matches JavaScript", (t) => {
     execFileSync(executable, { stdio: "pipe" });
 });
 
+test("native locale case mapping matches JavaScript", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required");
+        return;
+    }
+    const values = [
+        "",
+        "Report.TXT",
+        "Iİiı",
+        "straße ﬃ",
+        "ΟΣ ΟΣΑ",
+        "I\u0301 J\u0300 i\u0307",
+        "A\0Z\ud800\udfff\ud83d\ude80",
+    ];
+    const locales: Array<string | string[] | undefined> = [
+        undefined,
+        [],
+        "en",
+        "tr",
+        "az",
+        "lt",
+        "el",
+        "tr-TR-u-co-search",
+        ["zz-ZZ", "tr"],
+        ["tr", "en"],
+    ];
+    const mappings = values.flatMap((value) =>
+        locales.flatMap((locale) =>
+            (["toLocaleLowerCase", "toLocaleUpperCase"] as const).map(
+                (method) =>
+                    `if (${JSON.stringify(value)}.${method}(${JSON.stringify(locale)}) !== ${JSON.stringify(value[method](locale))}) throw new Error("case mapping ${method}");`,
+            ),
+        ),
+    );
+    const source = `${mappings.join("\n")}
+        let receiver = "I";
+        let calls = 0;
+        function locale(): string { calls++; receiver = "other"; return "tr"; }
+        if (receiver.toLocaleLowerCase(locale()) !== "ı" || receiver !== "other" || calls !== 1)
+            throw new Error("receiver snapshot");
+        let requested: string[] | undefined = ["tr"];
+        function lower(value: string): string { return value.toLocaleLowerCase(requested); }
+        if (lower("I") !== "ı") throw new Error("stored locales");
+        requested[0] = "en";
+        if (lower("I") !== "i") throw new Error("live locale array");
+        requested = undefined;
+        if (lower("REPORT") !== "report") throw new Error("absent locales");
+        let tag: string | undefined = "tr";
+        function upper(value: string): string { return value.toLocaleUpperCase(tag); }
+        if (upper("i") !== "İ") throw new Error("stored locale tag");
+        tag = undefined;
+        if (upper("report") !== "REPORT") throw new Error("absent locale tag");
+        let rejected = 0;
+        try { "".toLocaleLowerCase("en_US"); } catch { rejected++; }
+        try { "I".toLocaleUpperCase(["en_US", "tr"]); } catch { rejected++; }
+        if (rejected !== 2) throw new Error("invalid locales");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source, {
+        fileName: "test/locale-case-entry.ts",
+    });
+    assert.ok(result.manifest.features.includes("data:locale"));
+    const directory = resolve("artifacts/locale-case-check");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/utf-8",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        cpp,
+        "native/src/pal_locale.cpp",
+        "icu.lib",
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
+});
+
 test("unlowered number format contracts refuse explicitly", () => {
     assert.throws(
         () =>
@@ -326,4 +418,13 @@ test("unlowered collation option contracts refuse explicitly", () => {
         () => compileSource(`const a = "a"; a.localeCompare("b", [1, 2]);`),
         /string/,
     );
+});
+
+test("locale case mapping refuses non-string locale entries", () => {
+    for (const method of ["toLocaleLowerCase", "toLocaleUpperCase"]) {
+        assert.throws(
+            () => compileSource(`"text".${method}([1, 2]);`),
+            /string/,
+        );
+    }
 });

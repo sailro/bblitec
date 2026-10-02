@@ -296,12 +296,15 @@ export function compileLocaleStringMethod(
     method: string,
     owner: Value,
 ): Value | undefined {
-    if (method !== "normalize" && method !== "localeCompare") return undefined;
+    const casing =
+        method === "toLocaleLowerCase" || method === "toLocaleUpperCase";
+    if (method !== "normalize" && method !== "localeCompare" && !casing)
+        return undefined;
     const context = lowerer.context;
     context.expectArgumentCount(
         call,
-        method === "normalize" ? 0 : 1,
-        method === "normalize" ? 1 : 3,
+        method === "localeCompare" ? 1 : 0,
+        method === "localeCompare" ? 3 : 1,
     );
     context.reachFeature("data:locale", call);
     const source = snapshot(
@@ -311,6 +314,21 @@ export function compileLocaleStringMethod(
         call.expression,
         "locale_source",
     );
+    if (casing) {
+        const { locales } = compileLocalesAndOptions(
+            lowerer,
+            `String.${method}`,
+            "case mapping",
+            call.arguments[0],
+            undefined,
+            [],
+            call,
+        );
+        return lowerer.leafValue(
+            `bbl::pal::locale_string_case(${source}, ${locales}, ${method === "toLocaleUpperCase"})`,
+            { kind: "string" },
+        );
+    }
     if (method === "normalize") {
         const value = call.arguments[0]
             ? context.compileValue(call.arguments[0])
