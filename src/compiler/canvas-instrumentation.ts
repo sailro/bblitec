@@ -304,7 +304,6 @@ export function writesUnobservedCanvasMetadata(
     argumentIndex: number,
     host: NativeHostUi | undefined,
 ): boolean {
-    if (!host) return false;
     const declaration = checker.getResolvedSignature(call)?.declaration;
     if (
         !declaration ||
@@ -363,11 +362,13 @@ export function writesUnobservedCanvasMetadata(
     );
     // A selector, declared attribute, or any external source read can observe
     // the metadata. Dynamic property reads conservatively retain the helper.
-    const hostText = JSON.stringify([
-        host.elements,
-        nativeHostUiStyleRules(host),
-        host.styleSheets,
-    ]);
+    const hostText = host
+        ? JSON.stringify([
+              host.elements,
+              nativeHostUiStyleRules(host),
+              host.styleSheets,
+          ])
+        : "";
     if (attributes.some((name) => hostText.includes(name))) return false;
     const observes = (node: ts.Node): boolean => {
         if (node === declaration) return false;

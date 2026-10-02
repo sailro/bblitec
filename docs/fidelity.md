@@ -54,7 +54,8 @@ an explicit [Android atlas bundle](development.md#android) uses the target brows
 Its pin, source closure, producer, device/browser/GPU identity and PNG digest accompany each manifest asset.
 Missing or stale bundle entries refuse; other bake families retain their host behavior.
 
-Live dataset readback and recovery hooks remain represented; write-only instrumentation can erase.
+Live dataset readback and recovery hooks remain represented. Canvas metadata helpers erase only
+when their complete effects are confined to unobserved metadata and browser instrumentation.
 Native drawCallCount includes transport draws.
 
 Uncaught ordinary callback exceptions reach the entry handler and exit with status 1. Realm tasks use

@@ -620,6 +620,7 @@ export class BrowserErasure {
         // A helper receiving retained controls has native effects even when
         // its returned interface consists entirely of void methods (focus,
         // navigation, click). Do not erase that interface as browser chrome.
+        let writesOnlyCanvasMetadata = false;
         if (
             call.arguments.some((argument, index) => {
                 const global = this.context.libraryGlobal(argument);
@@ -633,8 +634,10 @@ export class BrowserErasure {
                         index,
                         this.context.options.nativeHostUi,
                     )
-                )
+                ) {
+                    writesOnlyCanvasMetadata = true;
                     return false;
+                }
                 if (this.context.isNativeUiValueExpression(argument))
                     return true;
                 const value = this.context.unwrap(argument);
@@ -670,37 +673,11 @@ export class BrowserErasure {
         // data.
         const observableResult =
             this.context.checker.getAwaitedType(resultType) ?? resultType;
-        let writeOnlyObjectResult = false;
         if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
             const directlyDom =
                 declaredInDomLibrary(observableResult.symbol) ||
                 declaredInDomLibrary(observableResult.aliasSymbol);
             if (!directlyDom) {
-                writeOnlyObjectResult =
-                    observableResult.getProperties().length > 0 &&
-                    observableResult.getProperties().every((property) => {
-                        const propertyDeclaration =
-                            property.valueDeclaration ??
-                            property.declarations?.[0];
-                        if (!propertyDeclaration) return false;
-                        const propertyType =
-                            this.context.checker.getTypeOfSymbolAtLocation(
-                                property,
-                                propertyDeclaration,
-                            );
-                        const signatures = propertyType.getCallSignatures();
-                        return (
-                            signatures.length > 0 &&
-                            signatures.every(
-                                (signature) =>
-                                    (this.context.checker.getReturnTypeOfSignature(
-                                        signature,
-                                    ).flags &
-                                        ts.TypeFlags.Void) !==
-                                    0,
-                            )
-                        );
-                    });
                 const carriesNativeData = observableResult
                     .getProperties()
                     .some((property) => {
@@ -728,36 +705,34 @@ export class BrowserErasure {
                     // individually rather than tainting the whole object.
                     return false;
                 }
-            }
-        }
-        if (writeOnlyObjectResult) {
-            let reachesBrowser = false;
-            let reachesBabylon = false;
-            const visit = (root: ts.Node): void =>
-                forEachAnalysisNode(root, (node) => {
-                    if (ts.isTypeNode(node)) {
-                        return "skip";
-                    }
-                    if (ts.isIdentifier(node)) {
-                        if (
-                            this.context.symbols.importedName(node) !==
-                            undefined
-                        ) {
-                            reachesBabylon = true;
-                        }
-                        if (
-                            ["document", "window", "globalThis"].includes(
-                                node.text,
-                            ) &&
-                            this.context.libraryGlobal(node) !== undefined
-                        ) {
-                            reachesBrowser = true;
-                        }
-                    }
-                });
-            visit(declaration.body);
-            if (reachesBrowser && !reachesBabylon) {
-                return true;
+                // A void method signature does not prove its effects are
+                // browser-only. Only the existing whole-body metadata proof
+                // permits erasing an otherwise represented method record.
+                if (
+                    writesOnlyCanvasMetadata &&
+                    observableResult.getProperties().length > 0 &&
+                    observableResult.getProperties().every((property) => {
+                        const site =
+                            property.valueDeclaration ??
+                            property.declarations?.[0];
+                        if (!site) return false;
+                        const signatures = this.context.checker
+                            .getTypeOfSymbolAtLocation(property, site)
+                            .getCallSignatures();
+                        return (
+                            signatures.length > 0 &&
+                            signatures.every(
+                                (signature) =>
+                                    (this.context.checker.getReturnTypeOfSignature(
+                                        signature,
+                                    ).flags &
+                                        ts.TypeFlags.Void) !==
+                                    0,
+                            )
+                        );
+                    })
+                )
+                    return true;
             }
         }
         const hasBrowserInput = call.arguments.some((argument) => {
