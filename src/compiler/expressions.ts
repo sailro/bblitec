@@ -242,6 +242,7 @@ export interface ExpressionContext
             | "libraryGlobal"
             | "callbacks"
             | "requireDefaultEngine"
+            | "defaultEngine"
             | "handleCollections"
             | "compileRegisteredConstant"
             | "compileRegisteredIntrinsic"

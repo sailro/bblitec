@@ -3,6 +3,8 @@ import { fileTypes } from "../file-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { documentEngine } from "./window-events.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 import { isStringValue, type Value } from "./types.js";
 
@@ -14,6 +16,8 @@ import { isStringValue, type Value } from "./types.js";
 export interface BrowserFileContext extends Pick<
     LoweringServices,
     | "checker"
+    | "options"
+    | "defaultEngine"
     | "unwrap"
     | "resolveStaticExpression"
     | "bindings"
@@ -220,10 +224,16 @@ export function compileBrowserFileCall(
         ) {
             return { kind: "void", cpp: "" };
         }
-        const engine = context.requireDefaultEngine(call);
         context.reachFeature("browser:file", call);
         if (callee.name.text === "createObjectURL") {
             context.expectKind(argument, "blob", argumentAt(call, 0));
+            // Window downloads and their URLs share the document's lifetime,
+            // including calls before a rendering engine or in a retained helper.
+            // A synchronous scene or rendering worker keeps its engine registry.
+            const engine = context.options.workers?.namespace
+                ? context.requireDefaultEngine(call)
+                : documentEngine(context, call);
+            if (!engine) throw new ApplicationRealmRequired();
             return {
                 kind: "object-url",
                 cpp: `bbl::js::create_object_url(${engine}, ${argument.cpp})`,
@@ -233,6 +243,7 @@ export function compileBrowserFileCall(
             };
         }
         context.expectKind(argument, "object-url", argumentAt(call, 0));
+        const engine = context.requireEngine(argument, call);
         return {
             kind: "void",
             cpp: `bbl::js::revoke_object_url(${engine}, ${argument.cpp})`,
