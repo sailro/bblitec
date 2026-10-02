@@ -8720,7 +8720,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        if (field.presentForTags)
+        if (
+            field.presentForTags &&
+            !(
+                field.optionalProperty &&
+                field.type.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(field.type.name)
+            )
+        )
             return field.type.kind === "optional"
                 ? optionalPresentCpp(slot)
                 : "true";

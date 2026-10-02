@@ -46,18 +46,45 @@ function check(name: string, source: string, realm = false): void {
     });
 }
 
+test("variant-specific optional references refuse ambiguous own-key membership", () => {
+    for (const initialize of [
+        "const items:Item[]=[{kind:'branch'}];",
+        "const items:Item[]=[{kind:'branch',next:undefined}];",
+        "const items:Item[]=[{kind:'branch'}];if(items[0]!.kind==='branch')items[0]!.next=undefined;",
+        "const items:Item[]=[{kind:'branch',next:{kind:'leaf'}}];if(items[0]!.kind==='branch')delete items[0]!.next;",
+    ]) {
+        for (const membership of [
+            "Object.hasOwn(items[0]!,'next');",
+            "'next' in items[0]!;",
+            "function has(value:Item,key:string){return Object.hasOwn(value,key);}has(items[0]!,'next');",
+            "function has(value:Item,key:string){return key in value;}has(items[0]!,'next');",
+        ]) {
+            assert.throws(
+                () =>
+                    compileSource(`
+                        type Item={kind:'leaf'}|{kind:'branch';next?:Item};
+                        ${initialize}
+                        ${membership}
+                    `),
+                /Own-property presence of 'next' is not represented/,
+            );
+        }
+    }
+});
+
 check(
     "tagged-array-optional-and-callback-cycles",
     `
     type Item={kind:'value';value:number;next?:Item}|{kind:'list';values:Item[];next?:Item}|{kind:'call';read:()=>Item;next?:Item};
     const items:Item[]=[{kind:'value',value:3}];
     const first=items[0]!;
-    if(Object.hasOwn(first,'next'))throw new Error('optional key absent');
+    function has(value:Item,key:string){return Object.hasOwn(value,key);}
+    if(Object.hasOwn(first,'next')||has(first,'next')||'next' in first)throw new Error('optional key absent');
     items.push({kind:'list',values:[first]});
     items.push({kind:'call',read:()=>first});
     const list=items[1]!, callback=items[2]!;
     first.next=list;list.next=first;
-    if(!Object.hasOwn(first,'next'))throw new Error('optional key assigned');
+    if(!Object.hasOwn(first,'next')||!has(first,'next')||!('next' in first))throw new Error('optional key assigned');
     if(list.kind!=='list'||list.values[0]!==first||list.next!==first||first.next!==list)throw new Error('recursive identity');
     if(callback.kind!=='call'||callback.read()!==first)throw new Error('recursive callback result');
     if(first.kind!=='value')throw new Error('tag');
@@ -65,7 +92,7 @@ check(
     const returned=callback.read();
     if(returned.kind!=='value'||returned.value!==7)throw new Error('live recursive value');
     delete first.next;
-    if(Object.hasOwn(first,'next')||first.next!==undefined)throw new Error('optional key deleted');
+    if(Object.hasOwn(first,'next')||has(first,'next')||'next' in first||first.next!==undefined)throw new Error('optional key deleted');
     first.next=callback;callback.next=first;
 `,
 );
