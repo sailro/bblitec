@@ -8628,16 +8628,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ownerNode,
                 );
                 const tests = fields.map((field) => {
-                    const present = this.membershipCpp(
-                        narrowed,
+                    const present = this.structFieldMembershipCpp(
+                        narrowed.cpp,
+                        dataType.name,
+                        field,
                         ownerNode,
-                        {
-                            kind: "string",
-                            cpp: this.context.cppString(field.sourceName),
-                            staticString: field.sourceName,
-                        },
-                        keyNode,
-                        operator,
                     );
                     return `(${keyCpp} == ${this.context.cppString(field.sourceName)} && (${present}))`;
                 });
@@ -8659,31 +8654,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
                 return "false";
             }
-            const access = this.context.dataTypes.isReferenceStruct(
-                dataType.name,
-            )
-                ? "->"
-                : ".";
-            const slot = `${narrowed.cpp}${access}${field.name}`;
-            // A union arm's field is narrowed by its tag, not its storage.
-            if (field.presentForTags && field.type.kind === "undefined")
-                this.context.fail(
-                    ownerNode,
-                    "A tagged undefined field requires its discriminant for own-property membership.",
-                );
-            if (field.presentForTags)
-                return field.type.kind === "optional"
-                    ? optionalPresentCpp(slot)
-                    : "true";
-            const present = this.context.dataTypes.ownPropertyPresentCpp(
+            return this.structFieldMembershipCpp(
+                narrowed.cpp,
                 dataType.name,
                 field,
-                slot,
                 ownerNode,
             );
-            if (present === undefined) return "true";
-            this.context.reachJsData();
-            return present;
         }
         return this.context.fail(
             ownerNode,
@@ -8691,6 +8667,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? "'in' is decided for compile-time records, dictionaries and structs."
                 : "Object.hasOwn is decided for compile-time records, dictionaries and structs.",
         );
+    }
+
+    private structFieldMembershipCpp(
+        ownerCpp: string,
+        structName: string,
+        field: DataStructField,
+        node: ts.Node,
+    ): string {
+        const access = this.context.dataTypes.isReferenceStruct(structName)
+            ? "->"
+            : ".";
+        const slot = `${ownerCpp}${access}${field.name}`;
+        // A union arm's field is narrowed by its tag, not its storage.
+        if (field.presentForTags && field.type.kind === "undefined")
+            this.context.fail(
+                node,
+                "A tagged undefined field requires its discriminant for own-property membership.",
+            );
+        if (field.presentForTags)
+            return field.type.kind === "optional"
+                ? optionalPresentCpp(slot)
+                : "true";
+        const present = this.context.dataTypes.ownPropertyPresentCpp(
+            structName,
+            field,
+            slot,
+            node,
+        );
+        if (present === undefined) return "true";
+        this.context.reachJsData();
+        return present;
     }
 
     /**
