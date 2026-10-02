@@ -54,6 +54,17 @@ test("ordinary retained filters survive projection and refuse unsupported forms"
         /currentColor/,
     );
     assert.throws(() => compile("url(mask.svg)"), /only color adjustments/);
+    const stylesheet = compileSource(`
+        const sheet = document.createElement("style");
+        sheet.textContent = ".sample{--Tone:.8;filter:BRIGHTNESS(CALC(1 - VAR(--Tone) * .5)) drop-shadow(0 4px currentColor);}";
+        document.head.append(sheet);
+    `).cpp;
+    const projectedRule = stylesheet
+        .split("\n")
+        .find((line) => line.includes("ui_add_class_style"));
+    assert.ok(projectedRule);
+    assert.ok(projectedRule.includes("brightness(calc(1 - var(--Tone) * .5))"));
+    assert.ok(!projectedRule.includes("--tone"));
 });
 
 test("native retained filters preserve nested layers, color parameters, shadows and backdrop order", (t) => {

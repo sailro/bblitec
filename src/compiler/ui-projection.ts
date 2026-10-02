@@ -2651,7 +2651,11 @@ export class UiProjection {
             .replace(/(^|;)\s*filter\s*:[^;]*/gi, (declaration, separator) =>
                 clipsGradientToText
                     ? String(separator)
-                    : declaration.toLowerCase(),
+                    : declaration
+                          .replace(/filter\s*:/i, "filter:")
+                          .replace(/[a-z-]+(?=\()/gi, (name: string) =>
+                              name.toLowerCase(),
+                          ),
             )
             .replace(/(^|;)\s*word-wrap\s*:/gi, "$1overflow-wrap:")
             .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {

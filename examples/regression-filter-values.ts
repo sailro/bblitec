@@ -17,10 +17,8 @@ second.className = "sample second";
 const third = document.createElement("div");
 third.className = "sample third";
 panel.append(first, second, third);
-requestAnimationFrame(() => {
-    panel.style.setProperty("--Tone", ".8");
-    panel.style.color = "#80c060";
-});
+panel.style.setProperty("--Tone", ".8");
+panel.style.color = "#80c060";
 panel.addEventListener("click", () => {
     panel.style.setProperty("--Tone", ".4");
     panel.style.color = "#e060a0";
