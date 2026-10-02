@@ -50,13 +50,14 @@ export interface SourceCoverageReport {
 
 /** An immutable source location shared by coverage and deferred capabilities. */
 export class SourceSiteRegistry {
-    private readonly hashes = new WeakMap<ts.SourceFile, string>();
+    /** Replays and independent collectors share immutable parsed source text. */
+    private static readonly hashes = new WeakMap<ts.SourceFile, string>();
 
     file(source: ts.SourceFile): { file: string; sha256: string } {
-        let sha256 = this.hashes.get(source);
+        let sha256 = SourceSiteRegistry.hashes.get(source);
         if (!sha256) {
             sha256 = createHash("sha256").update(source.text).digest("hex");
-            this.hashes.set(source, sha256);
+            SourceSiteRegistry.hashes.set(source, sha256);
         }
         return { file: resolve(source.fileName), sha256 };
     }

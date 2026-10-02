@@ -252,7 +252,7 @@ export function pinDetached(
     context: Pick<Context, "bindings">,
     value: Value,
     label: string,
-    node: ts.Expression,
+    node?: ts.Expression,
 ): Value {
     const snapshot = { ...value };
     delete snapshot.nativeBinding;

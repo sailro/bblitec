@@ -80,6 +80,7 @@ import {
     elementDomHandlerFamily,
     emitDomEventHandler,
     eventHandlerResult,
+    pinDetached,
 } from "./dom-listeners.js";
 import { elementInterfaceTag } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
@@ -3665,8 +3666,7 @@ export class UiProjection {
     ): boolean {
         if (!this.context.options.deferredCapabilities || !capabilities.length)
             return false;
-        const { nativeBinding, ...receiver } = element;
-        this.context.bindings.pinValueToTemporary(receiver, "style_receiver");
+        pinDetached(this.context, element, "style_receiver");
         const cpp = this.uiStringCpp(expression, "Deferred UI style operation");
         this.context.emitDiscardedValue({ kind: "string", cpp });
         for (const id of capabilities) {
@@ -4986,9 +4986,9 @@ export class UiProjection {
         )
             return;
         this.auditUiStylePropertyName(property, site);
-        const { nativeBinding, ...receiver } = element;
-        const styleElement = this.context.bindings.pinValueToTemporary(
-            receiver,
+        const styleElement = pinDetached(
+            this.context,
+            element,
             "style_receiver",
         );
         const engine = this.context.requireEngine(styleElement, site);
