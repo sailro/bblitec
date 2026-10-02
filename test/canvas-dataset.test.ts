@@ -220,6 +220,14 @@ test("metadata erasure retains template selectors and computed or extracted DOM 
                 (method) => `canvas.${method}(String(performance.now()));`,
             ),
             "const reader = canvas.getAttribute;",
+            'const field="loading-size"; const style=document.createElement("style"); style.textContent="canvas[data-"+field+"]{opacity:0}";',
+            'const field="loading-size"; const style=document.createElement("style"); style.textContent=`canvas[data-${field}]{opacity:0}`;',
+            'const style=document.createElement("style"); style.textContent="canvas[data-"; style.textContent+="loading-size]{opacity:0}";',
+            ...["insertRule", "replace", "replaceSync", "addRule"].map(
+                (method) =>
+                    `const sheet=new CSSStyleSheet(); sheet.${method}(String(performance.now()));`,
+            ),
+            "const sheet=new CSSStyleSheet(); const change=sheet.replaceSync;",
         ])
             assert.equal(
                 admitsInstrumentation(source(observer), withHost),
@@ -232,6 +240,12 @@ test("metadata erasure retains template selectors and computed or extracted DOM 
             'canvas.hasAttribute("data-other");',
             'canvas.matches(".other");',
             'canvas.querySelector("[data-other]");',
+            'const style=document.createElement("style"); style.textContent="canvas[data-other]{opacity:0}";',
+            'const div=document.createElement("div"); div.textContent=String(performance.now());',
+            ...["insertRule", "replace", "replaceSync", "addRule"].map(
+                (method) =>
+                    `const sheet=new CSSStyleSheet(); sheet.${method}("canvas[data-other]{opacity:0}");`,
+            ),
         ])
             assert.equal(
                 admitsInstrumentation(source(observer), withHost),

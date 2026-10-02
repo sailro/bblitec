@@ -371,6 +371,12 @@ export function writesUnobservedCanvasMetadata(
           ])
         : "";
     if (attributes.some((name) => hostText.includes(name))) return false;
+    const hasDomType = (expression: ts.Expression, name: string): boolean => {
+        const owner = checker
+            .getNonNullableType(checker.getTypeAtLocation(expression))
+            .getSymbol();
+        return owner?.name === name && declaredInDomLibrary(owner);
+    };
     const observes = (node: ts.Node): boolean => {
         if (node === declaration) return false;
         if (ts.isTypeNode(node)) return false;
@@ -384,10 +390,25 @@ export function writesUnobservedCanvasMetadata(
                     ? node.argumentExpression
                     : node,
             );
+            const write = node.parent;
             if (
                 member &&
                 declaredInDomLibrary(member) &&
-                [
+                ["textContent", "innerText", "innerHTML"].includes(
+                    member.name,
+                ) &&
+                hasDomType(node.expression, "HTMLStyleElement") &&
+                isAssignmentExpression(write) &&
+                write.left === node &&
+                (write.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                    stringLiteralText(unwrapExpression(write.right)) ===
+                        undefined)
+            )
+                return true;
+            if (
+                member &&
+                declaredInDomLibrary(member) &&
+                ([
                     "getAttribute",
                     "hasAttribute",
                     "getAttributeNS",
@@ -397,7 +418,14 @@ export function writesUnobservedCanvasMetadata(
                     "querySelectorAll",
                     "matches",
                     "closest",
-                ].includes(member.name)
+                ].includes(member.name) ||
+                    ([
+                        "insertRule",
+                        "replace",
+                        "replaceSync",
+                        "addRule",
+                    ].includes(member.name) &&
+                        hasDomType(node.expression, "CSSStyleSheet")))
             ) {
                 const call = node.parent;
                 const argument =
