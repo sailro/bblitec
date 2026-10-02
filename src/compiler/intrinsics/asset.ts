@@ -56,6 +56,7 @@ export interface AssetIntrinsicContext
             | "compileBoolean"
             | "bindings"
             | "staticAssetUrlCandidates"
+            | "sourceFiles"
             | "reachJsData"
             | "probeEmission"
             | "requireEngine"

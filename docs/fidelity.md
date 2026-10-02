@@ -35,6 +35,7 @@ Artifact paths are relative to `generated/<id>/`.
 | HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS or HTTP cache; buffered 32 MiB request/response cap |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect/30 s request |
 | HTTP teardown | Realm close cancels requests and joins transport threads |
+| Inferred packaged URLs | 256 candidates; fixed non-root local directory; uncertain mutations, dynamic queries, traversal and encoded separators refuse |
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate; `performance.timeOrigin` is the epoch time of `performance.now()`'s zero, one per process |
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
 | Compute limits | Dawn queries device limits; SDL_GPU has no numeric shader-resource queries and uses 256-byte uniform offsets |

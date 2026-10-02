@@ -12,6 +12,7 @@ import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import { deploymentUrl } from "./deployment.js";
+import { assetUrlDomain } from "./asset-url-domain.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import { isStringValue, type CompileAsset, type Value } from "./types.js";
 
@@ -32,6 +33,8 @@ export interface StaticFetchContext extends Pick<
     | "probeEmission"
     | "propertyName"
     | "fail"
+    | "checker"
+    | "sourceFiles"
 > {}
 
 export function compileStaticFetch(
@@ -147,8 +150,8 @@ function compileDynamicCandidateFetch(
     if (selected.staticString !== undefined || !isStringValue(selected)) {
         return undefined;
     }
-    const discovered = context
-        .staticAssetUrlCandidates()
+    const domain = assetUrlDomain(context, expression);
+    const discovered = (domain ?? context.staticAssetUrlCandidates())
         .flatMap((logicalSource) => {
             const source = resolveBundledAsset(
                 logicalSource,
@@ -159,6 +162,7 @@ function compileDynamicCandidateFetch(
                 readAssetBytesSync(source, context.options.fileName);
                 return [{ logicalSource, source }];
             } catch {
+                if (domain) return [];
                 const directory = resolve(
                     dirname(resolve(context.options.fileName)),
                     source,

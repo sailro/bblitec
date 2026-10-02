@@ -104,6 +104,14 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
         mkdirSync(dirname(output), { recursive: true });
         copyFileSync(resolve(directory, asset.source), output);
     }
+    runPackagedProgram(t, directory, result.cpp);
+});
+
+function runPackagedProgram(
+    t: test.TestContext,
+    directory: string,
+    program: string,
+): void {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
@@ -111,7 +119,7 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     }
     const cpp = join(directory, "check.cpp"),
         exe = join(directory, "check.exe");
-    writeFileSync(cpp, result.cpp);
+    writeFileSync(cpp, program);
     runNativeFixtureCompiler(native, [
         "/nologo",
         "/std:c++20",
@@ -131,5 +139,143 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     assert.equal(
         execFileSync(exe, { cwd: directory, encoding: "utf8", timeout: 10000 }),
         "",
+    );
+}
+
+test("packaged URL domains survive descriptor selection, base helpers and async aliases", (t) => {
+    const directory = resolve("artifacts/packaged-url-domain");
+    const publicDir = join(directory, "public");
+    const clips = join(publicDir, "clips");
+    mkdirSync(clips, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    for (const [name, bytes] of [
+        ["voice_01.bin", [11, 12]],
+        ["voice_02.bin", [21, 22, 23]],
+        ["tone & space_1.bin", [31]],
+        ["unrelated.bin", [99]],
+    ] as const)
+        writeFileSync(join(clips, name), Buffer.from(bytes));
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"}); worker.terminate();
+        const BASE=import.meta.env.BASE_URL;
+        let paths=0;
+        const assetPath=(path:string):string=>{paths++;return BASE+path.replace(/^\\/+/, "");};
+        interface Entry {url:string;weight:number;}
+        const entries:Entry[]=[...Array.from({length:2},(_,index)=>({
+            url:assetPath(\`/clips/voice_\${String(index+1).padStart(2,"0")}.bin\`),weight:1
+        }))];
+        function choose<T extends {url:string;weight:number}>(bank:T[], wanted:number):T {
+            let fallback=bank[0]!;
+            for(const entry of bank){fallback=entry;if(--wanted<0)return entry;}
+            return fallback;
+        }
+        async function load(url:string):Promise<Response>{return fetch(url);}
+        async function read(entry:Entry):Promise<Uint8Array>{return new Uint8Array(await load(entry.url).then(r=>r.arrayBuffer()));}
+        let selections=0;
+        function select(index:number):Entry{selections++;return choose(entries,index);}
+        function numbered(index:number):string{return assetPath("/clips/voice_"+String(index).padStart(2,"0")+".bin");}
+        async function numberedResponse(index:number):Promise<Response>{const url=numbered(index);return fetch(url,{cache:"no-store"});}
+        function escaped(index:number):string{return assetPath(\`/clips/tone%20%26%20space_\${index}.bin?version=2#clip\`);}
+        async function escapedResponse(index:number):Promise<Response>{return fetch(escaped(index));}
+        void(async()=>{
+            const pending=read(select(0));
+            const other=read(select(1));
+            const first=await pending, second=await other;
+            if(selections!==2||paths!==2||first.length!==2||first[0]!==11||second.length!==3||second[2]!==23)
+                throw new Error("descriptor domain or call evaluation");
+            const response=await numberedResponse(2);
+            if(paths!==3||response.url!=="https://assets.example/app/clips/voice_02.bin"||!response.ok||response.bodyUsed)
+                throw new Error("base-relative response metadata");
+            const alias=response;
+            if((await alias.arrayBuffer()).byteLength!==3||!response.bodyUsed)throw new Error("owned body");
+            let consumed=false;try{await response.arrayBuffer();}catch{consumed=true;}
+            if(!consumed)throw new Error("body reuse");
+            let rejected=false;try{await numberedResponse(3);}catch{rejected=true;}
+            if(!rejected||paths!==4)throw new Error("closed domain rejection or evaluation count");
+            const quoted=await escapedResponse(1);
+            if(quoted.url!=="https://assets.example/app/clips/tone%20%26%20space_1.bin?version=2"||
+                new Uint8Array(await quoted.arrayBuffer())[0]!==31||paths!==5)throw new Error("URL encoding/query/hash");
+            globalThis.close();
+        })();
+    `,
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir,
+            siteUrl: "https://assets.example/app/",
+        },
+    );
+    assert.ok(result.manifest.features.includes("platform:packaged-fetch"));
+    assert.ok(!result.manifest.features.includes("platform:http"));
+    assert.equal(result.manifest.assets.length, 3);
+    assert.ok(
+        result.manifest.assets.every(
+            (asset) => !asset.source.endsWith("unrelated.bin"),
+        ),
+    );
+    for (const asset of result.manifest.assets) {
+        const output = join(directory, asset.output);
+        mkdirSync(dirname(output), { recursive: true });
+        copyFileSync(resolve(directory, asset.source), output);
+    }
+    runPackagedProgram(t, directory, result.cpp);
+});
+
+test("packaged URL provenance refuses uncertain mutations, origins and unbounded domains", () => {
+    const directory = resolve("artifacts/packaged-url-domain-refusals");
+    const publicDir = join(directory, "public");
+    const clips = join(publicDir, "clips");
+    mkdirSync(clips, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    writeFileSync(join(clips, "voice_01.bin"), "one");
+    writeFileSync(join(clips, "voice_02.bin"), "two");
+    writeFileSync(
+        join(directory, "mutable.ts"),
+        'export let selected = "/clips/voice_01.bin";',
+    );
+    const cases = [
+        `const entries=[{url:"/clips/voice_01.bin"}]; entries[0].url="/clips/voice_02.bin"; const url=entries[Math.floor(Math.random())].url;`,
+        `const entries=[{url:"/clips/voice_01.bin"}]; const alias=entries; alias.push({url:"/clips/voice_02.bin"}); const url=entries[Math.floor(Math.random()*2)].url;`,
+        `const entries=[{url:"/clips/voice_01.bin"}]; function edit(bank:{url:string}[]):void{bank[0].url="/clips/voice_02.bin";} edit(entries); const url=entries[Math.floor(Math.random())].url;`,
+        `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
+        `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
+        `const entries=["/clips%2fvoice_01.bin","/clips%5cvoice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
+        `function path(index:number):string{return \`/clips/voice_\${index}.bin?version=\${index}\`;} const url=path(Math.random());`,
+        `function path(index:number):string{return \`/clips/voice_\${index}.bin\`.replace(/voice/g, value=>value);} const url=path(Math.random());`,
+        `import {selected} from "./mutable"; const url=selected;`,
+    ];
+    for (const body of cases) {
+        assert.throws(
+            () =>
+                compileSource(
+                    `
+            const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+            function moduleUrl(path:string,source:string):string{const value=new URL(path,source);return value.href;}
+            const unrelated=moduleUrl("/clips/voice_01.bin",import.meta.url);
+            ${body}
+            async function load(value:string):Promise<Response>{return fetch(value);}
+            void load(url);
+        `,
+                    { fileName: join(directory, "entry.ts"), publicDir },
+                ),
+            /fetch URL .*lost its static value|Expected a compile-time string|Packaged URL provenance/,
+        );
+    }
+    const crowded = join(publicDir, "crowded");
+    mkdirSync(crowded, { recursive: true });
+    for (let index = 0; index < 257; index++)
+        writeFileSync(join(crowded, `clip_${index}.bin`), "x");
+    assert.throws(
+        () =>
+            compileSource(
+                `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+        function path(index:number):string{return \`/crowded/clip_\${index}.bin\`;}
+        async function load(index:number):Promise<Response>{const url=path(index);return fetch(url);}
+        void load(Math.random());
+    `,
+                { fileName: join(directory, "entry.ts"), publicDir },
+            ),
+        /Packaged URL domain exceeds 256 candidates/,
     );
 });
