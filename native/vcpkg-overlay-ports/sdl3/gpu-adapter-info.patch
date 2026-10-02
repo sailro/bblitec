@@ -1,0 +1,45 @@
+Expose selected-adapter IDs as private SDL_GPU properties. D3D12 and Vulkan
+copy the driver's numeric IDs; Metal identifies Apple silicon through the
+Apple GPU family capability and leaves other IDs unavailable. Device names
+are never parsed. Retire when SDL exposes equivalent adapter identity.
+
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -9214,6 +9214,8 @@ static SDL_GPUDevice *D3D12_CreateDevice(bool debugMode, bool preferLowPower, SD
+     }
+ 
+     renderer->props = SDL_CreateProperties();
++    SDL_SetNumberProperty(renderer->props, "bblite.gpu.adapter.vendor_id", adapterDesc.VendorId);
++    SDL_SetNumberProperty(renderer->props, "bblite.gpu.adapter.device_id", adapterDesc.DeviceId);
+     if (verboseLogs) {
+         SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "SDL_GPU Driver: D3D12");
+     }
+diff --git a/src/gpu/vulkan/SDL_gpu_vulkan.c b/src/gpu/vulkan/SDL_gpu_vulkan.c
+--- a/src/gpu/vulkan/SDL_gpu_vulkan.c
++++ b/src/gpu/vulkan/SDL_gpu_vulkan.c
+@@ -12892,6 +12892,8 @@ static SDL_GPUDevice *VULKAN_CreateDevice(bool debugMode, bool preferLowPower, S
+     }
+ 
+     renderer->props = SDL_CreateProperties();
++    SDL_SetNumberProperty(renderer->props, "bblite.gpu.adapter.vendor_id", renderer->physicalDeviceProperties.properties.vendorID);
++    SDL_SetNumberProperty(renderer->props, "bblite.gpu.adapter.device_id", renderer->physicalDeviceProperties.properties.deviceID);
+     if (verboseLogs) {
+         SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "SDL_GPU Driver: Vulkan");
+     }
+diff --git a/src/gpu/metal/SDL_gpu_metal.m b/src/gpu/metal/SDL_gpu_metal.m
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -4636,6 +4636,12 @@ static SDL_GPUDevice *METAL_CreateDevice(bool debugMode, bool preferLowPower, SD
+         renderer->queue = [device newCommandQueue];
+ 
+         renderer->props = SDL_CreateProperties();
++        // Apple-family support identifies Apple silicon without parsing device names.
++        if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, *)) {
++            if ([device supportsFamily:MTLGPUFamilyApple1]) {
++                SDL_SetNumberProperty(renderer->props, "bblite.gpu.adapter.vendor_id", 0x106b);
++            }
++        }
+         SDL_SetBooleanProperty(renderer->props, "bblite.gpu.storage_texture_array", true);
+         if (verboseLogs) {
+             SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "SDL_GPU Driver: Metal");

@@ -384,6 +384,13 @@
       "variants": ["vcpkg", "trimmed"]
     },
     {
+      "library": "sdl3",
+      "file": "native/vcpkg-overlay-ports/sdl3/gpu-adapter-info.patch",
+      "purpose": "Selected adapter numeric IDs and Metal Apple-family identity without parsing device names",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"]
+    },
+    {
       "library": "sdl3-image",
       "file": "native/vcpkg-overlay-ports/sdl3-image/dependencies.diff",
       "purpose": "vcpkg's dependency discovery for SDL_image codecs",
