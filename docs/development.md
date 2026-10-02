@@ -202,6 +202,12 @@ lowering reaches (site, message, message class, enclosing function, cascades) an
 `npm run api -- report --run` collected. Group findings by shared capability and run independent
 source-shape probes before implementation batches.
 
+The compiler CLI accepts `--coverage <coverage.json>` with `--out` or `--survey`.
+It records source hashes, exact statement spans, retained lowering, refusals and
+rolled-back work per realm, including failed generation. Storage replays replace
+earlier attempts. Unlisted sites are unobserved; statement coverage does not prove
+complete function specialization, native compilation or runtime implementation.
+
 | File | Required data |
 | --- | --- |
 | `src/scene-registry.ts` | Source, title, pose, gates, attribution |

@@ -10,6 +10,10 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { activeSurvey } from "./survey.js";
+import {
+    coverSourceStatement,
+    sourceCoverageActive,
+} from "./source-coverage.js";
 import { syntaxKindName } from "../source-location.js";
 import { cppIdentifierPattern, doubleLiteral } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
@@ -459,6 +463,19 @@ export class StatementLowerer {
     }
 
     private lowerStatement(
+        context: StatementLoweringContext,
+        statement: ts.Statement,
+    ): void {
+        if (!sourceCoverageActive()) {
+            this.lowerStatementCore(context, statement);
+            return;
+        }
+        coverSourceStatement(statement, context.speculating, () =>
+            this.lowerStatementCore(context, statement),
+        );
+    }
+
+    private lowerStatementCore(
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {

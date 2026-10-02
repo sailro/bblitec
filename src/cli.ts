@@ -27,6 +27,7 @@ import type {
     CompileResult,
     CompiledNodeParticles,
 } from "./compiler/types.js";
+import { SourceCoverage } from "./compiler/source-coverage.js";
 import { writeJsonRecord } from "./tooling/records.js";
 import {
     emitUpstreamGenerated,
@@ -140,6 +141,7 @@ interface CliOptions {
     siteRoot?: string;
     idDiagnostics: boolean;
     sourceProfile?: string[];
+    coverage?: string;
 }
 
 /**
@@ -165,6 +167,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--site-root", value: "<directory>" },
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
+    { flag: "--coverage", value: "<coverage.json>" },
 ];
 
 function usage(): never {
@@ -208,6 +211,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let siteRoot: string | undefined;
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
+    let coverage: string | undefined;
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -221,6 +225,11 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--survey":
                 if (!value) usage();
                 survey = value;
+                index += 1;
+                break;
+            case "--coverage":
+                if (!value || value.startsWith("--")) usage();
+                coverage = value;
                 index += 1;
                 break;
             case "--title":
@@ -325,6 +334,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(hostUi ? { hostUi } : {}),
         ...(siteRoot ? { siteRoot } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
+        ...(coverage ? { coverage } : {}),
     };
 }
 
@@ -832,6 +842,16 @@ function writeSurvey(
     }
 }
 
+function withCoverage<T>(path: string | undefined, lower: () => T): T {
+    if (!path) return lower();
+    const coverage = new SourceCoverage();
+    try {
+        return coverage.run(lower);
+    } finally {
+        writeJsonRecord(resolve(path), coverage.report());
+    }
+}
+
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
     // This process runs out of `dist/` too, and an ad-hoc generation probe is
@@ -876,11 +896,16 @@ async function main(): Promise<void> {
             : {}),
     };
     if (options.target.kind === "survey") {
-        writeSurvey(resolve(options.target.census), source, compileOptions);
+        const census = resolve(options.target.census);
+        withCoverage(options.coverage, () =>
+            writeSurvey(census, source, compileOptions),
+        );
         return;
     }
     const outputPath = resolve(options.target.output);
-    const result = compileSource(source, compileOptions);
+    const result = withCoverage(options.coverage, () =>
+        compileSource(source, compileOptions),
+    );
 
     // The frozen node-particle bake is a Chromium run that nothing between
     // here and the emitters depends on, so it is started rather than

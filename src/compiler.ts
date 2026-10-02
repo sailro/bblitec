@@ -41,6 +41,7 @@ import {
     type NativeStatement,
 } from "./compiler/native-statements.js";
 import { sourceProfileScope } from "./compiler/source-profile.js";
+import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
@@ -592,22 +593,23 @@ function compileSourceApplication(
         const genericFunctions = new GenericFunctionStorage();
         // A replay lowers the realm again from the start, so a survey keeps
         // only the attempt that ran to the end.
-        const lower = (): CompileResult => {
-            const compiler = new Compiler(
-                input.program,
-                input.sourceFile,
-                input.checker,
-                resolved,
-                dynamicBindings,
-                ownedRecords,
-                genericFunctions,
-            );
-            const result = traceSourceProgram(input.program, () =>
-                compiler.compile(),
-            );
-            result.manifest.inputs = input.localFiles;
-            return result;
-        };
+        const lower = (): CompileResult =>
+            coverSourceRealm(input.program, input.sourceFile.fileName, () => {
+                const compiler = new Compiler(
+                    input.program,
+                    input.sourceFile,
+                    input.checker,
+                    resolved,
+                    dynamicBindings,
+                    ownedRecords,
+                    genericFunctions,
+                );
+                const result = traceSourceProgram(input.program, () =>
+                    compiler.compile(),
+                );
+                result.manifest.inputs = input.localFiles;
+                return result;
+            });
         for (;;) {
             try {
                 return survey
