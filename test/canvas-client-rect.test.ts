@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("canvas rectangle reads use CSS extents while sprite coordinates use backing pixels", () => {
@@ -47,12 +44,9 @@ test("primary canvas rectangle edges and coordinates use native CSS extents", (t
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const output = resolve("artifacts/canvas-client-rect");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(
-        source,
+    runGeneratedProgram(
+        tools,
+        "canvas-client-rect",
         `${result.cpp}
         namespace bbl {
         Engine create_engine(EngineOptions options) {
@@ -64,19 +58,6 @@ test("primary canvas rectangle edges and coordinates use native CSS extents", (t
         }
         }
         `,
+        { expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        source,
-    ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
 });

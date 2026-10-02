@@ -28,10 +28,6 @@ inline std::string ui_svg_paint_keyword(std::string_view value) {
     return result;
 }
 
-inline bool ui_svg_current_color(std::string_view value) {
-    return ui_svg_paint_keyword(value) == "currentcolor";
-}
-
 inline std::string ui_svg_paint(std::string_view value) {
     const auto keyword = ui_svg_paint_keyword(value);
     return keyword == "currentcolor" ? "white" : keyword == "none" ? "none" : std::string(value);
@@ -41,7 +37,6 @@ inline std::string ui_svg_paint(std::string_view value) {
 struct UiSvgMarkup {
     std::string source;
     bool current_color = false;
-    bool literal_paint = false;
 };
 
 inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string_view name,
@@ -129,6 +124,7 @@ inline std::vector<UiSelectorStep> ui_svg_style_sequence(const UiStyleRule& rule
 
 inline UiSvgMarkup ui_svg_markup(const Engine& engine, const UiElementRecord& root) {
     UiSvgMarkup result;
+    bool literal_paint = false;
     const auto validate_content = [](const UiElementRecord& record) {
         if (!record.text.empty() || !record.inner_rml.empty())
             throw std::runtime_error("Retained SVG accepts authored shape children only.");
@@ -157,12 +153,13 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, const UiElementRecord& ro
             const auto value =
                 paint(child, name,
                       paint(root, name, std::string_view(name) == "fill" ? "black" : "none"));
-            if (ui_svg_paint_keyword(value) == "none")
+            const auto keyword = ui_svg_paint_keyword(value);
+            if (keyword == "none")
                 continue;
-            if (ui_svg_current_color(value))
+            if (keyword == "currentcolor")
                 result.current_color = true;
             else
-                result.literal_paint = true;
+                literal_paint = true;
         }
         result.source += "<" + child.tag;
         // Stable XML avoids regenerating the plugin image when only container storage moved.
@@ -182,7 +179,7 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, const UiElementRecord& ro
         }
         result.source += "/>";
     }
-    if (result.current_color && result.literal_paint)
+    if (result.current_color && literal_paint)
         throw std::runtime_error("Retained SVG cannot mix currentColor and literal paints.");
     return result;
 }

@@ -328,7 +328,7 @@ struct RetainedUiSelectorTree {
     }
     bool matches_tag(Node node, const std::string& name) const {
         const auto& record = ui_element(engine, node);
-        return record.tag == (record.svg_namespace ? name : js::string_lower(name));
+        return record.svg_namespace ? record.tag == name : ascii_iequals(record.tag, name);
     }
     bool same_type(Node a, Node b) const {
         const auto& first = ui_element(engine, a);
@@ -5296,7 +5296,11 @@ struct UiRmlRuntime {
         const RetainedUiSelectorTree tree{engine};
         const UiSelectorMatcher matcher{tree};
         for_each_active_style_rule([&](const UiStyleRule& rule) {
-            const auto sequence = ui_svg_style_sequence(rule);
+            const auto legacy_sequence = rule.selector == UiStyleSelectorKind::Sequence
+                                             ? std::vector<UiSelectorStep>{}
+                                             : ui_svg_style_sequence(rule);
+            const auto& sequence =
+                rule.selector == UiStyleSelectorKind::Sequence ? rule.sequence : legacy_sequence;
             for (const auto child : root.children)
                 if (matcher.sequence(child, sequence))
                     throw std::runtime_error(
