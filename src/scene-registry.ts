@@ -820,7 +820,7 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Filter Values",
         parity: {
             maxFullMad: 0.5,
-            maxForegroundMad: 2,
+            maxForegroundMad: 0.5,
             backgroundColor: [32, 40, 48],
             backgroundThreshold: 30,
             nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "8" },
