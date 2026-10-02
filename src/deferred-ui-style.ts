@@ -9,8 +9,6 @@ import { supportedUiGridTracks } from "./ui-grid.js";
 const properties = new Set([
     "aspect-ratio",
     "zoom",
-    "float",
-    "clear",
     "columns",
     "column-count",
     "column-width",

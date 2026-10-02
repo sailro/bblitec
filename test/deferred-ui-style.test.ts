@@ -15,7 +15,7 @@ test("CSS deferral inventories independent features without hiding language gaps
         `
         panel.style.cssText="aspect-ratio:2;clip-path:inset(1px);animation-delay:1s";
         panel.style.gridTemplateColumns="[start] 1fr [end]";
-        panel.style.setProperty("float", "left");
+        panel.style.setProperty("columns", "2");
         const sheet=document.createElement("style");
         sheet.textContent='@media(max-width:600px){.panel{mask:none;grid-template-areas:"a b"}}';
     `;
@@ -28,7 +28,7 @@ test("CSS deferral inventories independent features without hiding language gaps
             "css:property:clip-path",
             "css:property:animation-delay",
             "css:grid-tracks:grid-template-columns",
-            "css:property:float",
+            "css:property:columns",
             "css:property:mask",
             "css:property:grid-template-areas",
         ],
@@ -123,14 +123,14 @@ test("CSS stubs evaluate values once and throw at each reached installation", (t
             ++catches;
         }
         try { panel.style.cssText=text("color:red"); } catch(e) {
-            if(!e.message.includes("css:runtime-declaration-parser"))throw new Error("declaration parser identity");
+            if(!e.message.includes("css:runtime-declaration-installation-bridge"))throw new Error("declaration bridge identity");
             ++catches;
         }
         try { sheet.textContent=text(".panel{color:red}"); } catch(e) {
-            if(!e.message.includes("css:runtime-stylesheet-parser"))throw new Error("sheet parser identity");
+            if(!e.message.includes("css:runtime-stylesheet-installation-bridge"))throw new Error("sheet bridge identity");
             ++catches;
         }
-        try { panel.style.cssText=\`mask:\${text("none")};float:left\`; } catch { ++catches; }
+        try { panel.style.cssText=\`mask:\${text("none")};columns:2\`; } catch { ++catches; }
         if(effects!==4||catches!==4)throw new Error("evaluation or catch order");
         if(panel.style.color!=="")throw new Error("deferred write must not change styles");
         globalThis.close();

@@ -27,9 +27,11 @@ export const uiLogicalSpacingProperties: readonly string[] = [
     ...logicalSpacingValues.keys(),
 ];
 
-/** Values whose layout is represented by the pinned flex and box formatters. */
+/** Values whose layout is represented by the pinned layout formatters. */
 const layoutValues: ReadonlyMap<string, RegExp> = new Map([
     ...logicalSpacingValues,
+    ["float", /^(?:none|left|right)$/],
+    ["clear", /^(?:none|left|right|both)$/],
     [
         "align-content",
         /^(?:start|end|flex-start|flex-end|center|space-between|space-around|space-evenly|stretch)$/,

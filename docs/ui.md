@@ -4,7 +4,8 @@ Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume t
 
 With [deferred capabilities](features.md#program-compilation), registered missing CSS properties and
 grid-track forms throw at retained style writes. Nonconstant stylesheet installation and unstructured
-declaration strings throw for the missing runtime parser. Receiver and string expressions still lower
+declaration strings throw for the missing browser CSS installation/retained-state bridge; RmlUi already
+provides declaration and stylesheet parsers. Receiver and string expressions still lower
 normally; the manifest lists each deferred feature. This does not add rendering support or change
 strict-mode admission. Host-page sheets and unsupported conditional CSS forms still require admission.
 
@@ -19,6 +20,9 @@ strict-mode admission. Host-page sheets and unsupported conditional CSS forms st
 
 The [pin](../upstream/rmlui.json) and maintained patches define the library surface.
 Check them before adding an implementation. Source rejection does not imply missing library support.
+
+Physical `float` (`none/left/right`) and `clear` (`none/left/right/both`) pass through to RmlUi layout.
+Logical keywords remain unsupported; dynamic values are checked during native projection.
 
 ## Integration
 

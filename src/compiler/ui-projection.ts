@@ -1367,6 +1367,7 @@ export class UiProjection {
             "bottom",
             "color",
             "clip",
+            "clear",
             "column-gap",
             "cursor",
             "display",
@@ -1386,6 +1387,7 @@ export class UiProjection {
             "flex-shrink",
             "flex-wrap",
             "filter",
+            "float",
             "font",
             "font-family",
             "font-size",
@@ -2354,6 +2356,7 @@ export class UiProjection {
     }
 
     private static cssStylePropertyName(property: string): string {
+        if (property === "cssFloat") return "float";
         const css = property.startsWith("--")
             ? property
             : property.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
@@ -3616,7 +3619,7 @@ export class UiProjection {
         if (!this.context.options.deferredCapabilities) return [];
         let source = this.tryUiStaticString(expression);
         if (source === undefined) {
-            if (sheet) return ["css:runtime-stylesheet-parser"];
+            if (sheet) return ["css:runtime-stylesheet-installation-bridge"];
             const parts = this.collectUiStringParts(expression);
             if (!parts) {
                 // Conditional/concatenated structures have an existing lowering
@@ -3625,7 +3628,7 @@ export class UiProjection {
                 return ts.isConditionalExpression(node) ||
                     ts.isBinaryExpression(node)
                     ? []
-                    : ["css:runtime-declaration-parser"];
+                    : ["css:runtime-declaration-installation-bridge"];
             }
             source = parts
                 .map((part) =>

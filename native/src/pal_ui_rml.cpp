@@ -4639,12 +4639,12 @@ struct UiRmlRuntime {
         }
         if (name == "display")
             element.SetProperty("--bbl-authored-display", "1");
-        const bool checked = name == "object-fit" || name == "filter" || name == "overflow-wrap" ||
-                             name == "word-break" || name == "flex" || name.starts_with("flex-") ||
-                             name == "align-self" || name == "align-content" || name == "row-gap" ||
-                             name == "column-gap" || name.starts_with("padding-") ||
-                             name == "margin-left" || name == "margin-right" ||
-                             name == "box-shadow";
+        const bool checked = name == "float" || name == "clear" || name == "object-fit" ||
+                             name == "filter" || name == "overflow-wrap" || name == "word-break" ||
+                             name == "flex" || name.starts_with("flex-") || name == "align-self" ||
+                             name == "align-content" || name == "row-gap" || name == "column-gap" ||
+                             name.starts_with("padding-") || name == "margin-left" ||
+                             name == "margin-right" || name == "box-shadow";
         const bool accepted = element.SetProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
