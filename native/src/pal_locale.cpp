@@ -44,7 +44,46 @@ template <typename Fill> std::string icu_string(Fill fill) {
     return result;
 }
 
+/** Unicode language identifiers exclude BCP 47 extlangs and legacy/private-only tags. */
+bool unicode_language_prefix(std::string_view tag) {
+    const auto letters = [](std::string_view part) {
+        return std::all_of(part.begin(), part.end(), [](char ch) {
+            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+        });
+    };
+    const auto digits = [](std::string_view part) {
+        return std::all_of(part.begin(), part.end(),
+                           [](char ch) { return ch >= '0' && ch <= '9'; });
+    };
+    const auto next = [&]() {
+        const auto separator = tag.find('-');
+        const auto part = tag.substr(0, separator);
+        tag = separator == std::string_view::npos ? std::string_view{} : tag.substr(separator + 1);
+        return part;
+    };
+    auto part = next();
+    if (!letters(part) ||
+        !((part.size() >= 2 && part.size() <= 3) || (part.size() >= 5 && part.size() <= 8)))
+        return false;
+    part = next();
+    if (part.size() == 4 && letters(part))
+        part = next();
+    if ((part.size() == 2 && letters(part)) || (part.size() == 3 && digits(part)))
+        part = next();
+    // ICU validates the complete tag, including each variant's characters,
+    // duplicates and extension grammar. Only its broader base grammar differs.
+    while (!part.empty() && part.size() != 1) {
+        if (!((part.size() >= 5 && part.size() <= 8) ||
+              (part.size() == 4 && part.front() >= '0' && part.front() <= '9')))
+            return false;
+        part = next();
+    }
+    return true;
+}
+
 std::string locale_id(const std::string& locale) {
+    if (!unicode_language_prefix(locale))
+        throw std::runtime_error("Invalid language tag.");
     const auto length = icu_length(locale.size());
     int32_t parsed = 0;
     auto result = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
@@ -374,14 +413,13 @@ std::string format_number(double value, const std::vector<std::string>& locales,
 
 std::string locale_string_case(const std::string& value, const std::vector<std::string>& locales,
                                bool upper) {
-    // TransformCase validates the whole list but selects only its first tag;
-    // unlike collation, an unavailable first locale never tries a later one.
-    std::string locale = uloc_getDefault();
-    for (std::size_t index = 0; index < locales.size(); ++index) {
-        auto id = locale_id(locales[index]);
-        if (index == 0)
-            locale = std::move(id);
-    }
+    // Chromium validates only the first requested tag for case conversion and
+    // passes its primary language to ICU, without region or extension keywords.
+    const auto requested =
+        locales.empty() ? std::string(uloc_getDefault()) : locale_id(locales.front());
+    const auto locale = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+        return uloc_getLanguage(requested.c_str(), output, capacity, status);
+    });
     const auto input = js::string_code_units(value);
     const auto length = icu_length(input.size());
     const auto convert = upper ? &u_strToUpper : &u_strToLower;

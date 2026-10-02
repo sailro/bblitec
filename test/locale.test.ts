@@ -322,8 +322,18 @@ test("native locale case mapping matches JavaScript", (t) => {
         "lt",
         "el",
         "tr-TR-u-co-search",
+        "tr-u-co-search",
+        "tr-x-test",
+        "az-x-test",
+        "lt-u-co-search",
+        "tur",
+        "tr-Latn-TR",
+        "en-001",
+        "sl-rozaj-biske-1994",
         ["zz-ZZ", "tr"],
         ["tr", "en"],
+        ["tr", "en_US"],
+        ["en", "x-private"],
     ];
     const mappings = values.flatMap((value) =>
         locales.flatMap((locale) =>
@@ -333,6 +343,20 @@ test("native locale case mapping matches JavaScript", (t) => {
             ),
         ),
     );
+    const invalidTags = [
+        "x-private",
+        "i-klingon",
+        "root",
+        "abcd",
+        "zh-cmn",
+        "en-GB-oed",
+    ];
+    const invalid = invalidTags.flatMap((tag) => [
+        `try { "I".toLocaleLowerCase(${JSON.stringify(tag)}); } catch { rejected++; }`,
+        `try { "i".toLocaleUpperCase(${JSON.stringify(tag)}); } catch { rejected++; }`,
+        `try { "a".localeCompare("b", ${JSON.stringify(tag)}); } catch { rejected++; }`,
+        `try { (1).toLocaleString(${JSON.stringify(tag)}); } catch { rejected++; }`,
+    ]);
     const source = `${mappings.join("\n")}
         let receiver = "I";
         let calls = 0;
@@ -354,7 +378,10 @@ test("native locale case mapping matches JavaScript", (t) => {
         let rejected = 0;
         try { "".toLocaleLowerCase("en_US"); } catch { rejected++; }
         try { "I".toLocaleUpperCase(["en_US", "tr"]); } catch { rejected++; }
-        if (rejected !== 2) throw new Error("invalid locales");
+        try { "a".localeCompare("b", ["en", "en_US"]); } catch { rejected++; }
+        try { (1).toLocaleString(["en", "en_US"]); } catch { rejected++; }
+        ${invalid.join("\n")}
+        if (rejected !== ${invalid.length + 4}) throw new Error("invalid locales");
     `;
     runInNewContext(
         ts.transpileModule(source, {
