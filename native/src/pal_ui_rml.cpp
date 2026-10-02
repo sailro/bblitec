@@ -2803,6 +2803,8 @@ public:
         return resolve(*element)->CompileFilter(element);
     }
     void ExtendInkOverflow(Rml::Element* element, Rml::Rectanglef& overflow) const override {
+        if (name != "blur" && name != "drop-shadow")
+            return;
         resolve(*element)->ExtendInkOverflow(element, overflow);
     }
 };
