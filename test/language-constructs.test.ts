@@ -4147,21 +4147,27 @@ check(
 `,
 );
 
-test("stored closures refuse later bindings without temporal-dead-zone storage", () => {
-    for (const read of ["options.read()", "readOptions()"]) {
-        assert.throws(
-            () =>
-                compileSource(`
-                const readers: Array<() => number> = [];
-                readers.push(() => ${read});
-                readers[0]!();
-                const options = { read: () => 7 };
-                function readOptions(): number { return options.read(); }
-            `),
-            /stored closure reading a later binding requires an owned data type to preserve its temporal dead zone/,
-        );
+check(
+    "stored closures preserve the temporal dead zone of later callback records",
+    `
+    const readers: Array<() => number> = [];
+    readers.push(() => options.read());
+    readers.push(() => readOptions());
+    let refused = 0;
+    for (const read of readers) {
+        try { read(); }
+        catch (error) {
+            if (!String(error).includes("before initialization")) throw error;
+            refused++;
+        }
     }
-});
+    if (refused !== 2) throw new Error("later callback record initialized early");
+    const options = { read: () => 7 };
+    function readOptions(): number { return options.read(); }
+    if (readers[0]!() !== 7 || readers[1]!() !== 7)
+        throw new Error("later callback record value");
+`,
+);
 
 check(
     "a named function expression calls itself by its own name",

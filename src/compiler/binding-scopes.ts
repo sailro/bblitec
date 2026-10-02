@@ -1843,6 +1843,7 @@ export class BindingScopes {
             if (
                 stored?.kind !== "struct" ||
                 !this.context.dataTypes.isReferenceStruct(stored.name) ||
+                this.recordHasStructuralHandle(value, stored, node) ||
                 (this.context.dataTypes.carriesFunction(stored) &&
                     !callbackContainer &&
                     !storedCallbacks)
@@ -1861,6 +1862,39 @@ export class BindingScopes {
             delete writable(projected).optionalFoundCpp;
             return { ...projected, freshData: true };
         });
+    }
+
+    private recordHasStructuralHandle(
+        value: Value,
+        type: DataType,
+        node: ts.Node,
+        seen = new Set<Value>(),
+    ): boolean {
+        if (value.kind !== "record") return false;
+        if (type.kind === "optional") type = type.inner;
+        // A structural source view can retain a compile-time proxy rather than
+        // the native handle its annotation names. Keep that record's metadata.
+        if (type.kind === "handle") return true;
+        if (type.kind !== "struct" || seen.has(value)) return false;
+        seen.add(value);
+        try {
+            return this.context.dataTypes
+                .structFields(type.name, node, "accessors")
+                .some((field) => {
+                    const property = value.recordProperties?.[field.sourceName];
+                    return (
+                        property !== undefined &&
+                        this.recordHasStructuralHandle(
+                            property,
+                            field.type,
+                            node,
+                            seen,
+                        )
+                    );
+                });
+        } finally {
+            seen.delete(value);
+        }
     }
 
     private recordHasMutableContainer(

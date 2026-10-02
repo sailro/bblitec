@@ -55,6 +55,14 @@ interface SourceGraph {
 // Source facts outlive emission attempts, but never retain a lowering context.
 const sourceGraphs = new WeakMap<ts.TypeChecker, SourceGraph>();
 
+function isLibraryObject(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return (
+        declaredInDefaultLibrary(type.symbol) &&
+        !checker.isArrayType(type) &&
+        !checker.isTupleType(type)
+    );
+}
+
 function calledFunction(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
@@ -85,6 +93,8 @@ function sourceGraph(
         );
         if (!(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.TypeParameter)))
             return;
+        // Native object mutations do not mutate the containing authored record.
+        if (isLibraryObject(checker, type)) return;
         const from = resolvedSymbol(checker, target);
         const root = rootIdentifier(source);
         const to = root && resolvedSymbol(checker, root);
@@ -213,8 +223,10 @@ export function assetUrlDomain(
 }
 
 class AssetUrlDomain {
+    /** @unjournaled Cycle detection for one URL-domain query, discarded with that query. */
     private readonly active = new Set<ts.Node>();
     private readonly graph: SourceGraph;
+    /** @unjournaled Traversal budget for one URL-domain query, discarded with that query. */
     private remaining = 4096;
 
     constructor(
@@ -280,9 +292,7 @@ class AssetUrlDomain {
                 const type = this.context.checker.getTypeAtLocation(node);
                 // Native browser objects (including the existing module URL
                 // helper's URL) retain their separate admission mechanism.
-                return declaredInDefaultLibrary(type.symbol) &&
-                    !this.context.checker.isArrayType(type) &&
-                    !this.context.checker.isTupleType(type)
+                return isLibraryObject(this.context.checker, type)
                     ? undefined
                     : [];
             }

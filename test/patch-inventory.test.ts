@@ -67,17 +67,18 @@ test(
             "vulkan-storage-array.patch",
             "vulkan-canvas-storage.patch",
             "metal-storage-array.patch",
+            "gpu-adapter-info.patch",
         ];
         assert.equal(trimmed.includes("fix-freebsd.patch"), false);
-        assert.deepEqual(trimmed.slice(-5), [
+        assert.deepEqual(trimmed.slice(-(2 + gpu.length)), [
             "0001-static-no-dynapi.patch",
             "0002-no-joystick-device-names.patch",
             ...gpu,
         ]);
-        assert.equal(trimmed.length, 10);
+        assert.equal(trimmed.length, 11);
         const port = names("sdl3", ["vcpkg"]);
         assert.equal(port[0], "fix-freebsd.patch");
-        assert.deepEqual(port.slice(-3), gpu);
+        assert.deepEqual(port.slice(-gpu.length), gpu);
         // A port feature selects its own patch.
         assert.equal(
             names("freetype", ["vcpkg"]).includes("subpixel-rendering.patch"),

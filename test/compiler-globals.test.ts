@@ -47,7 +47,11 @@ test("a scene binding named Math is the scene's own value", () => {
         { fileName: "scene-math.ts" },
     );
     assert.match(result.cpp, /return \(v_fn\d+_value \+ 100\.0\);/);
-    assert.match(result.cpp, /make_closure\([^\n]+\)\(3\.7\)/);
+    const callback = result.cpp.match(
+        /const auto (\w+) = bbl::js::snapshot_callback\(\w+->floor\);/,
+    );
+    assert.ok(callback);
+    assert.ok(result.cpp.includes(`position.x = ${callback[1]}(3.7);`));
     assert.doesNotMatch(result.cpp, /position\.x = 3\.0;/);
 });
 
