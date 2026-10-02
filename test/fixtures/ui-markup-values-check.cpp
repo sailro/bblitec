@@ -78,6 +78,14 @@ int run() {
         refuses([&] { ui_replace_children(engine, owner); });
         refuses([&] { ui_set_text(engine, owner, "replacement"); });
         refuses([&] { ui_set_inner_rml(engine, owner, "<span>replacement</span>"); });
+        const auto nested_owner = ui_create_element(engine, "div");
+        ui_set_inner_rml(engine, nested_owner,
+                         "<div data-bbl-node=\"0\"><span data-bbl-node=\"1\">leaf</span></div>");
+        const auto branch = ui_query_markup(engine, nested_owner, 0, "div");
+        const auto leaf = ui_query_markup(engine, nested_owner, 1, "span");
+        refuses([&] { ui_set_text(engine, branch, "replacement"); });
+        ui_set_text(engine, leaf, "replacement");
+        assert(ui_element(engine, leaf).text == "replacement");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

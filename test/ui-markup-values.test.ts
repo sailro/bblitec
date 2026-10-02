@@ -97,6 +97,15 @@ test("closed markup refuses ambiguous stored spans, unknown attributes and unsup
             'function html(): string { return "<script>bad</script>"; } root.innerHTML=html();',
             /outside the bounded/,
         ],
+        ...["querySelector", "querySelectorAll"].map(
+            (method) =>
+                [
+                    'const child=document.createElement("div"); child.innerHTML=performance.now()>0 ? \'<span class="target"></span>\' : \'<button class="target"></button>\'; root.append(child); root.' +
+                        method +
+                        '(".target");',
+                    /owned directly by the queried root/,
+                ] as const,
+        ),
     ] as const)
         assert.throws(
             () =>

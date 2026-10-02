@@ -1647,6 +1647,11 @@ export class PlatformCalls {
                 );
             }
             const descendants = this.ui.uiStaticDescendants(element.uiStaticId);
+            if (descendants.elements.size > 0)
+                this.context.fail(
+                    call,
+                    "Retained UI markup queries require innerHTML owned directly by the queried root.",
+                );
             const matches = descendants.markup.filter((node) =>
                 query.kind === "class"
                     ? node.classes.has(query.name)
@@ -1700,6 +1705,14 @@ export class PlatformCalls {
                 const descendants = this.ui.uiStaticDescendants(
                     element.uiStaticId,
                 );
+                if (
+                    descendants.markup.length > 0 &&
+                    descendants.elements.size > 0
+                )
+                    this.context.fail(
+                        call,
+                        "Retained UI markup queries require innerHTML owned directly by the queried root.",
+                    );
                 const markupMatches = descendants.markup.filter((node) =>
                     node.classes.has(matched[1]!),
                 );

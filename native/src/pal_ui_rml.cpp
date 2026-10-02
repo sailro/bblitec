@@ -759,7 +759,7 @@ void ui_set_form_value(Engine& engine, UiElementHandle element, std::string valu
 
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
     UiElementRecord& record = ui_element(engine, element);
-    if (!record.markup_children.empty())
+    if (!record.markup_children.empty() || record.markup_has_element_children)
         throw std::runtime_error(
             "Replacing queried innerHTML descendants requires an authored markup tree.");
     if (record.text == text && record.inner_rml.empty() && record.children.empty())
@@ -834,6 +834,12 @@ UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uin
     record.parent = owner;
     record.markup_owner = owner;
     record.markup_node_id = node_id;
+    // The compiler emits balanced tags and escapes text; the next tag of a
+    // non-void leaf is therefore its own closing tag.
+    const auto next_tag = owner_record.inner_rml.find('<', closing + 1);
+    record.markup_has_element_children = owner_record.inner_rml[closing - 1] != '/' &&
+                                         next_tag != std::string::npos &&
+                                         owner_record.inner_rml[next_tag + 1] != '/';
     while (cursor < closing) {
         while (cursor < closing &&
                std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor]))) {

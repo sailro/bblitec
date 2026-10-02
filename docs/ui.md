@@ -142,7 +142,8 @@ iOS uses UIKit Files with local storage and security-scoped imports; other platf
 Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path/rect attributes. Finite
 conditional fragments select parsed alternatives; immutable aliases and helpers retain one runtime text span
 inside fixed authored fragments. Runtime text is escaped and stored text is read from its captured value.
-Queries preserve selected order, absence and live attributes; removing, reparenting or replacing queried markup trees refuses.
+Queries on the markup owner preserve selected order, absence and live attributes; mixed retained/markup subtree queries
+and removing, reparenting or replacing queried markup trees refuse. Queried leaf text remains writable.
 Scripts, event attributes, unbounded attributes and malformed nesting refuse. SVG rasterizes at CSS size;
 mixed currentColor/literal paints and queries inside static SVG markup refuse.
 
