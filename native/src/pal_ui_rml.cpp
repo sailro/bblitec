@@ -759,6 +759,9 @@ void ui_set_form_value(Engine& engine, UiElementHandle element, std::string valu
 
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
     UiElementRecord& record = ui_element(engine, element);
+    if (!record.markup_children.empty())
+        throw std::runtime_error(
+            "Replacing queried innerHTML descendants requires an authored markup tree.");
     if (record.text == text && record.inner_rml.empty() && record.children.empty())
         return;
     // Nonempty plain leaf text cannot change structural selectors or the
@@ -784,6 +787,9 @@ void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
 
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup) {
     UiElementRecord& record = ui_element(engine, element);
+    if (!record.markup_children.empty() || record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Replacing queried innerHTML descendants requires an authored markup tree.");
     if (record.inner_rml == markup && record.text.empty() && record.children.empty())
         return;
     if (!record.children.empty())
@@ -793,19 +799,10 @@ void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string marku
     mark_ui_changed(engine, record);
 }
 
-UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
-                                std::string_view expected_tag) {
+namespace {
+UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
+                                 std::string_view expected_tag) {
     UiElementRecord& owner_record = ui_element(engine, owner);
-    for (const UiElementHandle child : owner_record.markup_children) {
-        const UiElementRecord& candidate = ui_element(engine, child);
-        if (candidate.markup_node_id == node_id) {
-            if (candidate.tag != expected_tag) {
-                throw std::runtime_error("Static UI markup node tag changed after lowering.");
-            }
-            return child;
-        }
-    }
-
     const std::string marker = "data-bbl-node=\"" + std::to_string(node_id) + "\"";
     const std::size_t marker_at = owner_record.inner_rml.find(marker);
     const std::size_t opening = marker_at == std::string::npos
@@ -869,7 +866,8 @@ UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint
                 while (cursor < closing && owner_record.inner_rml[cursor] != quote) {
                     ++cursor;
                 }
-                value = owner_record.inner_rml.substr(value_begin, cursor - value_begin);
+                value = Rml::StringUtilities::DecodeRml(
+                    owner_record.inner_rml.substr(value_begin, cursor - value_begin));
                 if (cursor < closing)
                     ++cursor;
             }
@@ -878,11 +876,86 @@ UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint
             record.attributes.insert_or_assign(std::move(name), std::move(value));
         }
     }
+    return record;
+}
+
+bool ui_markup_test(const UiElementRecord& record, const UiSelectorTest& test) {
+    if (test.kind == UiSelectorTestKind::Tag)
+        return record.tag == test.name;
+    if (test.kind == UiSelectorTestKind::Class)
+        return ui_record_has_class(record, test.name);
+    if (test.kind == UiSelectorTestKind::Equals) {
+        const auto found = record.attributes.find(test.name);
+        return found != record.attributes.end() && found->second == test.value;
+    }
+    throw std::runtime_error("Unsupported closed markup query predicate.");
+}
+
+bool ui_markup_matches(Engine& engine, UiElementHandle owner, const UiMarkupNode& node,
+                       const UiSelectorTest& test) {
+    for (const auto child : ui_element(engine, owner).markup_children) {
+        const auto& record = ui_element(engine, child);
+        if (record.markup_node_id == node.id)
+            return ui_markup_test(record, test);
+    }
+    return ui_markup_test(ui_markup_record(engine, owner, node.id, node.tag), test);
+}
+} // namespace
+
+UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
+                                std::string_view expected_tag) {
+    for (const auto child : ui_element(engine, owner).markup_children) {
+        const auto& record = ui_element(engine, child);
+        if (record.markup_node_id == node_id) {
+            if (record.tag != expected_tag)
+                throw std::runtime_error("Static UI markup node tag changed after lowering.");
+            return child;
+        }
+    }
+    auto record = ui_markup_record(engine, owner, node_id, expected_tag);
     const UiElementHandle handle{static_cast<std::uint32_t>(engine.ui_elements.size())};
     engine.ui_elements.push_back(std::move(record));
     handle_at(engine.ui_elements, owner).markup_children.push_back(handle);
     mark_ui_changed(engine);
     return handle;
+}
+
+js::Array<UiElementHandle> ui_query_markup_all(Engine& engine, UiElementHandle owner,
+                                               std::initializer_list<UiMarkupNode> candidates,
+                                               const UiSelectorTest& test) {
+    std::vector<std::pair<std::size_t, UiMarkupNode>> present;
+    const auto& source = ui_element(engine, owner).inner_rml;
+    for (const auto candidate : candidates) {
+        const auto position = source.find("data-bbl-node=\"" + std::to_string(candidate.id) + "\"");
+        if (position != std::string::npos && ui_markup_matches(engine, owner, candidate, test))
+            present.emplace_back(position, candidate);
+    }
+    std::sort(present.begin(), present.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    js::Array<UiElementHandle> result;
+    for (const auto& [position, node] : present) {
+        static_cast<void>(position);
+        result.push_back(ui_query_markup(engine, owner, node.id, node.tag));
+    }
+    return result;
+}
+
+js::Nullable<UiElementHandle> ui_query_markup_first(Engine& engine, UiElementHandle owner,
+                                                    std::initializer_list<UiMarkupNode> candidates,
+                                                    const UiSelectorTest& test) {
+    const auto& source = ui_element(engine, owner).inner_rml;
+    auto first = std::string::npos;
+    const UiMarkupNode* selected = nullptr;
+    for (const auto& candidate : candidates) {
+        const auto position = source.find("data-bbl-node=\"" + std::to_string(candidate.id) + "\"");
+        if (position < first && ui_markup_matches(engine, owner, candidate, test)) {
+            first = position;
+            selected = &candidate;
+        }
+    }
+    return selected ? js::Nullable<UiElementHandle>{ui_query_markup(engine, owner, selected->id,
+                                                                    selected->tag)}
+                    : js::Nullable<UiElementHandle>{};
 }
 
 std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
@@ -1301,6 +1374,10 @@ js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
 UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
     UiElementRecord& parent_record = ui_element(engine, parent);
     UiElementRecord& child_record = ui_element(engine, child);
+    if (child_record.markup_owner.value != invalid_handle ||
+        parent_record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Reparenting queried innerHTML nodes requires an authored markup tree.");
     if (parent.value == child.value) {
         throw std::runtime_error("A native UI element cannot contain itself.");
     }
@@ -1415,6 +1492,9 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
     if (parent == engine.ui_document_roots.html)
         throw std::runtime_error("Replacing the document root children is not supported.");
     UiElementRecord& record = ui_element(engine, parent);
+    if (!record.markup_children.empty() || record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Replacing queried innerHTML descendants requires an authored markup tree.");
     for (const UiElementHandle child : record.children) {
 #if BBLITE_HAS_BROWSER_FILE
         release_browser_file_subtree(engine, child);
@@ -1437,6 +1517,9 @@ void ui_remove(Engine& engine, UiElementHandle element) {
          element == engine.ui_document_roots.body))
         throw std::runtime_error("Removing document roots is not supported.");
     UiElementRecord& record = ui_element(engine, element);
+    if (record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Removing queried innerHTML nodes requires an authored markup tree.");
     const bool changed = record.parent.value != invalid_handle || record.attached_to_root;
     if (!changed)
         return;

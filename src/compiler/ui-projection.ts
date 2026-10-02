@@ -86,6 +86,7 @@ import {
 } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol } from "./symbols.js";
+import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
@@ -116,6 +117,17 @@ interface UiStaticMarkupNode {
     attributes: ReadonlyMap<string, string>;
     children: UiStaticMarkupNode[];
 }
+
+type UiMarkupPart =
+    | string
+    | { kind: "text"; expression: ts.Expression }
+    | { kind: "stored"; expression: ts.Expression; shape: UiMarkupShape }
+    | {
+          kind: "choice";
+          condition: ts.Expression;
+          yes: UiMarkupPart[];
+          no: UiMarkupPart[];
+      };
 
 /** Compiler state: written in place only through `writable()`; its sets are journaled. */
 interface UiStaticElement {
@@ -195,6 +207,10 @@ interface UiProjectionContext extends Pick<
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
     | "bindings"
+    | "sharedClosures"
+    | "captureEmittedLines"
+    | "enterRuntimeControlFlow"
+    | "leaveRuntimeControlFlow"
     | "options"
     | "probeEmission"
     | "reachFeature"
@@ -231,6 +247,9 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
 
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
+
+    private readonly uiMarkupAlternativeOwners = new EmissionSet<number>();
+    private readonly uiMarkupNodeIds = new EmissionMap<number, number>();
 
     private uiRuleSuffix(
         rule: Pick<
@@ -3179,15 +3198,18 @@ export class UiProjection {
         elements: Set<number>;
         markup: UiStaticMarkupNode[];
         complete: boolean;
+        markupAlternatives: boolean;
     } {
         const elements = new EmissionSet<number>();
         const markup: UiStaticMarkupNode[] = [];
         let complete = true;
+        let markupAlternatives = false;
         const addMarkup = (node: UiStaticMarkupNode): void => {
             markup.push(node);
             for (const child of node.children) addMarkup(child);
         };
         const visit = (id: number): void => {
+            markupAlternatives ||= this.uiMarkupAlternativeOwners.has(id);
             const parent = this.uiStaticElements.get(id);
             if (!parent) {
                 complete = false;
@@ -3202,7 +3224,7 @@ export class UiProjection {
             }
         };
         visit(rootId);
-        return { elements, markup, complete };
+        return { elements, markup, complete, markupAlternatives };
     }
 
     /**
@@ -3573,7 +3595,10 @@ export class UiProjection {
         const roots: UiStaticMarkupNode[] = [];
         const stack: UiStaticMarkupNode[] = [];
         const output: string[] = [];
-        let nextMarkupNodeId = 0;
+        let nextMarkupNodeId =
+            ownerId === undefined
+                ? 0
+                : (this.uiMarkupNodeIds.get(ownerId) ?? 0);
         const svgPaintStack: Array<{
             usesCurrentColor: boolean;
             usesLiteralPaint: boolean;
@@ -4020,6 +4045,8 @@ export class UiProjection {
                 `is missing closing tag '</${stack[stack.length - 1]!.tag}>'.`,
             );
         }
+        if (ownerId !== undefined)
+            this.uiMarkupNodeIds.set(ownerId, nextMarkupNodeId);
         this.recordUiStaticMarkup(ownerId, roots);
         return output.join("");
     }
@@ -4036,19 +4063,19 @@ export class UiProjection {
         }
         const unwrapped = this.context.unwrap(expression);
         if (ts.isConditionalExpression(unwrapped)) {
-            return (
-                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
-                `${this.compileUiMarkupString(unwrapped.whenTrue, ownerId)} : ` +
-                `${this.compileUiMarkupString(unwrapped.whenFalse, ownerId)})`
-            );
+            return this.compileUiStructuredMarkup(expression, ownerId);
         }
         const sourceParts = this.collectUiStringParts(unwrapped);
-        if (!sourceParts) {
-            this.context.fail(
-                expression,
-                "Native UI innerHTML must be a template or static fragments joined by string concatenation or a conditional.",
-            );
-        }
+        if (
+            !sourceParts ||
+            sourceParts.some(
+                (part) =>
+                    typeof part !== "string" &&
+                    (ts.isConditionalExpression(this.context.unwrap(part)) ||
+                        this.uiStoredMarkupShape(part)),
+            )
+        )
+            return this.compileUiStructuredMarkup(expression, ownerId);
         const substitutions: ts.Expression[] = [];
         let source = "";
         for (const part of sourceParts) {
@@ -4079,6 +4106,175 @@ export class UiProjection {
         }
         this.context.reachJsData();
         return `bbl::js::concat(${parts.join(", ")})`;
+    }
+
+    private uiStoredMarkupShape(
+        expression: ts.Expression,
+    ): UiMarkupShape | undefined {
+        const shape = uiMarkupValueShape(expression, {
+            checker: this.context.checker,
+            immutable: (node) =>
+                this.context.bindings.isImmutableVariable(node),
+            rebound: (node) =>
+                this.context.sharedClosures.identifierIsRebound(node),
+        });
+        return shape.some(
+            (part) => typeof part === "string" && /[<>]/.test(part),
+        )
+            ? shape
+            : undefined;
+    }
+
+    /** Closed structure is parsed after branches are selected; runtime text remains escaped. */
+    private compileUiStructuredMarkup(
+        expression: ts.Expression,
+        ownerId?: number,
+    ): string {
+        const collect = (source: ts.Expression): UiMarkupPart[] => {
+            const exact = this.tryUiStaticString(source);
+            if (exact !== undefined) return [exact];
+            const node = this.context.unwrap(source);
+            if (ts.isTemplateExpression(node))
+                return [
+                    node.head.text,
+                    ...node.templateSpans.flatMap((span) => [
+                        ...collect(span.expression),
+                        span.literal.text,
+                    ]),
+                ];
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+                (this.context.checker.getTypeAtLocation(node).flags &
+                    ts.TypeFlags.StringLike) !==
+                    0
+            )
+                return [...collect(node.left), ...collect(node.right)];
+            if (ts.isConditionalExpression(node))
+                return [
+                    {
+                        kind: "choice",
+                        condition: node.condition,
+                        yes: collect(node.whenTrue),
+                        no: collect(node.whenFalse),
+                    },
+                ];
+            const shape = this.uiStoredMarkupShape(node);
+            if (shape) {
+                if (shape.filter((part) => part === null).length > 1)
+                    this.context.fail(
+                        source,
+                        "Native UI stored markup requires one runtime text span within fixed authored fragments.",
+                    );
+                return [{ kind: "stored", expression: source, shape }];
+            }
+            return [{ kind: "text", expression: source }];
+        };
+        const sourceParts = collect(expression);
+        if (
+            sourceParts.length === 1 &&
+            typeof sourceParts[0] !== "string" &&
+            sourceParts[0]?.kind === "text"
+        )
+            this.context.fail(
+                expression,
+                "Native UI innerHTML requires closed authored markup provenance.",
+            );
+        let remaining = 32;
+        const hasChoices = (parts: readonly UiMarkupPart[]): boolean =>
+            parts.some(
+                (part) => typeof part !== "string" && part.kind === "choice",
+            );
+        if (ownerId !== undefined && hasChoices(sourceParts))
+            this.uiMarkupAlternativeOwners.add(ownerId);
+        const snapshot = (source: ts.Expression): string => {
+            const cpp = this.uiTemplateSubstitutionCpp(
+                source,
+                "Native UI innerHTML",
+            );
+            const name = this.context.allocateTemporaryCppName("markup_text");
+            this.context.emit({
+                kind: "declaration",
+                type: "const std::string",
+                name,
+                initializer: cpp,
+            });
+            return name;
+        };
+        const emit = (
+            pending: readonly UiMarkupPart[],
+            prefix: string,
+            substitutions: readonly string[],
+        ): string => {
+            let source = prefix;
+            const values = [...substitutions];
+            const text = (cpp: string): void => {
+                source += `__BBLITE_UI_MARKUP_${values.length}__`;
+                values.push(cpp);
+            };
+            for (let index = 0; index < pending.length; index++) {
+                const part = pending[index]!;
+                if (typeof part === "string") source += part;
+                else if (part.kind === "text") text(snapshot(part.expression));
+                else if (part.kind === "stored") {
+                    const value = snapshot(part.expression);
+                    const hole = part.shape.indexOf(null);
+                    if (hole < 0) source += part.shape.join("");
+                    else {
+                        const before = part.shape.slice(0, hole).join("");
+                        const after = part.shape.slice(hole + 1).join("");
+                        source += before;
+                        text(
+                            `bbl::js::string_substring(${value}, ${before.length}, bbl::js::string_length(${value}) - ${after.length})`,
+                        );
+                        source += after;
+                    }
+                } else {
+                    const condition = this.context.conditions.compileCondition(
+                        part.condition,
+                    );
+                    const branch = (parts: UiMarkupPart[]): string => {
+                        let result = "";
+                        const lines = this.context.captureEmittedLines(() => {
+                            this.context.enterRuntimeControlFlow();
+                            try {
+                                result = emit(
+                                    [...parts, ...pending.slice(index + 1)],
+                                    source,
+                                    values,
+                                );
+                            } finally {
+                                this.context.leaveRuntimeControlFlow();
+                            }
+                        });
+                        return `${lines.join("\n")}\nreturn ${result};`;
+                    };
+                    return `([&]() -> std::string { if (${condition}) {\n${branch(part.yes)}\n} else {\n${branch(part.no)}\n} }())`;
+                }
+            }
+            if (--remaining < 0)
+                this.context.fail(
+                    expression,
+                    "Native UI innerHTML exceeds 32 closed markup alternatives.",
+                );
+            const lowered = this.lowerUiMarkupLiteral(
+                source,
+                expression,
+                ownerId,
+            );
+            const chunks = lowered
+                .split(/(__BBLITE_UI_MARKUP_\d+__)/g)
+                .filter(Boolean)
+                .map((chunk) => {
+                    const marker = /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(chunk);
+                    return marker
+                        ? `bbl::ui_escape_rml(${values[Number(marker[1])]!})`
+                        : this.context.cppString(chunk);
+                });
+            return `bbl::js::concat(${chunks.join(", ")})`;
+        };
+        this.context.reachJsData();
+        return emit(sourceParts, "", []);
     }
 
     /**
