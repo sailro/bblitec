@@ -11,6 +11,7 @@ import {
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    stringLiteralText,
     unwrapExpression,
 } from "./syntax.js";
 
@@ -373,6 +374,49 @@ export function writesUnobservedCanvasMetadata(
     const observes = (node: ts.Node): boolean => {
         if (node === declaration) return false;
         if (ts.isTypeNode(node)) return false;
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        ) {
+            const member = resolvedSymbol(
+                checker,
+                ts.isElementAccessExpression(node)
+                    ? node.argumentExpression
+                    : node,
+            );
+            if (
+                member &&
+                declaredInDomLibrary(member) &&
+                [
+                    "getAttribute",
+                    "hasAttribute",
+                    "getAttributeNS",
+                    "hasAttributeNS",
+                    "getAttributeNames",
+                    "querySelector",
+                    "querySelectorAll",
+                    "matches",
+                    "closest",
+                ].includes(member.name)
+            ) {
+                const call = node.parent;
+                const argument =
+                    ts.isCallExpression(call) && call.expression === node
+                        ? call.arguments[member.name.endsWith("NS") ? 1 : 0]
+                        : undefined;
+                const literal = argument
+                    ? stringLiteralText(unwrapExpression(argument))
+                    : undefined;
+                // An extracted reader or computed name may observe any metadata.
+                if (
+                    literal === undefined ||
+                    attributes.some((name) =>
+                        literal.toLowerCase().includes(name),
+                    )
+                )
+                    return true;
+            }
+        }
         if (ts.isElementAccessExpression(node)) {
             const map = checker.getTypeAtLocation(node.expression).getSymbol();
             if (map?.name === "DOMStringMap" && declaredInDomLibrary(map))
@@ -390,8 +434,8 @@ export function writesUnobservedCanvasMetadata(
         if (ts.isPropertyAccessExpression(node) && fields.has(node.name.text))
             return true;
         if (
-            ts.isStringLiteralLike(node) &&
-            attributes.some((name) => node.text.includes(name))
+            (ts.isStringLiteral(node) || ts.isTemplateLiteralToken(node)) &&
+            attributes.some((name) => node.text.toLowerCase().includes(name))
         )
             return true;
         return ts.forEachChild(node, observes) ?? false;
