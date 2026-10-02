@@ -148,6 +148,7 @@ struct DomInput {
     DomEventListeners<PlatformCustomEvent> custom;
     DomEventListeners<PlatformTransitionEvent> transition;
     DomEventListeners<PlatformDragEvent> drag;
+    DomEventListeners<PlatformStorageEvent> storage;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -177,6 +178,7 @@ struct DomInput {
         custom.gc_trace(visitor);
         transition.gc_trace(visitor);
         drag.gc_trace(visitor);
+        storage.gc_trace(visitor);
     }
 #endif
 };
@@ -301,6 +303,26 @@ inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::str
     else if (!engine.dom_input)
         return;
     engine.dom_input->drag.set_handler(target, std::move(type), std::move(callback));
+}
+
+inline void on_dom_storage(Engine& engine, DomEventTarget target, std::string type,
+                           std::size_t identity,
+                           DomEventListeners<PlatformStorageEvent>::Callback callback,
+                           bool capture = false, bool once = false, bool passive = false) {
+    dom_input(engine).storage.add(target, std::move(type), identity, std::move(callback), capture,
+                                  once, passive);
+}
+
+inline void off_dom_storage(Engine& engine, DomEventTarget target, std::string type,
+                            std::size_t identity, bool capture = false) {
+    if (engine.dom_input)
+        engine.dom_input->storage.remove(target, std::move(type), identity, capture);
+}
+
+inline void dispatch_dom_storage(Engine& engine, const PlatformStorageEvent& event) {
+    if (engine.dom_input)
+        engine.dom_input->storage.dispatch(
+            event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
 }
 
 template <typename Event>
@@ -434,6 +456,55 @@ inline Engine& dom_target_owner(DomEventTargetValue value) {
     if (value.owner_lifetime.expired())
         throw std::logic_error("The event target's owning document has expired.");
     return *value.engine;
+}
+
+/** Weak collections distinguish targets without extending their document's lifetime. */
+inline js::WeakIdentity dom_target_weak_identity(DomEventTargetValue value) {
+    auto& engine = dom_target_owner(value);
+    const auto key = (static_cast<std::uint64_t>(value.target.kind) << 32) | value.target.element;
+    auto& identity = engine.dom_targets.identities[key];
+    if (!identity)
+        identity = std::make_shared<const int>(0);
+    return identity;
+}
+
+inline Engine& dom_window_owner(DomEventTargetValue value) {
+    auto& engine = dom_target_owner(value);
+    if (value.target.kind != DomEventTargetKind::Window)
+        throw std::runtime_error("This property requires a Window target.");
+    return engine;
+}
+
+template <typename Storage> Storage& dom_window_property(DomEventTargetValue value) {
+    static const int key = 0;
+    auto& storage = dom_window_owner(value).dom_targets.properties[&key];
+    if (!storage)
+        storage = std::make_shared<Storage>();
+    return *static_cast<Storage*>(storage.get());
+}
+
+inline js::Nullable<DomEventTargetValue> dom_owner_document(DomEventTargetValue value) {
+    auto& engine = dom_target_owner(value);
+    if (value.target.kind == DomEventTargetKind::Window)
+        throw std::runtime_error("ownerDocument requires a Node target.");
+    if (value.target.kind == DomEventTargetKind::Document)
+        return {};
+    return dom_target_value(engine, DomEventTarget::document());
+}
+
+inline Engine& dom_document_owner(DomEventTargetValue value) {
+    auto& engine = dom_target_owner(value);
+    if (value.target.kind != DomEventTargetKind::Document)
+        throw std::runtime_error("This property requires a Document target.");
+    return engine;
+}
+
+inline DomEventTargetValue dom_document_window(DomEventTargetValue value) {
+    return dom_target_value(dom_document_owner(value), DomEventTarget::window());
+}
+
+inline DomEventTargetValue dom_window_document(DomEventTargetValue value) {
+    return dom_target_value(dom_window_owner(value), DomEventTarget::document());
 }
 
 /** The retained element a target names, invalid for Document, Window and text targets. */

@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { NativeHostUi } from "./types.js";
 import { nativeHostUiStyleRules } from "../ui-style-rule.js";
 import {
+    accessedPropertySymbol,
     declarationInDefaultLibrary,
     declaredInDomLibrary,
     libraryGlobal,
@@ -14,6 +15,415 @@ import {
     stringLiteralText,
     unwrapExpression,
 } from "./syntax.js";
+
+type ReportingValue =
+    | "primitive"
+    | "error"
+    | "printable"
+    | "input"
+    | "element"
+    | "canvas"
+    | "style"
+    | "dataset"
+    | "document"
+    | "body"
+    | "console"
+    | "reporter";
+
+/** A reporter may format its input and build confined diagnostic DOM. No
+ * application object, callback, or host service can escape through that DOM. */
+export function hasOnlyReportingEffects(
+    checker: ts.TypeChecker,
+    handler: ts.Expression,
+    options: {
+        ownedRejection: boolean;
+        allowReportingDom: boolean;
+        isUnobservedWrite: (expression: ts.Expression) => boolean;
+    },
+): boolean {
+    const root = unwrapExpression(handler);
+    const fn =
+        ts.isArrowFunction(root) || ts.isFunctionExpression(root)
+            ? root
+            : undefined;
+    if (
+        fn?.parameters.some(
+            (parameter) =>
+                !ts.isIdentifier(parameter.name) ||
+                parameter.initializer ||
+                parameter.dotDotDotToken,
+        )
+    )
+        return false;
+    if (
+        fn &&
+        !checker
+            .getTypeAtLocation(fn)
+            .getCallSignatures()
+            .every(
+                (signature) =>
+                    (checker.getReturnTypeOfSignature(signature).flags &
+                        (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                    0,
+            )
+    )
+        return false;
+    const locals = new Map<ts.Symbol, ReportingValue>();
+    let reported = false;
+    const alternatives = <T>(left: () => T, right: () => T): [T, T] => {
+        const before = reported;
+        const leftValue = left(),
+            leftReports = reported;
+        reported = before;
+        const rightValue = right();
+        reported = leftReports && reported;
+        return [leftValue, rightValue];
+    };
+    for (const [index, parameter] of (fn?.parameters ?? []).entries()) {
+        const symbol = resolvedSymbol(checker, parameter.name);
+        if (!symbol) return false;
+        locals.set(
+            symbol,
+            index === 0 && options.ownedRejection ? "error" : "input",
+        );
+    }
+    const primitive = (expression: ts.Expression): boolean => {
+        const type = checker.getTypeAtLocation(expression);
+        return (type.isUnion() ? type.types : [type]).every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.StringLike |
+                        ts.TypeFlags.NumberLike |
+                        ts.TypeFlags.BooleanLike |
+                        ts.TypeFlags.BigIntLike |
+                        ts.TypeFlags.Null |
+                        ts.TypeFlags.Undefined |
+                        ts.TypeFlags.Void)) !==
+                0,
+        );
+    };
+    const printable = (value: ReportingValue | undefined): boolean =>
+        value === "primitive" || value === "error" || value === "printable";
+    const join = (
+        left: ReportingValue | undefined,
+        right: ReportingValue | undefined,
+    ): ReportingValue | undefined =>
+        !left || !right
+            ? undefined
+            : left === right
+              ? left
+              : printable(left) && printable(right)
+                ? "printable"
+                : undefined;
+    const property = (
+        node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): string | undefined => {
+        if (ts.isPropertyAccessExpression(node)) return node.name.text;
+        if (value(node.argumentExpression) !== "primitive") return undefined;
+        const key = checker.getTypeAtLocation(node.argumentExpression);
+        return key.isStringLiteral() ? key.value : undefined;
+    };
+    const libraryCall = (call: ts.CallExpression): boolean => {
+        const declaration = checker.getResolvedSignature(call)?.declaration;
+        return (
+            declaration !== undefined &&
+            declarationInDefaultLibrary(declaration)
+        );
+    };
+    const value = (expression: ts.Expression): ReportingValue | undefined => {
+        const node = unwrapExpression(expression);
+        if (ts.isIdentifier(node)) {
+            const global = libraryGlobal(checker, node);
+            if (global === "console" || global === "document") return global;
+            const symbol = resolvedSymbol(checker, node);
+            const local = symbol && locals.get(symbol);
+            if (local) return local;
+            if (global === "undefined" || primitive(node)) return "primitive";
+            return undefined;
+        }
+        if (
+            ts.isStringLiteralLike(node) ||
+            ts.isNumericLiteral(node) ||
+            ts.isBigIntLiteral(node) ||
+            node.kind === ts.SyntaxKind.TrueKeyword ||
+            node.kind === ts.SyntaxKind.FalseKeyword ||
+            node.kind === ts.SyntaxKind.NullKeyword
+        )
+            return "primitive";
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        ) {
+            const name = property(node);
+            if (!name) return undefined;
+            const member = accessedPropertySymbol(checker, node);
+            if (
+                member?.declarations?.some(
+                    (declaration) =>
+                        !declarationInDefaultLibrary(declaration) &&
+                        (ts.isGetAccessorDeclaration(declaration) ||
+                            ts.isSetAccessorDeclaration(declaration)),
+                )
+            )
+                return undefined;
+            const owner = value(node.expression);
+            if (
+                owner === "console" &&
+                member?.declarations?.every(declarationInDefaultLibrary)
+            ) {
+                const signatures = checker
+                    .getTypeAtLocation(node)
+                    .getCallSignatures();
+                if (
+                    signatures.length &&
+                    signatures.every(
+                        (signature) =>
+                            (checker.getReturnTypeOfSignature(signature).flags &
+                                ts.TypeFlags.Void) !==
+                            0,
+                    )
+                )
+                    return "reporter";
+            }
+            if (owner === "document" && name === "body") return "body";
+            if (
+                owner === "error" &&
+                ["message", "stack", "name"].includes(name)
+            )
+                return "primitive";
+            if (owner === "element" && name === "style") return "style";
+            if (
+                (owner === "element" || owner === "canvas") &&
+                name === "dataset"
+            )
+                return "dataset";
+            if (
+                owner === "element" &&
+                ["textContent", "innerText", "className", "id"].includes(name)
+            )
+                return "primitive";
+            if (owner === "style" || owner === "dataset") return "primitive";
+            return undefined;
+        }
+        if (ts.isCallExpression(node)) {
+            const reportedBeforeCall = reported;
+            if (!libraryCall(node)) return undefined;
+            const callee = unwrapExpression(node.expression);
+            const global = libraryGlobal(checker, callee);
+            if (
+                ["String", "Number", "Boolean"].includes(global ?? "") &&
+                node.arguments.length <= 1 &&
+                node.arguments.every((argument) => printable(value(argument)))
+            )
+                return "primitive";
+            if (
+                ts.isPropertyAccessExpression(callee) ||
+                ts.isElementAccessExpression(callee)
+            ) {
+                const owner = value(callee.expression),
+                    name = property(callee);
+                if (
+                    value(callee) === "reporter" &&
+                    node.arguments.every((argument) => {
+                        const input = value(argument);
+                        return printable(input) || input === "input";
+                    })
+                ) {
+                    reported = true;
+                    return "primitive";
+                }
+                if (
+                    owner === "document" &&
+                    (name === "getElementById" || name === "querySelector") &&
+                    node.arguments.length === 1 &&
+                    value(node.arguments[0]!) === "primitive"
+                ) {
+                    const type = checker.getNonNullableType(
+                        checker.getTypeAtLocation(expression),
+                    );
+                    const symbol = type.getSymbol();
+                    if (
+                        symbol?.getName() === "HTMLCanvasElement" &&
+                        declaredInDomLibrary(symbol)
+                    )
+                        return "canvas";
+                }
+                if (
+                    options.allowReportingDom &&
+                    (owner === "canvas" || owner === "element") &&
+                    name === "setAttribute" &&
+                    node.arguments.length === 2 &&
+                    value(node.arguments[0]!) === "primitive" &&
+                    printable(value(node.arguments[1]!))
+                ) {
+                    const attribute = checker.getTypeAtLocation(
+                        node.arguments[0]!,
+                    );
+                    if (
+                        attribute.isStringLiteral() &&
+                        /^data-[a-z0-9_.-]+$/i.test(attribute.value)
+                    ) {
+                        // A missing optional receiver performs no reporting.
+                        reported = ts.isCallChain(node)
+                            ? reportedBeforeCall
+                            : true;
+                        return "primitive";
+                    }
+                }
+                if (
+                    options.allowReportingDom &&
+                    owner === "document" &&
+                    name === "createElement" &&
+                    node.arguments.length === 1 &&
+                    ts.isStringLiteralLike(node.arguments[0]!) &&
+                    ["pre", "div", "span", "p", "code", "section"].includes(
+                        node.arguments[0].text,
+                    )
+                )
+                    return "element";
+                if (
+                    options.allowReportingDom &&
+                    (owner === "body" || owner === "element") &&
+                    (name === "appendChild" || name === "append") &&
+                    node.arguments.length > 0 &&
+                    (name !== "appendChild" || node.arguments.length === 1) &&
+                    node.arguments.every(
+                        (argument) => value(argument) === "element",
+                    )
+                ) {
+                    reported = true;
+                    return name === "appendChild" ? "element" : "primitive";
+                }
+            }
+            return undefined;
+        }
+        if (ts.isConditionalExpression(node)) {
+            if (!value(node.condition)) return undefined;
+            const [yes, no] = alternatives(
+                () => value(node.whenTrue),
+                () => value(node.whenFalse),
+            );
+            return join(yes, no);
+        }
+        if (ts.isTemplateExpression(node))
+            return node.templateSpans.every((span) =>
+                printable(value(span.expression)),
+            )
+                ? "primitive"
+                : undefined;
+        if (ts.isBinaryExpression(node)) {
+            if (
+                isAssignmentExpression(node) ||
+                node.operatorToken.kind === ts.SyntaxKind.InKeyword
+            )
+                return undefined;
+            const left = value(node.left);
+            if (node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword)
+                return left === "error" &&
+                    libraryGlobal(checker, unwrapExpression(node.right)) ===
+                        "Error"
+                    ? "primitive"
+                    : undefined;
+            const beforeRight = reported;
+            const right = value(node.right);
+            if (
+                [
+                    ts.SyntaxKind.AmpersandAmpersandToken,
+                    ts.SyntaxKind.BarBarToken,
+                    ts.SyntaxKind.QuestionQuestionToken,
+                ].includes(node.operatorToken.kind)
+            ) {
+                reported = beforeRight;
+                return join(left, right);
+            }
+            return printable(left) && printable(right)
+                ? "primitive"
+                : undefined;
+        }
+        if (ts.isPrefixUnaryExpression(node)) {
+            if (isUpdateExpression(node)) return undefined;
+            const operand = value(node.operand);
+            return operand &&
+                (node.operator === ts.SyntaxKind.ExclamationToken ||
+                    printable(operand))
+                ? "primitive"
+                : undefined;
+        }
+        if (ts.isTypeOfExpression(node) || ts.isVoidExpression(node))
+            return value(node.expression) ? "primitive" : undefined;
+        return undefined;
+    };
+    const write = (expression: ts.BinaryExpression): boolean => {
+        if (
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !printable(value(expression.right))
+        )
+            return false;
+        const left = unwrapExpression(expression.left);
+        if (
+            !ts.isPropertyAccessExpression(left) &&
+            !ts.isElementAccessExpression(left)
+        )
+            return false;
+        const name = property(left);
+        if (!name) return false;
+        const owner = value(left.expression);
+        const safe =
+            owner === "dataset"
+                ? options.allowReportingDom || options.isUnobservedWrite(left)
+                : options.allowReportingDom &&
+                  (owner === "style" ||
+                      (owner === "element" &&
+                          [
+                              "textContent",
+                              "innerText",
+                              "className",
+                              "id",
+                          ].includes(name)));
+        if (safe) reported = true;
+        return safe;
+    };
+    const statement = (node: ts.Statement): boolean => {
+        if (ts.isBlock(node)) return node.statements.every(statement);
+        if (ts.isVariableStatement(node)) {
+            if ((node.declarationList.flags & ts.NodeFlags.Const) === 0)
+                return false;
+            return node.declarationList.declarations.every((declaration) => {
+                if (
+                    !ts.isIdentifier(declaration.name) ||
+                    !declaration.initializer
+                )
+                    return false;
+                const symbol = resolvedSymbol(checker, declaration.name);
+                const initial = value(declaration.initializer);
+                if (!symbol || !initial) return false;
+                locals.set(symbol, initial);
+                return true;
+            });
+        }
+        if (ts.isIfStatement(node)) {
+            if (!value(node.expression)) return false;
+            const [yes, no] = alternatives(
+                () => statement(node.thenStatement),
+                () => !node.elseStatement || statement(node.elseStatement),
+            );
+            return yes && no;
+        }
+        if (ts.isExpressionStatement(node)) {
+            const expression = unwrapExpression(node.expression);
+            return ts.isBinaryExpression(expression) &&
+                isAssignmentExpression(expression)
+                ? write(expression)
+                : value(expression) !== undefined;
+        }
+        return ts.isEmptyStatement(node);
+    };
+    if (!fn) return value(root) === "reporter";
+    const safe = ts.isBlock(fn.body)
+        ? statement(fn.body)
+        : value(fn.body) !== undefined;
+    return safe && reported;
+}
 
 const metadataReaders = new Set([
     "getAttribute",

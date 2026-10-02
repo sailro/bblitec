@@ -978,6 +978,7 @@ function uiTextMutationFixture(source: string): string {
         "UiElementRecord& ui_element(",
         "void mark_ui_changed(Engine& engine)",
         "void mark_ui_changed(Engine& engine,",
+        "bool ui_prepare_content_replacement(",
         "void ui_replace_children(",
         "void ui_set_text(",
     ]

@@ -853,6 +853,19 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-grid-placement",
+        name: "Regression - Grid Placement",
+        source: "examples/regression-grid-placement.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Grid Placement",
+        parity: {
+            maxFullMad: 0.1,
+            maxForegroundMad: 0.5,
+            backgroundColor: [32, 40, 48],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",

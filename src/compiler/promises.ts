@@ -162,6 +162,7 @@ export function compileImmediatePromise(
     }
     const callback = argumentAt(call, 0);
     if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
+        if (!context.options.workers) throw new ApplicationRealmRequired();
         context.fail(
             callback,
             "Immediate promise then requires an inline callback.",
@@ -183,6 +184,7 @@ export function compileImmediatePromise(
         !ts.isArrowFunction(rejection) &&
         !ts.isFunctionExpression(rejection)
     ) {
+        if (!context.options.workers) throw new ApplicationRealmRequired();
         context.fail(
             rejection,
             "Immediate promise rejection callback must be inline.",
@@ -268,6 +270,7 @@ function compileImmediateCatch(
     }
     const callback = argumentAt(call, 0);
     if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
+        if (!context.options.workers) throw new ApplicationRealmRequired();
         context.fail(
             callback,
             "Immediate promise catch requires an inline callback.",

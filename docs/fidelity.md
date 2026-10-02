@@ -26,7 +26,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Typed records | Required undefined fields retain their keys and are omitted by JSON; an optional property holding undefined is absent; keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data. Locale case conversion validates and selects only the first requested tag, matching Chromium |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
-| Weak collections and WeakRef | Keys and targets retained strongly |
+| Weak collections and WeakRef | Erased object/DOM WeakMap keys use weak identity; other keys and WeakRef targets are retained strongly |
 | Retired meshes | A mesh that left its last scene keeps its record, with its last pose and bounds, while a mesh is parented under it or a shadow caster array, a physics body or an edit gizmo names it, and then gives its slot to a later mesh; touching it through a kept program reference afterwards throws "Native handle refers to a retired record", where JavaScript reaches the detached object |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |

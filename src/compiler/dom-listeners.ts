@@ -1,5 +1,4 @@
 import ts from "typescript";
-import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
@@ -29,6 +28,7 @@ type Context = Pick<
     | "cppString"
     | "emit"
     | "emitDiscardedValue"
+    | "probeEmission"
 >;
 
 const pointerNames = new Set([
@@ -101,15 +101,17 @@ export function isCustomDomEventName(type: string): boolean {
         !keyboardNames.has(type) &&
         !transitionNames.has(type) &&
         !dragNames.has(type) &&
+        type !== "storage" &&
         type !== "pagehide"
     );
 }
 
 type DomListenerFamily =
-    "custom" | "keyboard" | "pointer" | "transition" | "drag";
+    "custom" | "keyboard" | "pointer" | "transition" | "drag" | "storage";
 
 /** The shared dispatch family a DOM event name joins, if any. */
 function domListenerFamily(type: string): DomListenerFamily | undefined {
+    if (type === "storage") return "storage";
     if (keyboardNames.has(type)) return "keyboard";
     if (pointerNames.has(type)) return "pointer";
     if (transitionNames.has(type)) return "transition";
@@ -122,13 +124,20 @@ export function elementDomHandlerFamily(
     type: string,
 ): "keyboard" | "pointer" | "drag" | undefined {
     const family = domListenerFamily(type);
-    return family === "custom" || family === "transition" || type === "resize"
+    return family === "custom" ||
+        family === "transition" ||
+        family === "storage" ||
+        type === "resize"
         ? undefined
         : family;
 }
 
 /** Each family's borrowed event view. */
 const DOM_CALLBACK_EVENTS = {
+    storage: {
+        cppType: "const bbl::PlatformStorageEvent&",
+        kind: "platform-mouse-event",
+    },
     custom: {
         cppType: "const bbl::PlatformCustomEvent&",
         kind: "custom-event",
@@ -239,7 +248,7 @@ export function listenerOptions(
     };
 }
 
-function pinDetached(
+export function pinDetached(
     context: Pick<Context, "bindings">,
     value: Value,
     label: string,
@@ -270,7 +279,7 @@ function compileDomCallback(
         callback,
         { cppType: event.cppType, name },
         [
-            family === "transition" || family === "drag"
+            family === "transition" || family === "drag" || family === "storage"
                 ? valueForKind("platform-mouse-event", {
                       cpp: `bbl::js::BorrowedEvent(${name})`,
                       readOnly: true,
@@ -365,6 +374,12 @@ export function emitDomEventListener(
     let storedTarget: Value | undefined;
     if (element?.kind === "data" && element.dataType?.kind === "event-target") {
         storedTarget = element;
+    } else if (element?.domEventTargetCpp) {
+        ({ target, engine } = domTargetIdentity(
+            context,
+            element,
+            callee.expression,
+        ));
     } else if (element) {
         engine = context.requireEngine(element, call);
         const owner = pinDetached(
@@ -375,19 +390,7 @@ export function emitDomEventListener(
         );
         target = `bbl::DomEventTarget::node(${owner.cpp}.value)`;
     } else {
-        let global = context.libraryGlobal(callee.expression);
-        if (!global) {
-            const type = context.checker.getNonNullableType(
-                context.checker.getTypeAtLocation(callee.expression),
-            );
-            const symbol = type.getSymbol();
-            if (
-                symbol &&
-                declaredInDefaultLibrary(symbol) &&
-                symbol.name === "Document"
-            )
-                global = "document";
-        }
+        const global = context.libraryGlobal(callee.expression);
         if (global === "window" || global === "document") {
             target = `bbl::DomEventTarget::${global}()`;
             engine =
@@ -397,15 +400,18 @@ export function emitDomEventListener(
             target = "bbl::DomEventTarget::canvas()";
             engine = context.requireDefaultEngine(call);
         } else {
-            const type = context.dataLowerer.dataTypeAt(callee.expression);
-            const value =
-                type?.kind === "event-target"
-                    ? context.dataLowerer.narrowOptional(
-                          context.compileValue(callee.expression),
-                          callee.expression,
-                      )
+            const value = context.probeEmission(() => {
+                const candidate = context.dataLowerer.narrowOptional(
+                    context.compileValue(callee.expression),
+                    callee.expression,
+                );
+                return candidate.domEventTargetCpp ||
+                    candidate.kind === "ui-element" ||
+                    candidate.dataType?.kind === "event-target"
+                    ? candidate
                     : undefined;
-            if (value && value.kind !== "data") {
+            });
+            if (value?.domEventTargetCpp || value?.kind === "ui-element") {
                 // An element, Window, Document or canvas bound to a name
                 // typed `EventTarget` is the target it names.
                 ({ target, engine } = domTargetIdentity(
@@ -413,7 +419,7 @@ export function emitDomEventListener(
                     value,
                     callee.expression,
                 ));
-            } else if (value) {
+            } else if (value?.dataType?.kind === "event-target") {
                 storedTarget = value;
             }
         }
@@ -434,14 +440,20 @@ export function emitDomEventListener(
         engine = `bbl::dom_target_owner(${snapshot.cpp})`;
     }
     if (!target || !engine) return false;
-    if (pagehide && target !== "bbl::DomEventTarget::window()") {
+    if (
+        pagehide &&
+        !storedTarget &&
+        target !== "bbl::DomEventTarget::window()"
+    ) {
         context.fail(
             call,
             "Page lifecycle listeners require an asynchronous Window application realm.",
         );
     }
     if (
-        (type === "resize" && target !== "bbl::DomEventTarget::window()") ||
+        (type === "resize" &&
+            !storedTarget &&
+            target !== "bbl::DomEventTarget::window()") ||
         ((type === "focus" || type === "blur") &&
             (target === "bbl::DomEventTarget::document()" ||
                 target === "bbl::DomEventTarget::canvas()"))
@@ -453,6 +465,7 @@ export function emitDomEventListener(
     const custom = family === "custom";
     if (
         custom &&
+        !storedTarget &&
         target !== "bbl::DomEventTarget::window()" &&
         target !== "bbl::DomEventTarget::document()"
     )

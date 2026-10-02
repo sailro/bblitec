@@ -1181,6 +1181,18 @@ export class AsyncLowerer {
         const signature = context.checker
             .getTypeAtLocation(callback)
             .getCallSignatures()[0];
+        const returnType =
+            signature && context.checker.getReturnTypeOfSignature(signature);
+        // A reporting function value still installs a reaction: only its
+        // browser instrumentation is erased, not rejection handling or timing.
+        const reportingOnly =
+            !evaluated &&
+            !inline &&
+            returnType !== undefined &&
+            (returnType.flags &
+                (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                0 &&
+            context.browserErasure.isBrowserOnlyHandler(callback, rejection);
         const neverReturns =
             rejection &&
             signature &&
@@ -1189,11 +1201,12 @@ export class AsyncLowerer {
                 0;
         let stored: Value | undefined;
         if (
-            evaluated ||
-            !inline ||
-            (ts.isIdentifier(inline) &&
-                context.bindings.lookupOptional(inline)?.dataType?.kind ===
-                    "function")
+            !reportingOnly &&
+            (evaluated ||
+                !inline ||
+                (ts.isIdentifier(inline) &&
+                    context.bindings.lookupOptional(inline)?.dataType?.kind ===
+                        "function"))
         ) {
             const value = evaluated ?? context.compileValue(callback);
             const type =
@@ -1261,19 +1274,21 @@ export class AsyncLowerer {
                               ),
                     );
                 }
-                result.value = stored
-                    ? context.dataLowerer.compileFunctionValueCall(
-                          stored,
-                          inputs,
-                          node,
-                      )
-                    : asynchronous
-                      ? this.activate(inline, declaration, inputs, node)
-                      : context.compileCallbackWithValues(
-                            inline!,
+                result.value = reportingOnly
+                    ? { kind: "void", cpp: "" }
+                    : stored
+                      ? context.dataLowerer.compileFunctionValueCall(
+                            stored,
                             inputs,
                             node,
-                        );
+                        )
+                      : asynchronous
+                        ? this.activate(inline, declaration, inputs, node)
+                        : context.compileCallbackWithValues(
+                              inline!,
+                              inputs,
+                              node,
+                          );
                 if (signature)
                     result.value = this.normalizeUndefined(
                         result.value,

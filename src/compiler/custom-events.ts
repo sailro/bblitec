@@ -2,8 +2,8 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
-import { documentEngine } from "./window-events.js";
-import { isCustomDomEventName } from "./dom-listeners.js";
+import { domTargetIdentity } from "./dom-targets.js";
+import { isCustomDomEventName, pinDetached } from "./dom-listeners.js";
 
 type Context = Pick<
     LoweringServices,
@@ -20,6 +20,7 @@ type Context = Pick<
     | "defaultEngine"
     | "options"
     | "compileStringLiteral"
+    | "bindings"
 >;
 
 export function compileCustomEventConstructor(
@@ -81,9 +82,9 @@ export function customEventDispatchTarget(
         if (
             symbol &&
             declaredInDefaultLibrary(symbol) &&
-            symbol.name === "Document"
+            (symbol.name === "Document" || symbol.name === "Window")
         )
-            target = "document";
+            target = symbol.name === "Document" ? "document" : "window";
     }
     if (target !== "document" && target !== "window") return undefined;
     return target;
@@ -93,10 +94,33 @@ export function compileCustomEventDispatch(
     context: Context,
     call: ts.CallExpression,
 ): Value | undefined {
-    const target = customEventDispatchTarget(context, call);
-    if (!target) return undefined;
+    const callee = context.unwrap(call.expression);
+    if (
+        !ts.isPropertyAccessExpression(callee) ||
+        callee.name.text !== "dispatchEvent"
+    )
+        return undefined;
     if (call.arguments.length !== 1)
         context.fail(call, "dispatchEvent requires one event.");
+    const type = context.dataLowerer.dataTypeAt(call.arguments[0]!);
+    if (
+        !customEventDispatchTarget(context, call) &&
+        !(type?.kind === "handle" && type.handle === "custom-event")
+    )
+        return undefined;
+    const owner = pinDetached(
+        context,
+        context.compileValue(callee.expression),
+        "dispatch_target",
+        callee.expression,
+    );
+    const { target, engine } =
+        owner.dataType?.kind === "event-target"
+            ? {
+                  target: `${owner.cpp}.target`,
+                  engine: `bbl::dom_target_owner(${owner.cpp})`,
+              }
+            : domTargetIdentity(context, owner, callee.expression);
     const value = context.compileValue(call.arguments[0]!);
     if (value.kind !== "custom-event" && !value.platformEventBase)
         context.fail(
@@ -108,12 +132,10 @@ export function compileCustomEventDispatch(
     const event = value.platformEventBase
         ? `${value.cpp}.as<bbl::PlatformCustomEvent>()`
         : value.cpp;
-    const engine =
-        documentEngine(context, call) ?? context.requireDefaultEngine(call);
     return {
         kind: "boolean",
         dataType: { kind: "boolean" },
         impure: true,
-        cpp: `bbl::dispatch_custom_event(${engine}, bbl::DomEventTarget::${target}(), ${event})`,
+        cpp: `bbl::dispatch_custom_event(${engine}, ${target}, ${event})`,
     };
 }

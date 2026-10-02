@@ -29,7 +29,7 @@ Check them before adding an implementation. Source rejection does not imply miss
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
-- Source-declared optional Window properties start undefined and retain typed values within their realm; stored records preserve identity across reads, replacement and deletion.
+- Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
@@ -73,6 +73,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
 | Handler properties | Element `on<event>` for represented pointer, keyboard, file-drag and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
 | Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |
+| Storage listeners | Window/Document target identity, optional structural receivers, removal/once/capture and borrowed key/oldValue/newValue/url/storageArea | Own Window writes are silent; external-process storage notifications and constructed StorageEvent are unsupported |
 | File drags | SDL file dragenter/dragover/dragleave/drop on elements, Document and Window; dragover cancellation accepts a drop; borrowed DataTransfer.files, count and first file with name/size | No authored drags, text transfers, items, effects or wider file indices; dragover follows native motion notifications |
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Constructed input events | Owned Event/MouseEvent/PointerEvent/InputEvent values, identity sets, synchronous element/Document/Window dispatch, capture/bubble routing, cancellation and redispatch | Shared pointer, focus and input/change channels only; cross-document redispatch, unrepresented payload fields and option accessors refuse |
@@ -105,7 +106,9 @@ Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relat
 A base Event asserted to KeyboardEvent or MouseEvent reads a checked view of its payload.
 Native Event/MouseEvent parameters borrow dispatch. PointerEvent/InputEvent helpers retain owned payloads
 and shared identity; retained targets reject an expired document.
-CustomEvent retains its detail and identity. Stored EventTargets preserve their document and snapshot before call arguments.
+CustomEvent retains its detail and identity. Stored Window/Document/EventTargets preserve their document
+and snapshot before call arguments. ownerDocument/defaultView retain target identity; Document roots and
+activeElement use that owner. Native picker capability reads remain undefined through stored Window views.
 Optional element calls and stored EventTarget listeners snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
 Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element
@@ -128,6 +131,7 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 
 ### File transfer controls
 
+Window object URLs share the document's lifetime, including before rendering-engine creation and in deferred callbacks.
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
 live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
@@ -176,8 +180,9 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | --- | --- | --- |
 | Position/box | Reached defaults, fixed/inset, viewport/px/rem calc/min/max/clamp, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; containing-block/element-font-relative math, rem math in font sizing or custom properties, and unrepresented shorthands |
 | Flex | Wrapping/reversal, grow/shrink/basis, numeric shorthand, flow, alignment, independent gaps | Intrinsic basis keywords and unrepresented CSS math |
-| Grid | Row-major grid/inline-grid; auto/px/fr, minmax(px,fr), integer repeat, implicit rows, gaps/alignment; positive grid-column start/end; intrinsic flexible spans | 256 explicit tracks; flexible spans require percentage width; span minimum-track growth, named/alternate placement, percentage tracks and broader intrinsic functions |
+| Grid | Sparse row flow; numeric column/row lines, negative lines and spans; auto/px/fr, minmax(auto or px, auto/px/fr), integer/auto-fit/auto-fill repeat, implicit track patterns, gaps/alignment and intrinsic spans | 256 tracks per axis; named areas/lines, alternate flow, subgrid, percentage/relative tracks, broader intrinsic functions and absolute-item placement |
 | Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
+| Isolation | Reversible auto/isolate stacking contexts for painting and hit testing | Blend modes remain outside the retained surface |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
 | Media | Reached max-width, portrait/landscape and reduced-motion rules | Reduced motion polls Windows/macOS accessibility preferences, Android animator scale or the Linux desktop portal (standard reduced-motion, then GNOME enable-animations); unavailable preferences refuse |
 | Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages |

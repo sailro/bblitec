@@ -939,6 +939,17 @@ export class StaticEvaluator {
      * expressions untouched.
      */
     public castNumber(value: Value, precision: "float" | "double"): string {
+        if (
+            value.dataType?.kind === "optional" &&
+            value.dataType.inner.kind === "number" &&
+            value.preserveUncheckedLookup
+        ) {
+            this.onJsData();
+            const compiled = `bbl::js::number_from_optional(${value.cpp})`;
+            return precision === "float"
+                ? `static_cast<float>(${compiled})`
+                : compiled;
+        }
         if (isJsonValue(value)) {
             // `Number(document)` at the sink, which is where JavaScript
             // coerces one: an absent property is NaN, exactly as reading

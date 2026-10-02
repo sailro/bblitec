@@ -520,9 +520,13 @@ export function borrowedPlatformEventKind(
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
     // Extended events and DataTransfer borrow the checked dispatch payload.
     if (
-        ["Event", "TransitionEvent", "DragEvent", "DataTransfer"].includes(
-            symbol.name,
-        )
+        [
+            "Event",
+            "TransitionEvent",
+            "DragEvent",
+            "DataTransfer",
+            "StorageEvent",
+        ].includes(symbol.name)
     )
         return "event";
     if (symbol.name === "MouseEvent") return "mouse";
@@ -530,6 +534,32 @@ export function borrowedPlatformEventKind(
     if (symbol.name === "ErrorEvent") return "error";
     if (symbol.name === "PromiseRejectionEvent") return "rejection";
     return undefined;
+}
+
+/** Preserve event provenance through inheritance and complete mapped views. */
+function isDomEventType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    candidate = type,
+    seen = new Set<ts.Type>(),
+): boolean {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return (
+        (candidate.symbol?.name === "Event" &&
+            declaredInDomLibrary(candidate.symbol) &&
+            checker.isTypeAssignableTo(type, candidate)) ||
+        (candidate.isIntersection() &&
+            candidate.types.some((member) =>
+                isDomEventType(checker, type, member, seen),
+            )) ||
+        (candidate.getBaseTypes() ?? []).some((base) =>
+            isDomEventType(checker, type, base, seen),
+        ) ||
+        (candidate.aliasTypeArguments ?? []).some((argument) =>
+            isDomEventType(checker, type, argument, seen),
+        )
+    );
 }
 
 export function isDomElementType(symbol: ts.Symbol): boolean {
@@ -1454,7 +1484,9 @@ export class DataTypeRegistry {
         }
         const platformHandle = platformHandleKind(type);
         if (
-            type.symbol?.name === "EventTarget" &&
+            ["EventTarget", "Window", "Document"].includes(
+                type.symbol?.name ?? "",
+            ) &&
             declaredInDomLibrary(type.symbol)
         )
             return { kind: "event-target" };
@@ -1644,10 +1676,8 @@ export class DataTypeRegistry {
                     ? { kind: "vector", element: storedElement }
                     : { kind: "span", element: storedElement };
             }
-            // A WeakMap or WeakSet holds its object keys by identity exactly as
-            // Map and Set do; the weakness only lets an unreachable key be
-            // collected, which nothing in a program can observe. The cycle
-            // collector reclaims what the program can no longer reach either way.
+            // Erased object and DOM keys carry native weak identity tokens.
+            // Other concrete weak collections retain the Map/Set adaptation.
             if (
                 symbolName === "Map" ||
                 symbolName === "ReadonlyMap" ||
@@ -1658,6 +1688,18 @@ export class DataTypeRegistry {
                 if (!keyType || !valueType) return undefined;
                 const key = this.fromStoredTsType(keyType, node);
                 const value = this.fromStoredTsType(valueType, node);
+                if (
+                    symbolName === "WeakMap" &&
+                    value &&
+                    ((keyType.flags & ts.TypeFlags.NonPrimitive) !== 0 ||
+                        key?.kind === "event-target")
+                )
+                    return {
+                        kind: "map",
+                        weak: true,
+                        key: { kind: "weak-key" },
+                        value: this.markStoredObjectReferences(value),
+                    };
                 if (!key || !value) return undefined;
                 return {
                     kind: "map",
@@ -2987,6 +3029,7 @@ export class DataTypeRegistry {
         provisionalName: string,
         allowStoredFunctions: boolean,
     ): DataType | undefined {
+        if (isDomEventType(this.checker, type)) return undefined;
         const properties = this.checker.getPropertiesOfType(type);
         if (properties.length === 0) {
             return undefined;

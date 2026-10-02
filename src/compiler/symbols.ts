@@ -251,6 +251,22 @@ export function resolvedSymbol(
     return symbol && aliasTarget(checker, symbol);
 }
 
+/** The member a dotted access or a literal-typed computed key names. */
+export function accessedPropertySymbol(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): ts.Symbol | undefined {
+    if (ts.isElementAccessExpression(access)) {
+        const key = checker.getTypeAtLocation(access.argumentExpression);
+        if (key.isStringLiteral() || key.isNumberLiteral())
+            return checker.getPropertyOfType(
+                checker.getTypeAtLocation(access.expression),
+                String(key.value),
+            );
+    }
+    return resolvedSymbol(checker, access);
+}
+
 /**
  * The constant an enum member access (`Shape.Ball`, `Shape["Ball"]`)
  * names. The checker answers `getConstantValue` on the access itself only
@@ -378,6 +394,36 @@ export function libraryGlobal(
 /** A reader's view of {@link libraryGlobal}, bound to its program. */
 export type LibraryGlobal = (expression: ts.Expression) => string | undefined;
 
+/** Literal-valued readonly exports include the pin's `as const` enum bags. */
+export function pinnedConstantProperty(
+    checker: ts.TypeChecker,
+    expression: ts.PropertyAccessExpression,
+): number | string | undefined {
+    const owner = expression.expression;
+    const ownerDeclaration = ts.isIdentifier(owner)
+        ? resolvedSymbol(checker, owner)?.declarations?.[0]
+        : undefined;
+    if (
+        !ownerDeclaration ||
+        declarationOrigin(ownerDeclaration) !== "babylon"
+    ) {
+        return undefined;
+    }
+    const declaration = resolvedSymbol(checker, expression)?.declarations?.find(
+        ts.isPropertySignature,
+    );
+    if (
+        !declaration?.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+        )
+    )
+        return undefined;
+    const type = checker.getTypeAtLocation(expression);
+    return type.isNumberLiteral() || type.isStringLiteral()
+        ? type.value
+        : undefined;
+}
+
 export class CompilerSymbols {
     public constructor(private readonly checker: ts.TypeChecker) {}
 
@@ -423,34 +469,11 @@ export class CompilerSymbols {
         })?.name;
     }
 
-    /** Literal-valued readonly exports include the pin's `as const` enum bags. */
+    /** See {@link pinnedConstantProperty}. */
     public pinnedConstantProperty(
         expression: ts.PropertyAccessExpression,
     ): number | string | undefined {
-        const owner = expression.expression;
-        const ownerDeclaration = ts.isIdentifier(owner)
-            ? this.valueSymbol(owner)?.declarations?.[0]
-            : undefined;
-        if (
-            !ownerDeclaration ||
-            declarationOrigin(ownerDeclaration) !== "babylon"
-        ) {
-            return undefined;
-        }
-        const declaration = resolvedSymbol(
-            this.checker,
-            expression,
-        )?.declarations?.find(ts.isPropertySignature);
-        if (
-            !declaration?.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
-            )
-        )
-            return undefined;
-        const type = this.checker.getTypeAtLocation(expression);
-        return type.isNumberLiteral() || type.isStringLiteral()
-            ? type.value
-            : undefined;
+        return pinnedConstantProperty(this.checker, expression);
     }
 
     public valueSymbol(identifier: ts.MemberName): ts.Symbol | undefined {

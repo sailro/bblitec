@@ -2719,6 +2719,8 @@ function compileMapDataMethod(
     narrowed: Value,
     dataType: DataType & { kind: "map" },
 ): Value | undefined {
+    if (dataType.weak && !["get", "set", "has", "delete"].includes(method))
+        lowerer.context.fail(call, `WeakMap.${method} is not represented.`);
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
     lowerer.context.reachJsData();

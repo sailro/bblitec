@@ -16375,14 +16375,18 @@ test("compiles Babylon Lite scene 267 Standard vertex colors", () => {
     // The RGBA colors ride the ninth createMeshFromData slot, after the
     // three optional typed arrays the scene skips with `undefined`.
     const colors =
-        /auto (\w+) = bbl::js::Nullable<bbl::js::F32Array>\{bbl::js::f32_array_from\(bbl::js::Array<double>\{0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0, 1\.0, 0\.0, 1\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0\}\)\};/.exec(
+        /bbl::js::F32Array (\w+) = bbl::js::f32_array_from\(bbl::js::Array<double>\{0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0, 1\.0, 0\.0, 1\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0\}\);/.exec(
             result.cpp,
         );
     assert.ok(colors);
+    const colorStream = new RegExp(
+        `auto (\\w+) = bbl::js::Nullable<bbl::js::F32Array>\\{${colors[1]}\\};`,
+    ).exec(result.cpp);
+    assert.ok(colorStream);
     assert.match(
         result.cpp,
         new RegExp(
-            `create_retained_mesh_from_data\\([^;]*std::nullopt, std::nullopt, std::nullopt, ${colors[1]}\\.to_optional\\(\\)\\)`,
+            `create_retained_mesh_from_data\\([^;]*std::nullopt, std::nullopt, std::nullopt, ${colorStream[1]}\\.to_optional\\(\\)\\)`,
         ),
     );
     assert.match(result.cpp, /\.disable_lighting = true;/);
@@ -20632,9 +20636,8 @@ test("materializes entry-module state a main() scene rebinds", () => {
         (result.cpp.match(/bbl::Vec3d\{v_curX, 5\.0, 0\.0\}/g) ?? []).length,
         1,
     );
-    assert.equal((result.cpp.match(/v_curX \+= 2\.0;/g) ?? []).length, 1);
-    // A module let nothing rebinds is still a folded constant: no storage.
     assert.doesNotMatch(result.cpp, /v_unmoved/);
+    assert.equal((result.cpp.match(/v_curX \+= 2\.0;/g) ?? []).length, 1);
 });
 
 test("shares one cell for entry-module state a stored callback rebinds", () => {
@@ -20679,29 +20682,6 @@ test("shares one cell for entry-module state a stored callback rebinds", () => {
     assert.equal(
         (result.cpp.match(/\(\*v_ticks\) \+= 1\.0;/g) ?? []).length,
         1,
-    );
-});
-
-test("refuses entry-module state whose declaration is a binding pattern", () => {
-    // Destructuring declares no name the storage pass can materialize, so
-    // the read fails by name rather than reading a folded initializer the
-    // assignment has already replaced.
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-
-                let [slot] = [3];
-
-                async function main(): Promise<void> {
-                    const engine = await createEngine({});
-                    slot = 7;
-                    engine.setHardwareScalingLevel(slot);
-                }
-
-                void main();
-            `),
-        /Unknown or unsupported variable 'slot'/,
     );
 });
 

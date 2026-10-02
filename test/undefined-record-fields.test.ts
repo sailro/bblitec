@@ -218,13 +218,6 @@ test("erased void completion and optional undefined refuse", () => {
     assert.throws(
         () =>
             compileSource(
-                `const records:Array<{value:undefined}>=[{value:undefined}];Object.hasOwn(records[0]!,'value');`,
-            ),
-        /Object.hasOwn is decided for compile-time records/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
                 `const records:Array<{value:undefined}>=[{value:undefined}];if(JSON.stringify([records[0]!.value])!=='[null]')throw new Error('array');`,
             ),
         /JSON.stringify serializes a plain-data value/,

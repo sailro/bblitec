@@ -78,6 +78,7 @@ test("registers unique generated scene targets", () => {
             "regression-filter-values",
             "regression-retained-svg",
             "regression-markup-values",
+            "regression-grid-placement",
             "regression-instanced-ground",
             "regression-morph-ground",
             "regression-light-setters",

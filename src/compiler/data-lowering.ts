@@ -3488,6 +3488,69 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (dataType.kind === "struct") {
+            if (this.declaredAsDictionary(access.expression)) {
+                if (mode === "write")
+                    this.context.fail(
+                        access,
+                        "Writing through an open dictionary view of fixed fields requires dynamic object storage.",
+                    );
+                const fields = this.context.dataTypes.structFields(
+                    dataType.name,
+                    access,
+                    "accessors",
+                );
+                const common = fields[0]?.type;
+                if (
+                    !common ||
+                    common.kind === "optional" ||
+                    common.kind === "json" ||
+                    fields.some((field) => !dataTypesEqual(field.type, common))
+                )
+                    this.context.fail(
+                        access,
+                        "A fixed-field dictionary view requires one common non-nullable field type.",
+                    );
+                this.context.dataTypes.markStoredObjectReferences(dataType);
+                const receiver = this.context.bindings.pinValueToTemporary(
+                    owner,
+                    "dictionary_view",
+                    access.expression,
+                );
+                const key = this.compileForSink(access.argumentExpression, {
+                    kind: "string",
+                });
+                const parameter =
+                    this.context.allocateTemporaryCppName("property_key");
+                const arrow = this.context.dataTypes.isReferenceStruct(
+                    dataType.name,
+                )
+                    ? "->"
+                    : ".";
+                const resultType = this.context.dataTypes.nullableType(
+                    common,
+                    true,
+                );
+                const resultCpp = this.context.dataTypes.cppType(resultType);
+                this.context.reachJsData();
+                return {
+                    ...this.leafValue(
+                        `([&](const std::string& ${parameter}) -> ${resultCpp} { ` +
+                            fields
+                                .map((field) => {
+                                    const value = this.leafValue(
+                                        `${receiver.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`,
+                                        field.type,
+                                    );
+                                    return `if (${parameter} == ${this.context.cppString(field.sourceName)}) return ${this.compileKnownValueForSink(value, resultType, access)};`;
+                                })
+                                .join(" ") +
+                            ` return ${this.context.dataTypes.absentValue(resultType)}; })(${key})`,
+                        resultType,
+                    ),
+                    preserveUncheckedLookup: true,
+                    nativeCaptures: receiver.nativeCaptures ?? [],
+                };
+            }
             const staticMember = this.context.probeEmission(() => {
                 const key = this.context.compileValue(
                     access.argumentExpression,
@@ -6380,7 +6443,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
-        // A weak collection is its strong twin (see the type mapping).
+        // Weak collections share the Map/Set operation family; key storage selects ownership.
         const constructedKind = constructor.endsWith("Map") ? "map" : "set";
         const direct = this.dataTypeAt(expression);
         const contextualType =
@@ -6436,6 +6499,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(dataType);
         if (dataType.kind === "map") {
+            if (dataType.weak && arguments_.length !== 0)
+                this.context.fail(
+                    expression,
+                    "Erased-key WeakMap construction requires an empty initializer.",
+                );
             if (arguments_.length !== 0) {
                 return compileMapInitializer(this, expression, dataType);
             }
@@ -8369,24 +8437,65 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (ts.isPrivateIdentifier(expression.left)) {
             return this.context.classLowerer.compileBrandCheck(expression);
         }
-        const key = this.context.compileValue(expression.left);
-        const owner = this.context.compileValue(expression.right);
-        return this.membershipCpp(
-            owner,
-            expression.right,
-            key,
-            expression.left,
-            "in",
-        );
+        return this.compileMembership(expression.right, expression.left, "in");
+    }
+
+    public compileMembership(
+        ownerNode: ts.Expression,
+        keyNode: ts.Expression,
+        operator: "in" | "Object.hasOwn",
+    ): string {
+        const compileKey = (): Value =>
+            pinOperand(
+                this.context,
+                this.context.compileValue(keyNode),
+                keyNode,
+                "property_key",
+            );
+        const compileOwner = (): Value => {
+            const value = this.context.compileValue(ownerNode);
+            if (
+                value.dataType?.kind === "struct" ||
+                (value.dataType?.kind === "optional" &&
+                    value.dataType.inner.kind === "struct")
+            )
+                this.context.dataTypes.markStoredObjectReferences(
+                    value.dataType,
+                );
+            if (value.kind === "record") return value;
+            return this.context.bindings.pinValueToTemporary(
+                value,
+                "property_owner",
+                ownerNode,
+            );
+        };
+        let owner: Value;
+        let key: Value;
+        if (operator === "in") {
+            key = compileKey();
+            owner = compileOwner();
+        } else {
+            owner = compileOwner();
+            key = compileKey();
+        }
+        const present = this.narrowOptional(owner, ownerNode);
+        if (
+            present.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(present.dataType.name)
+        )
+            this.context.emit({
+                kind: "expression",
+                code: `static_cast<void>(*(${present.cpp}));`,
+            });
+        return this.membershipCpp(owner, ownerNode, key, keyNode, operator);
     }
 
     /**
      * Whether `owner` carries `key`, as a condition. A compile-time record
      * answers from its properties and a dictionary from its native
-     * membership. `in` also asks a struct, which answers from its type: a
+     * membership. A struct answers from its type: a
      * required field is always present and a `?` one is present when it
-     * holds a value. `Object.hasOwn` declines a struct, whose fields are
-     * its type's rather than the object's own.
+     * holds a value. `in` additionally includes Object.prototype names.
      */
     public membershipCpp(
         owner: Value,
@@ -8399,6 +8508,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             owner.kind === "data"
                 ? this.narrowOptional(owner, ownerNode)
                 : owner;
+        if (
+            (operator === "Object.hasOwn" || key.staticString === undefined) &&
+            (narrowed.classDeclaration ||
+                (narrowed.dataType?.kind === "struct" &&
+                    this.context.dataTypes.isClassStruct(
+                        narrowed.dataType.name,
+                    )))
+        )
+            this.context.fail(
+                ownerNode,
+                "Dynamic or own membership of class instances requires represented prototype descriptors.",
+            );
         // LightBase's discriminator is absent on loadGltf's synthetic SceneNode.
         if (
             operator === "in" &&
@@ -8439,23 +8560,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ].flatMap((fields) => Object.keys(fields ?? {})),
                 ),
             ];
-            if (key.staticString !== undefined)
-                return keys.includes(key.staticString) ? "true" : "false";
-            const name = this.context.allocateTemporaryCppName("property_key");
-            this.context.emit({
-                kind: "declaration",
-                type: "const std::string",
-                name: name,
-                initializer: this.compileKnownValueForSink(
-                    key,
-                    { kind: "string" },
-                    keyNode,
-                ),
-                attributes: "[[maybe_unused]] ",
-            });
-            return keys.length
-                ? `(${keys.map((key) => `${name} == ${this.context.cppString(key)}`).join(" || ")})`
-                : "false";
+            if (key.staticString !== undefined) {
+                if (keys.includes(key.staticString)) return "true";
+                if (operator === "Object.hasOwn") return "false";
+                this.context.reachJsData();
+                return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
+            }
+            const name = this.membershipStringKeyCpp(key, keyNode);
+            const tests = keys.map(
+                (key) => `${name} == ${this.context.cppString(key)}`,
+            );
+            if (operator === "in") {
+                this.context.reachJsData();
+                tests.push(`bbl::js::object_prototype_has_property(${name})`);
+            }
+            return tests.length ? `(${tests.join(" || ")})` : "false";
         }
         const dataType = narrowed.dataType;
         if (isJsonValue(narrowed)) {
@@ -8478,55 +8597,101 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return `${narrowed.cpp}.has(${keyCpp})`;
         }
-        if (
-            operator === "in" &&
-            narrowed.kind === "data" &&
-            dataType?.kind === "struct"
-        ) {
+        if (narrowed.kind === "data" && dataType?.kind === "struct") {
             if (key.staticString === undefined) {
-                this.context.fail(
-                    keyNode,
-                    "'in' over a struct requires a static key.",
+                const keyCpp = this.membershipStringKeyCpp(key, keyNode);
+                const fields = this.context.dataTypes.structFields(
+                    dataType.name,
+                    ownerNode,
                 );
+                const tests = fields.map((field) => {
+                    const present = this.structFieldMembershipCpp(
+                        narrowed.cpp,
+                        dataType.name,
+                        field,
+                        ownerNode,
+                    );
+                    return `(${keyCpp} == ${this.context.cppString(field.sourceName)} && (${present}))`;
+                });
+                if (operator === "in") {
+                    this.context.reachJsData();
+                    tests.push(
+                        `bbl::js::object_prototype_has_property(${keyCpp})`,
+                    );
+                }
+                return tests.length ? `(${tests.join(" || ")})` : "false";
             }
             const field = this.context.dataTypes
                 .structFields(dataType.name, ownerNode)
                 .find((candidate) => candidate.sourceName === key.staticString);
             if (!field) {
+                if (operator === "in") {
+                    this.context.reachJsData();
+                    return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
+                }
                 return "false";
             }
-            const access = this.context.dataTypes.isReferenceStruct(
-                dataType.name,
-            )
-                ? "->"
-                : ".";
-            const slot = `${narrowed.cpp}${access}${field.name}`;
-            // A union arm's field is narrowed by its tag, not its storage.
-            if (field.presentForTags && field.type.kind === "undefined")
-                this.context.fail(
-                    ownerNode,
-                    "A tagged undefined field requires its discriminant for own-property membership.",
-                );
-            if (field.presentForTags)
-                return field.type.kind === "optional"
-                    ? optionalPresentCpp(slot)
-                    : "true";
-            const present = this.context.dataTypes.ownPropertyPresentCpp(
+            return this.structFieldMembershipCpp(
+                narrowed.cpp,
                 dataType.name,
                 field,
-                slot,
                 ownerNode,
             );
-            if (present === undefined) return "true";
-            this.context.reachJsData();
-            return present;
         }
         return this.context.fail(
             ownerNode,
             operator === "in"
                 ? "'in' is decided for compile-time records, dictionaries and structs."
-                : "Object.hasOwn is decided for compile-time records and string-keyed dictionaries; a struct's fields are its type's.",
+                : "Object.hasOwn is decided for compile-time records, dictionaries and structs.",
         );
+    }
+
+    private membershipStringKeyCpp(key: Value, node: ts.Expression): string {
+        if (key.nativeBinding && isStringValue(key)) return key.cpp;
+        const name = this.context.allocateTemporaryCppName("property_key");
+        this.context.emit({
+            kind: "declaration",
+            type: "const std::string",
+            name,
+            initializer: this.compileKnownValueForSink(
+                key,
+                { kind: "string" },
+                node,
+            ),
+            attributes: "[[maybe_unused]] ",
+        });
+        return name;
+    }
+
+    private structFieldMembershipCpp(
+        ownerCpp: string,
+        structName: string,
+        field: DataStructField,
+        node: ts.Node,
+    ): string {
+        const access = this.context.dataTypes.isReferenceStruct(structName)
+            ? "->"
+            : ".";
+        const slot = `${ownerCpp}${access}${field.name}`;
+        // A union arm's field is narrowed by its tag, not its storage.
+        if (field.presentForTags && field.type.kind === "undefined")
+            this.context.fail(
+                node,
+                "A tagged undefined field requires its discriminant for own-property membership.",
+            );
+        if (field.presentForTags)
+            return field.type.kind === "optional"
+                ? optionalPresentCpp(slot)
+                : "true";
+        const present = this.context.dataTypes.ownPropertyPresentCpp(
+            structName,
+            field,
+            slot,
+            node,
+        );
+        if (present === undefined) return "true";
+        this.context.reachJsData();
+        return present;
     }
 
     /**

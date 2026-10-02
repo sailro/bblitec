@@ -261,7 +261,7 @@ function compileObjectIs(
     );
 }
 
-/** `Object.hasOwn(object, key)`: the `in` membership without its struct arm. */
+/** `Object.hasOwn(object, key)`: membership without inherited properties. */
 function compileObjectHasOwn(
     context: ObjectStaticContext,
     call: ts.CallExpression,
@@ -269,13 +269,9 @@ function compileObjectHasOwn(
     context.expectArgumentCount(call, 2, 2);
     const ownerNode = argumentAt(call, 0);
     const keyNode = argumentAt(call, 1);
-    const owner = context.compileValue(ownerNode);
-    const key = context.compileValue(keyNode);
     return booleanValue(
-        context.dataLowerer.membershipCpp(
-            owner,
+        context.dataLowerer.compileMembership(
             ownerNode,
-            key,
             keyNode,
             "Object.hasOwn",
         ),

@@ -89,7 +89,7 @@ test(
             "subpixel-rendering.patch",
         );
         const rmlui = names("rmlui", []);
-        assert.equal(rmlui.length, 30);
+        assert.equal(rmlui.length, 31);
         assert.deepEqual(
             rmlui.map((name) => Number(name.slice(0, 4))),
             rmlui.map((_, index) => index + 1),

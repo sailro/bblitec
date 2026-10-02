@@ -22,7 +22,10 @@ import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
 import { windowInterfaceTypeof } from "./dom-targets.js";
-import { writesUnobservedCanvasMetadata } from "./canvas-instrumentation.js";
+import {
+    hasOnlyReportingEffects,
+    writesUnobservedCanvasMetadata,
+} from "./canvas-instrumentation.js";
 import { staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
 import { declaredInDomLibrary } from "./symbols.js";
@@ -134,6 +137,10 @@ const ABSENT_GLOBAL_MEMBERS: ReadonlySet<string> = new Set([
     "showSaveFilePicker",
 ]);
 
+export function isAbsentWindowMember(name: string): boolean {
+    return ABSENT_GLOBAL_MEMBERS.has(name);
+}
+
 /**
  * A browser value with a native spelling: a primitive, or the deployment
  * query bag, which a read the fold cannot answer parses natively
@@ -159,6 +166,7 @@ interface BrowserErasureContext extends Pick<
     | "isNativeUiValueExpression"
     | "platformDocumentHidden"
     | "defaultEngine"
+    | "evaluationOrder"
     | "referenceSearch"
     | "options"
     | "constantInitializer"
@@ -593,24 +601,17 @@ export class BrowserErasure {
      * and document so an unresolved guard stays a refusal rather than
      * swallowing a nested call. Reporting is exactly what those globals do.
      */
-    public isBrowserOnlyHandler(handler: ts.Expression): boolean {
-        const body =
-            ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
-                ? handler.body
-                : undefined;
-        if (body && ts.isBlock(body)) {
-            return body.statements.every(
-                (statement) =>
-                    ts.isExpressionStatement(statement) &&
-                    this.isBrowserOnlyExpression(statement.expression),
-            );
-        }
-        // A concise body is the expression itself; anything that is not a
-        // function literal is asked directly, which lets a bare
-        // `console.error` pass and a named recovery routine not.
-        return this.isBrowserOnlyExpression(body ?? handler);
+    public isBrowserOnlyHandler(
+        handler: ts.Expression,
+        ownedRejection = false,
+    ): boolean {
+        return hasOnlyReportingEffects(this.context.checker, handler, {
+            ownedRejection,
+            allowReportingDom: ownedRejection && !this.context.options.workers,
+            isUnobservedWrite: (expression) =>
+                this.isBrowserOnlyExpression(expression),
+        });
     }
-
     /**
      * An imported helper with no route to Babylon and no native input can
      * only observe or mutate browser state. Erasing the call as one unit is

@@ -254,6 +254,13 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0031-grid-placement.patch",
+      "purpose": "Two-axis numeric grid placement, finite and intrinsic tracks, bounded auto-repeat and reversible stacking isolation",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

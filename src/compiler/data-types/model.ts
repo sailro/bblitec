@@ -110,6 +110,7 @@ interface DataKinds {
     number: {
         kind: "number";
     };
+    "weak-key": { kind: "weak-key" };
     boolean: {
         kind: "boolean";
     };
@@ -187,6 +188,8 @@ interface DataKinds {
     };
     map: {
         kind: "map";
+        /** Erased object identity, with concrete ownership proven at each key sink. */
+        weak?: true;
         /** Source object index signature; a JavaScript Map has no enumerable entries. */
         dictionary?: true;
         key: DataType;

@@ -31,6 +31,7 @@ import {
 import {
     browserDeploymentValue,
     browserEnvironmentPropertyValue,
+    isAbsentWindowMember,
     type BrowserGlobalContext,
 } from "./browser-erasure.js";
 import {
@@ -51,6 +52,7 @@ import {
 import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
+import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
 import { geometryEnumMember } from "./intrinsics/engine-options.js";
@@ -1900,6 +1902,93 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        const extension = this.context.windowProperties.readFromValue(
+            owner,
+            expression,
+        );
+        if (extension) return extension;
+        const property = expression.name.text;
+        if (
+            (owner.kind === "ui-element" ||
+                owner.domEventTargetCpp ||
+                owner.dataType?.kind === "event-target") &&
+            ["ownerDocument", "defaultView", "document"].includes(property)
+        ) {
+            const target = eventTargetCpp(
+                this.context,
+                owner,
+                expression.expression,
+            );
+            if (property === "ownerDocument") {
+                const sourceType =
+                    this.context.checker.getTypeAtLocation(expression);
+                if ((sourceType.flags & ts.TypeFlags.Null) !== 0) {
+                    this.context.emit({
+                        kind: "expression",
+                        code: `static_cast<void>(bbl::dom_document_owner(${target}));`,
+                    });
+                    return { kind: "json-null", cpp: "nullptr" };
+                }
+                const type = this.context.dataTypes.fromTsType(
+                    sourceType,
+                    expression,
+                );
+                const cpp = `bbl::dom_owner_document(${target})`;
+                return this.context.dataLowerer.leafValue(
+                    type?.kind === "optional" ? cpp : `(${cpp}).value()`,
+                    type?.kind === "optional" ? type : { kind: "event-target" },
+                );
+            }
+            const operation =
+                property === "defaultView"
+                    ? "dom_document_window"
+                    : "dom_window_document";
+            return this.context.dataLowerer.leafValue(
+                `bbl::${operation}(${target})`,
+                { kind: "event-target" },
+            );
+        }
+        if (
+            owner.dataType?.kind === "event-target" &&
+            ["body", "head", "documentElement", "activeElement"].includes(
+                property,
+            )
+        ) {
+            const snapshot = this.context.bindings.pinValueToTemporary(
+                owner,
+                "document_target",
+                expression.expression,
+            );
+            const engine = `bbl::dom_document_owner(${snapshot.cpp})`;
+            this.context.reachFeature("ui:rml", expression);
+            const part =
+                property === "body"
+                    ? "Body"
+                    : property === "head"
+                      ? "Head"
+                      : "Html";
+            return {
+                kind: "ui-element",
+                cpp:
+                    property === "activeElement"
+                        ? `bbl::ui_active_element(${engine})`
+                        : `bbl::ui_document_root(${engine}, bbl::UiDocumentPart::${part})`,
+                engineCpp: engine,
+                dataType: { kind: "handle", handle: "ui-element" },
+            };
+        }
+        if (
+            owner.dataType?.kind === "event-target" &&
+            isAbsentWindowMember(property)
+        ) {
+            this.context.emit({
+                kind: "expression",
+                code: `static_cast<void>(bbl::dom_window_owner(${owner.cpp}));`,
+            });
+            return this.context.dataLowerer.leafValue("bbl::js::Undefined{}", {
+                kind: "undefined",
+            });
+        }
         const target = this.context.ui.narrowedTarget(
             owner,
             expression.expression,
@@ -2842,6 +2931,34 @@ export class PropertyAccessLowerer {
                 };
         }
         if (owner.platformEventBase) {
+            if (
+                ["key", "oldValue", "newValue", "url", "storageArea"].includes(
+                    property,
+                ) &&
+                this.declaredEventInterface(ownerExpression) !== "KeyboardEvent"
+            ) {
+                const payload = `${owner.cpp}.as<bbl::PlatformStorageEvent>()`;
+                if (property === "storageArea")
+                    return this.context.dataLowerer.leafValue(
+                        `(${payload}.has_storage_area ? bbl::js::Nullable<bbl::js::Storage>{bbl::js::local_storage_object()} : bbl::js::Nullable<bbl::js::Storage>{})`,
+                        { kind: "optional", inner: { kind: "storage" } },
+                    );
+                if (property === "url")
+                    return this.context.dataLowerer.leafValue(
+                        `${payload}.url`,
+                        { kind: "string" },
+                    );
+                const field =
+                    property === "key"
+                        ? "key"
+                        : property === "oldValue"
+                          ? "old_value"
+                          : "new_value";
+                return this.context.dataLowerer.leafValue(
+                    `(${payload}.${field} ? bbl::js::Nullable<std::string>{*${payload}.${field}} : bbl::js::Nullable<std::string>{})`,
+                    { kind: "optional", inner: { kind: "string" } },
+                );
+            }
             if (
                 property === "propertyName" &&
                 this.declaredEventInterface(ownerExpression) ===

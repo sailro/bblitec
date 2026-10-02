@@ -12,6 +12,78 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
+for (const [entry, invocation] of [
+    ["implicit", ""],
+    ["terminal", "main();"],
+    ["module", "const invoke = main; invoke();"],
+] as const) {
+    test(`constant enums retain their values with ${entry} startup`, (t) => {
+        const result = compileSource(`
+            enum Base { First = 3, Second, Last = Second + 2 }
+            enum Scale { Small = Base.Last, Large = Small << 1 }
+            enum Tone { Soft = "soft", Bold = "bold" }
+            function main(): void {
+                const numbers: Base[] = [Base.First, Base.Second, Base.Last];
+                const label = {tone: Tone.Bold};
+                if (numbers.join(",") !== "3,4,6" || Scale.Large !== 12 ||
+                    label.tone !== "bold" || Tone["Soft"] !== "soft")
+                    throw new Error("enum startup values");
+            }
+            ${invocation}
+        `);
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        runGeneratedProgram(tools, `module-enum-${entry}`, result.cpp);
+    });
+
+    test(`runtime enum initializers refuse with ${entry} startup`, () => {
+        for (const initializer of [
+            "initialize()",
+            "Math.random()",
+            "Math.abs(-3)",
+        ]) {
+            assert.throws(
+                () =>
+                    compileSource(`
+                    let calls = 0;
+                    function initialize(): number { calls++; return 7; }
+                    enum Mode { Value = ${initializer} }
+                    function main(): void {
+                        if (Mode.Value < 0 || calls < 0) throw new Error("runtime enum");
+                    }
+                    ${invocation}
+                `),
+                /Enum declarations with runtime initializers require runtime enum storage/,
+            );
+        }
+    });
+}
+
+test("authored entry preserves destructured module bindings across rebinding", (t) => {
+    const result = compileSource(`
+        let initializations = 0;
+        function initial(): [number] { initializations++; return [3]; }
+        let [slot] = initial();
+        function read(): number { return slot; }
+        function main(): void {
+            if (initializations !== 1 || read() !== 3)
+                throw new Error("module destructuring initialization");
+            slot = 7;
+            if (read() !== 7) throw new Error("module binding replacement");
+        }
+        main();
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-destructured-entry", result.cpp);
+});
+
 test("initializer planning retains every alias origin across eager calls and recursive helpers", () => {
     const directory = mkdtempSync(join(tmpdir(), "bbl-module-plan-"));
     try {

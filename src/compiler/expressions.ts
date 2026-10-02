@@ -1,4 +1,5 @@
 import { requireWindowHost } from "./window-events.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
@@ -36,6 +37,7 @@ import { isHandleKind } from "./data-types.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
+    accessedPropertySymbol,
     aliasTarget,
     declaredSymbol,
     enumMemberConstant,
@@ -242,6 +244,7 @@ export interface ExpressionContext
             | "libraryGlobal"
             | "callbacks"
             | "requireDefaultEngine"
+            | "defaultEngine"
             | "handleCollections"
             | "compileRegisteredConstant"
             | "compileRegisteredIntrinsic"
@@ -1865,7 +1868,23 @@ export class ExpressionLowerer {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isCallExpression(unwrapped)) {
             for (const argument of unwrapped.arguments) {
-                if (!containsEvaluatedCall(argument)) {
+                if (
+                    !containsEvaluatedCall(argument) &&
+                    !someAnalysisNode(
+                        argument,
+                        (node) =>
+                            (ts.isPropertyAccessExpression(node) ||
+                                ts.isElementAccessExpression(node)) &&
+                            (accessedPropertySymbol(
+                                this.context.checker,
+                                node,
+                            )?.declarations?.some(
+                                ts.isGetAccessorDeclaration,
+                            ) ??
+                                false),
+                        { functions: "skip", types: "skip" },
+                    )
+                ) {
                     continue;
                 }
                 const value = this.compileValue(argument);
@@ -1929,6 +1948,8 @@ export class ExpressionLowerer {
      */
     private compileDeferredCallback(call: ts.CallExpression): Value {
         this.context.expectArgumentCount(call, 2, 2);
+        if (!this.context.defaultEngine() && !this.context.options.workers)
+            throw new ApplicationRealmRequired();
         const delay = staticNumberValue(this.context, argumentAt(call, 1));
         if (delay !== 0) {
             if (
@@ -4094,6 +4115,16 @@ export class ExpressionLowerer {
                         cpp: "",
                         callbackDeclaration: method,
                         callbackRecordOwner: owner,
+                    };
+                if (
+                    this.context.dataLowerer.declaredAsDictionary(
+                        unwrapped.expression,
+                    )
+                )
+                    return {
+                        kind: "json-null",
+                        cpp: "std::nullopt",
+                        preserveUncheckedLookup: true,
                     };
                 this.context.fail(
                     unwrapped.argumentExpression,
