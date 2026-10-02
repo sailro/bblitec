@@ -42,6 +42,126 @@ type Environment = ReadonlyMap<ts.Symbol, Origin>;
 type Domain = readonly string[] | undefined;
 const candidateLimit = 256;
 
+interface SourceGraph {
+    readonly calls: ReadonlyMap<
+        SupportedFunction,
+        readonly ts.CallExpression[]
+    >;
+    readonly writes: ReadonlyMap<ts.Symbol, readonly ts.Expression[]>;
+    readonly mutated: ReadonlySet<ts.Symbol>;
+}
+
+// Source facts outlive emission attempts, but never retain a lowering context.
+const sourceGraphs = new WeakMap<ts.TypeChecker, SourceGraph>();
+
+function calledFunction(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): SupportedFunction | undefined {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return (
+        declaration &&
+        (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration)
+            ? declaration
+            : functionOfDeclaration(declaration))
+    );
+}
+
+function sourceGraph(
+    checker: ts.TypeChecker,
+    sourceFiles: readonly ts.SourceFile[],
+): SourceGraph {
+    const cached = sourceGraphs.get(checker);
+    if (cached) return cached;
+
+    const calls = new Map<SupportedFunction, ts.CallExpression[]>();
+    const writes = new Map<ts.Symbol, ts.Expression[]>();
+    const mutated = new Set<ts.Symbol>();
+    const aliases = new Map<ts.Symbol, Set<ts.Symbol>>();
+    const alias = (target: ts.Node, source: ts.Expression): void => {
+        const type = checker.getNonNullableType(
+            checker.getTypeAtLocation(target),
+        );
+        if (!(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.TypeParameter)))
+            return;
+        const from = resolvedSymbol(checker, target);
+        const root = rootIdentifier(source);
+        const to = root && resolvedSymbol(checker, root);
+        if (from && to) {
+            const targets = aliases.get(from) ?? new Set<ts.Symbol>();
+            targets.add(to);
+            aliases.set(from, targets);
+        }
+    };
+    const mutate = (expression: ts.Expression): void => {
+        const root = rootIdentifier(expression);
+        const symbol = root && resolvedSymbol(checker, root);
+        if (symbol) mutated.add(symbol);
+    };
+    for (const source of sourceFiles) {
+        forEachAnalysisNode(
+            source,
+            (node) => {
+                if (
+                    ts.isVariableDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.initializer
+                )
+                    alias(node.name, node.initializer);
+                if (ts.isCallExpression(node)) {
+                    const declaration = calledFunction(checker, node);
+                    if (declaration) {
+                        const sites = calls.get(declaration) ?? [];
+                        sites.push(node);
+                        calls.set(declaration, sites);
+                        declaration.parameters.forEach((parameter, index) => {
+                            if (
+                                ts.isIdentifier(parameter.name) &&
+                                node.arguments[index]
+                            )
+                                alias(parameter.name, node.arguments[index]);
+                        });
+                    }
+                    const callee = unwrapExpression(node.expression);
+                    if (
+                        ts.isPropertyAccessExpression(callee) &&
+                        receiverWritingMethods.has(callee.name.text)
+                    )
+                        mutate(callee.expression);
+                }
+                if (isUpdateExpression(node)) mutate(node.operand);
+                if (!isAssignmentExpression(node)) return;
+                const target = unwrapExpression(node.left);
+                if (ts.isIdentifier(target)) {
+                    const symbol = resolvedSymbol(checker, target);
+                    if (!symbol) return;
+                    if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+                        mutated.add(symbol);
+                    } else {
+                        const values = writes.get(symbol) ?? [];
+                        values.push(node.right);
+                        writes.set(symbol, values);
+                    }
+                } else {
+                    mutate(target);
+                }
+            },
+            { types: "skip" },
+        );
+    }
+    const pending = [...mutated];
+    for (let index = 0; index < pending.length; index++) {
+        for (const target of aliases.get(pending[index]!) ?? []) {
+            if (mutated.has(target)) continue;
+            mutated.add(target);
+            pending.push(target);
+        }
+    }
+    const graph: SourceGraph = { calls, writes, mutated };
+    sourceGraphs.set(checker, graph);
+    return graph;
+}
+
 /**
  * Fetch-local discovery follows the selected value's declarations and calls.
  * Unknown filename fragments can select only existing files matching an
@@ -93,106 +213,14 @@ export function assetUrlDomain(
 
 class AssetUrlDomain {
     private readonly active = new Set<ts.Node>();
-    private readonly calls = new Map<SupportedFunction, ts.CallExpression[]>();
-    private readonly writes = new Map<ts.Symbol, ts.Expression[]>();
-    private readonly mutated = new Set<ts.Symbol>();
+    private readonly graph: SourceGraph;
     private remaining = 4096;
 
     constructor(
         private readonly context: Context,
         private readonly site: ts.Node,
     ) {
-        const aliases: [ts.Symbol, ts.Symbol][] = [];
-        const alias = (target: ts.Node, source: ts.Expression): void => {
-            const type = context.checker.getNonNullableType(
-                context.checker.getTypeAtLocation(target),
-            );
-            if (
-                !(
-                    type.flags &
-                    (ts.TypeFlags.Object | ts.TypeFlags.TypeParameter)
-                )
-            )
-                return;
-            const from = resolvedSymbol(context.checker, target);
-            const root = rootIdentifier(source);
-            const to = root && resolvedSymbol(context.checker, root);
-            if (from && to) aliases.push([from, to]);
-        };
-        const mutate = (expression: ts.Expression): void => {
-            const root = rootIdentifier(expression);
-            const symbol = root && resolvedSymbol(context.checker, root);
-            if (symbol) this.mutated.add(symbol);
-        };
-        for (const source of context.sourceFiles()) {
-            forEachAnalysisNode(
-                source,
-                (node) => {
-                    if (
-                        ts.isVariableDeclaration(node) &&
-                        ts.isIdentifier(node.name) &&
-                        node.initializer
-                    )
-                        alias(node.name, node.initializer);
-                    if (ts.isCallExpression(node)) {
-                        const declaration = this.function(node);
-                        if (declaration) {
-                            const calls = this.calls.get(declaration) ?? [];
-                            calls.push(node);
-                            this.calls.set(declaration, calls);
-                            declaration.parameters.forEach(
-                                (parameter, index) => {
-                                    if (
-                                        ts.isIdentifier(parameter.name) &&
-                                        node.arguments[index]
-                                    )
-                                        alias(
-                                            parameter.name,
-                                            node.arguments[index],
-                                        );
-                                },
-                            );
-                        }
-                        const callee = unwrapExpression(node.expression);
-                        if (
-                            ts.isPropertyAccessExpression(callee) &&
-                            receiverWritingMethods.has(callee.name.text)
-                        )
-                            mutate(callee.expression);
-                    }
-                    if (isUpdateExpression(node)) mutate(node.operand);
-                    if (!isAssignmentExpression(node)) return;
-                    const target = unwrapExpression(node.left);
-                    if (ts.isIdentifier(target)) {
-                        const symbol = resolvedSymbol(context.checker, target);
-                        if (!symbol) return;
-                        if (
-                            node.operatorToken.kind !==
-                            ts.SyntaxKind.EqualsToken
-                        ) {
-                            this.mutated.add(symbol);
-                        } else {
-                            const writes = this.writes.get(symbol) ?? [];
-                            writes.push(node.right);
-                            this.writes.set(symbol, writes);
-                        }
-                    } else {
-                        mutate(target);
-                    }
-                },
-                { types: "skip" },
-            );
-        }
-        let changed: boolean;
-        do {
-            changed = false;
-            for (const [from, to] of aliases) {
-                if (this.mutated.has(from) && !this.mutated.has(to)) {
-                    this.mutated.add(to);
-                    changed = true;
-                }
-            }
-        } while (changed);
+        this.graph = sourceGraph(context.checker, context.sourceFiles());
     }
 
     private bounded(values: readonly string[]): readonly string[] {
@@ -244,7 +272,7 @@ class AssetUrlDomain {
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.context.checker, node);
             if (!symbol) return undefined;
-            if (this.mutated.has(symbol)) {
+            if (this.graph.mutated.has(symbol)) {
                 const type = this.context.checker.getTypeAtLocation(node);
                 // Native browser objects (including the existing module URL
                 // helper's URL) retain their separate admission mechanism.
@@ -270,7 +298,7 @@ class AssetUrlDomain {
                 )
                     return [];
                 if (declaration.initializer) {
-                    const writes = this.writes.get(symbol) ?? [];
+                    const writes = this.graph.writes.get(symbol) ?? [];
                     return this.union(
                         [declaration.initializer, ...writes].map((value) =>
                             this.read(value, projection, environment),
@@ -294,7 +322,7 @@ class AssetUrlDomain {
                 if (!owner) return undefined;
                 const index = owner.parameters.indexOf(declaration);
                 return this.union(
-                    (this.calls.get(owner) ?? []).map((call) => {
+                    (this.graph.calls.get(owner) ?? []).map((call) => {
                         const argument =
                             call.arguments[index] ?? declaration.initializer;
                         return argument
@@ -406,18 +434,6 @@ class AssetUrlDomain {
         }
     }
 
-    private function(call: ts.CallExpression): SupportedFunction | undefined {
-        const declaration =
-            this.context.checker.getResolvedSignature(call)?.declaration;
-        return (
-            declaration &&
-            (ts.isArrowFunction(declaration) ||
-            ts.isFunctionExpression(declaration)
-                ? declaration
-                : functionOfDeclaration(declaration))
-        );
-    }
-
     private returned(
         declaration: SupportedFunction,
         projection: Projection,
@@ -451,7 +467,7 @@ class AssetUrlDomain {
         projection: Projection,
         environment: Environment,
     ): Domain {
-        const declaration = this.function(call);
+        const declaration = calledFunction(this.context.checker, call);
         if (declaration?.body) {
             const nested = new Map(environment);
             for (const [index, parameter] of declaration.parameters.entries()) {
