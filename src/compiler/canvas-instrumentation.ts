@@ -15,6 +15,25 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 
+const metadataReaders = new Set([
+    "getAttribute",
+    "hasAttribute",
+    "getAttributeNS",
+    "hasAttributeNS",
+    "getAttributeNames",
+    "querySelector",
+    "querySelectorAll",
+    "matches",
+    "closest",
+]);
+const styleTextProperties = new Set(["textContent", "innerText", "innerHTML"]);
+const stylesheetMethods = new Set([
+    "insertRule",
+    "replace",
+    "replaceSync",
+    "addRule",
+]);
+
 /** Erasing a metadata writer also erases its closures. Prove their other
  * effects stay in fresh local state or browser instrumentation; a void result
  * says nothing about writes to captured application state. */
@@ -381,8 +400,11 @@ export function writesUnobservedCanvasMetadata(
         if (node === declaration) return false;
         if (ts.isTypeNode(node)) return false;
         if (
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
+            ts.isElementAccessExpression(node) ||
+            (ts.isPropertyAccessExpression(node) &&
+                (metadataReaders.has(node.name.text) ||
+                    styleTextProperties.has(node.name.text) ||
+                    stylesheetMethods.has(node.name.text)))
         ) {
             const member = resolvedSymbol(
                 checker,
@@ -394,9 +416,7 @@ export function writesUnobservedCanvasMetadata(
             if (
                 member &&
                 declaredInDomLibrary(member) &&
-                ["textContent", "innerText", "innerHTML"].includes(
-                    member.name,
-                ) &&
+                styleTextProperties.has(member.name) &&
                 hasDomType(node.expression, "HTMLStyleElement") &&
                 isAssignmentExpression(write) &&
                 write.left === node &&
@@ -408,23 +428,8 @@ export function writesUnobservedCanvasMetadata(
             if (
                 member &&
                 declaredInDomLibrary(member) &&
-                ([
-                    "getAttribute",
-                    "hasAttribute",
-                    "getAttributeNS",
-                    "hasAttributeNS",
-                    "getAttributeNames",
-                    "querySelector",
-                    "querySelectorAll",
-                    "matches",
-                    "closest",
-                ].includes(member.name) ||
-                    ([
-                        "insertRule",
-                        "replace",
-                        "replaceSync",
-                        "addRule",
-                    ].includes(member.name) &&
+                (metadataReaders.has(member.name) ||
+                    (stylesheetMethods.has(member.name) &&
                         hasDomType(node.expression, "CSSStyleSheet")))
             ) {
                 const call = node.parent;

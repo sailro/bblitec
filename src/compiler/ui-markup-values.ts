@@ -5,6 +5,13 @@ import { unwrapExpression } from "./syntax.js";
 /** Fixed authored fragments around runtime text. Null spans never carry markup. */
 export type UiMarkupShape = readonly (string | null)[];
 
+function sameShape(left: UiMarkupShape, right: UiMarkupShape): boolean {
+    return (
+        left.length === right.length &&
+        left.every((part, index) => part === right[index])
+    );
+}
+
 interface ShapeContext {
     checker: ts.TypeChecker;
     immutable(declaration: ts.Node): boolean;
@@ -67,7 +74,7 @@ export function uiMarkupValueShape(
     if (ts.isConditionalExpression(node)) {
         const yes = shape(node.whenTrue),
             no = shape(node.whenFalse);
-        if (JSON.stringify(yes) === JSON.stringify(no)) return yes;
+        if (sameShape(yes, no)) return yes;
     }
     if (
         ts.isCallExpression(node) &&
@@ -107,10 +114,7 @@ export function uiMarkupValueShape(
                 last &&
                 ts.isReturnStatement(last) &&
                 returns.length &&
-                returns.every(
-                    (value) =>
-                        JSON.stringify(value) === JSON.stringify(returns[0]),
-                )
+                returns.every((value) => sameShape(value, returns[0]!))
             )
                 return returns[0]!;
         }
