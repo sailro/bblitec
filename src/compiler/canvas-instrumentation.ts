@@ -206,6 +206,7 @@ export function hasOnlyReportingEffects(
             return undefined;
         }
         if (ts.isCallExpression(node)) {
+            const reportedBeforeCall = reported;
             if (!libraryCall(node)) return undefined;
             const callee = unwrapExpression(node.expression);
             const global = libraryGlobal(checker, callee);
@@ -233,7 +234,7 @@ export function hasOnlyReportingEffects(
                 }
                 if (
                     owner === "document" &&
-                    name === "getElementById" &&
+                    (name === "getElementById" || name === "querySelector") &&
                     node.arguments.length === 1 &&
                     value(node.arguments[0]!) === "primitive"
                 ) {
@@ -246,6 +247,28 @@ export function hasOnlyReportingEffects(
                         declaredInDomLibrary(symbol)
                     )
                         return "canvas";
+                }
+                if (
+                    options.allowReportingDom &&
+                    (owner === "canvas" || owner === "element") &&
+                    name === "setAttribute" &&
+                    node.arguments.length === 2 &&
+                    value(node.arguments[0]!) === "primitive" &&
+                    printable(value(node.arguments[1]!))
+                ) {
+                    const attribute = checker.getTypeAtLocation(
+                        node.arguments[0]!,
+                    );
+                    if (
+                        attribute.isStringLiteral() &&
+                        /^data-[a-z0-9_.-]+$/i.test(attribute.value)
+                    ) {
+                        // A missing optional receiver performs no reporting.
+                        reported = ts.isCallChain(node)
+                            ? reportedBeforeCall
+                            : true;
+                        return "primitive";
+                    }
                 }
                 if (
                     options.allowReportingDom &&

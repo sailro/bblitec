@@ -219,6 +219,8 @@ test(
             "/EHsc",
             "/c",
             "/DBBLITE_HAS_UI=1",
+            "/DBBLITE_WORKERS=1",
+            "/DBBLITE_OFFSCREEN_SURFACES=1",
             `/Fo:${output}\\`,
             "/I",
             "native/include",

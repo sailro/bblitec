@@ -1452,14 +1452,36 @@ class Compiler implements LoweringServices {
     }
 
     private entryStatements(): readonly ts.Statement[] {
-        if (this.options.workers?.namespace) {
-            return this.sourceFile.statements.filter(
-                (statement) =>
+        const moduleStatements = this.sourceFile.statements.filter(
+            (statement) => {
+                if (ts.isEnumDeclaration(statement)) {
+                    // Constant members already lower at their use sites. A
+                    // runtime initializer must not disappear with its declaration.
+                    if (
+                        !statement.members.every(
+                            (member) =>
+                                this.checker.getConstantValue(member) !==
+                                    undefined &&
+                                (!member.initializer ||
+                                    this.evaluationOrder.isPureExpression(
+                                        member.initializer,
+                                    )),
+                        )
+                    )
+                        this.fail(
+                            statement,
+                            "Enum declarations with runtime initializers require runtime enum storage.",
+                        );
+                    return false;
+                }
+                return (
                     !ts.isImportDeclaration(statement) &&
                     !ts.isFunctionDeclaration(statement) &&
-                    !ts.isExportDeclaration(statement),
-            );
-        }
+                    !ts.isExportDeclaration(statement)
+                );
+            },
+        );
+        if (this.options.workers?.namespace) return moduleStatements;
         const main = this.sourceFile.statements.find(
             (statement): statement is ts.FunctionDeclaration =>
                 ts.isFunctionDeclaration(statement) &&
@@ -1475,12 +1497,6 @@ class Compiler implements LoweringServices {
             return main.body!.statements;
         }
 
-        const moduleStatements = this.sourceFile.statements.filter(
-            (statement) =>
-                !ts.isImportDeclaration(statement) &&
-                !ts.isFunctionDeclaration(statement) &&
-                !ts.isExportDeclaration(statement),
-        );
         const terminal = moduleStatements.at(-1);
         if (main && terminal && this.isTerminalMainCall(terminal, main)) {
             this.hasMainEntry = true;

@@ -972,19 +972,31 @@ test("a retained closure carries only the bindings its code reads", () => {
 });
 
 test("refuses unrelated DOM records and unknown MouseEvent provenance", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+    for (const eventType of [
+        "FocusEvent",
+        "UIEvent",
+        "WheelEvent",
+        "FocusEvent & {label: string}",
+        "AuthoredFocus",
+        "Readonly<FocusEvent>",
+        "Frozen<FocusEvent>",
+        "Required<Partial<FocusEvent>>",
+    ])
+        assert.throws(
+            () =>
+                compileSource(`
+                interface AuthoredFocus extends FocusEvent { label: string; }
+                type Frozen<T> = {readonly [K in keyof T]: T[K]};
                 interface FocusPayload {
-                    event: FocusEvent;
+                    event: ${eventType};
                     consumed: boolean;
                 }
                 const handlers =
                     new Set<(payload: FocusPayload) => void>();
                 const unused = handlers.size;
             `),
-        /requires concrete data type arguments|outside the supported native-data subset/,
-    );
+            /requires concrete data type arguments|outside the supported native-data subset/,
+        );
 
     assert.throws(
         () =>
@@ -1002,4 +1014,24 @@ test("refuses unrelated DOM records and unknown MouseEvent provenance", () => {
             `),
         /must come from the active synchronous platform callback/,
     );
+});
+
+test("authored records named Event retain ordinary callback storage", (t) => {
+    const result = compileSource(`
+        export {};
+        interface Event {value: number;}
+        const snapshot: Pick<FocusEvent, "type"> = {type: "focus"};
+        const partial: Partial<FocusEvent> = {type: "blur"};
+        const handlers = new Set<(event: Event) => void>();
+        let received = 0;
+        handlers.add(event => { received += event.value; });
+        for (const handler of handlers) handler({value: 7});
+        if (received !== 7) throw new Error("authored event record");
+        if (snapshot.type !== "focus" || partial.type !== "blur")
+            throw new Error("event data snapshot");
+    `);
+    if (!nativeTools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(nativeTools, "authored-event-record", result.cpp, {
+        expectedOutput: "",
+    });
 });

@@ -536,6 +536,32 @@ export function borrowedPlatformEventKind(
     return undefined;
 }
 
+/** Preserve event provenance through inheritance and complete mapped views. */
+function isDomEventType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    candidate = type,
+    seen = new Set<ts.Type>(),
+): boolean {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return (
+        (candidate.symbol?.name === "Event" &&
+            declaredInDomLibrary(candidate.symbol) &&
+            checker.isTypeAssignableTo(type, candidate)) ||
+        (candidate.isIntersection() &&
+            candidate.types.some((member) =>
+                isDomEventType(checker, type, member, seen),
+            )) ||
+        (candidate.getBaseTypes() ?? []).some((base) =>
+            isDomEventType(checker, type, base, seen),
+        ) ||
+        (candidate.aliasTypeArguments ?? []).some((argument) =>
+            isDomEventType(checker, type, argument, seen),
+        )
+    );
+}
+
 export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
@@ -3003,6 +3029,7 @@ export class DataTypeRegistry {
         provisionalName: string,
         allowStoredFunctions: boolean,
     ): DataType | undefined {
+        if (isDomEventType(this.checker, type)) return undefined;
         const properties = this.checker.getPropertiesOfType(type);
         if (properties.length === 0) {
             return undefined;

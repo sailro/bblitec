@@ -491,7 +491,7 @@ test("rejects a compressed JSON decoder with an extra observable statement", () 
                     decoderExtra: 'console.log("decoding", encoded);',
                 }),
             ),
-        /Immediate promise then requires an inline callback/,
+        /Call 'atob' does not resolve to a supported Babylon intrinsic or local function declaration/,
     );
 });
 
@@ -503,7 +503,7 @@ test("rejects a compressed JSON restorer that returns a different value", () => 
                     restorerReturn: "{ ...json }",
                 }),
             ),
-        /Immediate promise then requires an inline callback/,
+        /Call 'atob' does not resolve to a supported Babylon intrinsic or local function declaration/,
     );
 });
 

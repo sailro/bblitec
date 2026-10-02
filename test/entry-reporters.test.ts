@@ -111,6 +111,53 @@ test("reporting ownership admits confined diagnostic DOM and rejects hidden appl
         }`,
         ],
         [true, "console.error"],
+        [
+            true,
+            `(error: unknown) => {
+                document.querySelector("canvas")?.setAttribute("data-error", String(error));
+                console.error(error);
+            }`,
+        ],
+        [
+            false,
+            `(error: unknown) => {
+                document.querySelector("canvas")?.setAttribute("data-error", String(error));
+            }`,
+        ],
+        [
+            false,
+            `(error: unknown) => {
+                document.querySelector("canvas")?.setAttribute("data-error", (console.error(error), "failed"));
+            }`,
+        ],
+        [
+            false,
+            `(error: unknown) => {
+                document.querySelector("canvas")?.setAttribute("class", String(error));
+                console.error(error);
+            }`,
+        ],
+        [
+            false,
+            `(error: unknown) => {
+                document.querySelector("canvas")?.setAttribute("data-error", String(state));
+                console.error(error);
+            }`,
+        ],
+        [
+            false,
+            `(error: unknown) => {
+                document.querySelector("canvas")?.setAttribute("data-error", String(recover()));
+                console.error(error);
+            }`,
+        ],
+        [
+            false,
+            `(error: unknown) => {
+                document.querySelector<HTMLCanvasElement>(String(recover()))?.setAttribute("data-error", String(error));
+                console.error(error);
+            }`,
+        ],
         [false, "() => {}"],
         [false, "() => 42"],
         [false, "(error: unknown) => { if (false) console.error(error); }"],
@@ -234,6 +281,33 @@ test("confined entry diagnostic DOM does not activate retained UI", (t) => {
         return;
     }
     runGeneratedProgram(tools, "entry-confined-reporting-dom", result.cpp, {
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});
+
+test("queried canvas metadata reporting preserves one terminal entry execution", (t) => {
+    const result = compileSource(`
+        let starts = 0;
+        function initialize(): number { return ++starts; }
+        const initialized = initialize();
+        async function main(): Promise<void> {
+            if (initialized !== 1 || starts !== 1)
+                throw new Error("entry initialization count");
+        }
+        main().catch((error) => {
+            document.querySelector("canvas")?.setAttribute("data-failure", error);
+            console.error(error);
+        });
+    `);
+    assert.ok(!result.manifest.features.includes("platform:workers"));
+    assert.ok(!result.manifest.features.includes("ui:rml"));
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "entry-canvas-metadata-reporter", result.cpp, {
         timeoutMs: 10000,
         expectedOutput: "",
     });

@@ -3,7 +3,11 @@ import type { LoweringServices } from "./lowering-services.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
-import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    declaredInDomLibrary,
+    resolvedSymbol,
+} from "./symbols.js";
 import { nullability } from "./type-facts.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { isAbsentWindowMember } from "./browser-erasure.js";
@@ -56,6 +60,39 @@ export class WindowProperties {
     >();
     constructor(private readonly context: Context) {}
 
+    private targetType(type: ts.Type, seen = new Set<ts.Type>()): boolean {
+        if (seen.has(type)) return false;
+        seen.add(type);
+        if (type.isUnion() || type.isIntersection())
+            return type.types.some((member) => this.targetType(member, seen));
+        if (declaredInDomLibrary(type.symbol))
+            return ["Window", "Document", "EventTarget"].includes(
+                type.symbol.name,
+            );
+        return (type.getBaseTypes() ?? []).some((base) =>
+            this.targetType(base, seen),
+        );
+    }
+
+    private mayBeTarget(expression: ts.Expression): boolean {
+        const context = this.context;
+        const node = context.unwrap(expression);
+        const global = context.libraryGlobal(node);
+        if (global === "window" || global === "globalThis") return true;
+        const bound = ts.isIdentifier(node)
+            ? context.bindings.lookupOptional(node)
+            : undefined;
+        const type =
+            bound?.dataType?.kind === "optional"
+                ? bound.dataType.inner
+                : bound?.dataType;
+        return (
+            bound?.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
+            type?.kind === "event-target" ||
+            this.targetType(context.checker.getTypeAtLocation(expression))
+        );
+    }
+
     private target(
         expression: ts.Expression,
     ): { node: ts.PropertyAccessExpression; owner: Value } | undefined {
@@ -66,8 +103,7 @@ export class WindowProperties {
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         if (isAbsentWindowMember(node.name.text)) return undefined;
         if (this.isNativeMember(node)) return undefined;
-        if (!context.dataLowerer.plainDataOwnerChain(node.expression))
-            return undefined;
+        if (!this.mayBeTarget(node.expression)) return undefined;
         const owner = context.probeEmission(() => {
             const value = context.compileValue(node.expression);
             return value.domEventTargetCpp ===

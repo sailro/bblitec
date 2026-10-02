@@ -6,8 +6,79 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+const windowRuntime = `
+namespace bbl::pal {
+Engine& window_document_engine() { static Engine engine; return engine; }
+int run_window_application(WorkerEntry initialize, EngineOptions) {
+    const js::RealmScope scope;
+    EventLoop loop;
+    WorkerRealm realm(loop);
+    loop.run([&] { initialize(realm); });
+    return 0;
+}
+}
+`;
+
+test("Window admission preserves imported static factories, inherited members and structural host receivers", (t) => {
+    const directory = resolve("artifacts/window-static-dispatch");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        resolve(directory, "factory.ts"),
+        `
+        export class Factory {
+            static readonly initial = 3;
+            static current = 4;
+            static create(value: number): {value: number} { return {value}; }
+            static async load(value: number): Promise<{value: number}> { return Factory.create(value); }
+        }
+    `,
+    );
+    const result = compileSource(
+        `
+        import {Factory as Source} from "./factory.js";
+        class Derived extends Source {}
+        type Host = {caption?: string; read?: (value: number) => number};
+        class Access {
+            static host(): Window & Host { return window as Window & Host; }
+        }
+        function install(host: Host): void {
+            host.caption = "ready";
+            host.read = (value: number) => value + 3;
+        }
+        setTimeout(() => { globalThis.close(); }, 0);
+        const item = await Source.load(Source.initial);
+        if (item.value !== 3 || Derived.create(5).value !== 5) throw new Error("static factory");
+        Source.current = 6;
+        if (Derived.current !== 6) throw new Error("inherited static field");
+        const host = window as Window & Host;
+        install(host);
+        if (Access.host().caption !== "ready" || host.read?.(4) !== 7)
+            throw new Error("structural Window receiver");
+    `,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    assert.ok(result.manifest.features.includes("platform:workers"));
+    assert.match(result.cpp, /dom_window_property/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "window-static-dispatch",
+        result.cpp + windowRuntime,
+        {
+            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});
 
 test("Window extension admission leaves native resource property chains to their owner", () => {
     const result = compileSource(`
@@ -95,22 +166,7 @@ test("Window extension callbacks retain identity and captures through replacemen
     }
     const cpp = resolve(directory, "check.cpp"),
         exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
-        result.cpp +
-            `
-namespace bbl::pal {
-Engine& window_document_engine() { static Engine engine; return engine; }
-int run_window_application(WorkerEntry initialize, EngineOptions) {
-    const js::RealmScope scope;
-    EventLoop loop;
-    WorkerRealm realm(loop);
-    loop.run([&] { initialize(realm); });
-    return 0;
-}
-}
-`,
-    );
+    writeFileSync(cpp, result.cpp + windowRuntime);
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
