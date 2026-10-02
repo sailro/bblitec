@@ -145,6 +145,7 @@ type Context = Pick<
     | "dataTypes"
     | "dataLowerer"
     | "emitDiscardedValue"
+    | "emit"
     | "reachJsData"
     | "fail"
     | "cppString"
@@ -152,6 +153,7 @@ type Context = Pick<
     | "bindings"
     | "libraryGlobal"
     | "symbols"
+    | "probeEmission"
 >;
 
 export class DeferredCapabilities {
@@ -172,6 +174,12 @@ export class DeferredCapabilities {
         const descriptor = deferredCapabilityDescriptor(context.checker, call);
         if (!descriptor) return undefined;
         const target = context.unwrap(call.expression);
+        if (
+            descriptor.origin === "dom" &&
+            descriptor.api.includes(".") &&
+            !ts.isPropertyAccessExpression(target)
+        )
+            return undefined;
         if (
             descriptor.origin === "babylon" &&
             !context.symbols.importedName(call.expression) &&
@@ -258,9 +266,10 @@ export class DeferredCapabilities {
                         expected,
                         argument,
                     );
-                    context.emitDiscardedValue(
-                        context.dataLowerer.leafValue(cpp, expected),
-                    );
+                    context.emit({
+                        kind: "expression",
+                        code: `static_cast<void>(${cpp});`,
+                    });
                 } else {
                     // An unrepresented parameter is not permission to hide its authored value.
                     const actual = context.dataTypes.fromTsType(
@@ -277,9 +286,10 @@ export class DeferredCapabilities {
                         actual,
                         argument,
                     );
-                    context.emitDiscardedValue(
-                        context.dataLowerer.leafValue(cpp, actual),
-                    );
+                    context.emit({
+                        kind: "expression",
+                        code: `static_cast<void>(${cpp});`,
+                    });
                 }
             }
             return this.emitKnown(
@@ -303,45 +313,43 @@ export class DeferredCapabilities {
             descriptor.api.includes(".") &&
             ts.isPropertyAccessExpression(target)
         ) {
-            const owner = context.compileValue(target.expression);
-            const run = (value: Value) => {
-                const ownerType = descriptor.api.split(".")[0];
-                const valid =
-                    ownerType === "Blob"
-                        ? value.kind === "blob" || value.kind === "file"
-                        : ownerType === "Event"
-                          ? value.kind === "platform-mouse-event" ||
-                            value.kind === "platform-keyboard-event" ||
-                            value.dataType?.kind ===
-                                "borrowed-platform-event" ||
-                            (value.dataType?.kind === "handle" &&
-                                ["dom-event", "custom-event"].includes(
-                                    value.dataType.handle,
-                                ))
-                          : value.kind === "ui-element" ||
-                            value.dataType?.kind === "event-target";
-                if (!valid)
-                    return context.fail(
-                        target.expression,
-                        `Deferred '${descriptor.api}' requires its represented native receiver.`,
+            return context.probeEmission(() => {
+                const owner = context.compileValue(target.expression);
+                const run = (value: Value): Value | undefined => {
+                    const ownerType = descriptor.api.split(".")[0];
+                    const valid =
+                        ownerType === "Blob"
+                            ? value.kind === "blob" || value.kind === "file"
+                            : ownerType === "Event"
+                              ? value.kind === "platform-mouse-event" ||
+                                value.kind === "platform-keyboard-event" ||
+                                value.dataType?.kind ===
+                                    "borrowed-platform-event" ||
+                                (value.dataType?.kind === "handle" &&
+                                    ["dom-event", "custom-event"].includes(
+                                        value.dataType.handle,
+                                    ))
+                              : value.kind === "ui-element" ||
+                                value.dataType?.kind === "event-target";
+                    if (!valid) return undefined;
+                    context.emitDiscardedValue(
+                        context.bindings.pinValueToTemporary(
+                            value,
+                            "deferred_receiver",
+                            target.expression,
+                        ),
                     );
-                context.emitDiscardedValue(
-                    context.bindings.pinValueToTemporary(
-                        value,
-                        "deferred_receiver",
-                        target.expression,
-                    ),
-                );
-                return invoke();
-            };
-            return target.questionDotToken
-                ? context.dataLowerer.optionalAccess(owner, call, run)
-                : run(
-                      context.dataLowerer.narrowOptional(
-                          owner,
-                          target.expression,
-                      ),
-                  );
+                    return invoke();
+                };
+                return target.questionDotToken
+                    ? context.dataLowerer.optionalAccess(owner, call, run)
+                    : run(
+                          context.dataLowerer.narrowOptional(
+                              owner,
+                              target.expression,
+                          ),
+                      );
+            });
         }
         if (!ts.isIdentifier(target) && descriptor.origin === "dom")
             return context.fail(

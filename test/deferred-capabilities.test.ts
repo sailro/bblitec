@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
@@ -86,6 +88,33 @@ test("authored same-name and library-typed functions are not deferred", () => {
         assert.equal(result.manifest.deferredCapabilities, undefined);
         assert.doesNotMatch(result.cpp, /deferred_capability/);
     }
+});
+
+test("authored callables typed as DOM methods preserve their implementation", () => {
+    const result = compileSource(
+        `
+        let hits=0;
+        const own:Window["alert"]=(message)=>{if(message!=="call")throw new Error("argument");++hits;};
+        own("call");
+        const record:{alert:Window["alert"]}={alert:own};
+        const mapped:Pick<Window,"alert">={alert:own};
+        let reads=0;
+        function selected():Pick<Window,"alert">{++reads;return mapped;}
+        record.alert("call");
+        selected().alert("call");
+        if(hits!==3||reads!==1)throw new Error("authored method identity");
+    `,
+        { deferredCapabilities },
+    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "deferred-capabilities/authored-method",
+        result.cpp,
+        { expectedOutput: "" },
+    );
 });
 
 test("deferred calls inside authored callbacks retain lazy activation", () => {
@@ -254,5 +283,118 @@ test("pinned matrix and geometry descriptor batch retains declared result shapes
     assert.match(
         result.cpp,
         /deferred_capability<bblscene::MeshGeometryCapacityResult>/,
+    );
+});
+
+test("deferred result templates never construct successful payloads", () => {
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "deferred-capabilities/uninhabited-result",
+        `
+        #include <bblite/deferred_capability.hpp>
+        struct NoSuccessfulValue { NoSuccessfulValue() = delete; };
+        int main() {
+            try {
+                [[maybe_unused]] const auto value = bbl::deferred_capability<NoSuccessfulValue>("fixture:result", "result.ts:1:1");
+                return 1;
+            } catch (const bbl::DeferredCapabilityError& error) {
+                return std::string(error.what()).find("fixture:result") == std::string::npos ? 2 : 0;
+            }
+        }
+    `,
+        { expectedOutput: "" },
+    );
+    const result = compileSource(
+        `
+        let caught=0;
+        try{const result=structuredClone(new Float32Array([1,2]));if(result[0]===1)throw new Error("fabricated array");}
+        catch(error){if(!error.message.includes("dom:structuredClone"))throw error;++caught;}
+        try{const result=structuredClone({value:3,label:"payload"});if(result.value===3)throw new Error("fabricated record");}
+        catch(error){if(!error.message.includes("dom:structuredClone"))throw error;++caught;}
+        if(caught!==2)throw new Error("typed failures");
+    `,
+        { deferredCapabilities },
+    );
+    runGeneratedProgram(
+        tools,
+        "deferred-capabilities/owned-results",
+        result.cpp,
+        { expectedOutput: "" },
+    );
+});
+
+test("deferred engine arguments retain ordinary checked reads", () => {
+    const result = compileSource(
+        `
+        import {createEngine,setGpuTimingEnabled} from "@babylonjs/lite";
+        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const engines=[engine];
+        let index=0; let caught=0;
+        try{setGpuTimingEnabled(engines[++index]!,true);}catch(error){
+            if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
+            ++caught;
+        }
+        if(index!==1||caught!==1)throw new Error("argument effects");
+    `,
+        { deferredCapabilities },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "deferred-capabilities/engine-arguments",
+        result.cpp +
+            `
+        namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+    `,
+        { expectedOutput: "" },
+    );
+});
+
+test("worker application manifests join all deferred realm sites", () => {
+    const directory = resolve("artifacts/deferred-capabilities/worker-sites");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        resolve(directory, "worker.ts"),
+        `let caught=0;try{btoa("worker");}catch{++caught;}self.postMessage(caught);self.close();`,
+    );
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
+        worker.addEventListener("message",(event:MessageEvent<number>)=>{
+            if(event.data!==1)throw new Error("worker trap did not execute");
+            globalThis.close();
+        });
+        try{atob("window");}catch{}
+    `,
+        { fileName: resolve(directory, "entry.ts"), deferredCapabilities },
+    );
+    assert.deepEqual(
+        result.manifest.deferredCapabilities
+            ?.map((site) => [site.id, site.realm])
+            .sort(),
+        [
+            ["dom:atob", "window"],
+            ["dom:btoa", "worker"],
+        ],
+    );
+    assert.equal(
+        new Set(result.manifest.deferredCapabilities?.map((site) => site.file))
+            .size,
+        2,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "deferred-capabilities/worker-sites",
+        result.cpp,
+        {
+            defines: ["BBLITE_WORKERS=1"],
+            expectedOutput: "",
+            timeoutMs: 10000,
+        },
     );
 });
