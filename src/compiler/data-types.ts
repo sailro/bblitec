@@ -4063,11 +4063,15 @@ export class DataTypeRegistry {
                     current.members.forEach(visit);
                     return;
                 case "vector":
-                case "set":
                 case "span":
                     visit(current.element);
                     return;
                 case "map":
+                    if (!current.dictionary)
+                        this.fail(
+                            node,
+                            "JSON.stringify does not serialize a Map value; only dictionary storage is represented.",
+                        );
                     if (
                         current.key.kind !== "string" &&
                         current.key.kind !== "number"

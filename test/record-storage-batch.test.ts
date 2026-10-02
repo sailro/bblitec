@@ -115,6 +115,24 @@ test("mixed-union JSON rejects callback alternatives and recursive record paths"
     );
 });
 
+test("JSON serialization refuses Set and Map storage, including union alternatives", () => {
+    for (const [type, initializer, refusal] of [
+        ["Set<number>", "new Set([1, 2])", /does not serialize a 'set' value/],
+        [
+            "Map<string, number>",
+            'new Map([["key", 1]])',
+            /does not serialize a Map value/,
+        ],
+    ] as const) {
+        for (const program of [
+            `const value: ${type} = ${initializer}; JSON.stringify(value);`,
+            `const values: (number | ${type})[] = [1]; JSON.stringify(values);`,
+            `const values: (number | ${type})[] = [${initializer}]; JSON.stringify(values);`,
+        ])
+            assert.throws(() => compileSource(program), refusal);
+    }
+});
+
 test("nullable callback records retain unrepresented signature refusals", () => {
     assert.throws(
         () =>
