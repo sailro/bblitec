@@ -6,7 +6,7 @@
         { "summary": "Reuse pinned string membership keys and resolve optional Window callback storage once.", "applied": true },
         { "summary": "Sort local grid contributions in place and reuse bounded sizing scratch per invocation.", "applied": true },
         { "summary": "Normalize entry reporting wrappers through one ownership policy.", "applied": true },
-        { "summary": "Reuse module-state planning, pinned constant recognition and plain-data owner admission.", "applied": true },
+        { "summary": "Reuse module-state planning and pinned constant recognition; admit Window receivers by native ownership before evaluation.", "applied": true },
         { "summary": "Remove duplicate reporter argument classification and obsolete realm helper exports.", "applied": true }
     ]
 }
