@@ -7,6 +7,7 @@ import { propertyIsReadOnly } from "./data-types.js";
 import {
     declaredInDefaultLibrary,
     libraryGlobal,
+    pinnedConstantProperty,
     resolvedSymbol,
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
@@ -534,12 +535,14 @@ export class EvaluationOrder {
         unit: Unit | undefined,
     ): "skip" | void {
         const symbol = resolvedSymbol(this.checker, node);
-        // An enum member or a readonly constant of the language's own
-        // library (`Math.PI`) never changes; a library function read off
+        // Enum members and pinned or language-library readonly constants
+        // (`Math.PI`) never change; a library function read off
         // a namespace object (`Math.sin`) is no object's state.
         if (
             symbol &&
             ((symbol.flags & ts.SymbolFlags.EnumMember) !== 0 ||
+                (ts.isPropertyAccessExpression(node) &&
+                    pinnedConstantProperty(this.checker, node) !== undefined) ||
                 (declaredInDefaultLibrary(symbol) &&
                     (propertyIsReadOnly(symbol) ||
                         (libraryGlobal(this.checker, node.expression) !==

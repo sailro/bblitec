@@ -9,6 +9,25 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
+test("Window extension admission leaves native resource property chains to their owner", () => {
+    const result = compileSource(`
+        import { createEngine, createSceneContext } from "@babylonjs/lite";
+        setTimeout(() => { globalThis.close(); }, 0);
+        const engine = await createEngine(document.createElement("canvas"));
+        const scene = createSceneContext(engine);
+        scene.imageProcessing.exposure = 1.25;
+        scene.imageProcessing.contrast = 0.75;
+        scene.imageProcessing.toneMappingEnabled = false;
+        const host = window as Window & {caption?: string};
+        host.caption = "ready";
+    `);
+    assert.ok(result.manifest.features.includes("platform:workers"));
+    assert.match(result.cpp, /\.environment\.exposure = 1\.25f;/);
+    assert.match(result.cpp, /\.environment\.contrast = 0\.75f;/);
+    assert.match(result.cpp, /\.environment\.tone_mapping_enabled = false;/);
+    assert.match(result.cpp, /dom_window_property/);
+});
+
 test("Window extension callbacks retain identity and captures through replacement and deletion", (t) => {
     const directory = resolve("artifacts/window-properties-check");
     mkdirSync(directory, { recursive: true });

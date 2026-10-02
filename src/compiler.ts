@@ -1484,7 +1484,32 @@ class Compiler implements LoweringServices {
         const terminal = moduleStatements.at(-1);
         if (main && terminal && this.isTerminalMainCall(terminal, main)) {
             this.hasMainEntry = true;
-            return [...moduleStatements.slice(0, -1), ...main.body!.statements];
+            const state = new EmissionSet(
+                planEntryModuleState(
+                    this.program,
+                    this.sourceFile,
+                    this.checker,
+                    this.symbols,
+                ),
+            );
+            // Immutable literals retain the static evaluator's source shape;
+            // shared state and effectful initializers execute in module order.
+            const prefix = moduleStatements
+                .slice(0, -1)
+                .filter(
+                    (statement) =>
+                        !ts.isVariableStatement(statement) ||
+                        state.has(statement) ||
+                        statement.declarationList.declarations.some(
+                            (declaration) =>
+                                !ts.isIdentifier(declaration.name) ||
+                                !declaration.initializer ||
+                                !this.evaluationOrder.isPureExpression(
+                                    declaration.initializer,
+                                ),
+                        ),
+                );
+            return [...prefix, ...main.body!.statements];
         }
         const statements = moduleStatements.map((statement) =>
             this.unwrapEntryReporter(statement),

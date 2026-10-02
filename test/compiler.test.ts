@@ -2751,13 +2751,9 @@ test("writes a tuple lane at its sink's own width", () => {
         void main();
     `);
 
-    const offset = /double (\w+) = 5000000\.0;/.exec(result.cpp);
-    assert.ok(offset);
     assert.match(
         result.cpp,
-        new RegExp(
-            `bbl::js::Tuple<3>\\{${offset[1]}, 0\\.65, 5000002\\.45\\};`,
-        ),
+        /bbl::js::Tuple<3>\{5000000\.0, 0\.65, 5000002\.45\};/,
     );
     assert.match(result.cpp, /position = bbl::Vec3d\{[^;]+\};/);
 });
@@ -16331,14 +16327,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.match(result.cpp, /\.fixed_delta_ms = 16\.0;/);
     assert.match(result.cpp, /bbl::on_before_render/);
     assert.match(result.cpp, /v_frame\+\+/);
-    const addFrame = /double (\w+) = 20\.0;/.exec(result.cpp);
-    assert.ok(addFrame);
-    assert.match(
-        result.cpp,
-        new RegExp(
-            `if \\(\\(!\\(v_added\\) && v_frame >= ${addFrame[1]}\\)\\)`,
-        ),
-    );
+    assert.match(result.cpp, /if \(\(!\(v_added\) && v_frame >= 20\.0\)\)/);
     assert.match(
         result.cpp,
         /\.metallic_factor = 0\.1f, \.roughness_factor = 0\.4f, \.direct_intensity = 1\.0f/,
@@ -16442,11 +16431,8 @@ test("compiles Babylon Lite scene 268 orthographic camera", () => {
     );
     assert.equal(result.manifest.sceneMeshes.length, 10);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
-    const colors = /bbl::js::Array<bbl::js::Tuple<3>> (\w+) =/.exec(result.cpp);
-    assert.ok(colors);
     assert.equal(
-        result.cpp.match(new RegExp(`array_index_checked\\(${colors[1]},`, "g"))
-            ?.length,
+        result.cpp.match(/array_index_checked\(bblscene::COLORS/g)?.length,
         1,
     );
     // The URL override folds away: no query string reaches a native
@@ -17308,16 +17294,9 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.doesNotMatch(result.cmake, /pal_sdl_gpu\.cpp/);
     assert.match(result.cpp, /bbl::create_frame_graph_context/);
     assert.match(result.cpp, /bbl::on_frame_graph_update/);
-    const states =
-        /bbl::js::Array<bblscene::MorphState> (\w+) = bbl::js::Array<bblscene::MorphState>\{bbl::js::make_ref<bblscene::MorphStateData>/.exec(
-            result.cpp,
-        );
-    assert.ok(states);
     assert.match(
         result.cpp,
-        new RegExp(
-            `auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\\(bbl::js::array_at_or_default\\(${states[1]},`,
-        ),
+        /auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\(bbl::js::make_ref<bblscene::MorphStateData>/,
     );
 });
 
@@ -20652,17 +20631,12 @@ test("materializes entry-module state a main() scene rebinds", () => {
         1,
         "declared once, not once per reader",
     );
-    const unmoved = /double (\w+) = 5\.0;/.exec(result.cpp);
-    assert.ok(unmoved);
     // One shared body reads and updates the module's mutable storage.
     assert.equal(
-        (
-            result.cpp.match(
-                new RegExp(`bbl::Vec3d\\{v_curX, ${unmoved[1]}, 0\\.0\\}`, "g"),
-            ) ?? []
-        ).length,
+        (result.cpp.match(/bbl::Vec3d\{v_curX, 5\.0, 0\.0\}/g) ?? []).length,
         1,
     );
+    assert.doesNotMatch(result.cpp, /v_unmoved/);
     assert.equal((result.cpp.match(/v_curX \+= 2\.0;/g) ?? []).length, 1);
 });
 

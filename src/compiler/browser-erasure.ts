@@ -16,22 +16,19 @@ import {
     argumentAt,
     identifierText,
     isAssignmentExpression,
-    isUpdateExpression,
     stringLiteralText,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
 import { windowInterfaceTypeof } from "./dom-targets.js";
-import { writesUnobservedCanvasMetadata } from "./canvas-instrumentation.js";
+import {
+    hasOnlyReportingEffects,
+    writesUnobservedCanvasMetadata,
+} from "./canvas-instrumentation.js";
 import { staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
-import {
-    declaredInDomLibrary,
-    declarationInDefaultLibrary,
-    accessedPropertySymbol,
-} from "./symbols.js";
-import { isNativeRealmFunction } from "./workers.js";
+import { declaredInDomLibrary } from "./symbols.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
@@ -608,166 +605,13 @@ export class BrowserErasure {
         handler: ts.Expression,
         ownedRejection = false,
     ): boolean {
-        if (
-            (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)) &&
-            handler.parameters.some(
-                (parameter) =>
-                    !ts.isIdentifier(parameter.name) ||
-                    parameter.initializer !== undefined,
-            )
-        )
-            return false;
-        const body =
-            ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
-                ? handler.body
-                : undefined;
-        const parameter =
-            ownedRejection &&
-            (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))
-                ? handler.parameters[0]?.name
-                : undefined;
-        const rejection =
-            parameter && ts.isIdentifier(parameter)
-                ? this.context.symbols.valueSymbol(parameter)
-                : undefined;
-        const primitiveArgument = (argument: ts.Expression): boolean => {
-            const type = this.context.checker.getTypeAtLocation(argument);
-            return (type.isUnion() ? type.types : [type]).every(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.StringLike |
-                            ts.TypeFlags.NumberLike |
-                            ts.TypeFlags.BooleanLike |
-                            ts.TypeFlags.BigIntLike |
-                            ts.TypeFlags.ESSymbolLike |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined |
-                            ts.TypeFlags.Void |
-                            ts.TypeFlags.Never)) !==
-                    0,
-            );
-        };
-        const reportingCall = (call: ts.CallExpression): boolean => {
-            const argument = call.arguments[0];
-            const value = argument && this.context.unwrap(argument);
-            // A rejection callback receives the native owned exception,
-            // whose String conversion cannot dispatch application hooks.
-            if (
-                rejection &&
-                this.context.libraryGlobal(call.expression) === "String" &&
-                call.arguments.length === 1 &&
-                value &&
-                ts.isIdentifier(value) &&
-                this.context.symbols.valueSymbol(value) === rejection
-            )
-                return true;
-            const declaration =
-                this.context.checker.getResolvedSignature(call)?.declaration;
-            return (
-                declaration !== undefined &&
-                declarationInDefaultLibrary(declaration) &&
-                call.arguments.every(primitiveArgument) &&
-                this.context.evaluationOrder.isPureExpression(call)
-            );
-        };
-        // Browser taint alone does not prove that evaluating an argument or
-        // assignment value has no application effects.
-        const reportingEffects = (node: ts.Node): boolean => {
-            if (ts.isTypeNode(node)) return true;
-            if (
-                ts.isCallExpression(node) &&
-                isNativeRealmFunction(this.context, node.expression)
-            )
-                return false;
-            if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-                const declaration =
-                    this.context.checker.getResolvedSignature(
-                        node,
-                    )?.declaration;
-                const browserCall =
-                    declaration !== undefined &&
-                    declarationInDefaultLibrary(declaration) &&
-                    this.isBrowserOnlyExpression(node);
-                if (
-                    !browserCall &&
-                    !(ts.isCallExpression(node) && reportingCall(node))
-                )
-                    return false;
-            }
-            if (
-                isAssignmentExpression(node) &&
-                !this.isBrowserOnlyExpression(node.left)
-            )
-                return false;
-            if (
-                (isUpdateExpression(node) &&
-                    !this.isBrowserOnlyExpression(node.operand)) ||
-                (ts.isDeleteExpression(node) &&
-                    !this.isBrowserOnlyExpression(node.expression))
-            )
-                return false;
-            if (
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
-            ) {
-                const member = accessedPropertySymbol(
-                    this.context.checker,
-                    node,
-                );
-                const accessor = member?.declarations?.some(
-                    ts.isGetAccessorDeclaration,
-                );
-                if (
-                    (accessor ||
-                        (ts.isElementAccessExpression(node) &&
-                            !member &&
-                            !this.isBrowserOnlyExpression(node))) &&
-                    !this.context.evaluationOrder.isPureExpression(node)
-                )
-                    return false;
-            }
-            return (
-                ts.forEachChild(
-                    node,
-                    (child) => !reportingEffects(child) || undefined,
-                ) !== true
-            );
-        };
-        const reports = (statement: ts.Statement): boolean => {
-            if (ts.isBlock(statement))
-                return statement.statements.every(reports);
-            if (ts.isExpressionStatement(statement))
-                return this.isBrowserOnlyExpression(statement.expression);
-            if (ts.isVariableStatement(statement))
-                return statement.declarationList.declarations.every(
-                    (declaration) =>
-                        ts.isIdentifier(declaration.name) &&
-                        declaration.initializer !== undefined &&
-                        this.isBrowserOnlyExpression(declaration.initializer),
-                );
-            if (ts.isIfStatement(statement))
-                return (
-                    (this.isBrowserOnlyExpression(statement.expression) ||
-                        this.context.evaluationOrder.isPureExpression(
-                            statement.expression,
-                        )) &&
-                    reports(statement.thenStatement) &&
-                    (!statement.elseStatement ||
-                        reports(statement.elseStatement))
-                );
-            return false;
-        };
-        if (body && ts.isBlock(body))
-            return reportingEffects(body) && body.statements.every(reports);
-        // A concise body is the expression itself; anything that is not a
-        // function literal is asked directly, which lets a bare
-        // `console.error` pass and a named recovery routine not.
-        return (
-            reportingEffects(body ?? handler) &&
-            this.isBrowserOnlyExpression(body ?? handler)
-        );
+        return hasOnlyReportingEffects(this.context.checker, handler, {
+            ownedRejection,
+            allowReportingDom: ownedRejection && !this.context.options.workers,
+            isUnobservedWrite: (expression) =>
+                this.isBrowserOnlyExpression(expression),
+        });
     }
-
     /**
      * An imported helper with no route to Babylon and no native input can
      * only observe or mutate browser state. Erasing the call as one unit is

@@ -66,6 +66,8 @@ export class WindowProperties {
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         if (isAbsentWindowMember(node.name.text)) return undefined;
         if (this.isNativeMember(node)) return undefined;
+        if (!context.dataLowerer.plainDataOwnerChain(node.expression))
+            return undefined;
         const owner = context.probeEmission(() => {
             const value = context.compileValue(node.expression);
             return value.domEventTargetCpp ===

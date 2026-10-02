@@ -60,6 +60,17 @@ for (const [name, source] of [
         `,
     ],
     [
+        "stored-fulfillment",
+        `
+        async function main(): Promise<number> { return 7; }
+        const handler = (value: number): void => {
+            if (value !== 7) throw new Error("reaction value");
+            globalThis.close();
+        };
+        main().then(handler);
+        `,
+    ],
+    [
         "default-parameter",
         `
         function main(value = 7): void {

@@ -50,16 +50,6 @@ const nativeRealmFunctions = new Set([
     "close",
 ]);
 
-/** Realm services have native effects even before a reached call activates its realm. */
-export function isNativeRealmFunction(
-    context: Pick<WorkerLoweringContext, "libraryGlobal" | "unwrap">,
-    expression: ts.Expression,
-): boolean {
-    return nativeRealmFunctions.has(
-        context.libraryGlobal(context.unwrap(expression)) ?? "",
-    );
-}
-
 /**
  * The first position in a message shape without a native structured-clone
  * codec (js_structured_clone.hpp), described for a refusal. An OffscreenCanvas
