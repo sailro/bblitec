@@ -18,7 +18,7 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
-import { supportedUiGridColumn, supportedUiGridTracks } from "../ui-grid.js";
+import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {
     supportedUiImageBackground,
@@ -1366,6 +1366,10 @@ export class UiProjection {
             "display",
             "grid-template-columns",
             "grid-column",
+            "grid-row",
+            "grid-auto-columns",
+            "grid-auto-rows",
+            "isolation",
             "container-type",
             "grid-template-rows",
             "flex",
@@ -2113,24 +2117,35 @@ export class UiProjection {
             }
             if (
                 (property === "grid-template-columns" ||
-                    property === "grid-template-rows") &&
-                !supportedUiGridTracks(literalValue)
+                    property === "grid-template-rows" ||
+                    property === "grid-auto-columns" ||
+                    property === "grid-auto-rows") &&
+                !supportedUiGridTracks(
+                    literalValue,
+                    property.startsWith("grid-auto-"),
+                )
             ) {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "expected none, auto, non-negative px/fr tracks, minmax(px,fr), or repeat(integer, tracks), at most 256 tracks",
+                    "expected finite auto/px/fr or minmax(auto or px, auto/px/fr) tracks, with bounded repeat only for explicit tracks",
                 );
             }
             if (
-                property === "grid-column" &&
-                !supportedUiGridColumn(literalValue)
+                (property === "grid-column" || property === "grid-row") &&
+                !supportedUiGridPlacement(literalValue)
             ) {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "expected auto or ascending positive numeric start/end lines, ending at most at line 257",
+                    "expected auto, nonzero numeric lines, or positive spans, bounded to 256 tracks per axis",
                 );
+            }
+            if (
+                property === "isolation" &&
+                !/^(?:auto|isolate)$/.test(literalValue.trim().toLowerCase())
+            ) {
+                this.uiStyleRefusal(site, property, "expected auto or isolate");
             }
             if (UiProjection.PROJECTED_UI_STYLE_PROPERTIES.has(property)) {
                 return;

@@ -1,0 +1,950 @@
+Share bounded numeric placement and finite track sizing across both grid axes.
+Resolve sparse occupancy before layout, retain authored element identity, and use
+the existing stacking-context owner for reversible isolation.
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 22c93d96..66ab7246 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -266,6 +266,7 @@ namespace Style {
+ 		bool              has_local_transform()        const { return rare.has_local_transform; }
+ 		bool              has_local_perspective()      const { return rare.has_local_perspective; }
+ 		AlignContent      align_content()              const { return GetLocalPropertyKeyword(PropertyId::AlignContent, AlignContent::Stretch); }
++		Isolation         isolation()                  const { return GetLocalPropertyKeyword(PropertyId::Isolation, Isolation::Auto); }
+ 		AlignItems        justify_items()              const { return GetLocalPropertyKeyword(PropertyId::JustifyItems, AlignItems::Stretch); }
+ 		AlignSelf         justify_self()               const { return GetLocalPropertyKeyword(PropertyId::JustifySelf, AlignSelf::Auto); }
+ 		AlignItems        align_items()                const { return GetLocalPropertyKeyword(PropertyId::AlignItems, AlignItems::Stretch); }
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index e4d61afc..9e0287d4 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -167,6 +167,10 @@ enum class PropertyId : uint8_t {
+ 	GridTemplateColumns,
+ 	GridTemplateRows,
+ 	GridColumn,
++	GridRow,
++	GridAutoColumns,
++	GridAutoRows,
++	Isolation,
+ 	ContainerType,
+ 	JustifyItems,
+ 	JustifySelf,
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index db29cab1..88a01e59 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -53,6 +53,7 @@ namespace Style {
+ 		InlineGrid
+ 	};
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
++	enum class Isolation : uint8_t { Auto, Isolate };
+ 
+ 	using Top = LengthPercentageAuto;
+ 	using Right = LengthPercentageAuto;
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 4289f4fa..db878e3a 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1923,14 +1923,14 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		changed_properties.Contains(PropertyId::TransformOriginY) || changed_properties.Contains(PropertyId::TransformOriginZ);
+ 
+ 	// Update the z-index and stacking context.
+-	if (changed_properties.Contains(PropertyId::ZIndex) || filter_or_mask_changed || perspective_changed || transform_changed)
++	if (changed_properties.Contains(PropertyId::ZIndex) || changed_properties.Contains(PropertyId::Isolation) || filter_or_mask_changed || perspective_changed || transform_changed)
+ 	{
+ 		const Style::ZIndex z_index_property = meta->computed_values.z_index();
+ 
+ 		const float new_z_index = (z_index_property.type == Style::ZIndex::Auto ? 0.f : z_index_property.value);
+ 		const bool enable_local_stacking_context = (z_index_property.type != Style::ZIndex::Auto || local_stacking_context_forced ||
+ 			meta->computed_values.has_filter() || meta->computed_values.has_backdrop_filter() || meta->computed_values.has_mask_image() ||
+-			meta->computed_values.has_local_transform() || meta->computed_values.has_local_perspective());
++			meta->computed_values.has_local_transform() || meta->computed_values.has_local_perspective() || meta->computed_values.isolation() == Style::Isolation::Isolate);
+ 
+ 		if (z_index != new_z_index || local_stacking_context != enable_local_stacking_context)
+ 		{
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 1e9dac9a..c57180fb 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1387,6 +1387,10 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::GridTemplateColumns:
+ 	case PropertyId::GridTemplateRows:
+ 	case PropertyId::GridColumn:
++	case PropertyId::GridRow:
++	case PropertyId::GridAutoColumns:
++	case PropertyId::GridAutoRows:
++	case PropertyId::Isolation:
+ 		break; // Consumed by the grid track formatter.
+ 	case PropertyId::JustifyItems:
+ 	case PropertyId::JustifySelf:
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 90a447f1..cd542602 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -7,42 +7,15 @@
+ #include "ContainerBox.h"
+ #include "LayoutDetails.h"
+ #include "GridTrackSizing.h"
++#include "GridPlacement.h"
+ #include "../../../Include/RmlUi/Core/Context.h"
+ #include <algorithm>
+ #include <float.h>
+ #include <numeric>
+ #include <stdexcept>
+-#include <sstream>
+-#include <cctype>
+ 
+ namespace Rml {
+ 
+-struct GridColumnPlacement {
+-    size_t begin = 0, end = 1;
+-    bool definite = false;
+-};
+-
+-static GridColumnPlacement ParseGridColumn(String value)
+-{
+-    for (char& character : value) character = char(std::tolower(static_cast<unsigned char>(character)));
+-    std::istringstream input(value);
+-    input >> std::ws;
+-    if (input.peek() == 'a') {
+-        String automatic;
+-        input >> automatic >> std::ws;
+-        if (automatic == "auto" && input.eof()) return {};
+-    } else {
+-        unsigned begin = 0, end = 0;
+-        char slash = 0;
+-        if ((input >> begin >> slash >> end) && slash == '/' && begin > 0 && end > begin && end <= 257) {
+-            input >> std::ws;
+-            if (input.eof()) return {size_t(begin - 1), size_t(end - 1), true};
+-        }
+-    }
+-    throw std::runtime_error("UI grid-column requires auto or ascending positive numeric start/end lines.");
+-}
+-
+-
+ UniquePtr<LayoutBox> FlexFormattingContext::Format(ContainerBox* parent_container, Element* element, const Box* override_initial_box)
+ {
+ 	RMLUI_ZoneScopedC(0xAFAF4F);
+@@ -157,7 +130,7 @@ struct FlexItem {
+ 
+ 	Element* element;
+ 	Box box;
+-	size_t grid_column = 0, grid_row = 0, grid_span = 1;
++	size_t grid_column = 0, grid_row = 0, grid_span = 1, grid_row_span = 1;
+ 
+ 	// Filled during the build step.
+ 	Size main;
+@@ -283,26 +256,52 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 
+ 
+ 	Vector<GridTrack> grid_columns, grid_rows;
++	Vector<GridPlacement> grid_placements;
++	Vector<GridContribution> grid_column_contributions;
+ 	if (is_grid) {
+ 		const float dp_ratio = element_flex->GetContext()->GetDensityIndependentPixelRatio();
+-		grid_columns = GridTrackParser::Parse(element_flex->GetProperty<String>("grid-template-columns"), dp_ratio);
+-		grid_rows = GridTrackParser::Parse(element_flex->GetProperty<String>("grid-template-rows"), dp_ratio);
+-		if (grid_columns.empty()) grid_columns.emplace_back();
+-        // Definite positive line placements extend the implicit column grid.
++		auto parse_tracks = [&](const char* name, float available, float minimum, float maximum, float gap) {
++			const float size = available >= 0.f ? Math::Clamp(available, minimum, maximum) : maximum < FLT_MAX ? maximum : minimum > 0.f ? minimum : -1.f;
++			return GridTrackParser::Parse(element_flex->GetProperty<String>(name), dp_ratio, size, gap, available < 0.f && maximum == FLT_MAX && minimum > 0.f);
++		};
++		grid_columns = parse_tracks("grid-template-columns", main_available_size, main_min_size, main_max_size, main_gap_size);
++		grid_rows = parse_tracks("grid-template-rows", cross_available_size, cross_min_size, cross_max_size, cross_gap_size);
+         for (int index = 0; index < element_flex->GetNumChildren(); ++index) {
+             auto* child = element_flex->GetChild(index);
+             const auto& style = child->GetComputedValues();
+             if (style.display() == Style::Display::None || style.position() == Style::Position::Absolute || style.position() == Style::Position::Fixed) continue;
+-            const auto placement = ParseGridColumn(child->GetProperty<String>("grid-column"));
+-            if (placement.definite && placement.end > grid_columns.size()) grid_columns.resize(placement.end);
++			grid_placements.push_back({ParseGridPlacement(child->GetProperty<String>("grid-column"), int(grid_columns.size())),
++				ParseGridPlacement(child->GetProperty<String>("grid-row"), int(grid_rows.size()))});
+         }
++		const auto bounds = PlaceGridItems(grid_placements, int(grid_columns.size()), int(grid_rows.size()));
++		auto implicit_tracks = [&](Vector<GridTrack>& tracks, int origin, int count, const char* property) {
++			const auto pattern = GridTrackParser::Parse(element_flex->GetProperty<String>(property), dp_ratio, -1.f, 0.f, false, false);
++			if (pattern.empty()) throw std::runtime_error("UI implicit grid tracks cannot be none.");
++			const int explicit_count = int(tracks.size());
++			tracks.insert(tracks.begin(), size_t(-origin), GridTrack{});
++			tracks.resize(size_t(count));
++			for (int i = 0; i < count; ++i) {
++				const int position = i + origin;
++				if (position < 0 || position >= explicit_count) {
++					const int phase = position < 0 ? position : position - explicit_count;
++					tracks[size_t(i)] = pattern[size_t((phase % int(pattern.size()) + int(pattern.size())) % int(pattern.size()))];
++				}
++			}
++			for (auto& track : tracks) track.collapsed = track.auto_fit;
++		};
++		implicit_tracks(grid_columns, bounds.column_origin, bounds.columns, "grid-auto-columns");
++		implicit_tracks(grid_rows, bounds.row_origin, bounds.rows, "grid-auto-rows");
++		for (const auto& item : grid_placements) {
++			for (int i = item.column.begin; i < item.column.begin + item.column.span; ++i) grid_columns[size_t(i)].collapsed = false;
++			for (int i = item.row.begin; i < item.row.begin + item.row.span; ++i) grid_rows[size_t(i)].collapsed = false;
++		}
+ 	}
+ 
+ 	// -- Build a list of all flex items with base size information --
+ 	const int num_flex_children = element_flex->GetNumChildren();
+ 	Vector<FlexItem> items;
+ 	items.reserve(num_flex_children);
+-	size_t grid_cursor_column = 0, grid_cursor_row = 0;
++	size_t grid_item_index = 0;
+ 
+ 	for (int i = 0; i < num_flex_children; i++)
+ 	{
+@@ -315,6 +314,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		}
+ 		else if (computed.position() == Style::Position::Absolute || computed.position() == Style::Position::Fixed)
+ 		{
++			if (is_grid && (element->GetProperty<String>("grid-column") != "auto" || element->GetProperty<String>("grid-row") != "auto"))
++				throw std::runtime_error("UI grid placement on absolutely positioned children is not represented.");
+ 			ContainerBox* absolute_containing_block = LayoutDetails::GetContainingBlock(flex_container_box, computed.position()).container;
+ 			absolute_containing_block->AddAbsoluteElement(element, {}, element_flex);
+ 			continue;
+@@ -336,26 +337,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		FlexItem item = {};
+ 		item.element = element;
+         if (is_grid) {
+-            const auto placement = ParseGridColumn(element->GetProperty<String>("grid-column"));
+-            if (placement.definite) {
+-                if (placement.begin < grid_cursor_column) ++grid_cursor_row;
+-                grid_cursor_column = placement.begin;
+-                item.grid_span = placement.end - placement.begin;
+-            } else if (grid_cursor_column == grid_columns.size()) {
+-                ++grid_cursor_row;
+-                grid_cursor_column = 0;
+-            }
+-            item.grid_column = grid_cursor_column;
+-            item.grid_row = grid_cursor_row;
+-            grid_cursor_column += item.grid_span;
+-            if (item.grid_span > 1) {
+-                const auto first = grid_columns.begin() + item.grid_column;
+-                const auto end = first + item.grid_span;
+-                const bool fixed = std::all_of(first, end, [](const auto& track) { return track.kind == GridTrack::Kind::Fixed; });
+-                const bool flexible = std::any_of(first, end, [](const auto& track) { return track.kind == GridTrack::Kind::Flexible; });
+-                if (!fixed && (!flexible || computed.width().type != Style::LengthPercentageAuto::Percentage))
+-                    throw std::runtime_error("UI intrinsic spanning grid contributions require flexible tracks and percentage width.");
+-            }
++			const auto& placement = grid_placements[grid_item_index++];
++			item.grid_column = size_t(placement.column.begin); item.grid_span = size_t(placement.column.span);
++			item.grid_row = size_t(placement.row.begin); item.grid_row_span = size_t(placement.row.span);
+         }
+ 		LayoutDetails::BuildBox(item.box, flex_content_containing_block, element, is_grid ? BuildBoxMode::IntrinsicWidth : BuildBoxMode::UnalignedBlock);
+ 
+@@ -450,12 +434,14 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		item.flex_base_size = item.inner_flex_base_size + item.main.sum_edges;
+ 
+ 
+-		if (is_grid && item.grid_span == 1) {
+-			auto& track = grid_columns[item.grid_column];
++		if (is_grid) {
++			const auto first = grid_columns.begin() + item.grid_column, end = first + item.grid_span;
++			const bool automatic_minimum = std::any_of(first, end, [](const auto& track) { return track.automatic_minimum; });
++			const bool flexible_span = item.grid_span > 1 && std::any_of(first, end, [](const auto& track) { return track.kind == GridTrack::Kind::Flexible; });
+ 			float minimum = item.hypothetical_main_size;
+-			if (track.automatic_minimum && item.main.auto_size) {
++			if (automatic_minimum && item.main.auto_size) {
+ 				minimum = item.main.min_size + item.main.sum_edges;
+-				if ((!element->GetLocalProperty(PropertyId::MinWidth) || computed.min_width().type == Style::LengthPercentage::Percentage) && !LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y())) {
++				if (!flexible_span && (!element->GetLocalProperty(PropertyId::MinWidth) || computed.min_width().type == Style::LengthPercentage::Percentage) && !LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y())) {
+ 					if (element->IsReplaced()) minimum = item.hypothetical_main_size;
+ 					else {
+ 					// Formatting with zero inline space exposes the largest unbreakable
+@@ -480,8 +466,13 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 					compressed_minimum = Math::Max(compressed_minimum, ResolveValue(computed.min_height(), 0.f) * intrinsic_ratio);
+ 				minimum = compressed_minimum + item.main.sum_edges;
+ 			}
+-			track.min_content = Math::Max(track.min_content, minimum);
+-			track.max_content = Math::Max(track.max_content, item.hypothetical_main_size);
++			// An automatic minimum is capped by a definite maximum grid area.
++			if (item.main.min_size == 0.f && std::all_of(first, end, [](const auto& track) { return track.kind == GridTrack::Kind::Fixed || track.fixed_maximum; })) {
++				float limit = main_gap_size * float(item.grid_span - 1);
++				for (auto track = first; track != end; ++track) limit += std::max(track->minimum, track->maximum);
++				minimum = std::min(minimum, limit);
++			}
++			grid_column_contributions.push_back({item.grid_column, item.grid_span, minimum, item.hypothetical_main_size});
+ 		}
+ 		items.push_back(std::move(item));
+ 	}
+@@ -494,7 +485,12 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 	// -- Collect the items into lines --
+ 	FlexLineContainer container;
+ 
+-	if (flex_single_line)
++	if (is_grid) {
++		for (size_t i = 0; i < grid_rows.size(); ++i) container.lines.emplace_back(Vector<FlexItem>{});
++		for (auto& item : items) container.lines[item.grid_row].items.push_back(std::move(item));
++		GrowGridIntrinsicTracks(grid_columns, grid_column_contributions, main_gap_size);
++	}
++	else if (flex_single_line)
+ 	{
+ 		container.lines.emplace_back(std::move(items));
+ 	}
+@@ -508,7 +504,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		{
+ 			cursor += item.hypothetical_main_size;
+ 
+-			if (!line_items.empty() && (is_grid ? item.grid_row != line_items.front().grid_row : cursor > main_wrap_size))
++			if (!line_items.empty() && cursor > main_wrap_size)
+ 			{
+ 				// Break into new line.
+ 				container.lines.emplace_back(std::move(line_items));
+@@ -532,11 +528,6 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 	}
+ 
+ 
+-	if (is_grid) {
+-		const size_t row_count = Math::Max(size_t(1), Math::Max(grid_rows.size(), container.lines.size()));
+-		while (container.lines.size() < row_count) container.lines.emplace_back(Vector<FlexItem>{});
+-		grid_rows.resize(row_count);
+-	}
+ 	for (FlexLine& line : container.lines)
+ 	{
+ 		// now that items are in lines, we can add the main gap size to all but the last item
+@@ -568,45 +559,11 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		const bool stretch_auto = !element_flex->GetLocalProperty(PropertyId::JustifyContent) || computed_flex.justify_content() == Style::JustifyContent::Normal || computed_flex.justify_content() == Style::JustifyContent::Stretch;
+ 		ResolveGridTracks(grid_columns, main_available_size < 0.f ? -1.f : used_main_size, main_gap_size, stretch_auto);
+ 		if (main_available_size < 0.f) {
+-            // CSS Grid 11.7: an indefinite grid's fr size also includes each
+-            // spanning item's max-content contribution. Its non-flexible
+-            // tracks have already reached their intrinsic growth limits.
+-            float spanning_fraction = 0.f;
+-            for (const auto& line : container.lines) for (const auto& item : line.items) {
+-                if (item.grid_span < 2) continue;
+-                const auto first = grid_columns.begin() + item.grid_column;
+-                if (std::none_of(first, first + item.grid_span, [](const auto& track) { return track.kind == GridTrack::Kind::Flexible; })) continue;
+-                Vector<GridTrack> spanned(first, first + item.grid_span);
+-                for (auto& track : spanned) if (track.kind != GridTrack::Kind::Flexible) {
+-                    track.kind = GridTrack::Kind::Fixed;
+-                    track.automatic_minimum = false;
+-                    track.minimum = track.size;
+-                }
+-                spanning_fraction = Math::Max(spanning_fraction,
+-                    ResolveGridTracks(spanned, item.hypothetical_main_size, main_gap_size, false));
+-            }
+-            for (auto& track : grid_columns) if (track.kind == GridTrack::Kind::Flexible)
+-                track.size = Math::Max(track.size, track.fraction * spanning_fraction);
++			ResolveGridFlexibleSpans(grid_columns, grid_column_contributions, main_gap_size);
+             used_main_size = Math::Clamp(GridTracksExtent(grid_columns, main_gap_size), main_min_size, main_max_size);
+         }
+-		const float remaining = used_main_size - GridTracksExtent(grid_columns, main_gap_size);
+-		float offset = 0.f, spacing = main_gap_size;
+-		using Style::JustifyContent;
+-		switch (computed_flex.justify_content()) {
+-		case JustifyContent::Center: offset = remaining * .5f; break;
+-		case JustifyContent::Right: case JustifyContent::End: case JustifyContent::FlexEnd: offset = remaining; break;
+-		case JustifyContent::SpaceBetween: if (remaining > 0.f && grid_columns.size() > 1) spacing += remaining / float(grid_columns.size() - 1); break;
+-		case JustifyContent::SpaceAround:
+-			if (remaining > 0.f) { spacing += remaining / float(grid_columns.size()); offset = remaining / float(2 * grid_columns.size()); }
+-			else offset = remaining * .5f;
+-			break;
+-		case JustifyContent::SpaceEvenly:
+-			if (remaining > 0.f) { offset = remaining / float(grid_columns.size() + 1); spacing += offset; }
+-			else offset = remaining * .5f;
+-			break;
+-		default: break;
+-		}
+-		for (const auto& track : grid_columns) { grid_column_offsets.push_back(offset); offset += track.size + spacing; }
++		const auto alignment = computed_flex.justify_content() == Style::JustifyContent::Right ? Style::JustifyContent::End : computed_flex.justify_content();
++		grid_column_offsets = GridTrackOffsets(grid_columns, used_main_size, main_gap_size, alignment);
+ 	}
+ 
+ 	// -- Determine main size --
+@@ -745,10 +702,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+                 const size_t column = item.grid_column;
+                 const size_t last = column + item.grid_span - 1;
+                 const float cell_width = grid_column_offsets[last] + grid_columns[last].size - grid_column_offsets[column];
+-                if (item.grid_span > 1 && item.main.min_size + item.main.sum_edges > cell_width &&
+-                    std::any_of(grid_columns.begin() + column, grid_columns.begin() + last + 1,
+-                                [](const auto& track) { return track.kind != GridTrack::Kind::Fixed; }))
+-                    throw std::runtime_error("UI grid span requires unrepresented intrinsic track growth.");
++
+ 				const auto& values = item.element->GetComputedValues();
+ 				// Once the cell is definite, all inline percentages and both axes'
+ 				// percentage edges resolve against its inline size, not the grid box.
+@@ -945,10 +899,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		{
+ 			RMLUI_ASSERT(std::none_of(line.items.begin(), line.items.end(), [&](const auto& item) { return CanSkipHypotheticalCrossSize(item); }));
+ 
+-			const float largest_hypothetical_cross_size = line.items.empty() ? 0.f :
+-				std::max_element(line.items.begin(), line.items.end(), [](const FlexItem& a, const FlexItem& b) {
+-					return a.hypothetical_cross_size < b.hypothetical_cross_size;
+-				})->hypothetical_cross_size;
++			float largest_hypothetical_cross_size = 0.f;
++			for (const auto& item : line.items) if (!is_grid || item.grid_row_span == 1)
++				largest_hypothetical_cross_size = Math::Max(largest_hypothetical_cross_size, item.hypothetical_cross_size);
+ 
+ 			// Currently, we don't handle the case where baseline alignment could extend the line's cross size, see CSS specs 9.4.8.
+ 			line.cross_size = Math::Max(0.0f, largest_hypothetical_cross_size);
+@@ -958,16 +911,29 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		}
+ 	}
+ 
+-	const float grid_gap_total = is_grid ? cross_gap_size * float(container.lines.size() - 1) : 0.f;
+-	const float grid_intrinsic_height = grid_gap_total + std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
+-		[](float value, const FlexLine& line) { return value + line.cross_size; });
+-	const float row_stretch_size = is_grid
+-		? Math::Clamp(cross_available_size >= 0.f ? cross_available_size : grid_intrinsic_height, cross_min_size, cross_max_size)
+-		: cross_available_size;
++	float grid_gap_total = 0.f;
++	float row_stretch_size = cross_available_size;
+ 	if (is_grid) {
+-		for (size_t i = 0; i < grid_rows.size(); ++i) grid_rows[i].min_content = grid_rows[i].max_content = container.lines[i].cross_size;
+-		ResolveGridTracks(grid_rows, cross_available_size < 0.f && cross_min_size <= grid_intrinsic_height ? -1.f : row_stretch_size,
+-			cross_gap_size, computed_flex.align_content() == Style::AlignContent::Stretch);
++		Vector<GridContribution> contributions;
++		for (const auto& line : container.lines) for (const auto& item : line.items) {
++			const auto first = grid_rows.begin() + item.grid_row, end = first + item.grid_row_span;
++			const bool flexible_span = item.grid_row_span > 1 && std::any_of(first, end, [](const auto& track) { return track.kind == GridTrack::Kind::Flexible; });
++			float minimum = flexible_span && item.cross.auto_size ? item.cross.min_size + item.cross.sum_edges : item.hypothetical_cross_size;
++			if (item.cross.min_size == 0.f && std::all_of(first, end, [](const auto& track) { return track.kind == GridTrack::Kind::Fixed || track.fixed_maximum; })) {
++				float limit = cross_gap_size * float(item.grid_row_span - 1);
++				for (auto track = first; track != end; ++track) limit += std::max(track->minimum, track->maximum);
++				minimum = std::min(minimum, limit);
++			}
++			contributions.push_back({item.grid_row, item.grid_row_span, minimum, item.hypothetical_cross_size});
++		}
++		GrowGridIntrinsicTracks(grid_rows, contributions, cross_gap_size);
++		ResolveGridTracks(grid_rows, cross_available_size, cross_gap_size, false);
++		if (cross_available_size < 0.f) ResolveGridFlexibleSpans(grid_rows, contributions, cross_gap_size);
++		const float intrinsic = GridTracksExtent(grid_rows, cross_gap_size);
++		row_stretch_size = Math::Clamp(cross_available_size >= 0.f ? cross_available_size : intrinsic, cross_min_size, cross_max_size);
++		if (cross_available_size >= 0.f || row_stretch_size != intrinsic)
++			ResolveGridTracks(grid_rows, row_stretch_size, cross_gap_size, computed_flex.align_content() == Style::AlignContent::Stretch);
++		grid_gap_total = GridTracksExtent(grid_rows, cross_gap_size) - GridTracksExtent(grid_rows, 0.f);
+ 		for (size_t i = 0; i < grid_rows.size(); ++i) container.lines[i].cross_size = grid_rows[i].size;
+ 	}
+ 	// Stretch out the lines if we have extra space.
+@@ -992,7 +958,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 	}
+ 
+ 	// Determine the used cross size of items.
+-	for (FlexLine& line : container.lines)
++	if (!is_grid) for (FlexLine& line : container.lines)
+ 	{
+ 		for (FlexItem& item : line.items)
+ 		{
+@@ -1106,7 +1072,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 	const float used_cross_size = Math::Clamp(used_cross_size_unconstrained, cross_min_size, cross_max_size);
+ 
+ 	// Align the lines along the cross-axis.
+-	{
++	if (!is_grid) {
+ 		const float remaining_free_space = used_cross_size - accumulated_lines_cross_size;
+ 		const int num_lines = int(container.lines.size());
+ 
+@@ -1187,6 +1153,26 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		}
+ 	}
+ 
++	if (is_grid) {
++		const auto offsets = GridTrackOffsets(grid_rows, used_cross_size, cross_gap_size, computed_flex.align_content());
++		for (size_t i = 0; i < container.lines.size(); ++i) {
++			auto& line = container.lines[i]; line.cross_offset = offsets[i];
++			for (auto& item : line.items) {
++				const size_t last = item.grid_row + item.grid_row_span - 1;
++				const float cell_size = offsets[last] + grid_rows[last].size - offsets[i];
++				const int auto_margins = int(item.cross.auto_margin_a) + int(item.cross.auto_margin_b);
++				item.used_cross_size = item.align_self == Style::AlignSelf::Stretch && item.cross.auto_size && !auto_margins
++					? Math::Clamp(cell_size - item.cross.sum_edges, item.cross.min_size, item.cross.max_size) + item.cross.sum_edges
++					: item.hypothetical_cross_size;
++				const float remaining = cell_size - item.used_cross_size;
++				item.cross_offset = item.cross.margin_a;
++				if (auto_margins) item.cross_offset += item.cross.auto_margin_a ? std::max(0.f, remaining) / float(auto_margins) : 0.f;
++				else if (item.align_self == Style::AlignSelf::Center) item.cross_offset += remaining * .5f;
++				else if (item.align_self == Style::AlignSelf::End || item.align_self == Style::AlignSelf::FlexEnd) item.cross_offset += remaining;
++			}
++		}
++	}
++
+ 	auto MainCrossToVec2 = [main_axis_horizontal](const float v_main, const float v_cross) {
+ 		return main_axis_horizontal ? Vector2f(v_main, v_cross) : Vector2f(v_cross, v_main);
+ 	};
+diff --git a/Source/Core/Layout/GridPlacement.h b/Source/Core/Layout/GridPlacement.h
+new file mode 100644
+index 00000000..3411b83e
+--- /dev/null
++++ b/Source/Core/Layout/GridPlacement.h
+@@ -0,0 +1,139 @@
++#pragma once
++
++#include "../../../Include/RmlUi/Core/Types.h"
++#include "../NumberParsing.h"
++#include <algorithm>
++#include <cctype>
++#include <stdexcept>
++#include <string_view>
++
++namespace Rml {
++
++struct GridAxisPlacement {
++	int begin = 0, span = 1;
++	bool definite = false;
++};
++
++inline GridAxisPlacement ParseGridPlacement(std::string_view source, int explicit_tracks)
++{
++	struct Line { int number = 0; bool span = false; };
++	String lower(source);
++	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
++	std::string_view input(lower);
++	auto fail = [] { throw std::runtime_error("UI grid placement requires auto, nonzero integer lines, or positive spans within 256 tracks."); };
++	auto space = [&] { while (!input.empty() && std::isspace(static_cast<unsigned char>(input.front()))) input.remove_prefix(1); };
++	auto line = [&] {
++		space(); Line result;
++		if (input.substr(0, 4) == "auto") { input.remove_prefix(4); return result; }
++		if (input.substr(0, 4) == "span") {
++			input.remove_prefix(4);
++			if (input.empty() || !std::isspace(static_cast<unsigned char>(input.front()))) fail();
++			space(); result.span = true;
++		}
++		if (!input.empty() && input.front() == '+') {
++			input.remove_prefix(1);
++			if (input.empty() || !std::isdigit(static_cast<unsigned char>(input.front()))) fail();
++		}
++		const auto parsed = number_parsing::from_chars(input.data(), input.data() + input.size(), result.number);
++		if (parsed.ec != std::errc{} || result.number == 0 || result.number < -257 || result.number > 257 ||
++			(result.span && (result.number < 1 || result.number > 256))) fail();
++		input.remove_prefix(size_t(parsed.ptr - input.data()));
++		return result;
++	};
++	Line first = line(), last;
++	space();
++	if (!input.empty() && input.front() == '/') { input.remove_prefix(1); last = line(); space(); }
++	if (!input.empty()) fail();
++	// CSS Grid 8.3.1: discard the end span when both sides specify spans.
++	if (first.span && last.span) last = {};
++	auto index = [=](int number) { return number > 0 ? number - 1 : explicit_tracks + number + 1; };
++	const bool start = first.number != 0 && !first.span;
++	const bool end = last.number != 0 && !last.span;
++	if (start && end) {
++		int a = index(first.number), b = index(last.number);
++		if (a > b) std::swap(a, b);
++		return {a, std::max(1, b - a), true};
++	}
++	const int span = first.span ? first.number : last.span ? last.number : 1;
++	if (start) return {index(first.number), span, true};
++	if (end) return {index(last.number) - span, span, true};
++	return {0, span, false};
++}
++
++struct GridPlacement { GridAxisPlacement column, row; };
++struct GridBounds { int columns = 1, rows = 1, column_origin = 0, row_origin = 0; };
++
++inline GridBounds PlaceGridItems(Vector<GridPlacement>& items, int explicit_columns, int explicit_rows)
++{
++	// CSS Grid 8.5, sparse row flow. Definite areas reserve cells before any
++	// auto-placement, including areas appearing later in document order.
++	GridBounds bounds;
++	bounds.columns = std::max(1, explicit_columns);
++	bounds.rows = std::max(1, explicit_rows);
++	for (const auto& item : items) {
++		if (item.column.definite) {
++			bounds.column_origin = std::min(bounds.column_origin, item.column.begin);
++			bounds.columns = std::max(bounds.columns, item.column.begin + item.column.span);
++		}
++		if (item.row.definite) {
++			bounds.row_origin = std::min(bounds.row_origin, item.row.begin);
++			bounds.rows = std::max(bounds.rows, item.row.begin + item.row.span);
++		}
++	}
++	bounds.columns -= bounds.column_origin;
++	bounds.rows -= bounds.row_origin;
++	auto check = [](int columns, int rows) {
++		if (columns > 256 || rows > 256) throw std::runtime_error("UI grid implicit placement exceeds 256 tracks per axis.");
++	};
++	check(bounds.columns, bounds.rows);
++	for (auto& item : items) {
++		if (item.column.definite) item.column.begin -= bounds.column_origin;
++		if (item.row.definite) item.row.begin -= bounds.row_origin;
++		bounds.columns = std::max(bounds.columns, item.column.span);
++	}
++	Vector<bool> occupied(256 * 256, false);
++	auto overlaps = [&](const GridPlacement& item) {
++		check(item.column.begin + item.column.span, item.row.begin + item.row.span);
++		for (int row = item.row.begin; row < item.row.begin + item.row.span; ++row)
++			for (int column = item.column.begin; column < item.column.begin + item.column.span; ++column)
++				if (occupied[size_t(row * 256 + column)]) return true;
++		return false;
++	};
++	auto occupy = [&](const GridPlacement& item) {
++		check(item.column.begin + item.column.span, item.row.begin + item.row.span);
++		bounds.columns = std::max(bounds.columns, item.column.begin + item.column.span);
++		bounds.rows = std::max(bounds.rows, item.row.begin + item.row.span);
++		for (int row = item.row.begin; row < item.row.begin + item.row.span; ++row)
++			for (int column = item.column.begin; column < item.column.begin + item.column.span; ++column)
++				occupied[size_t(row * 256 + column)] = true;
++	};
++	for (const auto& item : items) if (item.column.definite && item.row.definite) occupy(item);
++	Vector<int> locked_row_cursor(256, 0);
++	for (auto& item : items) if (!item.column.definite && item.row.definite) {
++		item.column.begin = locked_row_cursor[size_t(item.row.begin)];
++		while (overlaps(item)) ++item.column.begin;
++		occupy(item);
++		for (int occupied_row = item.row.begin; occupied_row < item.row.begin + item.row.span; ++occupied_row)
++			locked_row_cursor[size_t(occupied_row)] = std::max(locked_row_cursor[size_t(occupied_row)], item.column.begin + item.column.span);
++	}
++	int column = 0, row = 0;
++	for (auto& item : items) if (!item.row.definite) {
++		if (item.column.definite) {
++			if (item.column.begin < column) ++row;
++			column = item.column.begin;
++			item.row.begin = row;
++			while (overlaps(item)) item.row.begin = ++row;
++		} else {
++			for (;;) {
++				if (column + item.column.span > bounds.columns) { column = 0; ++row; }
++				item.column.begin = column; item.row.begin = row;
++				if (!overlaps(item)) break;
++				++column;
++			}
++		}
++		occupy(item);
++	}
++	return bounds;
++}
++
++} // namespace Rml
+diff --git a/Source/Core/Layout/GridTrackSizing.h b/Source/Core/Layout/GridTrackSizing.h
+index 1dd4d61d..52264c1c 100644
+--- a/Source/Core/Layout/GridTrackSizing.h
++++ b/Source/Core/Layout/GridTrackSizing.h
+@@ -6,18 +6,21 @@
+ #include <cctype>
+ #include <cmath>
+ #include <numeric>
++#include <limits>
+ #include <stdexcept>
+ #include <string_view>
+ 
+ namespace Rml {
+ 
+-// Row-major, non-spanning grid tracks. Keep sizing separate from item formatting
+-// so columns and rows use the same fixed/auto/flexible sizing algorithm.
++// Keep sizing separate from item formatting so columns and rows share track
++// parsing, intrinsic contributions, flexible sizing and collapsed gutters.
+ struct GridTrack {
+ 	enum class Kind { Fixed, Auto, Flexible };
+ 	Kind kind = Kind::Auto;
+ 	bool automatic_minimum = true;
+-	float minimum = 0.f;
++	float minimum = 0.f, maximum = 0.f;
++	bool fixed_maximum = false;
++	bool auto_fit = false, collapsed = false;
+ 	float fraction = 0.f;
+ 	float min_content = 0.f, max_content = 0.f;
+ 	float size = 0.f;
+@@ -25,11 +28,11 @@ struct GridTrack {
+ 
+ class GridTrackParser {
+ public:
+-	static Vector<GridTrack> Parse(std::string_view value, float dp_ratio)
++	static Vector<GridTrack> Parse(std::string_view value, float dp_ratio, float available = -1.f, float gap = 0.f, bool minimum_size = false, bool allow_repeat = true)
+ 	{
+ 		String lower(value);
+ 		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+-		GridTrackParser parser(lower, dp_ratio);
++		GridTrackParser parser(lower, dp_ratio, allow_repeat);
+ 		parser.Space();
+ 		if (parser.Take("none")) {
+ 			parser.Space();
+@@ -38,14 +41,36 @@ public:
+ 		}
+ 		auto result = parser.List(false);
+ 		if (!parser.input.empty() || result.empty()) Fail();
++		if (parser.automatic_count) {
++			float outside = 0.f, pattern = 0.f;
++			for (size_t i = 0; i < result.size(); ++i) {
++				const auto& track = result[i];
++				if (track.automatic_minimum && !track.fixed_maximum && track.kind != GridTrack::Kind::Fixed) Fail();
++				const float size = track.fixed_maximum ? std::max(track.minimum, track.maximum) : track.minimum;
++				if (i >= parser.automatic_start && i < parser.automatic_start + parser.automatic_count) pattern += std::max(1.f, size);
++				else outside += size;
++			}
++			const size_t others = result.size() - parser.automatic_count;
++			const float fitting = available < 0.f ? 1.f :
++				(available - outside - gap * float(others) + gap) / (pattern + gap * float(parser.automatic_count));
++			const float repetitions = std::max(1.f, minimum_size ? std::ceil(fitting) : std::floor(fitting));
++			if (!std::isfinite(repetitions) || repetitions * float(parser.automatic_count) + float(others) > 256.f) Fail();
++			const auto begin = result.begin() + parser.automatic_start;
++			const Vector<GridTrack> repeated(begin, begin + parser.automatic_count);
++			result.insert(result.begin() + parser.automatic_start, (size_t(repetitions) - 1) * parser.automatic_count, GridTrack{});
++			for (size_t i = 0; i < size_t(repetitions); ++i)
++				std::copy(repeated.begin(), repeated.end(), result.begin() + parser.automatic_start + i * parser.automatic_count);
++		}
+ 		return result;
+ 	}
+ 
+ private:
+ 	std::string_view input;
+ 	float dp_ratio;
+-	GridTrackParser(std::string_view input, float dp_ratio) : input(input), dp_ratio(dp_ratio) {}
+-	[[noreturn]] static void Fail() { throw std::runtime_error("UI grid tracks require none, auto, non-negative px/fr, minmax(px,fr), or repeat(integer, tracks), at most 256 tracks."); }
++	bool allow_repeat;
++	size_t automatic_start = 0, automatic_count = 0;
++	GridTrackParser(std::string_view input, float dp_ratio, bool allow_repeat) : input(input), dp_ratio(dp_ratio), allow_repeat(allow_repeat) {}
++	[[noreturn]] static void Fail() { throw std::runtime_error("UI grid tracks require finite auto/px/fr, minmax(auto or px, auto/px/fr), or bounded repeat tracks, at most 256 tracks."); }
+ 	void Space() { while (!input.empty() && (input.front() == ' ' || input.front() == '\t' || input.front() == '\n' || input.front() == '\r')) input.remove_prefix(1); }
+ 	bool Take(std::string_view prefix) {
+ 		if (input.substr(0, prefix.size()) != prefix) return false;
+@@ -72,9 +97,17 @@ private:
+ 			Space(); track.automatic_minimum = Take("auto");
+ 			if (!track.automatic_minimum) track.minimum = Length();
+ 			Space(); if (!Take(",")) Fail(); Space();
+-			track.fraction = Number();
+-			if (!Take("fr")) Fail(); Space(); if (!Take(")")) Fail();
+-			track.kind = GridTrack::Kind::Flexible;
++			if (!Take("auto")) {
++				const float value = Number();
++				if (Take("fr")) { track.kind = GridTrack::Kind::Flexible; track.fraction = value; }
++				else {
++					track.fixed_maximum = true;
++					if (Take("px")) track.maximum = value;
++					else if (Take("dp")) track.maximum = value * dp_ratio;
++					else if (value != 0.f) Fail();
++				}
++			}
++			Space(); if (!Take(")")) Fail();
+ 			return track;
+ 		}
+ 		const float value = Number();
+@@ -90,14 +123,21 @@ private:
+ 		Space();
+ 		while (!input.empty() && input.front() != ')') {
+ 			if (Take("repeat(")) {
+-				if (repeated) Fail();
+-				Space(); unsigned count_value = 0;
+-				const auto parsed = number_parsing::from_chars(input.data(), input.data() + input.size(), count_value);
+-				if (parsed.ec != std::errc{} || count_value < 1 || count_value > 256) Fail();
+-				input.remove_prefix(size_t(parsed.ptr - input.data()));
++				if (repeated || !allow_repeat) Fail();
++				Space(); unsigned count_value = 1;
++				const bool fit = Take("auto-fit"), automatic = fit || Take("auto-fill");
++				if (!automatic) {
++					const auto parsed = number_parsing::from_chars(input.data(), input.data() + input.size(), count_value);
++					if (parsed.ec != std::errc{} || count_value < 1 || count_value > 256) Fail();
++					input.remove_prefix(size_t(parsed.ptr - input.data()));
++				} else if (automatic_count) Fail();
+ 				Space(); if (!Take(",")) Fail();
+-				const auto pattern = List(true);
++				auto pattern = List(true);
+ 				if (pattern.empty() || !Take(")") || pattern.size() * size_t(count_value) + result.size() > 256) Fail();
++				if (automatic) {
++					automatic_start = result.size(); automatic_count = pattern.size();
++					for (auto& track : pattern) track.auto_fit = fit;
++				}
+ 				for (int i = 0; i < int(count_value); ++i) result.insert(result.end(), pattern.begin(), pattern.end());
+ 			} else {
+ 				result.push_back(Track());
+@@ -113,27 +153,128 @@ private:
+ 
+ inline float GridTracksExtent(const Vector<GridTrack>& tracks, float gap)
+ {
+-	return std::accumulate(tracks.begin(), tracks.end(), tracks.empty() ? 0.f : gap * float(tracks.size() - 1),
++	const auto count = std::count_if(tracks.begin(), tracks.end(), [](const auto& track) { return !track.collapsed; });
++	return std::accumulate(tracks.begin(), tracks.end(), count > 0 ? gap * float(count - 1) : 0.f,
+ 		[](float sum, const GridTrack& track) { return sum + track.size; });
+ }
+ 
++template <typename Alignment>
++inline Vector<float> GridTrackOffsets(const Vector<GridTrack>& tracks, float available, float gap, Alignment alignment)
++{
++	const auto count = std::count_if(tracks.begin(), tracks.end(), [](const auto& track) { return !track.collapsed; });
++	const float remaining = available - GridTracksExtent(tracks, gap);
++	float offset = 0.f, spacing = gap;
++	switch (alignment) {
++	case Alignment::Center: offset = remaining * .5f; break;
++	case Alignment::End: case Alignment::FlexEnd: offset = remaining; break;
++	case Alignment::SpaceBetween: if (remaining > 0.f && count > 1) spacing += remaining / float(count - 1); break;
++	case Alignment::SpaceAround:
++		if (remaining > 0.f && count > 0) { spacing += remaining / float(count); offset = remaining / float(2 * count); }
++		else offset = remaining * .5f;
++		break;
++	case Alignment::SpaceEvenly:
++		if (remaining > 0.f) { offset = remaining / float(count + 1); spacing += offset; }
++		else offset = remaining * .5f;
++		break;
++	default: break;
++	}
++	Vector<float> offsets;
++	bool preceding = false;
++	for (const auto& track : tracks) {
++		if (!track.collapsed && preceding) offset += spacing;
++		offsets.push_back(offset);
++		if (!track.collapsed) { offset += track.size; preceding = true; }
++	}
++	return offsets;
++}
++
++struct GridContribution {
++	size_t begin, span;
++	float minimum, maximum;
++};
++
++inline void GrowGridIntrinsicTracks(Vector<GridTrack>& tracks, Vector<GridContribution> contributions, float gap)
++{
++	// Apply equal-span contributions together so document order cannot change
++	// track bases or growth limits. Flexible spans contribute their maximum
++	// later, when resolving an indefinite fr size.
++	std::stable_sort(contributions.begin(), contributions.end(), [](const auto& a, const auto& b) { return a.span < b.span; });
++	for (size_t first = 0; first < contributions.size();) {
++		size_t end = first + 1;
++		while (end < contributions.size() && contributions[end].span == contributions[first].span) ++end;
++		for (bool maximum : {false, true}) {
++			Vector<float> planned(tracks.size(), 0.f);
++			for (size_t index = first; index < end; ++index) {
++				const auto& item = contributions[index];
++				bool flexible = false;
++				float current = gap * float(item.span - 1), factors = 0.f;
++				for (size_t i = item.begin; i < item.begin + item.span; ++i) flexible |= tracks[i].kind == GridTrack::Kind::Flexible;
++				if (maximum && flexible && item.span > 1) continue;
++				auto eligible = [&](const GridTrack& track) {
++					return !track.collapsed && (maximum ? track.kind != GridTrack::Kind::Fixed && !track.fixed_maximum : track.automatic_minimum);
++				};
++				for (size_t i = item.begin; i < item.begin + item.span; ++i) {
++					const auto& track = tracks[i];
++					const float base = track.automatic_minimum ? track.min_content : track.minimum;
++					current += maximum ? std::max(base, track.fixed_maximum ? track.maximum : track.kind == GridTrack::Kind::Fixed ? track.minimum : track.max_content) : base;
++					if (eligible(track)) factors += flexible && item.span > 1 ? track.fraction : 1.f;
++				}
++				float extra = std::max(0.f, (maximum ? item.maximum : item.minimum) - current);
++				if (extra == 0.f || factors == 0.f) continue;
++				Vector<float> increases(item.span, 0.f);
++				// Freeze finite growth limits before redistributing the remainder.
++				// If every affected track reaches its limit, the item's required
++				// minimum can still grow their bases beyond those limits.
++				for (bool beyond_limits : {false, true}) {
++					while (extra > 0.f) {
++						auto room = [&](size_t i) {
++							return !maximum && !beyond_limits && tracks[i].fixed_maximum
++								? std::max(0.f, tracks[i].maximum - tracks[i].min_content - increases[i - item.begin]) : std::numeric_limits<float>::max();
++						};
++						float growing = 0.f;
++						for (size_t i = item.begin; i < item.begin + item.span; ++i)
++							if (eligible(tracks[i]) && room(i) > 0.f) growing += flexible && item.span > 1 ? tracks[i].fraction : 1.f;
++						if (growing == 0.f) break;
++						float distributed = 0.f;
++						for (size_t i = item.begin; i < item.begin + item.span; ++i) if (eligible(tracks[i])) {
++							const float weight = flexible && item.span > 1 ? tracks[i].fraction : 1.f;
++							const float share = std::min(room(i), extra * weight / growing);
++							increases[i - item.begin] += share; distributed += share;
++						}
++						if (distributed == 0.f) break;
++						extra = std::max(0.f, extra - distributed);
++					}
++				}
++				for (size_t i = item.begin; i < item.begin + item.span; ++i) {
++					planned[i] = std::max(planned[i], increases[i - item.begin]);
++				}
++			}
++			for (size_t i = 0; i < tracks.size(); ++i) {
++				if (maximum) tracks[i].max_content = std::max(tracks[i].max_content, tracks[i].automatic_minimum ? tracks[i].min_content : tracks[i].minimum) + planned[i];
++				else tracks[i].min_content += planned[i];
++			}
++		}
++		first = end;
++	}
++}
++
+ inline float ResolveGridTracks(Vector<GridTrack>& tracks, float available, float gap, bool stretch_auto)
+ {
+ 	// CSS Grid 11.4-11.8 for non-spanning fixed/auto/flexible tracks.
+ 	// https://www.w3.org/TR/css-grid-1/#algo-track-sizing
+ 	for (auto& track : tracks)
+-		track.size = track.automatic_minimum ? track.min_content : track.minimum;
++		track.size = track.collapsed ? 0.f : track.automatic_minimum ? track.min_content : track.minimum;
+ 
+ 	// Maximize auto tracks to their growth limits before distributing fr space.
+ 	for (;;) {
+-		const float free = available < 0.f ? 1.e30f : available - GridTracksExtent(tracks, gap);
++		const float free = available < 0.f ? std::numeric_limits<float>::max() : available - GridTracksExtent(tracks, gap);
+ 		const size_t growing = size_t(std::count_if(tracks.begin(), tracks.end(), [](const auto& track) {
+-			return track.kind == GridTrack::Kind::Auto && track.size < track.max_content;
++			return !track.collapsed && track.kind == GridTrack::Kind::Auto && track.size < (track.fixed_maximum ? track.maximum : track.max_content);
+ 		}));
+ 		if (free <= 0.f || growing == 0) break;
+ 		bool changed = false;
+-		for (auto& track : tracks) if (track.kind == GridTrack::Kind::Auto && track.size < track.max_content) {
+-			const float next = std::min(track.max_content, track.size + free / float(growing));
++		for (auto& track : tracks) if (!track.collapsed && track.kind == GridTrack::Kind::Auto && track.size < (track.fixed_maximum ? track.maximum : track.max_content)) {
++			const float next = std::min(track.fixed_maximum ? track.maximum : track.max_content, track.size + free / float(growing));
+ 			changed |= next > track.size; track.size = next;
+ 		}
+ 		if (!changed) break;
+@@ -141,33 +282,52 @@ inline float ResolveGridTracks(Vector<GridTrack>& tracks, float available, float
+ 
+ 	float fraction_size = 0.f;
+ 	if (available < 0.f) {
+-		for (const auto& track : tracks) if (track.kind == GridTrack::Kind::Flexible)
++		for (const auto& track : tracks) if (!track.collapsed && track.kind == GridTrack::Kind::Flexible)
+ 			fraction_size = std::max(fraction_size, std::max(track.size, track.max_content) / std::max(1.f, track.fraction));
+ 	} else {
+ 		Vector<bool> frozen(tracks.size(), false);
+ 		for (;;) {
+-			float free = available - (tracks.empty() ? 0.f : gap * float(tracks.size() - 1));
++			const auto count = std::count_if(tracks.begin(), tracks.end(), [](const auto& track) { return !track.collapsed; });
++			float free = available - (count > 0 ? gap * float(count - 1) : 0.f);
+ 			float factors = 0.f;
+ 			for (size_t i = 0; i < tracks.size(); ++i) {
+-				if (tracks[i].kind != GridTrack::Kind::Flexible || frozen[i]) free -= tracks[i].size;
++				if (tracks[i].collapsed || tracks[i].kind != GridTrack::Kind::Flexible || frozen[i]) free -= tracks[i].size;
+ 				else factors += tracks[i].fraction;
+ 			}
+ 			fraction_size = std::max(0.f, free) / std::max(1.f, factors);
+ 			bool changed = false;
+-			for (size_t i = 0; i < tracks.size(); ++i) if (tracks[i].kind == GridTrack::Kind::Flexible && !frozen[i] &&
++			for (size_t i = 0; i < tracks.size(); ++i) if (!tracks[i].collapsed && tracks[i].kind == GridTrack::Kind::Flexible && !frozen[i] &&
+ 				tracks[i].size > fraction_size * tracks[i].fraction) { frozen[i] = true; changed = true; }
+ 			if (!changed) break;
+ 		}
+ 	}
+-	for (auto& track : tracks) if (track.kind == GridTrack::Kind::Flexible)
++	for (auto& track : tracks) if (!track.collapsed && track.kind == GridTrack::Kind::Flexible)
+ 		track.size = std::max(track.size, track.fraction * fraction_size);
+ 
+ 	if (stretch_auto && available >= 0.f) {
+-		const size_t count = size_t(std::count_if(tracks.begin(), tracks.end(), [](const auto& track) { return track.kind == GridTrack::Kind::Auto; }));
++		const size_t count = size_t(std::count_if(tracks.begin(), tracks.end(), [](const auto& track) { return !track.collapsed && track.kind == GridTrack::Kind::Auto && !track.fixed_maximum; }));
+ 		const float share = count ? std::max(0.f, available - GridTracksExtent(tracks, gap)) / float(count) : 0.f;
+-		for (auto& track : tracks) if (track.kind == GridTrack::Kind::Auto) track.size += share;
++		for (auto& track : tracks) if (!track.collapsed && track.kind == GridTrack::Kind::Auto && !track.fixed_maximum) track.size += share;
+ 	}
+ 	return fraction_size;
+ }
+ 
++inline void ResolveGridFlexibleSpans(Vector<GridTrack>& tracks, const Vector<GridContribution>& contributions, float gap)
++{
++	float fraction = 0.f;
++	for (const auto& item : contributions) if (item.span > 1) {
++		const auto first = tracks.begin() + item.begin;
++		if (std::none_of(first, first + item.span, [](const auto& track) { return track.kind == GridTrack::Kind::Flexible; })) continue;
++		Vector<GridTrack> spanned(first, first + item.span);
++		for (auto& track : spanned) if (track.kind != GridTrack::Kind::Flexible) {
++			track.kind = GridTrack::Kind::Fixed;
++			track.automatic_minimum = false;
++			track.minimum = track.size;
++		}
++		fraction = std::max(fraction, ResolveGridTracks(spanned, item.maximum, gap, false));
++	}
++	for (auto& track : tracks) if (!track.collapsed && track.kind == GridTrack::Kind::Flexible)
++		track.size = std::max(track.size, track.fraction * fraction);
++}
++
+ } // namespace Rml
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index b2603b43..189bc62a 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -427,6 +427,10 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::GridTemplateColumns, "grid-template-columns", "none", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridTemplateRows, "grid-template-rows", "none", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridColumn, "grid-column", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::GridRow, "grid-row", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::GridAutoColumns, "grid-auto-columns", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::Isolation, "isolation", "auto", false, false).AddParser("keyword", "auto, isolate");
+ 	RegisterProperty(PropertyId::ContainerType, "container-type", "normal", false, true).AddParser("keyword", "normal, inline-size");
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
