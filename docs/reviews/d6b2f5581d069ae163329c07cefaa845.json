@@ -7,6 +7,7 @@
         { "summary": "Share Dawn string-view conversion between adapter metadata and resources.", "applied": true },
         { "summary": "Use the native fixture runner for async texture execution.", "applied": true },
         { "summary": "Share nullable async resource projection and defer type mapping past already-owned and tuple cases.", "applied": true },
-        { "summary": "Combine equivalent undefined-completion refusal guards.", "applied": true }
+        { "summary": "Combine equivalent undefined-completion refusal guards.", "applied": true },
+        { "summary": "Compute queried markup subtree bounds only when materializing a retained handle.", "applied": true }
     ]
 }
