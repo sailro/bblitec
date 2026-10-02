@@ -6,6 +6,7 @@
 #include <bblite/js_error.hpp>
 #include <bblite/js_accessor.hpp>
 #include <bblite/dom_event_state.hpp>
+#include <bblite/features/workers.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
 // arrays, nullable objects, readonly views, all-number tuples, JavaScript

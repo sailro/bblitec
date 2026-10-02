@@ -2579,13 +2579,19 @@ export class StatementLowerer {
         }
         // A callback list is a live subscription set, even if its generation
         // snapshot is an empty tuple before another stored closure adds to it.
-        const runtimeTarget = ts.isIdentifier(
-            context.unwrap(statement.expression),
-        )
-            ? context.dataIterationTarget(statement.expression)
+        const subject = context.unwrap(statement.expression);
+        const containerType = ts.isIdentifier(subject)
+            ? (context.bindings.lookupOptional(subject)?.dataType ??
+              context.dataLowerer.dataTypeAt(subject))
             : undefined;
+        // Inspect the type before asking for storage: resolving an unrelated
+        // tuple here would materialize its records and lose static options.
+        const liveElement =
+            containerType && "element" in containerType
+                ? containerType.element
+                : undefined;
         if (
-            runtimeTarget?.element.kind === "function" &&
+            liveElement?.kind === "function" &&
             this.emitRuntimeForOf(context, statement, declaration)
         ) {
             return;
@@ -2602,7 +2608,7 @@ export class StatementLowerer {
         // to its original `[]` initializer would incorrectly unroll zero
         // iterations and erase the body.
         if (
-            runtimeTarget?.element.kind === "handle" &&
+            liveElement?.kind === "handle" &&
             this.emitRuntimeForOf(context, statement, declaration)
         ) {
             return;

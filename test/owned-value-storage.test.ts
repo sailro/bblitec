@@ -125,6 +125,27 @@ check(
     true,
 );
 
+check(
+    "stored-defaults-and-local-recursion",
+    `
+    let defaults=0, total=0;
+    function fallback():string{defaults++;return 'default';}
+    const readers:Array<(value?:string)=>string>=[(value=fallback())=>value];
+    if(readers[0]!()!=='default'||readers[0]!(undefined)!=='default'||readers[0]!('')!==''||defaults!==2)throw new Error('lazy stored default');
+    const frames:Array<()=>void>=[()=>{
+        let burst=0;
+        const drain=(value:number):void=>{if(value<=0)return;burst+=value;drain(value-1);};
+        drain(3);total+=burst;
+    }];
+    frames[0]!();frames[0]!();
+    if(total!==12)throw new Error('independent recursive frames');
+    const settings=[{enabled:undefined},{enabled:false}];
+    const visited:boolean[]=[];
+    for(const setting of settings)visited.push(setting.enabled??true);
+    if(visited.join()!=='true,false')throw new Error('mixed field fallback');
+`,
+);
+
 test("imported mixed catalog retains optional undefined fields", (t) => {
     const directory = resolve("artifacts/owned-value-storage/imported-catalog");
     mkdirSync(directory, { recursive: true });

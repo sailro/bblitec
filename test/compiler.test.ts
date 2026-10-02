@@ -7929,8 +7929,8 @@ test("keeps synchronous recursive callbacks local to native data functions", () 
 });
 
 test("keeps synchronous frame-local recursive callbacks in local storage", () => {
-    // Direct recursive calls borrow the frame's callback and local state;
-    // they need neither heap ownership nor an engine lifetime root.
+    // Direct recursive calls borrow the frame's callback. Mutable captures
+    // share a cell without extending the callback's lifetime to the engine.
     const result = compileSource(`
         import { createEngine, startEngine } from "@babylonjs/lite";
 
@@ -7960,7 +7960,11 @@ test("keeps synchronous frame-local recursive callbacks in local storage", () =>
     );
     assert.match(
         result.cpp,
-        /v_fn\d+_drain = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, bblscene::\w+/,
+        /v_fn\d+_drain = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_fn\d+_burst, std::ref\(v_fn\d+_drain\)\}, bblscene::\w+/,
+    );
+    assert.match(
+        result.cpp,
+        /v_fn\d+_burst = bbl::js::make_gc_shared<double>\(0\.0\)/,
     );
     assert.doesNotMatch(result.cpp, /drain_owner/);
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
@@ -11335,7 +11339,10 @@ test("supplies omitted optional arguments to stored functions", () => {
         result.cpp,
         /const auto (\w+) = bbl::js::snapshot_callback\([^;]+\.banner\);\s*\1\([^,]+, bbl::js::Nullable<std::string>\{std::nullopt\}\)/,
     );
-    assert.match(result.cpp, /has_value\(\) \? \*[^:]+ : ""/);
+    assert.match(
+        result.cpp,
+        /if \((\w+)\.has_value\(\)\) return \*\1;\s*return "";/,
+    );
 });
 
 test("lowers boolean data-field assignment expression callbacks", () => {

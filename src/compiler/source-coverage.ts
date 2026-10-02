@@ -81,6 +81,7 @@ let current: RealmCoverage | undefined;
 
 /** Opt-in observations; a storage replay replaces the preceding attempt of its realm. */
 export class SourceCoverage {
+    /** @unjournaled Each realm replay replaces its observation attempt; retained sites journal separately. */
     private readonly realms = new Map<string, RealmCoverage>();
 
     run<T>(work: () => T): T {
