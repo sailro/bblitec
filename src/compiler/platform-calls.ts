@@ -1652,14 +1652,13 @@ export class PlatformCalls {
                     call,
                     "Retained UI markup queries require innerHTML owned directly by the queried root.",
                 );
-            const matches = descendants.markup.filter((node) =>
+            const match = descendants.markup.find((node) =>
                 query.kind === "class"
                     ? node.classes.has(query.name)
                     : query.kind === "tag"
                       ? node.tag === query.name
                       : node.attributes.get(query.name) === query.value,
             );
-            const match = matches[0];
             if (!descendants.complete || !match) {
                 this.context.fail(
                     call,

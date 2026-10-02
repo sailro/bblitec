@@ -81,6 +81,12 @@ import {
 
 type Fail = (node: ts.Node, message: string) => never;
 
+interface GenericFunctionField {
+    name: string;
+    type: DataType<"function">;
+    demand: GenericFunctionDemand;
+}
+
 /** The suffix an accessor-backed field adds to its struct's identity key. */
 function accessorKey(field: DataStructField): string {
     return field.accessor ? `:${field.accessor}` : "";
@@ -732,11 +738,7 @@ export class DataTypeRegistry {
             family: string;
             signature: ts.Signature;
             declaration: ts.SignatureDeclaration;
-            fields: Array<{
-                name: string;
-                type: DataType<"function">;
-                demand: GenericFunctionDemand;
-            }>;
+            fields: GenericFunctionField[];
         }
     >();
     private readonly genericFunctionNames = new EmissionMap<string, string>();
@@ -1865,11 +1867,7 @@ export class DataTypeRegistry {
         );
         this.genericFunctionNames.set(family, name);
         this.referenceStructNames.add(name);
-        const fields: Array<{
-            name: string;
-            type: DataType<"function">;
-            demand: GenericFunctionDemand;
-        }> = [];
+        const fields: GenericFunctionField[] = [];
         this.genericFunctions.set(name, {
             family,
             signature,
@@ -1910,11 +1908,9 @@ export class DataTypeRegistry {
         return { kind: "function", parameters: [], generic: name };
     }
 
-    public genericFunctionFields(name: string): ReadonlyArray<{
-        name: string;
-        type: DataType<"function">;
-        demand: GenericFunctionDemand;
-    }> {
+    public genericFunctionFields(
+        name: string,
+    ): readonly GenericFunctionField[] {
         return this.genericFunctions.get(name)!.fields;
     }
 

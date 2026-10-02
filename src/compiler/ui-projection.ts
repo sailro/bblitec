@@ -4087,6 +4087,20 @@ export class UiProjection {
             }
         }
         const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
+        this.context.reachJsData();
+        return this.uiMarkupConcat(lowered, (index) =>
+            this.uiTemplateSubstitutionCpp(
+                substitutions[index]!,
+                "Native UI innerHTML",
+                true,
+            ),
+        );
+    }
+
+    private uiMarkupConcat(
+        lowered: string,
+        substitution: (index: number) => string,
+    ): string {
         const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
         const parts: string[] = [];
         for (const chunk of chunks) {
@@ -4097,14 +4111,9 @@ export class UiProjection {
                 continue;
             }
             parts.push(
-                `bbl::ui_escape_rml(${this.uiTemplateSubstitutionCpp(
-                    substitutions[Number(marker[1])]!,
-                    "Native UI innerHTML",
-                    true,
-                )})`,
+                `bbl::ui_escape_rml(${substitution(Number(marker[1]))})`,
             );
         }
-        this.context.reachJsData();
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
@@ -4262,16 +4271,7 @@ export class UiProjection {
                 expression,
                 ownerId,
             );
-            const chunks = lowered
-                .split(/(__BBLITE_UI_MARKUP_\d+__)/g)
-                .filter(Boolean)
-                .map((chunk) => {
-                    const marker = /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(chunk);
-                    return marker
-                        ? `bbl::ui_escape_rml(${values[Number(marker[1])]!})`
-                        : this.context.cppString(chunk);
-                });
-            return `bbl::js::concat(${chunks.join(", ")})`;
+            return this.uiMarkupConcat(lowered, (index) => values[index]!);
         };
         this.context.reachJsData();
         return emit(sourceParts, "", []);

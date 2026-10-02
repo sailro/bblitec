@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("factories with void methods retain native lifecycle effects", (t) => {
@@ -53,22 +52,8 @@ test("factories with void methods retain native lifecycle effects", (t) => {
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const cpp = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        cpp,
-    ]);
-    execFileSync(exe, { stdio: "pipe", timeout: 10000, windowsHide: true });
+    runGeneratedProgram(tools, "platform-factory-effects", result.cpp, {
+        defines: ["BBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+    });
 });
