@@ -647,11 +647,31 @@ export class PlatformCalls {
             const type = this.context.dataLowerer.dataTypeAt(callee.expression);
             if (
                 type?.kind === "optional" &&
-                type.inner.kind === "handle" &&
-                type.inner.handle === "ui-element"
+                (type.inner.kind === "event-target" ||
+                    type.inner.kind === "struct" ||
+                    (type.inner.kind === "handle" &&
+                        type.inner.handle === "ui-element"))
             ) {
-                const owner = this.context.compileValue(callee.expression);
-                if (owner.kind === "ui-element" && isPresentValue(owner))
+                const owner = this.context.probeEmission(() => {
+                    const value = this.context.compileValue(callee.expression);
+                    const stored =
+                        value.dataType?.kind === "optional"
+                            ? value.dataType.inner
+                            : value.dataType;
+                    return value.kind === "json-null" ||
+                        value.kind === "ui-element" ||
+                        stored?.kind === "event-target" ||
+                        (stored?.kind === "handle" &&
+                            stored.handle === "ui-element")
+                        ? value
+                        : undefined;
+                });
+                if (!owner) return false;
+                if (owner.kind === "json-null") {
+                    this.context.emitDiscardedValue(owner);
+                    return true;
+                }
+                if (isPresentValue(owner))
                     return this.emitPlatformEventListener(call, owner);
                 const result = this.context.dataLowerer.optionalAccess(
                     owner,
@@ -1176,7 +1196,9 @@ export class PlatformCalls {
                   }
                 : classListMutation
                   ? undefined
-                  : this.ui.uiElementValue(callee.expression));
+                  : callee.name.text === "getBoundingClientRect"
+                    ? this.ui.compileUiElementReceiver(callee.expression)
+                    : this.ui.uiElementValue(callee.expression));
         if (element?.uiTag === "image-bitmap" && callee.name.text === "close") {
             this.context.expectArgumentCount(call, 0, 0);
             return { kind: "void", cpp: "" };
@@ -1975,9 +1997,11 @@ export class PlatformCalls {
                 false,
                 "const bbl::UiClientRect",
             );
-            const component = (name: string): Value => ({
+            const component = (name: string, extent?: string): Value => ({
                 kind: "number",
-                cpp: `${rect}.${name}`,
+                cpp: extent
+                    ? `(${rect}.${name} + ${rect}.${extent})`
+                    : `${rect}.${name}`,
                 dataType: { kind: "number" },
                 engineCpp: engine,
                 nativeCaptures: [binding],
@@ -1987,8 +2011,12 @@ export class PlatformCalls {
                 cpp: "",
                 // DOMRect sizes are the border box, as offsetWidth/Height are.
                 recordProperties: {
+                    x: component("left"),
+                    y: component("top"),
                     left: component("left"),
                     top: component("top"),
+                    right: component("left", "offset_width"),
+                    bottom: component("top", "offset_height"),
                     width: component("offset_width"),
                     height: component("offset_height"),
                 },

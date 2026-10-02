@@ -1262,12 +1262,16 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) &&
             (unwrapped.name.text === "left" ||
                 unwrapped.name.text === "top" ||
+                unwrapped.name.text === "x" ||
+                unwrapped.name.text === "y" ||
+                unwrapped.name.text === "right" ||
+                unwrapped.name.text === "bottom" ||
                 unwrapped.name.text === "width" ||
                 unwrapped.name.text === "height") &&
             this.browserValueOf(unwrapped.expression)?.kind === "dom-rect"
         ) {
             // Native has no CSS offset around its render surface; its size is
-            // the live engine surface. All four reached DOMRect coordinates
+            // the live engine surface. The DOMRect coordinates
             // therefore have platform-backed numeric representations.
             return false;
         }
@@ -2120,7 +2124,7 @@ export class BrowserErasure {
     }
 
     /** A read of an {@link ABSENT_GLOBAL_MEMBERS} member off the global object. */
-    private isAbsentGlobalMember(expression: ts.Expression): boolean {
+    public isAbsentGlobalMember(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         return (
             ts.isPropertyAccessExpression(unwrapped) &&

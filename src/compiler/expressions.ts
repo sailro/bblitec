@@ -529,6 +529,8 @@ export class ExpressionLowerer {
         if (http) return http;
         const window = compileWindowIdentity(this.context, unwrapped);
         if (window) return window;
+        if (this.context.browserErasure.isAbsentGlobalMember(unwrapped))
+            return { kind: "json-null", cpp: "std::nullopt" };
 
         if (
             ts.isPropertyAccessExpression(unwrapped) ||

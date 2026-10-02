@@ -148,10 +148,15 @@ test("generated selector chains share the rendered and private native cascades",
         entry.appendChild(label);
         panel.append(lead, " ", entry);
         document.body.appendChild(panel);
-        const before = entry.getBoundingClientRect();
+        let rectangleReceivers = 0;
+        function measured(): HTMLElement { rectangleReceivers++; return entry; }
+        const before = measured().getBoundingClientRect();
         entry.setAttribute("data-mode", "wide");
-        const after = entry.getBoundingClientRect();
-        if (before.width !== 90 || after.width !== 120 || before.width !== 90)
+        const after = measured().getBoundingClientRect();
+        if (rectangleReceivers !== 2 || before.width !== 90 || after.width !== 120 || before.width !== 90 ||
+            before.x !== -12.5 || before.left !== -12.5 || before.y !== 7.25 || before.top !== 7.25 ||
+            before.right !== 77.5 || before.bottom !== 47.25 || before.height !== 40 ||
+            after.right !== 107.5 || after.bottom !== 47.25 || after.x !== before.x || after.y !== before.y)
             throw new Error("layout snapshot values");
         entry.setAttribute("data-mode", "a,b");
         globalThis.close();

@@ -104,7 +104,7 @@ A base Event asserted to KeyboardEvent or MouseEvent reads a checked view of its
 Native Event/MouseEvent parameters borrow dispatch. PointerEvent/InputEvent helpers retain owned payloads
 and shared identity; retained targets reject an expired document.
 CustomEvent retains its detail and identity. Stored EventTargets preserve their document and snapshot before call arguments.
-Optional element calls snapshot the receiver and skip arguments
+Optional element calls and stored EventTarget listeners snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
 Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element
 methods; an unrepresented canvas is not content-editable.
@@ -121,6 +121,7 @@ Dataset reads distinguish missing (`undefined`) and empty attributes.
 Source append and replaceChildren arguments finish before replacement and insertion. Canvas backing
 dimensions are drawable pixels; client dimensions and bounding rectangles are CSS pixels; element
 offset/client sizes are rounded CSS pixels. Rectangle and size reads flush pending layout.
+Retained bounding rectangles snapshot x/y, left/top, right/bottom and border-box width/height.
 Pixel ratio, viewport size and input capabilities read host state without flushing pending DOM or canvas writes.
 
 ### File transfer controls

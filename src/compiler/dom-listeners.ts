@@ -362,7 +362,10 @@ export function emitDomEventListener(
     }
     let target: string | undefined;
     let engine: string | undefined;
-    if (element) {
+    let storedTarget: Value | undefined;
+    if (element?.kind === "data" && element.dataType?.kind === "event-target") {
+        storedTarget = element;
+    } else if (element) {
         engine = context.requireEngine(element, call);
         const owner = pinDetached(
             context,
@@ -411,21 +414,24 @@ export function emitDomEventListener(
                     callee.expression,
                 ));
             } else if (value) {
-                if (value.dataType?.kind !== "event-target")
-                    context.fail(
-                        callee.expression,
-                        "Nullable event targets require a presence guard.",
-                    );
-                const snapshot = pinDetached(
-                    context,
-                    value,
-                    "event_target",
-                    callee.expression,
-                );
-                target = `${snapshot.cpp}.target`;
-                engine = `bbl::dom_target_owner(${snapshot.cpp})`;
+                storedTarget = value;
             }
         }
+    }
+    if (storedTarget) {
+        if (storedTarget.dataType?.kind !== "event-target")
+            context.fail(
+                callee.expression,
+                "Nullable event targets require a presence guard.",
+            );
+        const snapshot = pinDetached(
+            context,
+            storedTarget,
+            "event_target",
+            callee.expression,
+        );
+        target = `${snapshot.cpp}.target`;
+        engine = `bbl::dom_target_owner(${snapshot.cpp})`;
     }
     if (!target || !engine) return false;
     if (pagehide && target !== "bbl::DomEventTarget::window()") {

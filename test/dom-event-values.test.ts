@@ -15,6 +15,71 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
         target.id = "target";
         parent.appendChild(target);
         document.body.appendChild(parent);
+        type PickerWindow = Window & {
+            showOpenFilePicker?: () => Promise<unknown>;
+            showSaveFilePicker?: () => Promise<unknown>;
+            showDirectoryPicker?: () => Promise<unknown>;
+        };
+        const pickerWindow = window as PickerWindow;
+        const openPicker = pickerWindow.showOpenFilePicker;
+        const savePicker = (window as PickerWindow).showSaveFilePicker;
+        const directoryPicker = pickerWindow.showDirectoryPicker;
+        if (openPicker || savePicker || directoryPicker || typeof savePicker !== "undefined")
+            throw new Error("native file picker capability");
+        function localPicker(): number {
+            const window = {showSaveFilePicker: () => 3};
+            return window.showSaveFilePicker();
+        }
+        if (localPicker() !== 3) throw new Error("shadowed window capability");
+        interface OptionalOwner { events?: EventTarget | null; }
+        const optionalOwner: OptionalOwner = { events: target };
+        let selectedCalls = 0;
+        let argumentCalls = 0;
+        let optionalCalls = 0;
+        const optionalListener = () => { optionalCalls++; };
+        const optionalListeners: Array<() => void> = [optionalListener];
+        function select(): EventTarget | null | undefined {
+            selectedCalls++;
+            return optionalOwner.events;
+        }
+        function listenerArgument(): () => void {
+            argumentCalls++;
+            optionalOwner.events = null;
+            return optionalListeners[0]!;
+        }
+        select()?.addEventListener("click", listenerArgument());
+        target.dispatchEvent(new MouseEvent("click"));
+        optionalOwner.events?.addEventListener("click", listenerArgument());
+        optionalOwner.events?.removeEventListener("click", listenerArgument());
+        if (selectedCalls !== 1 || argumentCalls !== 1 || optionalCalls !== 1)
+            throw new Error("optional target evaluation and arguments");
+        optionalOwner.events = target;
+        select()?.removeEventListener("click", listenerArgument());
+        target.dispatchEvent(new MouseEvent("click"));
+        if (selectedCalls !== 2 || argumentCalls !== 2 || optionalCalls !== 1)
+            throw new Error("optional target removal snapshot");
+        const optionalOwners: OptionalOwner[] = [{events:window}, {}, {events:document}, {events:target}, {events:null}];
+        for (const owner of optionalOwners) owner.events?.addEventListener("pointerup", optionalListener);
+        target.dispatchEvent(new PointerEvent("pointerup", {bubbles:true}));
+        if (optionalCalls !== 4) throw new Error("optional stored target routing");
+        for (const owner of optionalOwners) owner.events?.removeEventListener("pointerup", optionalListener);
+        target.dispatchEvent(new PointerEvent("pointerup", {bubbles:true}));
+        if (optionalCalls !== 4) throw new Error("optional stored target cleanup");
+        interface ListenerView {
+            addEventListener(type: "click", callback: () => void): void;
+            removeEventListener(type: "click", callback: () => void): void;
+        }
+        function listenThroughView(options: {events?: ListenerView | null}): () => void {
+            options.events?.addEventListener("click", optionalListener);
+            return () => options.events?.removeEventListener("click", optionalListener);
+        }
+        const removeView = listenThroughView({events:window});
+        const removeAbsent = listenThroughView({});
+        target.dispatchEvent(new MouseEvent("click", {bubbles:true}));
+        if (optionalCalls !== 5) throw new Error("optional structural target view");
+        removeView(); removeAbsent();
+        target.dispatchEvent(new MouseEvent("click", {bubbles:true}));
+        if (optionalCalls !== 5) throw new Error("optional structural target cleanup");
         const seen = new WeakSet<Event>();
         let count = 0;
         let order = "";
