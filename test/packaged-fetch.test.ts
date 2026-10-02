@@ -230,7 +230,7 @@ test("worker native-object mutations preserve sibling packaged URL selection", (
     writeFileSync(
         join(directory, "asset.ts"),
         `
-        function asset(path:string,base:string):string{return new URL(path,base).href;}
+        function asset(path:string,base:string):string{const value=new URL(path,base);return value.href;}
         export const ASSET=asset("/files/bytes.bin",import.meta.url);
     `,
     );
