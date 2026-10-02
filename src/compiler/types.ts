@@ -126,6 +126,8 @@ export interface RefusalSite {
 }
 
 export interface CompileOptions extends DeploymentOptions {
+    /** Emit explicit typed runtime failures for registered missing capabilities. */
+    deferredCapabilities?: "runtime-throw";
     fileName?: string;
     hostPage?: HostPageProgram;
     title?: string;
@@ -142,6 +144,7 @@ export interface CompileOptions extends DeploymentOptions {
 }
 
 export interface CompileManifest {
+    deferredCapabilities?: readonly import("./deferred-capabilities.js").DeferredCapabilitySite[];
     assetDecoders?: AssetDecoderConfiguration;
     source: string;
     /**
@@ -3042,6 +3045,7 @@ export interface WorkerCompilation {
 }
 
 export interface ResolvedCompileOptions extends DeploymentOptions {
+    deferredCapabilities?: "runtime-throw";
     workers?: WorkerCompilation;
     /** Reached query mutation requires native identities throughout this realm. */
     runtimeSearchParams?: boolean;

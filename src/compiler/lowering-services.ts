@@ -114,6 +114,7 @@ export interface LoweringServices {
     readonly assetRegistry: AssetRegistry;
     readonly admissions: AdmissionRecorder;
     readonly intrinsicOptions: IntrinsicOptions;
+    readonly deferredCapabilities: import("./deferred-capabilities.js").DeferredCapabilities;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;

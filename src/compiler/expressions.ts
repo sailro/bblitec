@@ -204,6 +204,7 @@ export interface ExpressionContext
             | "referenceSearch"
             | "evaluator"
             | "sceneManifest"
+            | "deferredCapabilities"
             | "dataLowerer"
             | "classLowerer"
             | "userFunctions"
@@ -2511,6 +2512,8 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const deferred = this.context.deferredCapabilities.compile(call);
+        if (deferred) return deferred;
         const target = this.context.unwrap(call.expression);
         if (target.kind === ts.SyntaxKind.SuperKeyword) {
             this.context.fail(

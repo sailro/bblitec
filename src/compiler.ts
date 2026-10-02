@@ -1,3 +1,4 @@
+import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
@@ -548,6 +549,9 @@ function compileSourceApplication(
         workers?: ResolvedCompileOptions["workers"],
     ): CompileResult => {
         const resolved: ResolvedCompileOptions = {
+            ...(options.deferredCapabilities
+                ? { deferredCapabilities: options.deferredCapabilities }
+                : {}),
             fileName: workers?.namespace ? input.sourceFile.fileName : fileName,
             title: options.title ?? "Babylon Lite Native",
             width: options.width ?? 1280,
@@ -709,6 +713,8 @@ class Compiler implements LoweringServices {
     public readonly propertyAccess: PropertyAccessLowerer =
         new PropertyAccessLowerer(this);
     /** Per-intrinsic option objects and the shader programs they reach. */
+    public readonly deferredCapabilities = new DeferredCapabilities(this);
+
     public readonly intrinsicOptions: IntrinsicOptions = new IntrinsicOptions(
         this,
     );
@@ -1070,6 +1076,9 @@ class Compiler implements LoweringServices {
                 ? { sourceProfileScopes: [...this.sourceProfileScopes] }
                 : {}),
             manifest: {
+                ...(this.deferredCapabilities.sites.length
+                    ? { deferredCapabilities: this.deferredCapabilities.sites }
+                    : {}),
                 source: this.options.fileName,
                 // The compiler's half of the reached-file list is the
                 // program's, filled in by `compileSource`; generation
@@ -8150,6 +8159,8 @@ class Compiler implements LoweringServices {
                 : {}),
             features,
             jsDataReached: this.jsDataReached,
+            deferredCapabilitiesReached:
+                this.deferredCapabilities.sites.length > 0,
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

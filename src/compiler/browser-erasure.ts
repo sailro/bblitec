@@ -1,3 +1,4 @@
+import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import {
     emissionArray,
@@ -945,6 +946,11 @@ export class BrowserErasure {
                 ? this.context.unwrap(unwrapped.left)
                 : unwrapped;
         if (ts.isCallExpression(candidate)) {
+            if (
+                this.context.options.deferredCapabilities &&
+                deferredCapabilityDescriptor(this.context.checker, candidate)
+            )
+                return false;
             const callee = this.context.unwrap(candidate.expression);
             if (
                 ts.isPropertyAccessExpression(callee) &&
