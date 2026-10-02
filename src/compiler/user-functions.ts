@@ -4073,6 +4073,7 @@ export class UserFunctionLowerer {
         expression: ts.Identifier | SupportedFunction,
         dataType: DataType & { kind: "function" },
         owner?: Value,
+        identityCpp?: string,
     ): string {
         const unwrapped =
             ts.isFunctionDeclaration(expression) ||
@@ -4109,6 +4110,7 @@ export class UserFunctionLowerer {
                 declaration,
                 dataType,
                 owner,
+                identityCpp,
             );
         } finally {
             this.loweringStoredDataFunctions.delete(declaration);
@@ -4120,6 +4122,7 @@ export class UserFunctionLowerer {
         declaration: SupportedFunction,
         dataType: DataType & { kind: "function" },
         owner?: Value,
+        identityCpp?: string,
     ): string {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
@@ -4376,8 +4379,8 @@ export class UserFunctionLowerer {
         // identity beside the closure; everything else is the plain
         // assignment the stored-function model already emitted.
         const identity = dataType.identity
-            ? owner?.runtimeCallbackIdentityCpp
-                ? `{${owner.runtimeCallbackIdentityCpp}, `
+            ? identityCpp
+                ? `{${identityCpp}, `
                 : owner?.repeatedCallbackEvaluation
                   ? "{bbl::js::next_callback_identity(), "
                   : `{${context.callbackIdentity(declaration, owner)}u, `

@@ -116,6 +116,9 @@ test("awaited fixed-array maps retain per-input asset slots and URL specializati
         }
         async function initialize(engine: EngineContext, resolveUrl: (path: string) => string) {
             function named(path: {url: string}) { return load(engine, resolveUrl(path.url)); }
+            const aliased = named;
+            const arrow = (path: {url: string}) => load(engine, resolveUrl(path.url));
+            async function awaited(path: {url: string}) { return await load(engine, resolveUrl(path.url)); }
             ${
                 immediate
                     ? `const containers = await Promise.all(${input});`
@@ -137,6 +140,9 @@ test("awaited fixed-array maps retain per-input asset slots and URL specializati
         "paths.map(path => load(engine, resolveUrl(path.url)))",
         "paths.map(path => { return load(engine, resolveUrl(path.url)); })",
         "paths.map(named)",
+        "paths.map(aliased)",
+        "paths.map(arrow)",
+        "paths.map(awaited)",
         "paths.map(async path => await load(engine, resolveUrl(path.url)))",
         '[load(engine, resolveUrl("./first.glb")), load(engine, resolveUrl("./second.glb"))]',
     ]) {

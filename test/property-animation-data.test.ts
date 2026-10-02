@@ -110,6 +110,14 @@ const program = scene(
     goToFrame(setterGroup, 5);
     if (written !== 5) throw new Error("Existing scalar setter binding changed");
 
+    const accessorTarget = { position: createPosition(), value: 0 };
+    const accessorAlias = accessorTarget.position;
+    const accessorGroup = createPropertyAnimationGroup(manager, accessorTarget, clip);
+    goToFrame(accessorGroup, 5);
+    if (accessorAlias.x !== 0) throw new Error("Nested accessor target lost its setter");
+    accessorAlias.x = 7;
+    if (accessorTarget.position.x !== 7) throw new Error("Nested accessor target lost its alias");
+
     const missing: { nested: { position: { x: number } } | null } = { nested: null };
     const missingClip = createPropertyAnimationClip("missing", [{ path: "nested.position.x",
         keys: [{ frame: 0, value: 0 }, { frame: 10, value: 1 }] }]);
@@ -120,6 +128,13 @@ const program = scene(
 `,
     `
     function observe(target: Target): number { return target.position.x; }
+    function createPosition(): { x: number } {
+        let current = -2;
+        return {
+            get x() { return current; },
+            set x(next: number) { current = next; },
+        };
+    }
     function bind(manager: AnimationManager, target: { value: number }, clip: PropertyAnimationClip) {
         return createPropertyAnimationGroup(manager, target, clip);
     }

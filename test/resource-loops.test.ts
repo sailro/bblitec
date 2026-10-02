@@ -1692,6 +1692,12 @@ test("cached reached walks preserve pruning and validate rebound callees after r
     const first = functions.find((node) => node.name?.text === "first")!;
     const second = functions.find((node) => node.name?.text === "second")!;
     const root = functions.find((node) => node.name?.text === "scan")!.body!;
+    const firstCall = root.statements[0]!;
+    assert.ok(
+        ts.isExpressionStatement(firstCall) &&
+            ts.isCallExpression(firstCall.expression),
+    );
+    const callbackRoot = firstCall.expression.expression;
     const selected: Value = {
         kind: "callback",
         cpp: "",
@@ -1707,10 +1713,10 @@ test("cached reached walks preserve pruning and validate rebound callees after r
                 ? selected
                 : undefined,
     };
-    const calls = (skipFirst: boolean): string[] => {
+    const calls = (skipFirst: boolean, input: ts.Node = root): string[] => {
         let count = 0;
         const reached: string[] = [];
-        walkReachedLoopNodes(context, root, (node) => {
+        walkReachedLoopNodes(context, input, (node) => {
             if (!ts.isCallExpression(node)) return;
             const name = node.expression.getText();
             if (name === "selected" && count++ === 0 && skipFirst) return false;
@@ -1719,14 +1725,17 @@ test("cached reached walks preserve pruning and validate rebound callees after r
         return reached;
     };
     assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
+    assert.deepEqual(calls(false, callbackRoot), ["Math.abs"]);
     assert.deepEqual(calls(true), ["selected", "Math.abs"]);
     assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
     new EmissionTransaction().run(() => {
         writable(selected).callbackDeclaration = second;
         assert.deepEqual(calls(false), ["selected", "Math.sin", "selected"]);
+        assert.deepEqual(calls(false, callbackRoot), ["Math.sin"]);
         return false;
     }, Boolean);
     assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
+    assert.deepEqual(calls(false, callbackRoot), ["Math.abs"]);
 });
 
 test("a structural pick of a DOM type is a plain record in a native data loop", () => {

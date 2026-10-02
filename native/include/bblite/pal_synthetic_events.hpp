@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/workers.hpp>
 #include <bblite/pal_custom_events.hpp>
 
 namespace bbl {

@@ -4346,7 +4346,7 @@ test("promise rejection callbacks refuse parameters the rejection cannot supply"
     );
 });
 
-test("a setter-only property maps as data and refuses where its record is stored", () => {
+test("setter-only properties permit direct writes and refuse stored accessor assignment", () => {
     compileSource(`
         let written = 0;
         const target = { set value(next: number) { written = next; } };
@@ -4361,7 +4361,7 @@ test("a setter-only property maps as data and refuses where its record is stored
         targets[0]!.value = 3;
         console.log(written, targets.length);
     `),
-        /has a setter without a getter/,
+        /This data assignment requires a stored field rather than an accessor/,
     );
 });
 
@@ -4513,6 +4513,21 @@ check(
     const handlers: Array<() => string> = [];
     for (const { key, name: who } of CREDITS) handlers.push(() => key + ":" + who);
     if (handlers.map((handler) => handler()).join(",") !== "us:A,es:B") throw new Error("destructured elements");
+`,
+);
+
+check(
+    "runtime-for-of-enum-field-snapshot",
+    `
+    type Phase = "before" | "after";
+    const rows: { phase: Phase }[] = [{phase: "before"}, {phase: "after"}];
+    const readers: Array<() => string> = [];
+    for (const {phase: saved} of rows) {
+        rows[0]!.phase = "after";
+        readers.push(() => saved);
+    }
+    if (rows[0]!.phase !== "after" || readers.map(read => read()).join(",") !== "before,after")
+        throw new Error("enum field snapshot");
 `,
 );
 

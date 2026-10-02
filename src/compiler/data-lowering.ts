@@ -790,7 +790,13 @@ export class DataLowerer {
         dataType: DataType,
         destination: string,
     ): string {
-        if (!this.context.dataTypes.carriesBorrowedPlatformEvent(dataType)) {
+        if (
+            !this.context.dataTypes.carriesBorrowedPlatformEvent(dataType) &&
+            !(
+                dataType.kind === "handle" &&
+                dataType.handle === "dom-event-identity"
+            )
+        ) {
             return this.compileForSink(expression, dataType);
         }
         const value = this.context.compileValue(expression);
@@ -1102,6 +1108,10 @@ export class DataLowerer {
             // Static tables materialize only under runtime indices; static
             // indices keep the legacy compile-time tuple folding so existing
             // generated scenes stay byte-identical.
+            const receiver = this.context.unwrap(unwrapped.expression);
+            const bound = ts.isIdentifier(receiver)
+                ? this.context.bindings.lookupOptional(receiver)
+                : undefined;
             const owner =
                 this.compileDataPath(unwrapped.expression, mode) ??
                 (unwrapped.questionDotToken &&
@@ -1111,7 +1121,10 @@ export class DataLowerer {
                 (this.isStaticIndex(unwrapped.argumentExpression)
                     ? undefined
                     : (this.materializeStaticTable(unwrapped.expression) ??
-                      this.materializeConstantArray(unwrapped.expression)));
+                      this.materializeConstantArray(unwrapped.expression) ??
+                      (bound?.kind === "tuple"
+                          ? this.materializeKnownTuple(receiver, bound)
+                          : undefined)));
             if (!owner) {
                 return undefined;
             }
@@ -1707,11 +1720,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (known.kind !== "tuple") {
             return undefined;
         }
-        const element = this.knownTupleElement(
-            expression,
-            known,
-            knownValue !== undefined,
-        );
+        const element = this.knownTupleElement(expression, known);
         if (!element) {
             return undefined;
         }
@@ -1781,13 +1790,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * The element type a compile-time tuple takes as a native array: the
-     * one its expression declares, or the one every element shares. With
-     * `checkFit`, undefined when an element does not fit it.
+     * one its expression declares, or the one every element shares, provided
+     * every element fits that storage.
      */
     public knownTupleElement(
         expression: ts.Expression,
         known: Value,
-        checkFit: boolean,
     ): DataType | undefined {
         const container = this.dataTypeAt(expression);
         const sourceType = this.context.checker.getTypeAtLocation(expression);
@@ -1832,12 +1840,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         if (
-            checkFit &&
             !(known.tupleElements ?? []).every((entry) =>
                 this.knownValueFitsSink(entry, element, expression, false),
             )
         ) {
-            return undefined;
+            // Runtime storage can represent callback literals before they
+            // have a native value. Probe the actual sink without leaking its
+            // emitted statements or generated types into the chosen path.
+            const fits = this.context.probeEmission(
+                () => {
+                    try {
+                        for (const entry of known.tupleElements ?? [])
+                            this.compileKnownValueForSink(
+                                entry,
+                                element,
+                                expression,
+                            );
+                        return true;
+                    } catch (error) {
+                        if (error instanceof CompileError) return false;
+                        throw error;
+                    }
+                },
+                () => false,
+            );
+            if (!fits) return undefined;
         }
         return element;
     }
@@ -1989,8 +2016,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return (
                     value.kind === "record" &&
                     this.context.dataTypes
-                        .structFields(sink.name, node)
+                        .structFields(sink.name, node, "accessors")
                         .every((field) => {
+                            if (field.accessor) return false;
                             const property =
                                 value.recordProperties?.[field.sourceName];
                             return property
@@ -4718,6 +4746,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             element.kind,
         );
         if (!scalarElements && bound) {
+            // Prove constant storage before requesting lexical replay. A
+            // resource view can have a nominal data type without retaining
+            // the native identity and metadata its specialized reads need.
+            if (
+                !bound.tupleElements!.every((entry) =>
+                    this.knownValueFitsSink(entry, element, unwrapped, true),
+                )
+            )
+                return undefined;
             // Keep allocated elements at the lexical initializer, including
             // fresh factory calls and aliases that precede the first search.
             const declaration = resolvedSymbol(
@@ -5753,8 +5790,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
                 const booleanConstructor =
                     this.context.libraryGlobal(callback) === "Boolean";
+                const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
+                const callbackValue = this.leafValue(
+                    snapshotCpp,
+                    dataType.element,
+                );
                 const callbackArguments: Value[] = [
-                    elementValue,
+                    {
+                        ...callbackValue,
+                        ...(callbackValue.cpp === snapshotCpp
+                            ? { nativeOwnedRvalue: true as const }
+                            : {}),
+                        nativeCaptures: elementValue.nativeCaptures,
+                    },
                     {
                         kind: "number",
                         cpp: `static_cast<double>(${index})`,
@@ -6397,7 +6445,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
-            )
+            ) ||
+            (dataType.element.kind === "handle" &&
+                dataType.element.handle === "dom-event-identity")
         ) {
             this.context.refuseBorrowedPlatformEventEscape(
                 source,

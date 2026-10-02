@@ -880,11 +880,19 @@ export class DeclarationLowerer {
             );
             return;
         }
-        value =
-            this.context.bindings.referenceRecordValue(
-                value,
-                declaration.initializer,
-            ) ?? value;
+        const initializer = this.context.unwrap(declaration.initializer);
+        const aliasesRecord =
+            ts.isIdentifier(initializer) ||
+            ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer);
+        // A named or selected record already owns its fields. Allocating a
+        // fresh object here would split aliases and discard their known facts.
+        if (!aliasesRecord)
+            value =
+                this.context.bindings.referenceRecordValue(
+                    value,
+                    declaration.initializer,
+                ) ?? value;
         if (nullableResource && value.kind === nullableResource.kind) {
             // Copy nullable resource STORAGE, not its present-value spelling.
             // A bound nullable resource exposes `(*storage)` for code that a
@@ -971,11 +979,6 @@ export class DeclarationLowerer {
             );
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
-            const initializer = this.context.unwrap(declaration.initializer);
-            const aliasesRecord =
-                ts.isIdentifier(initializer) ||
-                ts.isPropertyAccessExpression(initializer) ||
-                ts.isElementAccessExpression(initializer);
             if (
                 value.kind === "record" &&
                 !aliasesRecord &&
@@ -1029,7 +1032,6 @@ export class DeclarationLowerer {
                 });
                 return;
             }
-            const initializer = this.context.unwrap(declaration.initializer);
             const constructs =
                 ts.isCallExpression(initializer) ||
                 ts.isNewExpression(initializer) ||
@@ -2412,22 +2414,43 @@ export class DeclarationLowerer {
             )
         ) {
             const source = declaration.initializer;
-            const value = this.context.probeEmission(() => {
-                try {
-                    return this.context.compileValue(source);
-                } catch (error) {
-                    if (error instanceof CompileError) return undefined;
-                    throw error;
-                }
-            }, isJsonValue);
-            if (isJsonValue(value))
+            const arrayType =
+                inferredMutableArray && annotated?.kind === "vector"
+                    ? annotated
+                    : undefined;
+            const result = this.context.probeEmission(
+                () => {
+                    try {
+                        const value = this.context.compileValue(source);
+                        if (isJsonValue(value)) return value;
+                        // Nominal resource interfaces can describe several
+                        // native shapes; prove the actual array sink too.
+                        if (arrayType)
+                            this.context.dataLowerer.compileKnownValueForSink(
+                                value,
+                                arrayType,
+                                source,
+                            );
+                        return true;
+                    } catch (error) {
+                        if (error instanceof CompileError)
+                            return arrayType === undefined;
+                        throw error;
+                    }
+                },
+                // JSON retains this registry; every other outcome rolls back
+                // and carries only its boolean admission result outside it.
+                (value) => typeof value !== "boolean",
+            );
+            if (typeof result !== "boolean")
                 return this.emitDynamicDataBinding(
                     name,
                     cppName,
-                    value,
+                    result,
                     source,
                     sharedClosureStorage,
                 );
+            if (!result) return false;
         }
         if (
             inferredMutableArray &&

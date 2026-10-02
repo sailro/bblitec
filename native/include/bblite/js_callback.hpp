@@ -203,7 +203,7 @@ template <typename R, typename... Args, typename Receiver>
 
 template <typename Function> class NativeInvocation {
 public:
-    explicit NativeInvocation(Function function) : function_(function) {}
+    explicit NativeInvocation(Function function) : function_(std::move(function)) {}
     template <typename... Args>
     std::invoke_result_t<Function, Args...> operator()(Args&&... args) const {
         if (!function_)
@@ -219,6 +219,12 @@ private:
 template <typename R, bool Noexcept, typename... Args>
 [[nodiscard]] auto snapshot_callback(R (*function)(Args...) noexcept(Noexcept)) {
     return NativeInvocation<decltype(function)>{function};
+}
+
+/** PAL storage owns its target; copying an erased Callback retains its shared body. */
+template <typename R, typename... Args>
+[[nodiscard]] auto snapshot_callback(const std::function<R(Args...)>& function) {
+    return NativeInvocation<std::function<R(Args...)>>{function};
 }
 
 template <typename Function>

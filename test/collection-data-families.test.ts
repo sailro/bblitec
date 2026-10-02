@@ -92,6 +92,36 @@ test("readonly record arrays preserve declaration and activation identities", (t
     runGeneratedProgram(native, "readonly-array-identities", result.cpp);
 });
 
+test("readonly allocated records keep lexical effects and nested aliases before search", (t) => {
+    const result = compileSource(`
+        let evaluations = 0;
+        function make(seed: number) {
+            evaluations++;
+            return {id: seed, nested: {count: seed}};
+        }
+        function select(seed: number) {
+            const before = evaluations;
+            const rows = [make(seed), make(seed + 1)] as const;
+            if (evaluations !== before + 2) throw new Error("lexical factory effects");
+            const alias = rows;
+            const first = alias[0];
+            first.nested.count += 10;
+            const selected = rows.find(row => row.id === seed)!;
+            if (selected !== first || selected !== alias[0] || selected.nested.count !== seed + 10 ||
+                evaluations !== before + 2) throw new Error("search preserves earlier aliases");
+            selected.nested.count++;
+            if (alias[0].nested.count !== seed + 11) throw new Error("nested mutation alias");
+            return selected;
+        }
+        const first = select(3), second = select(3);
+        if (first === second || first.nested === second.nested || evaluations !== 4)
+            throw new Error("independent allocated activations");
+    `);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "readonly-array-lexical-effects", result.cpp);
+});
+
 test("computed module catalogues support runtime loop control", (t) => {
     const directory = resolve("artifacts/collection-module-loop");
     mkdirSync(directory, { recursive: true });

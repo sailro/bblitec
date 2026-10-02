@@ -303,6 +303,8 @@ function valueStruct(
                             method,
                             field.type,
                             value,
+                            ts.isMethodDeclaration(method) &&
+                                ts.isClassDeclaration(method.parent),
                         );
                     }
                 }

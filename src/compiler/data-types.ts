@@ -2558,8 +2558,8 @@ export class DataTypeRegistry {
      *
      * The walk covers every place a parameter can hide inside one type: a
      * union or intersection constituent, a reference's own type arguments,
-     * and the members of an anonymous or instantiated object -- an inline
-     * `{ part: P; distance: number }` is spelled identically under two
+     * callable signatures, and the members of an anonymous or instantiated
+     * object -- an inline `{ part: P; distance: number }` is spelled identically under two
      * instantiations and would otherwise read back the first one's struct.
      * `seen` closes the recursion on self-referential shapes, and every
      * branch is a disjunction over a set, so no answer depends on order.
@@ -2596,6 +2596,27 @@ export class DataTypeRegistry {
             this.checker
                 .getTypeArguments(type as ts.TypeReference)
                 .some((argument) => this.mentionsSubstitution(argument, seen))
+        ) {
+            return true;
+        }
+        if (
+            type
+                .getCallSignatures()
+                .some(
+                    (signature) =>
+                        signature
+                            .getParameters()
+                            .some((parameter) =>
+                                this.mentionsSubstitution(
+                                    this.checker.getTypeOfSymbol(parameter),
+                                    seen,
+                                ),
+                            ) ||
+                        this.mentionsSubstitution(
+                            signature.getReturnType(),
+                            seen,
+                        ),
+                )
         ) {
             return true;
         }

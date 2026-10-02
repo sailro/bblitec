@@ -5033,14 +5033,17 @@ class Compiler implements LoweringServices {
      * removed at module scope is one function object, and two instances
      * adding it add the same one.
      *
-     * A declaration owned by a shared class has no such owner to key on --
+     * An instance callback owned by a shared class has no such owner to key on --
      * its `this` is rebuilt at every access, and one identity would make
      * every instance's handler the same handler. That is refused rather
-     * than conflated, as is a closure this cannot name at all.
+     * than conflated, as is a closure this cannot name at all. Structural
+     * adapters for module-level prototype methods share the declaration's
+     * identity while retaining their receivers in separate closures.
      */
     public callbackIdentity(
         declaration: ts.Node,
         owner: Value | undefined,
+        prototypeMethod = false,
     ): number {
         if (ts.isIdentifier(declaration)) {
             declaration =
@@ -5050,7 +5053,21 @@ class Compiler implements LoweringServices {
                     "Callback identity requires a function declaration.",
                 );
         }
-        const key = this.callbackClosureKey(declaration, owner);
+        if (
+            prototypeMethod &&
+            !(
+                ts.isMethodDeclaration(declaration) &&
+                ts.isClassDeclaration(declaration.parent) &&
+                ts.isSourceFile(declaration.parent.parent)
+            )
+        )
+            this.fail(
+                declaration,
+                "A structural method view requires a module-level class prototype identity.",
+            );
+        const key = prototypeMethod
+            ? declaration.parent
+            : this.callbackClosureKey(declaration, owner);
         const perClosure =
             this.callbackIdentities.get(declaration) ??
             new EmissionMap<object, number>();
@@ -6968,7 +6985,13 @@ class Compiler implements LoweringServices {
             | ts.MethodDeclaration,
         dataType: DataType & { kind: "function" },
         owner?: Value,
+        prototypeMethod = false,
     ): string {
+        if (prototypeMethod && owner?.kind !== "record")
+            this.fail(
+                expression,
+                "A structural method view requires its receiver.",
+            );
         if (ts.isIdentifier(expression)) {
             const imported = this.symbols.importedName(expression);
             if (imported)
@@ -7012,11 +7035,14 @@ class Compiler implements LoweringServices {
                           : {}),
                   }
                 : undefined);
+        const identityCpp = prototypeMethod
+            ? `${this.callbackIdentity(expression, owner, true)}u`
+            : effectiveOwner?.runtimeCallbackIdentityCpp;
         const compile = (): string => {
-            if (effectiveOwner?.runtimeCallbackIdentityCpp) {
+            if (identityCpp) {
                 this.useNativeValue({
                     kind: "number",
-                    cpp: effectiveOwner.runtimeCallbackIdentityCpp,
+                    cpp: identityCpp,
                 });
                 dataType = { ...dataType, identity: true };
             }
@@ -7029,6 +7055,7 @@ class Compiler implements LoweringServices {
                 expression,
                 dataType,
                 effectiveOwner,
+                identityCpp,
             );
             this.registerNativeBinding(cpp);
             return cpp;
