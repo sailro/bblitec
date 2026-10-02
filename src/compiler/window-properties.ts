@@ -123,7 +123,8 @@ export class WindowProperties {
                 expression,
                 "Window extension properties require plain assignment.",
             );
-        let field = this.fields.get(target.name.text);
+        let field =
+            this.fields.get(target.name.text) ?? this.declaredField(target);
         if (!field) {
             const valueType = context.dataTypes.fromTsType(
                 context.checker.getTypeAtLocation(expression.right),
@@ -146,7 +147,7 @@ export class WindowProperties {
                 : field.type;
         context.emit({
             kind: "expression",
-            code: `${field.cpp} = ${context.dataLowerer.compileForSink(expression.right, stored)};`,
+            code: `${field.cpp} = ${context.dataLowerer.compileForRetainedSink(expression.right, stored, "a Window extension")};`,
         });
         return true;
     }
@@ -154,7 +155,8 @@ export class WindowProperties {
     remove(expression: ts.DeleteExpression): boolean {
         const target = this.target(expression.expression);
         if (!target) return false;
-        const field = this.fields.get(target.name.text);
+        const field =
+            this.fields.get(target.name.text) ?? this.declaredField(target);
         if (!field)
             return this.context.fail(
                 expression,
