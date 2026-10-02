@@ -2714,7 +2714,12 @@ export class DataTypeRegistry {
                       declaration !== undefined &&
                       (ts.isPropertySignature(declaration) ||
                           ts.isMethodSignature(declaration) ||
-                          ts.isMethodDeclaration(declaration))
+                          ts.isMethodDeclaration(declaration) ||
+                          (this.classDemanded &&
+                              (ts.isPropertyAssignment(declaration) ||
+                                  ts.isShorthandPropertyAssignment(
+                                      declaration,
+                                  ))))
                         ? this.fromFunctionType(
                               callableType,
                               declaration ?? node,
@@ -4053,6 +4058,9 @@ export class DataTypeRegistry {
                 }
                 case "optional":
                     visit(current.inner);
+                    return;
+                case "union":
+                    current.members.forEach(visit);
                     return;
                 case "vector":
                 case "set":
