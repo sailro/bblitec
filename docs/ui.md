@@ -29,6 +29,7 @@ Check them before adding an implementation. Source rejection does not imply miss
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
+- Source-declared optional Window properties start undefined and retain typed values within their realm; stored records preserve identity across reads, replacement and deletion.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.

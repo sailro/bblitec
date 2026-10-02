@@ -4,6 +4,7 @@ import { optionalPresentCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import { nullability } from "./type-facts.js";
 
 type Context = Pick<
     LoweringServices,
@@ -55,9 +56,41 @@ export class WindowProperties {
     read(expression: ts.PropertyAccessExpression): Value | undefined {
         const target = this.target(expression);
         if (!target) return undefined;
-        const field = this.fields.get(target.name.text);
+        const field =
+            this.fields.get(target.name.text) ?? this.declaredField(target);
         if (!field) return undefined;
         return this.context.dataLowerer.leafValue(field.cpp, field.type);
+    }
+
+    private declaredField(target: ts.PropertyAccessExpression) {
+        const sourceType = this.context.checker.getTypeAtLocation(target);
+        if (!nullability(sourceType).undefined) return undefined;
+        const type = this.context.dataTypes.fromTsType(sourceType, target);
+        if (!type) return undefined;
+        return this.createField(target.name.text, type);
+    }
+
+    private createField(name: string, valueType: DataType) {
+        const context = this.context;
+        const type = context.dataTypes.markStoredObjectReferences(
+            valueType.kind === "optional"
+                ? valueType
+                : { kind: "optional", inner: valueType, undefinedOnly: true },
+        );
+        const cppType = context.dataTypes.cppType(type);
+        const cppName = context.allocateTemporaryCppName("window_property");
+        context.nativeEmission.registerNativeFunction(
+            `${cppType}& ${cppName}();`,
+            [
+                `${cppType}& ${cppName}() {`,
+                `    struct Storage { ${cppType} value{}; };`,
+                "    return bbl::js::realm_scratch<Storage>().value;",
+                "}",
+            ],
+        );
+        const field = { type, cpp: `bblscene::${cppName}()` };
+        this.fields.set(name, field);
+        return field;
     }
 
     call(expression: ts.Expression): Value | undefined {
@@ -101,27 +134,7 @@ export class WindowProperties {
                     expression.right,
                     "Window extension requires a represented value type.",
                 );
-            const type: DataType =
-                valueType.kind === "optional"
-                    ? valueType
-                    : {
-                          kind: "optional",
-                          inner: valueType,
-                          undefinedOnly: true,
-                      };
-            const cppType = context.dataTypes.cppType(type);
-            const name = context.allocateTemporaryCppName("window_property");
-            context.nativeEmission.registerNativeFunction(
-                `${cppType}& ${name}();`,
-                [
-                    `${cppType}& ${name}() {`,
-                    `    struct Storage { ${cppType} value{}; };`,
-                    "    return bbl::js::realm_scratch<Storage>().value;",
-                    "}",
-                ],
-            );
-            field = { type, cpp: `bblscene::${name}()` };
-            this.fields.set(target.name.text, field);
+            field = this.createField(target.name.text, valueType);
         }
         const stored: DataType =
             field.type.kind === "optional" &&
@@ -149,7 +162,7 @@ export class WindowProperties {
             );
         this.context.emit({
             kind: "expression",
-            code: `${field.cpp} = std::nullopt;`,
+            code: `${field.cpp} = ${this.context.dataTypes.absentValue(field.type)};`,
         });
         return true;
     }
