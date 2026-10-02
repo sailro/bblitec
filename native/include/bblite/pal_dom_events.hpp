@@ -478,12 +478,21 @@ inline bool dom_target_is_element(DomEventTargetValue value, bool html) {
     if (element.value == invalid_handle)
         return false;
     const auto& record = dom_target_owner(value).ui_elements[element.value];
-    return !html || record.markup_owner.value == invalid_handle ||
-           (record.tag != "svg" && record.tag != "path" && record.tag != "rect");
+    return !html || (!record.svg_namespace &&
+                     (record.markup_owner.value == invalid_handle ||
+                      (record.tag != "svg" && record.tag != "path" && record.tag != "rect")));
 }
 
 inline bool dom_target_is_element(const js::Nullable<DomEventTargetValue>& value, bool html) {
     return value.has_value() && dom_target_is_element(*value, html);
+}
+
+inline bool dom_target_is_svg(DomEventTargetValue value) {
+    return dom_target_is_element(value, false) && !dom_target_is_element(value, true);
+}
+
+inline bool dom_target_is_svg(const js::Nullable<DomEventTargetValue>& value) {
+    return value.has_value() && dom_target_is_svg(*value);
 }
 
 /** isContentEditable of an element target; the render canvas a page does not retain has no

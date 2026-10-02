@@ -522,8 +522,7 @@ export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (symbol.name === "Element" ||
-            symbol.name === "HTMLElement" ||
-            /^HTML[A-Za-z0-9]*Element$/.test(symbol.name))
+            /^(?:HTML|SVG)[A-Za-z0-9]*Element$/.test(symbol.name))
     );
 }
 
@@ -2714,7 +2713,12 @@ export class DataTypeRegistry {
                       declaration !== undefined &&
                       (ts.isPropertySignature(declaration) ||
                           ts.isMethodSignature(declaration) ||
-                          ts.isMethodDeclaration(declaration))
+                          ts.isMethodDeclaration(declaration) ||
+                          (this.classDemanded &&
+                              (ts.isPropertyAssignment(declaration) ||
+                                  ts.isShorthandPropertyAssignment(
+                                      declaration,
+                                  ))))
                         ? this.fromFunctionType(
                               callableType,
                               declaration ?? node,
@@ -4054,12 +4058,19 @@ export class DataTypeRegistry {
                 case "optional":
                     visit(current.inner);
                     return;
+                case "union":
+                    current.members.forEach(visit);
+                    return;
                 case "vector":
-                case "set":
                 case "span":
                     visit(current.element);
                     return;
                 case "map":
+                    if (!current.dictionary)
+                        this.fail(
+                            node,
+                            "JSON.stringify does not serialize a Map value; only dictionary storage is represented.",
+                        );
                     if (
                         current.key.kind !== "string" &&
                         current.key.kind !== "number"

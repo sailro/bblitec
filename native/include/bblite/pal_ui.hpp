@@ -26,6 +26,7 @@ namespace bbl {
 enum class UiDocumentPart { Html, Head, Body };
 UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part);
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
+UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag);
 #if BBLITE_WORKERS
 bool ui_image_complete(Engine&, UiElementHandle);
 double ui_image_natural_width(Engine&, UiElementHandle);

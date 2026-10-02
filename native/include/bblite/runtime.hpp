@@ -3726,6 +3726,7 @@ struct UiElementRecord {
         double shadow_blur = 0.0;
     };
     std::string tag;
+    bool svg_namespace = false;
     std::string text;
     /** Last plain-text change in the owning engine's UI text sequence. */
     std::uint64_t text_revision = 0;

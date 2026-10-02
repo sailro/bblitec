@@ -813,6 +813,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-retained-svg",
+        name: "Regression - Retained SVG",
+        source: "examples/regression-retained-svg.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Retained SVG",
+        parity: {
+            maxFullMad: 0.1,
+            maxForegroundMad: 0.5,
+            backgroundColor: [32, 40, 48],
+            backgroundThreshold: 30,
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "8" },
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",

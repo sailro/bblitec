@@ -24,7 +24,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Workers/Window | AOT factories, typed cloning, realm loops, layout snapshots; 16 ms ResizeObserver polling |
 | Data | Typed storage, checked access, bounded sparse/JSON representation |
 | Typed records | An optional property holding undefined is absent; keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
-| Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data |
+| Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data. Locale case conversion validates and selects only the first requested tag, matching Chromium |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections and WeakRef | Keys and targets retained strongly |
 | Retired meshes | A mesh that left its last scene keeps its record, with its last pose and bounds, while a mesh is parented under it or a shadow caster array, a physics body or an edit gizmo names it, and then gives its slot to a later mesh; touching it through a kept program reference afterwards throws "Native handle refers to a retired record", where JavaScript reaches the detached object |

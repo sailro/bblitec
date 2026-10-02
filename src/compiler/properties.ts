@@ -2874,13 +2874,19 @@ export class PropertyAccessLowerer {
             owner.browserValue?.kind === "dom-rect" &&
             (property === "left" ||
                 property === "top" ||
+                property === "x" ||
+                property === "y" ||
+                property === "right" ||
+                property === "bottom" ||
                 property === "width" ||
                 property === "height")
         ) {
             const axis =
-                property === "width" || property === "height"
-                    ? property
-                    : undefined;
+                property === "width" || property === "right"
+                    ? "width"
+                    : property === "height" || property === "bottom"
+                      ? "height"
+                      : undefined;
             return {
                 kind: "number",
                 cpp: axis

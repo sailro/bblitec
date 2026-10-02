@@ -1,0 +1,16 @@
+{
+  "scene": "regression-retained-svg",
+  "notes": "Pointer activation on the SVG root changes its inherited paint and retained circle radius.",
+  "capture": false,
+  "phases": [
+    { "id": "idle", "frame": 24 },
+    {
+      "id": "activate",
+      "frame": 24,
+      "tape": ["-*10", "+UiMouseLeft@150:94", "-UiMouseLeft@150:94"]
+    }
+  ],
+  "expect": [
+    { "kind": "image-mad", "phase": "activate", "vs": "idle", "min": 0.1 }
+  ]
+}

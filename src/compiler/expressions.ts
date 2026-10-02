@@ -529,6 +529,8 @@ export class ExpressionLowerer {
         if (http) return http;
         const window = compileWindowIdentity(this.context, unwrapped);
         if (window) return window;
+        if (this.context.browserErasure.isAbsentGlobalMember(unwrapped))
+            return { kind: "json-null", cpp: "std::nullopt" };
 
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
@@ -4243,7 +4245,7 @@ export class ExpressionLowerer {
         const contextualType = contextual
             ? this.context.dataTypes.fromTsType(contextual, unwrapped)
             : undefined;
-        const inferred =
+        let inferred =
             this.context.dataLowerer.dataTypeAt(unwrapped) ??
             (contextualType &&
             [
@@ -4258,6 +4260,25 @@ export class ExpressionLowerer {
             ].includes(contextualType.kind)
                 ? contextualType
                 : undefined);
+        if (
+            !inferred &&
+            (this.context.symbols.isNullishLiteral(
+                this.context.unwrap(unwrapped.whenTrue),
+            ) ||
+                this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(unwrapped.whenFalse),
+                ))
+        ) {
+            // Selecting an anonymous callback record or absence needs owned
+            // storage even when ordinary inference keeps the record static.
+            const stored = this.context.dataTypes.fromStoredTsType(
+                this.context.checker.getTypeAtLocation(unwrapped),
+                unwrapped,
+            );
+            if (stored)
+                inferred =
+                    this.context.dataTypes.markStoredObjectReferences(stored);
+        }
         // A selected fresh readonly array must outlive its branch's temporaries.
         const conditionalType =
             inferred?.kind === "span"

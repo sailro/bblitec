@@ -218,6 +218,8 @@ inline void json_write(JsonWriter& writer, bool value) { writer.boolean(value); 
 inline void json_write(JsonWriter& writer, const std::string& value) { writer.string(value); }
 
 inline void json_write(JsonWriter& writer, const JsonValue& value);
+template <typename... T>
+inline void json_write(JsonWriter& writer, const std::variant<T...>& value);
 
 /** A record key: a string is itself, a numeric key is its own spelling. */
 [[nodiscard]] inline const std::string& json_object_key(const std::string& key) { return key; }
@@ -344,6 +346,11 @@ inline void json_write(JsonWriter& writer, const Map<K, V>& entries) {
         json_write(writer, value);
     });
     writer.end_object();
+}
+
+template <typename... T>
+inline void json_write(JsonWriter& writer, const std::variant<T...>& value) {
+    std::visit([&](const auto& member) { json_write(writer, member); }, value);
 }
 
 template <typename T> [[nodiscard]] inline std::string json_stringify(const T& value) {

@@ -29,6 +29,7 @@ Check them before adding an implementation. Source rejection does not imply miss
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
+- Source-declared optional Window properties start undefined and retain typed values within their realm; stored records preserve identity across reads, replacement and deletion.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
@@ -103,7 +104,7 @@ A base Event asserted to KeyboardEvent or MouseEvent reads a checked view of its
 Native Event/MouseEvent parameters borrow dispatch. PointerEvent/InputEvent helpers retain owned payloads
 and shared identity; retained targets reject an expired document.
 CustomEvent retains its detail and identity. Stored EventTargets preserve their document and snapshot before call arguments.
-Optional element calls snapshot the receiver and skip arguments
+Optional element calls and stored EventTarget listeners snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
 Element views validate target ownership; Document, Window, text and unrepresented canvas targets refuse element
 methods; an unrepresented canvas is not content-editable.
@@ -120,6 +121,7 @@ Dataset reads distinguish missing (`undefined`) and empty attributes.
 Source append and replaceChildren arguments finish before replacement and insertion. Canvas backing
 dimensions are drawable pixels; client dimensions and bounding rectangles are CSS pixels; element
 offset/client sizes are rounded CSS pixels. Rectangle and size reads flush pending layout.
+Retained bounding rectangles snapshot x/y, left/top, right/bottom and border-box width/height.
 Pixel ratio, viewport size and input capabilities read host state without flushing pending DOM or canvas writes.
 
 ### File transfer controls
@@ -137,9 +139,14 @@ iOS uses UIKit Files with local storage and security-scoped imports; other platf
 
 ### Markup
 
-Closed innerHTML admits text/div/span and reviewed SVG/path/rect attributes. Scripts, event attributes,
+Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path/rect attributes. Scripts, event attributes,
 dynamic attributes and malformed nesting refuse. Runtime text is escaped. SVG rasterizes at CSS size;
-mixed currentColor/literal paints and internal SVG queries refuse.
+mixed currentColor/literal paints and queries inside static SVG markup refuse.
+
+`createElementNS` admits SVG svg/path/rect/circle nodes with retained identity, case-sensitive attributes,
+and live append/remove/replace operations. RmlUi's SVG plugin rasterizes shape XML; inherited currentColor
+tracks the SVG root's computed color. Shape styles, listeners, layout reads, nested SVG, paint servers,
+CSS-wide paint keywords and variable paints refuse.
 
 ## Canvas2D
 

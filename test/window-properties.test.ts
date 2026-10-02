@@ -17,7 +17,27 @@ test("Window extension callbacks retain identity and captures through replacemen
         `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
+        const metadata = globalThis as typeof globalThis & {info?: {value: number; label?: string}};
+        delete metadata.info;
+        metadata.info = {value: 1};
+        metadata.info = {value: 2, label: "next"};
+        if (metadata.info.label !== "next") throw new Error("declared layout before read");
         const target = globalThis as typeof globalThis & {snapshot?: () => number};
+        const absentCall = target.snapshot?.();
+        if (absentCall !== undefined) throw new Error("unassigned optional call");
+        if (target.snapshot !== undefined) throw new Error("unassigned callback");
+        const infoTarget = globalThis as typeof globalThis & {identity?: {version?: string; revision?: string}};
+        const initial = infoTarget.identity;
+        if ((initial?.version ?? "unknown") !== "unknown") throw new Error("unassigned record");
+        const observations: Array<() => string> = [];
+        observations.push(() => infoTarget.identity?.version ?? "unknown");
+        infoTarget.identity = {version: "one"};
+        if (observations[0]!() !== "one") throw new Error("deferred extension read");
+        const oldIdentity = infoTarget.identity;
+        infoTarget.identity = {version: "two", revision: "abc"};
+        if (oldIdentity?.version !== "one" || observations[0]!() !== "two") throw new Error("record snapshot");
+        delete infoTarget.identity;
+        if (observations[0]!() !== "unknown") throw new Error("removed record");
         let count = 1;
         const snapshot = () => count;
         target.snapshot = snapshot;
@@ -86,4 +106,24 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
         `/Fe${exe}`,
     ]);
     assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+});
+
+test("Window extension records refuse borrowed dispatch events", () => {
+    const directory = resolve("artifacts/window-properties-borrowed");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+                worker.terminate();
+                const target = window as Window & {record?: {event: KeyboardEvent}};
+                const before = target.record;
+                window.addEventListener("keydown", event => { target.record = {event}; });
+            `,
+                { fileName: resolve(directory, "entry.ts") },
+            ),
+        /borrowed.*event|event.*dispatch/i,
+    );
 });

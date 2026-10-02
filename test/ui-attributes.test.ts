@@ -10,6 +10,9 @@ test("attribute removal preserves absence, style reset and rendered image update
     const directory = resolve("artifacts/ui-attributes");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const texture = new PNG({ width: 4, height: 4 });
+    texture.data.fill(255);
+    writeFileSync(join(directory, "tile.png"), PNG.sync.write(texture));
     const result = compileSource(
         `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -34,15 +37,22 @@ test("attribute removal preserves absence, style reset and rendered image update
         if (button.disabled) throw new Error("removed boolean attribute");
         panel.appendChild(button);
         document.body.appendChild(panel);
+        const markup = document.createElement("div");
+        markup.id = "markup";
+        markup.innerHTML = '<div><img class="picture" src="tile.png" alt="" width="20" height="20"></div>';
+        const picture = markup.querySelector(".picture") as HTMLImageElement;
+        picture.setAttribute("width", "24");
+        if (picture.getAttribute("width") !== "24") throw new Error("markup image mutation");
+        document.body.appendChild(markup);
         globalThis.close();
     `,
         { fileName: join(directory, "entry.ts") },
     );
     assert.ok(result.cpp.includes("ui_remove_attribute"));
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    const texture = new PNG({ width: 4, height: 4 });
-    texture.data.fill(255);
-    writeFileSync(join(directory, "tile.png"), PNG.sync.write(texture));
+    assert.ok(
+        result.manifest.assets.some((asset) => asset.output === "tile.png"),
+    );
     runRmlUiFixture(t, "ui-attributes", {
         macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
         imageDecoder: true,

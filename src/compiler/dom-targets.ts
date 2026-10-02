@@ -74,6 +74,7 @@ export function domTargetIdentity(
 type ElementInterfaceTest =
     | { readonly kind: "tag"; readonly tag: string }
     | { readonly kind: "element"; readonly html: boolean }
+    | { readonly kind: "svg" }
     | { readonly kind: "node" };
 
 type WindowInterface =
@@ -92,6 +93,7 @@ const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
     ["Node", { kind: "element", test: { kind: "node" } }],
     ["Element", { kind: "element", test: { kind: "element", html: false } }],
     ["HTMLElement", { kind: "element", test: { kind: "element", html: true } }],
+    ["SVGElement", { kind: "element", test: { kind: "svg" } }],
     ...(
         [
             ["HTMLInputElement", "input"],
@@ -175,6 +177,8 @@ export function compileDomInstanceOf(
             return `bbl::dom_target_is_node(${target})`;
         case "element":
             return `bbl::dom_target_is_element(${target}, ${entry.test.html})`;
+        case "svg":
+            return `bbl::dom_target_is_svg(${target})`;
         case "tag":
             return `bbl::dom_target_has_tag(${target}, ${context.cppString(entry.test.tag)})`;
     }
