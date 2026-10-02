@@ -1483,7 +1483,12 @@ class Compiler implements LoweringServices {
                 statement.name?.text === "main" &&
                 statement.body !== undefined,
         );
-        if (main) {
+        // A Window module that supplies its own entry call owns startup
+        // order. Lowering only the function body would lose module-level
+        // producers, listeners and work after an async call suspends.
+        const authoredEntry =
+            main && this.options.workers && this.moduleReferencesEntry(main);
+        if (main && !authoredEntry) {
             this.hasMainEntry = true;
             return main.body!.statements;
         }
@@ -1502,6 +1507,40 @@ class Compiler implements LoweringServices {
             );
         }
         return statements;
+    }
+
+    private moduleReferencesEntry(entry: ts.FunctionDeclaration): boolean {
+        const visited = new Set<ts.Node>();
+        const referencesEntry = (root: ts.Node): boolean =>
+            someAnalysisNode(
+                root,
+                (node) => {
+                    if (
+                        ts.isIdentifier(node) &&
+                        this.symbols.valueSymbol(node)?.valueDeclaration ===
+                            entry
+                    )
+                        return true;
+                    if (!ts.isCallExpression(node)) return false;
+                    const callee =
+                        this.checker.getResolvedSignature(node)?.declaration;
+                    if (callee === entry) return true;
+                    if (
+                        !isSupportedFunction(callee) ||
+                        !callee.body ||
+                        visited.has(callee)
+                    )
+                        return false;
+                    visited.add(callee);
+                    return referencesEntry(callee.body);
+                },
+                { types: "skip", memberNames: "skip" },
+            );
+        return this.sourceFile.statements.some(
+            (statement) =>
+                !ts.isFunctionDeclaration(statement) &&
+                referencesEntry(statement),
+        );
     }
 
     /**
