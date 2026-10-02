@@ -2,6 +2,12 @@
 
 Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume the same draw frame.
 
+With [deferred capabilities](features.md#program-compilation), registered missing CSS properties and
+grid-track forms throw at retained style writes. Nonconstant stylesheet installation and unstructured
+declaration strings throw for the missing runtime parser. Receiver and string expressions still lower
+normally; the manifest lists each deferred feature. This does not add rendering support or change
+strict-mode admission. Host-page sheets and unsupported conditional CSS forms still require admission.
+
 ## RmlUi ownership
 
 | Area | Owner |

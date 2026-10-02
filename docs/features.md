@@ -48,7 +48,7 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 
 ## Program compilation
 
-`CompileOptions.deferredCapabilities: "runtime-throw"` admits explicitly registered missing APIs with
+`--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) admits explicitly registered missing APIs with
 owned argument/result representations. Their reached sites appear in `manifest.deferredCapabilities`;
 runtime calls throw or reject according to each descriptor. Later source still compiles normally.
 Unregistered APIs, unsupported type/ownership forms and dynamic argument spreads still refuse.

@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import ts from "typescript";
-import {
-    sceneRelativeSourceLabel,
-    sourceLocation,
-    syntaxKindName,
-} from "../source-location.js";
+import { sceneRelativeSourceLabel } from "../source-location.js";
+import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -163,7 +160,7 @@ export class DeferredCapabilities {
         DeferredCapabilitySite
     >();
     /** @unjournaled Immutable parsed source hashes, independent of emission attempts. */
-    private readonly sourceHashes = new WeakMap<ts.SourceFile, string>();
+    private readonly sourceSites = new SourceSiteRegistry();
     constructor(private readonly context: Context) {}
     get sites(): readonly DeferredCapabilitySite[] {
         return [...this.reached.values()];
@@ -387,25 +384,15 @@ export class DeferredCapabilities {
         node: ts.Node,
         descriptor: DeferredCapabilityEmission,
     ): DeferredCapabilitySite {
-        const original = ts.getOriginalNode(node);
-        const { file, line, character } = sourceLocation(original);
-        let sourceSha256 = this.sourceHashes.get(file);
-        if (!sourceSha256) {
-            sourceSha256 = createHash("sha256").update(file.text).digest("hex");
-            this.sourceHashes.set(file, sourceSha256);
-        }
+        const { sha256, ...location } = this.sourceSites.site(node);
         const site: DeferredCapabilitySite = {
             ...descriptor,
             signatureHash: createHash("sha256")
                 .update(descriptor.signature)
                 .digest("hex"),
-            file: file.fileName.replaceAll("\\", "/"),
-            line,
-            column: character,
-            start: original.getStart(file),
-            end: original.end,
-            kind: syntaxKindName(original.kind),
-            sourceSha256,
+            ...location,
+            file: location.file.replaceAll("\\", "/"),
+            sourceSha256: sha256,
             realm: this.context.options.workers
                 ? this.context.options.workers.namespace
                     ? "worker"

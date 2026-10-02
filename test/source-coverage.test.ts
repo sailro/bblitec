@@ -228,3 +228,41 @@ test("CLI writes coverage on a strict compile refusal without producing a builda
     assert.ok(sites.some((site) => site.state === "lowered"));
     assert.ok(sites.some((site) => site.state === "refused"));
 });
+
+test("CLI survey combines explicit deferred capabilities with source coverage", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblite-deferred-coverage-"));
+    const input = join(directory, "entry.ts");
+    const census = join(directory, "census.json");
+    const coverage = join(directory, "coverage.json");
+    writeFileSync(input, `atob("first"); btoa("second");`);
+    const result = spawnSync(
+        process.execPath,
+        [
+            resolve("dist/src/cli.js"),
+            input,
+            "--survey",
+            census,
+            "--coverage",
+            coverage,
+            "--deferred-capabilities",
+            "runtime-throw",
+        ],
+        {
+            encoding: "utf8",
+            env: { ...process.env, BBLITE_DIST_LOCK_HELD: "1" },
+            windowsHide: true,
+        },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const report = jsonObject(JSON.parse(readFileSync(census, "utf8")));
+    assert.equal(jsonObject(report.statements).refused, 0);
+    const measured = jsonObject(JSON.parse(readFileSync(coverage, "utf8")));
+    const realm = jsonObject(jsonArray(measured.realms)[0]);
+    assert.equal(realm.complete, true);
+    assert.equal(
+        jsonArray(realm.sites).filter(
+            (site) => jsonObject(site).state === "lowered",
+        ).length,
+        2,
+    );
+});

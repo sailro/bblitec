@@ -142,6 +142,7 @@ interface CliOptions {
     idDiagnostics: boolean;
     sourceProfile?: string[];
     coverage?: string;
+    deferredCapabilities?: CompileOptions["deferredCapabilities"];
 }
 
 /**
@@ -168,6 +169,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
     { flag: "--coverage", value: "<coverage.json>" },
+    { flag: "--deferred-capabilities", value: "runtime-throw" },
 ];
 
 function usage(): never {
@@ -212,6 +214,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
     let coverage: string | undefined;
+    let deferredCapabilities: CompileOptions["deferredCapabilities"];
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -230,6 +233,14 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--coverage":
                 if (!value || value.startsWith("--")) usage();
                 coverage = value;
+                index += 1;
+                break;
+            case "--deferred-capabilities":
+                if (value !== "runtime-throw")
+                    throw new Error(
+                        "--deferred-capabilities expects runtime-throw.",
+                    );
+                deferredCapabilities = value;
                 index += 1;
                 break;
             case "--title":
@@ -335,6 +346,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(siteRoot ? { siteRoot } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
         ...(coverage ? { coverage } : {}),
+        ...(deferredCapabilities ? { deferredCapabilities } : {}),
     };
 }
 
@@ -875,6 +887,9 @@ async function main(): Promise<void> {
     const inputPath = resolve(page?.entry ?? options.input);
     const source = readFileSync(inputPath, "utf8");
     const compileOptions: CompileOptions = {
+        ...(options.deferredCapabilities
+            ? { deferredCapabilities: options.deferredCapabilities }
+            : {}),
         fileName: inputPath,
         environment: options.environment,
         ...(page ? hostPageCompileOptions(page) : {}),
