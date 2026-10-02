@@ -6,7 +6,11 @@ import type {
 } from "./lowering-services.js";
 import ts from "typescript";
 import { provenUndefinedValue } from "./undefined-values.js";
-import { renderClosure, type CapturedClosure } from "./closure-captures.js";
+import {
+    renderClosure,
+    type CapturedClosure,
+    type NativeCaptureBinding,
+} from "./closure-captures.js";
 import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
@@ -117,10 +121,10 @@ export class AsyncLowerer {
             if (value.promiseType === expected) return value.cpp;
             const name = context.allocateTemporaryCppName("adopted_result");
             const conversion = context.captureManagedClosureLines(() => {
-                context.registerNativeBinding(name);
+                const binding = context.registerNativeBinding(name);
                 const result = type
                     ? convert(
-                          this.resultAt(value.promiseResult!, name),
+                          this.resultAt(value.promiseResult!, name, binding),
                           type,
                           expression,
                       )
@@ -216,10 +220,7 @@ export class AsyncLowerer {
                     temporary,
                     settled.dataType ?? { kind: "string" },
                 );
-            return {
-                ...this.resultAt(settled, temporary),
-                nativeCaptures: [binding],
-            };
+            return this.resultAt(settled, temporary, binding);
         }
         if (
             ts.isNewExpression(node) &&
@@ -532,10 +533,7 @@ export class AsyncLowerer {
             attributes: "[[maybe_unused]] ",
         });
         const binding = context.registerNativeBinding(temporary);
-        return {
-            ...this.resultAt(value, temporary),
-            nativeCaptures: [binding],
-        };
+        return this.resultAt(value, temporary, binding);
     }
 
     private activate(
@@ -886,9 +884,8 @@ export class AsyncLowerer {
             return output.kind === "void"
                 ? { kind: "void", cpp: settled, nativeCaptures: [binding] }
                 : {
-                      ...this.resultAt(output, settled),
+                      ...this.resultAt(output, settled, binding),
                       impure: true,
-                      nativeCaptures: [binding],
                   };
         }
         return {
@@ -1257,13 +1254,11 @@ export class AsyncLowerer {
                                       nativeCaptures: [binding],
                                   },
                               )
-                            : {
-                                  ...this.resultAt(
-                                      promise.promiseResult!,
-                                      name,
-                                  ),
-                                  nativeCaptures: [binding],
-                              },
+                            : this.resultAt(
+                                  promise.promiseResult!,
+                                  name,
+                                  binding,
+                              ),
                     );
                 }
                 result.value = stored
@@ -1386,7 +1381,11 @@ export class AsyncLowerer {
             `Promise result '${value.kind}' has no owned asynchronous representation.`,
         );
     }
-    private resultAt(source: Value, cpp: string): Value {
+    private resultAt(
+        source: Value,
+        cpp: string,
+        binding: NativeCaptureBinding,
+    ): Value {
         const { ownedCpp, ...value } = source;
         if (value.kind === "tuple")
             return {
@@ -1394,9 +1393,13 @@ export class AsyncLowerer {
                 cpp,
                 tupleElements: (value.tupleElements ?? []).map(
                     (element, index) =>
-                        this.resultAt(element, `std::get<${index}>(${cpp})`),
+                        this.resultAt(
+                            element,
+                            `std::get<${index}>(${cpp})`,
+                            binding,
+                        ),
                 ),
-                nativeCaptures: [],
+                nativeCaptures: [binding],
             };
         if (value.kind === "engine")
             return {
@@ -1404,9 +1407,9 @@ export class AsyncLowerer {
                 cpp: `(*${cpp})`,
                 engineCpp: `(*${cpp})`,
                 ownedEngineCpp: cpp,
-                nativeCaptures: [],
+                nativeCaptures: [binding],
                 nativeCompanionCaptures: {
-                    engineCpp: [this.context.registerNativeBinding(cpp)],
+                    engineCpp: [binding],
                 },
             };
         if (
@@ -1417,6 +1420,7 @@ export class AsyncLowerer {
             return {
                 kind: value.kind,
                 cpp,
+                nativeCaptures: [binding],
                 ...(value.dataType ? { dataType: value.dataType } : {}),
                 ...(value.staticString !== undefined
                     ? { staticString: value.staticString }
@@ -1431,7 +1435,7 @@ export class AsyncLowerer {
                     ? { packagedBodySource: value.packagedBodySource }
                     : {}),
             };
-        return { ...value, cpp, nativeCaptures: [] };
+        return { ...value, cpp, nativeCaptures: [binding] };
     }
     private withoutConstants(value: Value): Value {
         const {

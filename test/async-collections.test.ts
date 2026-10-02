@@ -42,6 +42,23 @@ test("collection callbacks start independent async activations and keep promise 
             if(started!==2||finished!==0)throw new Error("tuple scheduling");
             const tupleValues=await Promise.all(tuplePending);
             if(tupleValues[0]!==2||tupleValues[1]!==3||finished!==2)throw new Error("tuple results");
+            const rows=[["first",2],["second",4]] as const;
+            async function readRow([label,value]:readonly [string,number]):Promise<string> {
+                const read=()=>label+":"+value;
+                await Promise.resolve();
+                return read();
+            }
+            const labels=await Promise.all(rows.map(readRow));
+            if(labels.join(",")!=="first:2,second:4")throw new Error("destructured tuple argument captures");
+            const reaction=await Promise.resolve(["reaction",6] as const).then(async ([label,value])=>{
+                const read=()=>label+":"+value;
+                await Promise.resolve();
+                return read();
+            });
+            if(reaction!=="reaction:6")throw new Error("destructured reaction captures");
+            const settled=await Promise.resolve(["settled",8] as const);
+            const deferred=async()=>{await Promise.resolve();return readRow(settled);};
+            if(await deferred()!=="settled:8")throw new Error("settled tuple captures");
             let predicateCalls=0;
             async function predicate():Promise<boolean>{await Promise.resolve();predicateCalls++;return false;}
             const kept=input.filter(predicate),some=input.some(predicate),every=input.every(predicate),found=input.find(predicate);

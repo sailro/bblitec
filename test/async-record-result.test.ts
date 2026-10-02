@@ -233,6 +233,20 @@ test("async texture payloads preserve nullable snapshots, tuple leaves and facto
         }
         if(await selected(0)!==original || await selected(1)!==undefined)
             throw new Error("texture indexed presence");
+        async function describe([label,texture]:readonly [string,Texture2D|null]):Promise<string> {
+            const read=()=>texture;
+            await Promise.resolve();
+            return label+(read()===original?":present":":absent");
+        }
+        const rows=[["first",original],["second",null]] as const;
+        const descriptions=await Promise.all(rows.map(describe));
+        if(descriptions.join(",")!=="first:present,second:absent")
+            throw new Error("optional texture tuple argument captures");
+        const reaction=await Promise.resolve(["reaction",original] as const).then(async ([label,texture])=>{
+            await Promise.resolve();
+            return describe([label,texture]);
+        });
+        if(reaction!=="reaction:present")throw new Error("texture tuple reaction captures");
         globalThis.close();
     `,
         { fileName: resolve(directory, "entry.ts") },
