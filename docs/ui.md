@@ -244,7 +244,10 @@ Backdrop blur snapshots preceding UI into FP16 scratch. An element with a backdr
 when a descendant also has one, the element and its descendants paint into their own layer, so that backdrop
 reads only what the root painted before it, and draws its filtered backdrop over the same content, compounding a
 translucent root as Chromium does.
-Filters retain nested layers and ordered color adjustments, pixel blur and explicit-color drop-shadow chains.
+Filters retain nested layers and ordered color adjustments, pixel blur and drop-shadow chains.
+Filter scalar/px math resolves inherited custom properties in calc/min/max/clamp expressions;
+omitted shadow colors and currentColor follow the element's computed color.
+Other math units and bare var() shadow arguments refuse.
 Canvas-only capture excludes UI filters.
 
 ## Limits

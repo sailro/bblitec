@@ -24,6 +24,8 @@
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <RmlUi/Core/Elements/ElementFormControlTextArea.h>
 #include <RmlUi/Core/Factory.h>
+#include <RmlUi/Core/Filter.h>
+#include <RmlUi/Core/CompiledFilterShader.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/Geometry.h>
@@ -2560,10 +2562,11 @@ std::string rml_css_filter_arguments(std::string value) {
     return value;
 }
 
-std::string rml_css_color_alpha(std::string value) {
+std::string rml_css_color_alpha(std::string value, bool clamp_channels = false) {
     // RmlUi's legacy rgba() parser expects all four channels in 0..255,
     // while browser CSS uses a fractional alpha. Translate only that alpha
-    // and leave the rest of the declaration untouched.
+    // and leave the rest of the declaration untouched. Computed filter channels
+    // also clamp to CSS ranges after arithmetic resolves.
     std::size_t position = 0;
     while ((position = value.find("rgba(", position)) != std::string::npos) {
         const std::size_t end = value.find(')', position + 5);
@@ -2576,7 +2579,13 @@ std::string rml_css_color_alpha(std::string value) {
         double alpha = 0.0;
         if (std::sscanf(function.c_str(), "rgba(%lf,%lf,%lf,%lf)", &red, &green, &blue, &alpha) ==
                 4 &&
-            alpha >= 0.0 && alpha <= 1.0) {
+            (clamp_channels || (alpha >= 0.0 && alpha <= 1.0))) {
+            if (clamp_channels) {
+                red = std::clamp(red, 0.0, 255.0);
+                green = std::clamp(green, 0.0, 255.0);
+                blue = std::clamp(blue, 0.0, 255.0);
+                alpha = std::clamp(alpha, 0.0, 1.0);
+            }
             char translated[80]{};
             std::snprintf(translated, sizeof(translated), "rgba(%d,%d,%d,%d)",
                           static_cast<int>(std::lround(red)), static_cast<int>(std::lround(green)),
@@ -2630,6 +2639,187 @@ std::string rml_css_density_units(std::string value) {
         }
     }
     return value;
+}
+
+/** Resolve filter arguments after RmlUi substitutes inherited custom properties. */
+class UiResolvedFilter final : public Rml::Filter {
+    Rml::FilterInstancer& original;
+    std::string name, arguments;
+
+    Rml::SharedPtr<Rml::Filter> resolve(Rml::Element& element) const {
+        // This bounded filter surface uses scalar arithmetic and CSS pixels.
+        // Other units need their own typed admission rather than a zero viewport.
+        std::string value = js::string_lower(arguments);
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            if (!std::isdigit(static_cast<unsigned char>(value[index])) && value[index] != '.')
+                continue;
+            if (index && ((css_identifier_character(value[index - 1]) && value[index - 1] != '-') ||
+                          value[index - 1] == '#' || value[index - 1] == '.'))
+                continue;
+            auto end = index;
+            const auto number = detail::css_decimal(value, end);
+            if (!number || !std::isfinite(static_cast<float>(*number)))
+                throw std::runtime_error("Non-finite retained UI filter argument.");
+            index = end - 1;
+            if (end < value.size() && std::isalpha(static_cast<unsigned char>(value[end]))) {
+                const auto begin = end;
+                while (end < value.size() && std::isalpha(static_cast<unsigned char>(value[end])))
+                    ++end;
+                const auto unit = std::string_view(value).substr(begin, end - begin);
+                if (unit != "px" && unit != "dp" && unit != "deg" && unit != "rad")
+                    throw std::runtime_error("Unsupported retained UI filter unit.");
+                // Custom-property pixels have already passed through the common
+                // density projection; restore their CSS unit for typed math.
+                if (unit == "dp")
+                    value.replace(begin, 2, "px");
+                index = end - 1;
+            }
+        }
+        value = rml_css_length_math(std::move(value), 0, 0);
+        value = rml_css_color_alpha(std::move(value), true);
+        if (name == "drop-shadow") {
+            Rml::StringList tokens;
+            Rml::StringUtilities::ExpandString(tokens, value, ' ', '(', ')', true);
+            const auto length = [](const std::string& token) {
+                return !token.empty() &&
+                       (std::isdigit(static_cast<unsigned char>(token.front())) ||
+                        token.front() == '+' || token.front() == '-' || token.front() == '.');
+            };
+            if (tokens.size() >= 2 && std::all_of(tokens.begin(), tokens.end(), length))
+                value += " currentcolor";
+            const auto color = element.GetComputedValues().color();
+            const std::string rgba =
+                "rgba(" + std::to_string(color.red) + "," + std::to_string(color.green) + "," +
+                std::to_string(color.blue) + "," + std::to_string(color.alpha) + ")";
+            replace_css_identifier(value, "currentcolor", rgba);
+            value = rml_css_filter_arguments("drop-shadow(" + value + ")");
+            value = value.substr(12, value.size() - 13);
+        }
+        value = rml_css_density_units(std::move(value));
+        Rml::PropertyDictionary properties;
+        const auto& specification = original.GetPropertySpecification();
+        if (!specification.ParsePropertyDeclaration(properties, "filter", value))
+            throw std::runtime_error("Unsupported retained UI filter arguments: " + name);
+        specification.SetPropertyDefaults(properties);
+        auto filter = original.InstanceFilter(name, properties);
+        if (!filter)
+            throw std::runtime_error("Unsupported retained UI filter arguments: " + name);
+        return filter;
+    }
+
+public:
+    UiResolvedFilter(Rml::FilterInstancer& source, std::string name, std::string arguments)
+        : original(source), name(std::move(name)), arguments(std::move(arguments)) {}
+    Rml::CompiledFilter CompileFilter(Rml::Element* element) const override {
+        return resolve(*element)->CompileFilter(element);
+    }
+    void ExtendInkOverflow(Rml::Element* element, Rml::Rectanglef& overflow) const override {
+        resolve(*element)->ExtendInkOverflow(element, overflow);
+    }
+};
+
+class UiFilterInstancer final : public Rml::FilterInstancer {
+    Rml::FilterInstancer& original;
+    Rml::PropertyId arguments;
+
+public:
+    explicit UiFilterInstancer(Rml::FilterInstancer& source) : original(source) {
+        arguments = RegisterProperty("filter", "").AddParser("string").GetId();
+    }
+    Rml::SharedPtr<Rml::Filter> InstanceFilter(const Rml::String& name,
+                                               const Rml::PropertyDictionary& properties) override {
+        const auto* value = properties.GetProperty(arguments);
+        if (!value)
+            throw std::runtime_error("Missing retained UI filter arguments.");
+        return Rml::MakeShared<UiResolvedFilter>(original, name, value->Get<Rml::String>());
+    }
+};
+
+/** Filter values stay in browser units until their inherited variables resolve. */
+template <typename Project>
+std::string project_css_outside_filters(const std::string& source, Project&& project) {
+    std::string result;
+    std::size_t segment = 0, boundary = 0;
+    char quote = 0;
+    int parentheses = 0;
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        const char token = source[index];
+        if (token == '\\') {
+            ++index;
+            continue;
+        }
+        if (quote) {
+            if (token == quote)
+                quote = 0;
+            continue;
+        }
+        if (token == '\'' || token == '"') {
+            quote = token;
+            continue;
+        }
+        if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
+            const auto end = source.find("*/", index + 2);
+            if (end == std::string::npos)
+                break;
+            if (trim_css_token(std::string_view(source).substr(boundary, index - boundary)).empty())
+                boundary = end + 2;
+            index = end + 1;
+            continue;
+        }
+        if (token == '(' || token == '[')
+            ++parentheses;
+        if (token == ')' || token == ']')
+            --parentheses;
+        if (parentheses)
+            continue;
+        if (token == ';' || token == '{' || token == '}')
+            boundary = index + 1;
+        if (token != ':' ||
+            !css_property_name_equals(
+                trim_css_token(std::string_view(source).substr(boundary, index - boundary)),
+                "filter"))
+            continue;
+        auto end = index + 1;
+        int depth = 0;
+        char value_quote = 0;
+        for (; end < source.size(); ++end) {
+            const char current = source[end];
+            if (current == '\\') {
+                ++end;
+                continue;
+            }
+            if (value_quote) {
+                if (current == value_quote)
+                    value_quote = 0;
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                value_quote = current;
+                continue;
+            }
+            if (current == '/' && end + 1 < source.size() && source[end + 1] == '*') {
+                const auto close = source.find("*/", end + 2);
+                if (close == std::string::npos) {
+                    end = source.size();
+                    break;
+                }
+                end = close + 1;
+                continue;
+            }
+            if (current == '(')
+                ++depth;
+            else if (current == ')')
+                --depth;
+            else if (depth == 0 && (current == ';' || current == '}'))
+                break;
+        }
+        result += project(source.substr(segment, boundary - segment));
+        result += source.substr(boundary, end - boundary);
+        segment = end;
+        index = end ? end - 1 : end;
+    }
+    result += project(source.substr(segment));
+    return result;
 }
 
 std::string take_css_declaration(std::string& style, std::string_view requested_name) {
@@ -4018,6 +4208,15 @@ struct UiRmlRuntime {
             }
             initialized = true;
             register_ui_style_properties();
+            for (const auto* name : {"brightness", "contrast", "grayscale", "invert", "opacity",
+                                     "saturate", "sepia", "hue-rotate", "blur", "drop-shadow"}) {
+                auto* original = Rml::Factory::GetFilterInstancer(name);
+                if (!original)
+                    throw std::runtime_error("Missing pinned RmlUi filter instancer.");
+                auto adapter = std::make_unique<UiFilterInstancer>(*original);
+                Rml::Factory::RegisterFilterInstancer(name, adapter.get());
+                filter_instancers.push_back(std::move(adapter));
+            }
             register_ui_background_properties();
             Rml::Factory::RegisterElementInstancer("button", &button_instancer);
             Rml::Factory::RegisterElementInstancer("canvas", &canvas_instancer);
@@ -4268,6 +4467,16 @@ struct UiRmlRuntime {
 
     std::string project_css(std::string value, std::string_view property = {}) const {
         static_cast<void>(take_css_declaration(value, "resize"));
+        if (property == "filter")
+            return value;
+        if (property.empty())
+            return project_css_outside_filters(value, [this](std::string part) {
+                return project_css_fragment(std::move(part), {});
+            });
+        return project_css_fragment(std::move(value), property);
+    }
+
+    std::string project_css_fragment(std::string value, std::string_view property) const {
         replace_all(value, "--bbl-text-gradient", "bbl-text-gradient");
         replace_all(value, "system-ui", css_font_family);
         replace_all(value, "sans-serif", css_sans_family);
@@ -4299,8 +4508,10 @@ struct UiRmlRuntime {
                              name == "margin-left" || name == "margin-right" ||
                              name == "box-shadow";
         const bool accepted = element.SetProperty(
-            name,
-            project_css(checked && name != "box-shadow" ? js::string_lower(value) : value, name));
+            name, project_css(checked && name != "box-shadow" && name != "filter"
+                                  ? js::string_lower(value)
+                                  : value,
+                              name));
         if (checked && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
@@ -6232,6 +6443,7 @@ struct UiRmlRuntime {
     SDL_Window* window = nullptr;
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
+    std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
     UiRangeDecoratorInstancer range_decorator;
     UiControlMarkDecoratorInstancer control_mark_decorator;
     UiControlArrowDecoratorInstancer control_arrow_decorator;

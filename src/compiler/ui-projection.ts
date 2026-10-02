@@ -2040,7 +2040,7 @@ export class UiProjection {
                     this.uiStyleRefusal(
                         site,
                         property,
-                        "only color adjustments, pixel blur and drop shadows with literal colors are represented",
+                        "only color adjustments, pixel blur and drop shadows with bounded scalar/px math and colors are represented",
                     );
                 }
                 return;

@@ -813,6 +813,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-filter-values",
+        name: "Regression - Filter Values",
+        source: "examples/regression-filter-values.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Filter Values",
+        parity: {
+            maxFullMad: 0.5,
+            maxForegroundMad: 2,
+            backgroundColor: [32, 40, 48],
+            backgroundThreshold: 30,
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "8" },
+        },
+    },
+    {
         id: "regression-retained-svg",
         name: "Regression - Retained SVG",
         source: "examples/regression-retained-svg.ts",
