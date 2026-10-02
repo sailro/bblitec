@@ -109,6 +109,37 @@ check(
 `,
 );
 
+check(
+    "optional-undefined-consumers-and-effects",
+    `
+    let reads=0;
+    let getters=0;
+    let fallbacks=0;
+    const records:Array<{readonly value:undefined}>=[{get value(){getters++;return undefined;}}];
+    function lookup(index:number){reads++;return records[index];}
+    function fallback():string{fallbacks++;return 'fallback';}
+    for(let index=0;index<2;index++){
+        if(lookup(index)?.value!==undefined||lookup(index)?.value===null||lookup(index)?.value!=null)
+            throw new Error('optional undefined equality');
+        if(lookup(index)?.['value']!==undefined)throw new Error('optional indexed field');
+        if((lookup(index)?.value??fallback())!=='fallback')throw new Error('undefined fallback');
+        if(lookup(index)?.value||Boolean(lookup(index)?.value))throw new Error('undefined truthiness');
+        if(typeof lookup(index)?.value!=='undefined')throw new Error('undefined typeof');
+        if(String(lookup(index)?.value)!=='undefined'||(''+lookup(index)?.value)!=='undefined')
+            throw new Error('undefined strings');
+        if(JSON.stringify(lookup(index)?.value)!==undefined)throw new Error('undefined JSON');
+        const copy:Array<{value:undefined}>=[{value:lookup(index)?.value}];
+        if(!('value' in copy[0]!)||Object.keys(copy[0]!).join()!=='value'||JSON.stringify(copy[0]!)!=='{}')
+            throw new Error('required undefined key');
+    }
+    if(reads!==24||getters!==12||fallbacks!==2)throw new Error('optional evaluation counts');
+    const snapshot=lookup(0)?.value;
+    records.length=0;
+    if(snapshot!==undefined||String(snapshot)!=='undefined'||reads!==25||getters!==13)
+        throw new Error('undefined snapshot');
+`,
+);
+
 test("cloned undefined fields retain required keys and aliases", (t) => {
     const directory = resolve("artifacts/undefined-record-fields/clone");
     mkdirSync(directory, { recursive: true });

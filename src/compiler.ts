@@ -6304,19 +6304,13 @@ class Compiler implements LoweringServices {
     ): boolean {
         const storage = target.optionalStorageCpp;
         if (!storage) return false;
-        const right = this.unwrap(expression.right);
-        if (right.kind === ts.SyntaxKind.NullKeyword) {
-            this.emit({ kind: "expression", code: `${storage}.reset();` });
-            delete writable(target).spriteDepthMode;
-            return true;
-        }
-        const value = this.compileValue(right);
+        const value = this.compileValue(expression.right);
         if (value.kind === "json-null") {
             this.emit({ kind: "expression", code: `${storage}.reset();` });
             delete writable(target).spriteDepthMode;
             return true;
         }
-        this.assignOptionalResourceValue(target, value, right);
+        this.assignOptionalResourceValue(target, value, expression.right);
         return true;
     }
 

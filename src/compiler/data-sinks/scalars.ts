@@ -292,14 +292,10 @@ export const scalarsSinks: DataSinkOperations<
             ),
         value: (_type, lowerer, value, node) => {
             if (value.dataType?.kind === "undefined") return value.cpp;
-            if (value.erasedVoidCompletion)
-                lowerer.context.fail(
-                    node,
-                    "A stored void field requires a proven undefined completion.",
-                );
             if (
-                value.kind === "void" &&
-                !provenUndefinedValue(lowerer.context, node)
+                value.erasedVoidCompletion ||
+                (value.kind === "void" &&
+                    !provenUndefinedValue(lowerer.context, node))
             )
                 lowerer.context.fail(
                     node,

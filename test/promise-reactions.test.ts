@@ -6,8 +6,50 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("promise boundaries snapshot scalar Map lookups before source mutation", (t) => {
+    const directory = resolve("artifacts/promise-reactions/map-snapshots");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+        const values=new Map<string,number>([["settled",3],["returned",5],["reaction",7],["argument",11]]);
+        async function selected():Promise<number|undefined>{return values.get("returned");}
+        async function retained(value:number|undefined):Promise<number|undefined>{await Promise.resolve();return value;}
+        void(async()=>{
+            const settled=Promise.resolve(values.get("settled"));
+            const missing=Promise.resolve(values.get("missing"));
+            const returned=selected();
+            const reaction=Promise.resolve().then(()=>values.get("reaction"));
+            const argument=retained(values.get("argument"));
+            await Promise.resolve();
+            values.set("settled",30);values.set("returned",50);values.set("reaction",70);values.set("argument",110);
+            values.set("missing",13);
+            if(await settled!==3||await returned!==5||await reaction!==7||await argument!==11||await missing!==undefined)
+                throw new Error("promise payload aliases a rebound map slot");
+            values.delete("settled");values.clear();
+            if(await settled!==3||await returned!==5||await reaction!==7||await argument!==11||await missing!==undefined)
+                throw new Error("promise payload depends on a deleted map slot");
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "promise-reactions/map-snapshots", result.cpp, {
+        defines: ["BBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});
 
 test("two-callback Promise.then selects the original outcome and adopts returned promises", (t) => {
     const directory = resolve("artifacts/promise-reactions");

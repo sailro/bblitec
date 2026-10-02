@@ -109,9 +109,89 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
                 throw new Error("decoded buffer metadata");
             if(samples.length<900||samples.length>1100||Math.abs(samples[100]-0.25)>0.001)
                 throw new Error("fetched audio PCM");
+            const decoded = new Map<string, AudioBuffer>();
+            let requests = 0;
+            async function cachedBuffer(): Promise<AudioBuffer> {
+                let buffer = decoded.get("tone");
+                if (!buffer) {
+                    requests++;
+                    buffer = await context.decodeAudioData(await fetch("tone.wav").then(response=>response.arrayBuffer()));
+                    decoded.set("tone", buffer);
+                }
+                return buffer;
+            }
+            first = await cachedBuffer();
+            const cached = await cachedBuffer();
+            if (requests !== 1 || first !== cached || decoded.get("tone") !== cached || Math.abs(first.getChannelData(0)[100]-0.25)>0.001)
+                throw new Error("awaited nullable buffer cache");
+            async function maybeCached(key:string): Promise<AudioBuffer|undefined> {
+                await Promise.resolve();
+                return decoded.get(key);
+            }
+            if(await maybeCached("missing")!==undefined || await maybeCached("tone")!==cached)
+                throw new Error("optional buffer promise result");
+            const missingReaction = await Promise.resolve().then(()=>decoded.get("missing"));
+            const presentReaction = await Promise.resolve().then(()=>decoded.get("tone"));
+            const adopted = await Promise.resolve(decoded.get("tone"));
+            if(missingReaction!==undefined || presentReaction!==cached || adopted!==cached)
+                throw new Error("optional buffer adoption and reaction");
+            const mapSnapshot = Promise.resolve(decoded.get("tone"));
+            decoded.clear();
+            if(await mapSnapshot!==cached) throw new Error("borrowed map result snapshot");
+            decoded.set("tone",cached);
+            async function delayed(buffer:AudioBuffer|null):Promise<AudioBuffer|null> {
+                await Promise.resolve();
+                return buffer;
+            }
+            const heldArgument=delayed(first);
+            first=null;
+            const emptyArgument=delayed(first);
+            first=cached;
+            if(await heldArgument!==cached || await emptyArgument!==null)
+                throw new Error("nullable argument snapshots");
+            async function localBuffer(present:boolean):Promise<AudioBuffer|null> {
+                let buffer:AudioBuffer|null=null;
+                if(present) buffer=cached;
+                await Promise.resolve();
+                return buffer;
+            }
+            if(await localBuffer(true)!==cached || await localBuffer(false)!==null)
+                throw new Error("nullable local result");
+            async function pair(present:boolean):Promise<readonly [AudioBuffer|null,number]> {
+                let buffer:AudioBuffer|null=null;
+                if(present) buffer=cached;
+                await Promise.resolve();
+                return [buffer,7] as const;
+            }
+            const [presentPair,presentTag]=await pair(true);
+            const [emptyPair,emptyTag]=await pair(false);
+            if(presentPair!==cached || emptyPair!==null || presentTag!==7 || emptyTag!==7)
+                throw new Error("nullable tuple payloads");
+            async function aggregate(present:boolean):Promise<[AudioBuffer|null,number]> {
+                let buffer:AudioBuffer|null=null;
+                if(present) buffer=cached;
+                const pending=Promise.all([buffer,11]);
+                buffer=null;
+                return pending;
+            }
+            const [presentAggregate,presentNumber]=await aggregate(true);
+            const [emptyAggregate,emptyNumber]=await aggregate(false);
+            if(presentAggregate!==cached || emptyAggregate!==null || presentNumber!==11 || emptyNumber!==11)
+                throw new Error("nullable aggregate snapshots");
+            async function projected(present:boolean):Promise<AudioBuffer|null> {
+                return Promise.resolve().then(()=>{
+                    let buffer:AudioBuffer|null=null;
+                    if(present) buffer=cached;
+                    return buffer;
+                });
+            }
+            if(await projected(true)!==cached || await projected(false)!==null)
+                throw new Error("nullable reaction payloads");
             let invalid=false;
-            try{await context.decodeAudioData(new ArrayBuffer(0));}catch{invalid=true;}
-            if(!invalid) throw new Error("invalid audio must reject");
+            try{first=await context.decodeAudioData(new ArrayBuffer(0));}catch{invalid=true;}
+            if(!invalid || first!==cached) throw new Error("rejected assignment must retain its previous buffer");
+            first = null;
+            if(first!==null) throw new Error("nullable buffer reset");
             let order = "";
             const resumed = context.resume().then(() => { order += "r"; });
             order += "s";

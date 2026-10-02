@@ -1640,7 +1640,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.registerNativeTemporary(result, type);
             return this.leafValue(result, type);
         };
-        const nullableType = this.context.dataTypes.nullableType(selectedType);
+        // A required undefined field and a short-circuited read have the same
+        // value; owner presence must not turn that value into an engaged payload.
+        const nullableType =
+            selectedType.kind === "undefined"
+                ? selectedType
+                : this.context.dataTypes.nullableType(selectedType);
         if (nullableType.kind !== "optional") {
             return withSlot(
                 optionalResult(

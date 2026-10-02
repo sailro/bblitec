@@ -5,6 +5,7 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { resolveBundledAsset } from "./assets.js";
 import { deploymentUrl } from "./deployment.js";
 import { CompileError } from "./compile-error.js";
+import { forEachReturn } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
@@ -223,14 +224,17 @@ class AssetUrlDomain {
         this.graph = sourceGraph(context.checker, context.sourceFiles());
     }
 
-    private bounded(values: readonly string[]): readonly string[] {
-        const result = [...new Set(values)];
-        if (result.length > candidateLimit)
-            this.context.fail(
-                this.site,
-                `Packaged URL domain exceeds ${candidateLimit} candidates.`,
-            );
-        return result;
+    private bounded(values: Iterable<string>): readonly string[] {
+        const result = new Set<string>();
+        for (const value of values) {
+            result.add(value);
+            if (result.size > candidateLimit)
+                this.context.fail(
+                    this.site,
+                    `Packaged URL domain exceeds ${candidateLimit} candidates.`,
+                );
+        }
+        return [...result];
     }
 
     private union(values: readonly Domain[]): Domain {
@@ -443,22 +447,13 @@ class AssetUrlDomain {
         if (!ts.isBlock(declaration.body))
             return this.read(declaration.body, projection, environment);
         const values: Domain[] = [];
-        forEachAnalysisNode(
-            declaration.body,
-            (node) => {
-                if (ts.isReturnStatement(node))
-                    values.push(
-                        node.expression
-                            ? this.read(
-                                  node.expression,
-                                  projection,
-                                  environment,
-                              )
-                            : undefined,
-                    );
-            },
-            { functions: "skip", types: "skip" },
-        );
+        forEachReturn([declaration.body], (node) => {
+            values.push(
+                node.expression
+                    ? this.read(node.expression, projection, environment)
+                    : undefined,
+            );
+        });
         return this.union(values);
     }
 
@@ -556,17 +551,15 @@ class AssetUrlDomain {
                 ? [new RegExp(regex.pattern, regex.flags)]
                 : this.read(patternNode, [], environment);
             if (!replacement || !patterns) return [];
-            return this.bounded(
-                source.flatMap((value) =>
-                    patterns.flatMap((pattern) =>
-                        replacement.map((text) =>
-                            method === "replace"
+            const candidates = function* () {
+                for (const value of source)
+                    for (const pattern of patterns)
+                        for (const text of replacement)
+                            yield method === "replace"
                                 ? value.replace(pattern, text)
-                                : value.replaceAll(pattern, text),
-                        ),
-                    ),
-                ),
-            );
+                                : value.replaceAll(pattern, text);
+            };
+            return this.bounded(candidates());
         }
         return [];
     }
