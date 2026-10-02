@@ -696,12 +696,8 @@ public:
             throw std::runtime_error("The right side of in must be an object.");
         if (has_own(key))
             return true;
-        for (const auto name :
-             {"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
-              "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
-              "toLocaleString", "toString", "valueOf", "__proto__"})
-            if (key == name)
-                return true;
+        if (object_prototype_has_property(key))
+            return true;
         if (is_array()) {
             for (const auto name :
                  {"at",       "concat",        "copyWithin",  "fill",     "find",      "findIndex",

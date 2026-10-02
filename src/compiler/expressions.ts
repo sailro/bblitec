@@ -4096,6 +4096,16 @@ export class ExpressionLowerer {
                         callbackDeclaration: method,
                         callbackRecordOwner: owner,
                     };
+                if (
+                    this.context.dataLowerer.declaredAsDictionary(
+                        unwrapped.expression,
+                    )
+                )
+                    return {
+                        kind: "json-null",
+                        cpp: "std::nullopt",
+                        preserveUncheckedLookup: true,
+                    };
                 this.context.fail(
                     unwrapped.argumentExpression,
                     `Compile-time record has no property '${property}'.`,

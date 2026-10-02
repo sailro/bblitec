@@ -262,6 +262,7 @@ const opaqueSink = {
 };
 
 export const scalarsSinks: DataSinkOperations<
+    | "weak-key"
     | "undefined"
     | "error"
     | "event-target"
@@ -283,6 +284,40 @@ export const scalarsSinks: DataSinkOperations<
     | "json"
     | "borrowed-platform-event"
 > = {
+    "weak-key": {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (_type, lowerer, value, node) => {
+            const type = value.dataType;
+            if (type?.kind === "weak-key") return value.cpp;
+            if (type?.kind === "struct") {
+                lowerer.context.dataTypes.markStoredObjectReferences(type);
+                return `(${value.cpp}).weak_identity()`;
+            }
+            const global = ts.isExpression(node)
+                ? lowerer.context.libraryGlobal(node)
+                : undefined;
+            if (
+                type?.kind === "event-target" ||
+                value.kind === "ui-element" ||
+                value.domEventTargetCpp !== undefined ||
+                global === "window" ||
+                global === "globalThis" ||
+                global === "document"
+            ) {
+                const target = eventTargetCpp(lowerer.context, value, node);
+                return target && `bbl::dom_target_weak_identity(${target})`;
+            }
+            return lowerer.context.fail(
+                node,
+                "A weak object key requires an owned record or represented DOM target.",
+            );
+        },
+    },
     undefined: {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(

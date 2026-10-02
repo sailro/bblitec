@@ -1644,10 +1644,8 @@ export class DataTypeRegistry {
                     ? { kind: "vector", element: storedElement }
                     : { kind: "span", element: storedElement };
             }
-            // A WeakMap or WeakSet holds its object keys by identity exactly as
-            // Map and Set do; the weakness only lets an unreachable key be
-            // collected, which nothing in a program can observe. The cycle
-            // collector reclaims what the program can no longer reach either way.
+            // Erased object and DOM keys carry native weak identity tokens.
+            // Other concrete weak collections retain the Map/Set adaptation.
             if (
                 symbolName === "Map" ||
                 symbolName === "ReadonlyMap" ||
@@ -1658,6 +1656,18 @@ export class DataTypeRegistry {
                 if (!keyType || !valueType) return undefined;
                 const key = this.fromStoredTsType(keyType, node);
                 const value = this.fromStoredTsType(valueType, node);
+                if (
+                    symbolName === "WeakMap" &&
+                    value &&
+                    ((keyType.flags & ts.TypeFlags.NonPrimitive) !== 0 ||
+                        key?.kind === "event-target")
+                )
+                    return {
+                        kind: "map",
+                        weak: true,
+                        key: { kind: "weak-key" },
+                        value: this.markStoredObjectReferences(value),
+                    };
                 if (!key || !value) return undefined;
                 return {
                     kind: "map",

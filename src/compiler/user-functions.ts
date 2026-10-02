@@ -2963,6 +2963,13 @@ export class UserFunctionLowerer {
             const declared = rootEntry.parameterTypes[index];
             const parameterType =
                 declared?.kind === "optional" ? declared.inner : declared;
+            if (
+                !recursive &&
+                argumentType?.kind === "struct" &&
+                parameterType?.kind === "map" &&
+                parameterType.dictionary
+            )
+                throw new SharedCallRequiresInline();
             // A structural projection allocates a new record. Both shared
             // methods and functions must retain the caller's object identity.
             if (

@@ -48,6 +48,16 @@
 
 namespace bbl::js {
 
+[[nodiscard]] inline bool object_prototype_has_property(std::string_view key) {
+    for (const auto name :
+         {"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
+          "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
+          "toLocaleString", "toString", "valueOf", "__proto__"})
+        if (key == name)
+            return true;
+    return false;
+}
+
 /** A required record field can hold undefined while retaining its own key. */
 struct Undefined {
     friend bool operator==(Undefined, Undefined) = default;

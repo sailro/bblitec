@@ -90,10 +90,13 @@ export const containerKinds: DataKindOperations<
     },
     map: {
         cpp: (type, context) =>
-            `bbl::js::Map<${context.cppType(type.key)}, ${context.cppType(type.value)}>`,
+            type.weak
+                ? `bbl::js::WeakMap<${context.cppType(type.value)}>`
+                : `bbl::js::Map<${context.cppType(type.key)}, ${context.cppType(type.value)}>`,
         key: (type, key) =>
-            `${type.dictionary ? "dictionary" : "map"}(${key(type.key)},${key(type.value)})`,
+            `${type.weak ? "weak-map" : type.dictionary ? "dictionary" : "map"}(${key(type.key)},${key(type.value)})`,
         equal: (left, right, equal) =>
+            left.weak === right.weak &&
             left.dictionary === right.dictionary &&
             equal(left.key, right.key) &&
             equal(left.value, right.value),

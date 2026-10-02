@@ -801,6 +801,27 @@ export class NativeFunctionLowerer {
             parameter.type.kind === "optional"
                 ? parameter.type.inner
                 : parameter.type;
+        if (
+            target.kind === "map" &&
+            target.dictionary &&
+            this.context.knownValueWithoutEvaluation(argument)?.kind ===
+                "record"
+        ) {
+            const actual = this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(argument),
+                argument,
+            );
+            if (actual?.kind === "struct") {
+                this.context.dataTypes.markStoredObjectReferences(actual);
+                return false;
+            }
+        }
+        if (
+            target.kind === "map" &&
+            target.dictionary &&
+            carries(argument, (type) => type?.kind === "struct")
+        )
+            return false;
         if (target.kind === "struct" && carries(argument, isOpaqueReference))
             return false;
         if (
