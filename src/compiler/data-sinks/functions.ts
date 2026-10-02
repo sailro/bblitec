@@ -60,7 +60,11 @@ function expressionFunction(
         return lowerer.context.compileStoredDataFunction(unwrapped, dataType);
     }
     const value = lowerer.context.compileValue(unwrapped);
-    if (value.kind === "callback") {
+    if (
+        value.kind === "callback" ||
+        value.kind === "void" ||
+        value.kind === "json-null"
+    ) {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
     if (value.kind === "data" && value.dataType?.kind === "function") {
@@ -197,8 +201,12 @@ function valueFunction(
     dataType: DataType<"function">,
     lowerer: DataSinkHost,
     value: Value,
-    _node: ts.Node,
+    node: ts.Node,
 ): string | undefined {
+    if (value.kind === "void") {
+        lowerer.context.emitDiscardedValue(value);
+        return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
+    }
     if (value.kind === "json-null") {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
@@ -216,6 +224,11 @@ function valueFunction(
             )
         )
             return value.cpp;
+        if (stored.generic || dataType.generic)
+            lowerer.context.fail(
+                node,
+                "Stored generic function conversion requires matching concrete signature families.",
+            );
         const adapted = adaptedArguments(lowerer, stored, dataType);
         if (adapted)
             return renderSignatureAdapter(

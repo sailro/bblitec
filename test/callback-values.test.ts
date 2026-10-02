@@ -290,7 +290,26 @@ test("self-captured satisfies objects retain identity through readonly result in
         true,
     ));
 
-test("checked self-capture refuses layouts which widen a source field", () => {
+test("self-captured satisfies objects retain narrower source fields", (t) =>
+    nativeCheck(
+        "checked-self-capture-narrow",
+        `
+        interface State { value: number | string; read(): number; }
+        const state = {
+            value: 1,
+            read(): number { return state.value; }
+        } satisfies State;
+        const read = state.read;
+        if (read() !== 1) throw new Error("Initial source field");
+        state.value = 7;
+        if (read() !== 7 || state.value !== 7)
+            throw new Error("Retained source field");
+    `,
+        t,
+        true,
+    ));
+
+test("writes through widened checked-object aliases refuse", () => {
     const directory = resolve(
         "artifacts/callback-values/checked-self-capture-invalid",
     );
@@ -306,11 +325,12 @@ test("checked self-capture refuses layouts which widen a source field", () => {
             value: 1,
             read(): number { return state.value; }
         } satisfies State;
-        state.read();
+        const view: State = state;
+        view.value = "text";
     `,
                 { fileName: join(directory, "entry.ts") },
             ),
-        /binding captured by its initializer requires an owned data type/,
+        /writes through aliases are outside the supported subset/,
     );
 });
 

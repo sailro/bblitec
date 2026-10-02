@@ -34,7 +34,7 @@ function instrumentationSource(captures: string, effects: string, size = "1") {
     `;
 }
 
-function admitsInstrumentation(source: string): boolean {
+function admitsInstrumentation(source: string, withHost = true): boolean {
     const { checker, program, sourceFile } = createCompilerProgram(
         source,
         "input.ts",
@@ -51,7 +51,7 @@ function admitsInstrumentation(source: string): boolean {
                 program.getSourceFiles(),
                 node,
                 0,
-                nativeHostUi,
+                withHost ? nativeHostUi : undefined,
             );
         }
         ts.forEachChild(node, visit);
@@ -191,6 +191,67 @@ test("metadata helper admission retains indirect and unknown effects", () => {
             false,
             effects,
         );
+    }
+});
+
+test("metadata erasure retains template selectors and computed or extracted DOM readers", () => {
+    const source = (observer: string) => `
+        function install(canvas: HTMLCanvasElement) {
+            canvas.dataset.loadingSize = "ready";
+            return { stop(): void {} };
+        }
+        const canvas = document.createElement("canvas");
+        const controller = install(canvas);
+        ${observer}
+    `;
+    for (const withHost of [false, true]) {
+        for (const observer of [
+            "const css = `canvas[data-loading-size] {opacity:${performance.now()}}`;",
+            "const css = `${1}canvas[data-loading-size]${2}`;",
+            "const css = `${1}canvas[data-loading-size]`;",
+            'canvas.getAttribute(`data-${"loading-size"}`);',
+            'canvas.hasAttribute("data-" + "loading-size");',
+            'canvas.getAttribute("DATA-LOADING-SIZE");',
+            "canvas.getAttribute(String(performance.now()));",
+            'canvas["hasAttribute"](String(performance.now()));',
+            "canvas.getAttributeNS(null, String(performance.now()));",
+            "canvas.getAttributeNames();",
+            ...["querySelector", "querySelectorAll", "matches", "closest"].map(
+                (method) => `canvas.${method}(String(performance.now()));`,
+            ),
+            "const reader = canvas.getAttribute;",
+            'const field="loading-size"; const style=document.createElement("style"); style.textContent="canvas[data-"+field+"]{opacity:0}";',
+            'const field="loading-size"; const style=document.createElement("style"); style.textContent=`canvas[data-${field}]{opacity:0}`;',
+            'const style=document.createElement("style"); style.textContent="canvas[data-"; style.textContent+="loading-size]{opacity:0}";',
+            ...["insertRule", "replace", "replaceSync", "addRule"].map(
+                (method) =>
+                    `const sheet=new CSSStyleSheet(); sheet.${method}(String(performance.now()));`,
+            ),
+            "const sheet=new CSSStyleSheet(); const change=sheet.replaceSync;",
+        ])
+            assert.equal(
+                admitsInstrumentation(source(observer), withHost),
+                false,
+                observer,
+            );
+        for (const observer of [
+            "",
+            'canvas.getAttribute("title");',
+            'canvas.hasAttribute("data-other");',
+            'canvas.matches(".other");',
+            'canvas.querySelector("[data-other]");',
+            'const style=document.createElement("style"); style.textContent="canvas[data-other]{opacity:0}";',
+            'const div=document.createElement("div"); div.textContent=String(performance.now());',
+            ...["insertRule", "replace", "replaceSync", "addRule"].map(
+                (method) =>
+                    `const sheet=new CSSStyleSheet(); sheet.${method}("canvas[data-other]{opacity:0}");`,
+            ),
+        ])
+            assert.equal(
+                admitsInstrumentation(source(observer), withHost),
+                true,
+                observer,
+            );
     }
 });
 

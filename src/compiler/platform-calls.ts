@@ -1647,6 +1647,11 @@ export class PlatformCalls {
                 );
             }
             const descendants = this.ui.uiStaticDescendants(element.uiStaticId);
+            if (descendants.elements.size > 0)
+                this.context.fail(
+                    call,
+                    "Retained UI markup queries require innerHTML owned directly by the queried root.",
+                );
             const match = descendants.markup.find((node) =>
                 query.kind === "class"
                     ? node.classes.has(query.name)
@@ -1661,6 +1666,18 @@ export class PlatformCalls {
                 );
             }
             const engine = this.context.requireEngine(element, call);
+            if (descendants.markupAlternatives) {
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    engineCpp: engine,
+                    cpp: `bbl::ui_query_markup_first(${engine}, ${element.cpp}, {${descendants.markup.map((node) => `{${node.id}u, ${this.context.cppString(node.tag)}}`).join(", ")}}, {bbl::UiSelectorTestKind::${query.kind === "class" ? "Class" : query.kind === "tag" ? "Tag" : "Equals"}, ${this.context.cppString(query.name)}, ${this.context.cppString(query.value)}})`,
+                    dataType: {
+                        kind: "optional",
+                        inner: { kind: "handle", handle: "ui-element" },
+                    },
+                };
+            }
             return {
                 kind: "ui-element",
                 cpp:
@@ -1687,6 +1704,14 @@ export class PlatformCalls {
                 const descendants = this.ui.uiStaticDescendants(
                     element.uiStaticId,
                 );
+                if (
+                    descendants.markup.length > 0 &&
+                    descendants.elements.size > 0
+                )
+                    this.context.fail(
+                        call,
+                        "Retained UI markup queries require innerHTML owned directly by the queried root.",
+                    );
                 const markupMatches = descendants.markup.filter((node) =>
                     node.classes.has(matched[1]!),
                 );
@@ -1701,16 +1726,17 @@ export class PlatformCalls {
                     this.context.reachJsData();
                     return {
                         kind: "data",
-                        cpp:
-                            "bbl::js::Array<bbl::UiElementHandle>{" +
-                            markupMatches
-                                .map(
-                                    (node) =>
-                                        `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
-                                        `${node.id}u, ${this.context.cppString(node.tag)})`,
-                                )
-                                .join(", ") +
-                            "}",
+                        cpp: descendants.markupAlternatives
+                            ? `bbl::ui_query_markup_all(${engine}, ${element.cpp}, {${descendants.markup.map((node) => `{${node.id}u, ${this.context.cppString(node.tag)}}`).join(", ")}}, {bbl::UiSelectorTestKind::Class, ${this.context.cppString(matched[1]!)}, ""})`
+                            : "bbl::js::Array<bbl::UiElementHandle>{" +
+                              markupMatches
+                                  .map(
+                                      (node) =>
+                                          `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
+                                          `${node.id}u, ${this.context.cppString(node.tag)})`,
+                                  )
+                                  .join(", ") +
+                              "}",
                         dataType: {
                             kind: "vector",
                             element: {

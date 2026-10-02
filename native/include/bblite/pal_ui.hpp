@@ -68,6 +68,16 @@ void ui_set_text(Engine& engine, UiElementHandle element, std::string text);
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup);
 UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
                                 std::string_view tag);
+struct UiMarkupNode {
+    std::uint32_t id;
+    std::string_view tag;
+};
+js::Nullable<UiElementHandle> ui_query_markup_first(Engine&, UiElementHandle,
+                                                    std::initializer_list<UiMarkupNode>,
+                                                    const UiSelectorTest&);
+js::Array<UiElementHandle> ui_query_markup_all(Engine&, UiElementHandle,
+                                               std::initializer_list<UiMarkupNode>,
+                                               const UiSelectorTest&);
 std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle element,
                                            std::string_view name);

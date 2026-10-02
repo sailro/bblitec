@@ -11,8 +11,28 @@ import {
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    stringLiteralText,
     unwrapExpression,
 } from "./syntax.js";
+
+const metadataReaders = new Set([
+    "getAttribute",
+    "hasAttribute",
+    "getAttributeNS",
+    "hasAttributeNS",
+    "getAttributeNames",
+    "querySelector",
+    "querySelectorAll",
+    "matches",
+    "closest",
+]);
+const styleTextProperties = new Set(["textContent", "innerText", "innerHTML"]);
+const stylesheetMethods = new Set([
+    "insertRule",
+    "replace",
+    "replaceSync",
+    "addRule",
+]);
 
 /** Erasing a metadata writer also erases its closures. Prove their other
  * effects stay in fresh local state or browser instrumentation; a void result
@@ -304,7 +324,6 @@ export function writesUnobservedCanvasMetadata(
     argumentIndex: number,
     host: NativeHostUi | undefined,
 ): boolean {
-    if (!host) return false;
     const declaration = checker.getResolvedSignature(call)?.declaration;
     if (
         !declaration ||
@@ -363,15 +382,74 @@ export function writesUnobservedCanvasMetadata(
     );
     // A selector, declared attribute, or any external source read can observe
     // the metadata. Dynamic property reads conservatively retain the helper.
-    const hostText = JSON.stringify([
-        host.elements,
-        nativeHostUiStyleRules(host),
-        host.styleSheets,
-    ]);
+    const hostText = host
+        ? JSON.stringify([
+              host.elements,
+              nativeHostUiStyleRules(host),
+              host.styleSheets,
+          ])
+        : "";
     if (attributes.some((name) => hostText.includes(name))) return false;
+    const hasDomType = (expression: ts.Expression, name: string): boolean => {
+        const owner = checker
+            .getNonNullableType(checker.getTypeAtLocation(expression))
+            .getSymbol();
+        return owner?.name === name && declaredInDomLibrary(owner);
+    };
     const observes = (node: ts.Node): boolean => {
         if (node === declaration) return false;
         if (ts.isTypeNode(node)) return false;
+        if (
+            ts.isElementAccessExpression(node) ||
+            (ts.isPropertyAccessExpression(node) &&
+                (metadataReaders.has(node.name.text) ||
+                    styleTextProperties.has(node.name.text) ||
+                    stylesheetMethods.has(node.name.text)))
+        ) {
+            const member = resolvedSymbol(
+                checker,
+                ts.isElementAccessExpression(node)
+                    ? node.argumentExpression
+                    : node,
+            );
+            const write = node.parent;
+            if (
+                member &&
+                declaredInDomLibrary(member) &&
+                styleTextProperties.has(member.name) &&
+                hasDomType(node.expression, "HTMLStyleElement") &&
+                isAssignmentExpression(write) &&
+                write.left === node &&
+                (write.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                    stringLiteralText(unwrapExpression(write.right)) ===
+                        undefined)
+            )
+                return true;
+            if (
+                member &&
+                declaredInDomLibrary(member) &&
+                (metadataReaders.has(member.name) ||
+                    (stylesheetMethods.has(member.name) &&
+                        hasDomType(node.expression, "CSSStyleSheet")))
+            ) {
+                const call = node.parent;
+                const argument =
+                    ts.isCallExpression(call) && call.expression === node
+                        ? call.arguments[member.name.endsWith("NS") ? 1 : 0]
+                        : undefined;
+                const literal = argument
+                    ? stringLiteralText(unwrapExpression(argument))
+                    : undefined;
+                // An extracted reader or computed name may observe any metadata.
+                if (
+                    literal === undefined ||
+                    attributes.some((name) =>
+                        literal.toLowerCase().includes(name),
+                    )
+                )
+                    return true;
+            }
+        }
         if (ts.isElementAccessExpression(node)) {
             const map = checker.getTypeAtLocation(node.expression).getSymbol();
             if (map?.name === "DOMStringMap" && declaredInDomLibrary(map))
@@ -389,8 +467,8 @@ export function writesUnobservedCanvasMetadata(
         if (ts.isPropertyAccessExpression(node) && fields.has(node.name.text))
             return true;
         if (
-            ts.isStringLiteralLike(node) &&
-            attributes.some((name) => node.text.includes(name))
+            (ts.isStringLiteral(node) || ts.isTemplateLiteralToken(node)) &&
+            attributes.some((name) => node.text.toLowerCase().includes(name))
         )
             return true;
         return ts.forEachChild(node, observes) ?? false;

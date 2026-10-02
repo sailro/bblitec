@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
@@ -84,10 +85,10 @@ test(
     { skip: !tools },
     () => {
         const result = compileSource(`
-        import { createEngine } from "@babylonjs/lite";
+        import { createEngine, startEngine } from "@babylonjs/lite";
         function hidden(): boolean { return document.hidden; }
         async function main(): Promise<void> {
-            await createEngine({});
+            const engine = await createEngine({});
             const button = document.createElement("button");
             const snapshot = button.getBoundingClientRect();
             button.addEventListener("pointermove", event => {
@@ -101,6 +102,7 @@ test(
                 button.hidden = hidden();
             });
             document.body.appendChild(button);
+            startEngine(engine);
         }
         void main();
     `);
@@ -109,35 +111,70 @@ test(
         )?.[1];
         assert.ok(rect);
         assert.equal(result.cpp.match(/bbl::ui_get_client_rect\(/g)?.length, 1);
-        const storage =
-            /std::shared_ptr<std::tuple<double, double, double, double>> (\w+) = bbl::js::make_gc_shared/.exec(
-                result.cpp,
-            )?.[1];
-        assert.ok(storage);
-        assert.match(
-            result.cpp,
-            new RegExp(`auto& ${storage} = \\w+\\.capture\\d+`),
-        );
         // A bounding rectangle's extent is the border box.
         for (const field of ["left", "top", "offset_width", "offset_height"])
             assert.match(result.cpp, new RegExp(`= ${rect}\\.${field};`));
-        const output = resolve("artifacts/platform-local-capture-check");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/c",
-            "/DBBLITE_HAS_UI=1",
-            `/Fo:${output}\\`,
-            "/I",
-            "native/include",
-            source,
-        ]);
+        runGeneratedProgram(
+            tools!,
+            "platform-local-capture-check",
+            `
+        #define main generated_main
+        ${result.cpp}
+        #undef main
+        #include <cassert>
+        namespace {
+            bbl::UiClientRect rectangle{10, 20, 80, 40, 100, 50};
+            int rectangle_reads = 0;
+            std::string button_text;
+            bool hidden = false;
+        }
+        namespace bbl {
+            Engine create_engine(EngineOptions) { return {}; }
+            UiElementHandle ui_create_element(Engine&, std::string_view tag) {
+                assert(tag == "button");
+                return {0};
+            }
+            UiClientRect ui_get_client_rect(Engine&, UiElementHandle) {
+                ++rectangle_reads;
+                return rectangle;
+            }
+            void ui_set_text(Engine&, UiElementHandle element, std::string value) {
+                assert(element.value == 0);
+                button_text = std::move(value);
+            }
+            void ui_set_boolean_attribute(Engine&, UiElementHandle element,
+                                          std::string name, bool present) {
+                assert(element.value == 0 && name == "hidden");
+                hidden = present;
+            }
+            UiElementHandle ui_append_to_root(Engine&, UiElementHandle element) {
+                return element;
+            }
+            void on_visibility_change(Engine& engine, std::size_t identity,
+                                      js::Callback<void(bool)> callback, bool once) {
+                engine.visibility_change_callbacks.add(identity, std::move(callback), once);
+            }
+            void start_engine(Engine& engine) {
+                assert(rectangle_reads == 1);
+                rectangle = {100, 200, 180, 140, 200, 150};
+                PlatformMouseEvent pointer;
+                pointer.client_x = 60;
+                dispatch_dom_pointer(engine, dom_event(pointer, "pointermove",
+                                     {DomEventTarget::node(0)}));
+                assert(button_text == "0.5");
+                engine.document_hidden = true;
+                engine.visibility_change_callbacks.dispatch(true);
+                assert(button_text == "true" && hidden);
+                engine.document_hidden = false;
+                engine.visibility_change_callbacks.dispatch(false);
+                assert(button_text == "false" && !hidden);
+                assert(rectangle_reads == 1);
+            }
+        }
+        int main() { return generated_main(); }
+        `,
+            { defines: ["BBLITE_HAS_UI=1"], timeoutMs: 10000 },
+        );
     },
 );
 

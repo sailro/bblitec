@@ -3751,6 +3751,7 @@ struct UiElementRecord {
      */
     UiElementHandle markup_owner{};
     std::uint32_t markup_node_id = invalid_handle;
+    bool markup_has_element_children = false;
     /** Materialized static-markup nodes owned by this element. */
     std::vector<UiElementHandle> markup_children;
     std::vector<std::function<void()>> click_callbacks;

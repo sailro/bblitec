@@ -71,6 +71,10 @@ import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
 } from "./compiler/native-record-storage.js";
+import {
+    GenericFunctionStorageRequired,
+    GenericFunctionStorage,
+} from "./compiler/generic-function-storage.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import {
@@ -585,6 +589,7 @@ function compileSourceApplication(
             NativeRecordStorageDemand["identity"],
             NativeRecordStorageDemand
         >();
+        const genericFunctions = new GenericFunctionStorage();
         // A replay lowers the realm again from the start, so a survey keeps
         // only the attempt that ran to the end.
         const lower = (): CompileResult => {
@@ -595,6 +600,7 @@ function compileSourceApplication(
                 resolved,
                 dynamicBindings,
                 ownedRecords,
+                genericFunctions,
             );
             const result = traceSourceProgram(input.program, () =>
                 compiler.compile(),
@@ -620,6 +626,11 @@ function compileSourceApplication(
                     !ownedRecords.has(error.demand.identity)
                 ) {
                     ownedRecords.set(error.demand.identity, error.demand);
+                } else if (
+                    error instanceof GenericFunctionStorageRequired &&
+                    genericFunctions.add(error.demand)
+                ) {
+                    continue;
                 } else if (
                     error instanceof RuntimeSearchParamsRequired &&
                     (!resolved.runtimeSearchParams ||
@@ -895,6 +906,7 @@ class Compiler implements LoweringServices {
             NativeRecordStorageDemand["identity"],
             NativeRecordStorageDemand
         >,
+        genericFunctions: GenericFunctionStorage,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -903,6 +915,7 @@ class Compiler implements LoweringServices {
             (node, message) => this.fail(node, message),
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
+            genericFunctions,
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -7039,6 +7052,62 @@ class Compiler implements LoweringServices {
             ? `${this.callbackIdentity(expression, owner, true)}u`
             : effectiveOwner?.runtimeCallbackIdentityCpp;
         const compile = (): string => {
+            if (dataType.generic) {
+                const declaration = ts.isIdentifier(expression)
+                    ? resolveFunctionDeclaration(
+                          this.checker,
+                          expression,
+                          (node, message) => this.fail(node, message),
+                      )
+                    : expression;
+                if (!declaration)
+                    this.fail(
+                        expression,
+                        "Stored generic function requires a local declaration.",
+                    );
+                if (
+                    declaration.body &&
+                    someAnalysisNode(
+                        declaration.body,
+                        (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+                        {
+                            skip: (node) =>
+                                ts.isFunctionLike(node) &&
+                                !ts.isArrowFunction(node),
+                        },
+                    )
+                )
+                    this.fail(
+                        expression,
+                        "Stored generic methods using this require a shared native receiver.",
+                    );
+                const fields = this.dataTypes.genericFunctionFields(
+                    dataType.generic,
+                );
+                const parts = fields.map((field) =>
+                    this.dataTypes.withGenericFunctionArguments(
+                        declaration,
+                        field.demand,
+                        () =>
+                            this.compileStoredDataFunction(
+                                expression,
+                                field.type,
+                                effectiveOwner,
+                                prototypeMethod,
+                            ),
+                    ),
+                );
+                const table = this.dataLowerer.structAggregate(
+                    { kind: "struct", name: dataType.generic },
+                    parts,
+                );
+                const identity =
+                    identityCpp ??
+                    (effectiveOwner?.repeatedCallbackEvaluation
+                        ? "bbl::js::next_callback_identity()"
+                        : `${this.callbackIdentity(declaration, effectiveOwner)}u`);
+                return `${this.dataTypes.cppType(dataType)}{${identity}, ${table}}`;
+            }
             if (identityCpp) {
                 this.useNativeValue({
                     kind: "number",

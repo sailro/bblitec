@@ -1815,6 +1815,12 @@ template <typename Sig> struct ValueHash<Callback<Sig>> {
     }
 };
 
+template <typename Table> struct ValueHash<GenericCallback<Table>> {
+    [[nodiscard]] std::size_t operator()(const GenericCallback<Table>& value) const noexcept {
+        return value.identity();
+    }
+};
+
 template <typename... T> struct ValueHash<std::variant<T...>> {
     [[nodiscard]] std::size_t operator()(const std::variant<T...>& value) const noexcept {
         return std::visit(

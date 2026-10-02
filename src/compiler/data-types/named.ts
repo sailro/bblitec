@@ -19,13 +19,18 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
     },
     function: {
         cpp: (type, context) =>
-            `bbl::js::Callback<${type.result ? context.cppType(type.result) : "void"}` +
-            `(${type.parameters.map((parameter) => context.cppType(parameter)).join(", ")})>`,
+            type.generic
+                ? `bbl::js::GenericCallback<${context.namedType(type.generic)}>`
+                : `bbl::js::Callback<${type.result ? context.cppType(type.result) : "void"}` +
+                  `(${type.parameters.map((parameter) => context.cppType(parameter)).join(", ")})>`,
         key: (type, key) =>
-            `${type.identity ? "cb" : "fn"}(${type.parameters.map(key).join(",")})` +
-            `${type.restParameter === undefined ? "" : `...${type.restParameter}`}` +
-            `${type.erasedParameters?.length ? `~${type.erasedParameters.join(",")}` : ""}->${type.result ? key(type.result) : "void"}`,
+            type.generic
+                ? `generic(${type.generic})`
+                : `${type.identity ? "cb" : "fn"}(${type.parameters.map(key).join(",")})` +
+                  `${type.restParameter === undefined ? "" : `...${type.restParameter}`}` +
+                  `${type.erasedParameters?.length ? `~${type.erasedParameters.join(",")}` : ""}->${type.result ? key(type.result) : "void"}`,
         equal: (left, right, equal) =>
+            left.generic === right.generic &&
             left.identity === right.identity &&
             left.restParameter === right.restParameter &&
             (left.erasedParameters ?? []).join(",") ===
@@ -38,10 +43,12 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
                 ? right.result === undefined
                 : right.result !== undefined &&
                   equal(left.result, right.result)),
-        children: (type, _fields, signatures) =>
-            signatures
-                ? [...type.parameters, ...(type.result ? [type.result] : [])]
-                : [],
+        children: (type, fields, signatures) =>
+            type.generic
+                ? fields(type.generic)
+                : signatures
+                  ? [...type.parameters, ...(type.result ? [type.result] : [])]
+                  : [],
         byReference: false,
         tracedEdges: "always",
     },
