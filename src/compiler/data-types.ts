@@ -2407,13 +2407,7 @@ export class DataTypeRegistry {
             presences.push(unionPresence(memberProperties, memberTypes, first));
         }
 
-        const key = fields
-            .map(
-                (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}`,
-            )
-            .join(",");
-        return this.internMappedStruct(name, key, fields, presences);
+        return this.internMappedStruct(name, fields, presences);
     }
 
     /**
@@ -2657,13 +2651,7 @@ export class DataTypeRegistry {
                       ),
             );
         }
-        const key = fields
-            .map(
-                (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${JSON.stringify(field.presentForTags)}`,
-            )
-            .join(",");
-        return this.internMappedStruct(name, key, fields, presences);
+        return this.internMappedStruct(name, fields, presences);
     }
 
     private fromTupleType(
@@ -3214,21 +3202,22 @@ export class DataTypeRegistry {
             // is visible to the dispatcher after the call.
             this.referenceStructNames.add(provisionalName);
         }
-        const key = `${fields
-            .map(
-                (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}${accessorKey(field)}`,
-            )
-            .join(",")}`;
-        return this.internMappedStruct(provisionalName, key, fields, presences);
+        return this.internMappedStruct(provisionalName, fields, presences);
     }
 
     private internMappedStruct(
         provisionalName: string,
-        key: string,
         fields: DataStructField[],
         presences: OwnPropertyPresence[],
     ): DataType<"struct"> {
+        // A union's stored element and a callback's declared result share an
+        // object when their field layouts agree, regardless of mapping path.
+        const key = fields
+            .map(
+                (field) =>
+                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${field.uncheckedProperty ? "unchecked" : "checked"}:${JSON.stringify(field.presentForTags)}${accessorKey(field)}`,
+            )
+            .join(",");
         const existing = this.structsByKey.get(key);
         const name =
             existing && !this.referenceStructNames.has(provisionalName)
