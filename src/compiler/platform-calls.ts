@@ -660,6 +660,7 @@ export class PlatformCalls {
                             : value.dataType;
                     return value.kind === "json-null" ||
                         value.kind === "ui-element" ||
+                        value.domEventTargetCpp !== undefined ||
                         stored?.kind === "event-target" ||
                         (stored?.kind === "handle" &&
                             stored.handle === "ui-element")

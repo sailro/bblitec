@@ -5,6 +5,8 @@ import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
 import { nullability } from "./type-facts.js";
+import { eventTargetCpp } from "./dom-targets.js";
+import { isAbsentWindowMember } from "./browser-erasure.js";
 
 type Context = Pick<
     LoweringServices,
@@ -20,46 +22,96 @@ type Context = Pick<
     | "nativeEmission"
     | "emit"
     | "fail"
+    | "probeEmission"
+    | "defaultEngine"
+    | "requireDefaultEngine"
+    | "reachFeature"
 >;
 
 /** Statically named Window extensions retain ordinary typed values for one realm. */
 export class WindowProperties {
+    private isNativeMember(node: ts.PropertyAccessExpression): boolean {
+        const checker = this.context.checker;
+        if (declaredInDefaultLibrary(resolvedSymbol(checker, node)))
+            return true;
+        const windowSymbol = checker.resolveName(
+            "Window",
+            undefined,
+            ts.SymbolFlags.Type,
+            false,
+        );
+        return (
+            windowSymbol !== undefined &&
+            declaredInDefaultLibrary(
+                checker.getPropertyOfType(
+                    checker.getDeclaredTypeOfSymbol(windowSymbol),
+                    node.name.text,
+                ),
+            )
+        );
+    }
     private readonly fields = new EmissionMap<
         string,
-        { type: DataType; cpp: string }
+        { type: DataType; functionCpp: string }
     >();
     constructor(private readonly context: Context) {}
 
     private target(
         expression: ts.Expression,
-    ): ts.PropertyAccessExpression | undefined {
+    ): { node: ts.PropertyAccessExpression; owner: Value } | undefined {
         const context = this.context;
         if (!context.options.workers || context.options.workers.namespace)
             return undefined;
         const node = context.unwrap(expression);
         if (!ts.isPropertyAccessExpression(node)) return undefined;
-        const owner = context.unwrap(node.expression);
-        const global = context.libraryGlobal(owner);
-        const alias = ts.isIdentifier(owner)
-            ? context.bindings.lookupOptional(owner)
-            : undefined;
-        if (
-            !["window", "globalThis"].includes(global ?? "") &&
-            alias?.domEventTargetCpp !== "bbl::DomEventTarget::window()"
-        )
-            return undefined;
-        const symbol = resolvedSymbol(context.checker, node);
-        if (declaredInDefaultLibrary(symbol)) return undefined;
-        return node;
+        if (isAbsentWindowMember(node.name.text)) return undefined;
+        if (this.isNativeMember(node)) return undefined;
+        const owner = context.probeEmission(() => {
+            const value = context.compileValue(node.expression);
+            return value.domEventTargetCpp ===
+                "bbl::DomEventTarget::window()" ||
+                value.dataType?.kind === "event-target"
+                ? value
+                : undefined;
+        });
+        return owner ? { node, owner } : undefined;
     }
 
     read(expression: ts.PropertyAccessExpression): Value | undefined {
         const target = this.target(expression);
         if (!target) return undefined;
+        return this.readFromValue(target.owner, target.node);
+    }
+
+    readFromValue(
+        owner: Value,
+        node: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (
+            !this.context.options.workers ||
+            this.context.options.workers.namespace ||
+            isAbsentWindowMember(node.name.text) ||
+            this.isNativeMember(node) ||
+            !(
+                owner.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
+                owner.dataType?.kind === "event-target"
+            )
+        )
+            return undefined;
         const field =
-            this.fields.get(target.name.text) ?? this.declaredField(target);
+            this.fields.get(node.name.text) ?? this.declaredField(node);
         if (!field) return undefined;
-        return this.context.dataLowerer.leafValue(field.cpp, field.type);
+        return this.context.dataLowerer.leafValue(
+            this.fieldCpp(field, { owner, node }),
+            field.type,
+        );
+    }
+
+    private fieldCpp(
+        field: { functionCpp: string },
+        target: { node: ts.PropertyAccessExpression; owner: Value },
+    ): string {
+        return `${field.functionCpp}(${eventTargetCpp(this.context, target.owner, target.node.expression)})`;
     }
 
     private declaredField(target: ts.PropertyAccessExpression) {
@@ -80,15 +132,15 @@ export class WindowProperties {
         const cppType = context.dataTypes.cppType(type);
         const cppName = context.allocateTemporaryCppName("window_property");
         context.nativeEmission.registerNativeFunction(
-            `${cppType}& ${cppName}();`,
+            `${cppType}& ${cppName}(bbl::DomEventTargetValue owner);`,
             [
-                `${cppType}& ${cppName}() {`,
+                `${cppType}& ${cppName}(bbl::DomEventTargetValue owner) {`,
                 `    struct Storage { ${cppType} value{}; };`,
-                "    return bbl::js::realm_scratch<Storage>().value;",
+                "    return bbl::dom_window_property<Storage>(owner).value;",
                 "}",
             ],
         );
-        const field = { type, cpp: `bblscene::${cppName}()` };
+        const field = { type, functionCpp: `bblscene::${cppName}` };
         this.fields.set(name, field);
         return field;
     }
@@ -98,7 +150,9 @@ export class WindowProperties {
         if (!ts.isCallExpression(call)) return undefined;
         const target = this.target(call.expression);
         if (!target) return undefined;
-        const field = this.fields.get(target.name.text);
+        const field =
+            this.fields.get(target.node.name.text) ??
+            this.declaredField(target.node);
         if (!field) return undefined;
         const type =
             field.type.kind === "optional" ? field.type.inner : field.type;
@@ -107,10 +161,22 @@ export class WindowProperties {
                 call,
                 "Window extension call requires function storage.",
             );
+        const owner = this.context.allocateTemporaryCppName("window_target");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: owner,
+            initializer: eventTargetCpp(
+                this.context,
+                target.owner,
+                target.node.expression,
+            ),
+        });
+        const valueCpp = `${field.functionCpp}(${owner})`;
         const cpp =
             field.type.kind === "optional"
-                ? `(${optionalPresentCpp(field.cpp)} ? *${field.cpp} : ${this.context.dataTypes.cppType(type)}{})`
-                : field.cpp;
+                ? `(${optionalPresentCpp(valueCpp)} ? *${valueCpp} : ${this.context.dataTypes.cppType(type)}{})`
+                : valueCpp;
         return this.context.dataLowerer.compileStoredCall(call, cpp, type);
     }
 
@@ -124,7 +190,8 @@ export class WindowProperties {
                 "Window extension properties require plain assignment.",
             );
         let field =
-            this.fields.get(target.name.text) ?? this.declaredField(target);
+            this.fields.get(target.node.name.text) ??
+            this.declaredField(target.node);
         if (!field) {
             const valueType = context.dataTypes.fromTsType(
                 context.checker.getTypeAtLocation(expression.right),
@@ -135,7 +202,7 @@ export class WindowProperties {
                     expression.right,
                     "Window extension requires a represented value type.",
                 );
-            field = this.createField(target.name.text, valueType);
+            field = this.createField(target.node.name.text, valueType);
         }
         const stored: DataType =
             field.type.kind === "optional" &&
@@ -145,9 +212,20 @@ export class WindowProperties {
                       inner: { ...field.type.inner, identity: true },
                   }
                 : field.type;
+        const owner = context.allocateTemporaryCppName("window_target");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: owner,
+            initializer: eventTargetCpp(
+                context,
+                target.owner,
+                target.node.expression,
+            ),
+        });
         context.emit({
             kind: "expression",
-            code: `${field.cpp} = ${context.dataLowerer.compileForRetainedSink(expression.right, stored, "a Window extension")};`,
+            code: `${field.functionCpp}(${owner}) = ${context.dataLowerer.compileForRetainedSink(expression.right, stored, "a Window extension")};`,
         });
         return true;
     }
@@ -156,7 +234,8 @@ export class WindowProperties {
         const target = this.target(expression.expression);
         if (!target) return false;
         const field =
-            this.fields.get(target.name.text) ?? this.declaredField(target);
+            this.fields.get(target.node.name.text) ??
+            this.declaredField(target.node);
         if (!field)
             return this.context.fail(
                 expression,
@@ -164,7 +243,7 @@ export class WindowProperties {
             );
         this.context.emit({
             kind: "expression",
-            code: `${field.cpp} = ${this.context.dataTypes.absentValue(field.type)};`,
+            code: `${this.fieldCpp(field, target)} = ${this.context.dataTypes.absentValue(field.type)};`,
         });
         return true;
     }

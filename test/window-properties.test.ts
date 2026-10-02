@@ -81,6 +81,7 @@ test("Window extension callbacks retain identity and captures through replacemen
         result.cpp +
             `
 namespace bbl::pal {
+Engine& window_document_engine() { static Engine engine; return engine; }
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;

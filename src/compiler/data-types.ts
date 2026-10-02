@@ -520,9 +520,13 @@ export function borrowedPlatformEventKind(
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
     // Extended events and DataTransfer borrow the checked dispatch payload.
     if (
-        ["Event", "TransitionEvent", "DragEvent", "DataTransfer"].includes(
-            symbol.name,
-        )
+        [
+            "Event",
+            "TransitionEvent",
+            "DragEvent",
+            "DataTransfer",
+            "StorageEvent",
+        ].includes(symbol.name)
     )
         return "event";
     if (symbol.name === "MouseEvent") return "mouse";
@@ -1454,7 +1458,9 @@ export class DataTypeRegistry {
         }
         const platformHandle = platformHandleKind(type);
         if (
-            type.symbol?.name === "EventTarget" &&
+            ["EventTarget", "Window", "Document"].includes(
+                type.symbol?.name ?? "",
+            ) &&
             declaredInDomLibrary(type.symbol)
         )
             return { kind: "event-target" };

@@ -190,6 +190,23 @@ struct PlatformKeyboardEvent {
     void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
+/** A storage notification delivered to a different Window sharing the storage area. */
+struct PlatformStorageEvent {
+    std::optional<std::string> key{}, old_value{}, new_value{};
+    std::string url{};
+    bool has_storage_area = true;
+    mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+
+    void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default())
+            return;
+        default_prevented = true;
+    }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+};
+
 /** The end of a CSS transition on a retained element. */
 struct PlatformTransitionEvent {
     std::string property_name{};
@@ -3944,6 +3961,34 @@ private:
     std::shared_ptr<const int> token_;
 };
 
+/** A copied or moved Engine is a fresh document identity, just like OwnerLifetime. */
+struct DomTargetState {
+    DomTargetState() = default;
+    DomTargetState(const DomTargetState&) {}
+    DomTargetState(DomTargetState&& other) noexcept { other.clear(); }
+    DomTargetState& operator=(const DomTargetState& other) {
+        if (this != &other)
+            clear();
+        return *this;
+    }
+    DomTargetState& operator=(DomTargetState&& other) noexcept {
+        if (this != &other) {
+            clear();
+            other.clear();
+        }
+        return *this;
+    }
+    std::unordered_map<std::uint64_t, std::shared_ptr<const int>> identities;
+    /** Ref/Callback cells root their values until deletion or document teardown. */
+    std::unordered_map<const void*, std::shared_ptr<void>> properties;
+
+private:
+    void clear() {
+        identities.clear();
+        properties.clear();
+    }
+};
+
 class GpuTransportError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -4021,6 +4066,7 @@ struct Engine {
     bool device_disposed = false;
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
+    DomTargetState dom_targets;
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
     /** Generated subsystem state; callbacks hold weak references back to it. */
     std::vector<std::shared_ptr<void>> native_resource_owners;

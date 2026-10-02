@@ -134,6 +134,10 @@ const ABSENT_GLOBAL_MEMBERS: ReadonlySet<string> = new Set([
     "showSaveFilePicker",
 ]);
 
+export function isAbsentWindowMember(name: string): boolean {
+    return ABSENT_GLOBAL_MEMBERS.has(name);
+}
+
 /**
  * A browser value with a native spelling: a primitive, or the deployment
  * query bag, which a read the fold cannot answer parses natively

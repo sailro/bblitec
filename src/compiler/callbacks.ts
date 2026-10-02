@@ -714,7 +714,7 @@ export class CallbackLowerer {
                     return this.context.dataLowerer.leafValue(
                         this.context.dataLowerer.compileKnownValueForSink(
                             value,
-                            type,
+                            { ...type, identity: true },
                             callback,
                         ),
                         type,
