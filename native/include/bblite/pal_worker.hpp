@@ -7,6 +7,8 @@
 #endif
 
 #include <bblite/js_structured_clone.hpp>
+#include <bblite/js_promise.hpp>
+#include <bblite/js_gpu_adapter.hpp>
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_host_services.hpp>
 #include <bblite/pal_animation_frame.hpp>
@@ -151,6 +153,29 @@ public:
     const void* graphics_identity() const {
         require_owner();
         return host_services_ ? host_services_->graphics_identity() : nullptr;
+    }
+    /** Promise reactions run on this realm; only immutable native strings cross the host boundary. */
+    auto request_graphics_adapter(const js::Nullable<std::string>& power_preference = std::nullopt,
+                                  bool force_fallback = false,
+                                  const js::Nullable<std::string>& feature_level = std::nullopt,
+                                  bool xr_compatible = false) {
+        require_owner();
+        using Result = js::Nullable<GpuAdapterHandle>;
+        using Promise = js::Promise<Result>;
+        try {
+            if ((power_preference.has_value() && *power_preference != "high-performance") ||
+                force_fallback || (feature_level.has_value() && *feature_level != "core") ||
+                xr_compatible)
+                throw std::runtime_error(
+                    "GPU adapter options do not select the native host's high-performance core device.");
+            const auto info =
+                host_services_ ? host_services_->graphics_adapter_info() : std::nullopt;
+            return Promise::resolved(info ? Result{js::make_ref<GpuAdapterRecord>(GpuAdapterRecord{
+                                                js::make_ref<GpuAdapterInfo>(*info)})}
+                                          : Result{std::nullopt});
+        } catch (...) {
+            return Promise::rejected(std::current_exception());
+        }
     }
 
     EventLoop::AnimationFrameId request_animation_frame(EventLoop::AnimationCallback callback) {

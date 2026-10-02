@@ -267,6 +267,8 @@ export const scalarsSinks: DataSinkOperations<
     | "event-target"
     | "search-params"
     | "http-response"
+    | "gpu-adapter"
+    | "gpu-adapter-info"
     | "promise"
     | "storage"
     | "date"
@@ -313,6 +315,8 @@ export const scalarsSinks: DataSinkOperations<
             return undefined;
         },
     },
+    "gpu-adapter": opaqueSink,
+    "gpu-adapter-info": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(

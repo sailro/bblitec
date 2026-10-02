@@ -50,6 +50,7 @@ import {
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
+import { gpuAdapterProperty } from "./gpu-adapter.js";
 import { errorValue, thrownMessage } from "./error-values.js";
 import {
     renderClosure,
@@ -262,6 +263,7 @@ interface DataLoweringContext extends Pick<
     | "resolveThisField"
     | "resolveRecordMember"
     | "resolveRecordValue"
+    | "knownValueWithoutEvaluation"
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
     | "isInRuntimeControlFlow"
@@ -1037,6 +1039,19 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            const ownerType =
+                owner.dataType?.kind === "optional"
+                    ? owner.dataType.inner
+                    : owner.dataType;
+            if (
+                mode === "write" &&
+                (ownerType?.kind === "gpu-adapter" ||
+                    ownerType?.kind === "gpu-adapter-info")
+            )
+                this.context.fail(
+                    unwrapped,
+                    "GPU adapter metadata is read-only.",
+                );
             if (mode === "write" && owner.nativeError)
                 this.context.fail(
                     unwrapped,
@@ -2841,6 +2856,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
+        const gpu = gpuAdapterProperty(this, owner, property);
+        if (gpu) return gpu;
         const dataType =
             owner.dataType ??
             (owner.kind === "string"

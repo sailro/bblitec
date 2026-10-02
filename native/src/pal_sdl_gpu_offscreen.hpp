@@ -8,6 +8,7 @@
 #include <bblite/features/storage_readback.hpp>
 
 #include "pal_sdl_gpu_shared.hpp"
+#include "pal_sdl_gpu_adapter.hpp"
 #include "pal_offscreen_gpu.hpp"
 #if BBLITE_GPU_TASK_TIMING
 #include "pal_sdl_gpu_timestamp.hpp"
@@ -69,6 +70,7 @@ private:
 /** The host retains the device until all producers and image leases end. */
 struct SdlOffscreenDevice final : OffscreenDevice {
     const void* device_identity() const override { return device; }
+    std::optional<GpuAdapterInfo> adapter_info() const override { return info; }
 #if BBLITE_GPU_TASK_TIMING
     bool supports_gpu_timestamps() const override {
         return SDL_BBLiteGetGPUTimestampFrequency(device) != 0;
@@ -106,7 +108,8 @@ struct SdlOffscreenDevice final : OffscreenDevice {
                                                    source_mip, target_mip, base_array_layer);
     }
 #endif
-    explicit SdlOffscreenDevice(SDL_GPUDevice* value) : device(value) {}
+    explicit SdlOffscreenDevice(SDL_GPUDevice* value)
+        : device(value), info(sdl_gpu_adapter_info(value)) {}
 #if BBLITE_STORAGE_READBACK
     std::shared_ptr<StorageReadback>
     create_storage_readback(const StorageReadbackDescriptor& descriptor) override {
@@ -174,6 +177,7 @@ struct SdlOffscreenDevice final : OffscreenDevice {
         return std::make_unique<SdlSubmissionCompletion>(device, std::move(complete));
     }
     SDL_GPUDevice* device;
+    const GpuAdapterInfo info;
 };
 
 struct SdlOffscreenImage final : OffscreenImage {

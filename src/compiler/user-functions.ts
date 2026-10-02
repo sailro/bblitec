@@ -35,6 +35,7 @@ import {
 import {
     passesByReference,
     dataTypesEqual,
+    isOpaqueReference,
     isHandleKind,
     tupleComponents,
     type DataType,
@@ -2966,8 +2967,10 @@ export class UserFunctionLowerer {
             // methods and functions must retain the caller's object identity.
             if (
                 !recursive &&
-                argumentType?.kind === "struct" &&
+                (argumentType?.kind === "struct" ||
+                    isOpaqueReference(argumentType)) &&
                 parameterType?.kind === "struct" &&
+                argumentType !== undefined &&
                 !dataTypesEqual(argumentType, parameterType)
             )
                 throw new SharedCallRequiresInline();

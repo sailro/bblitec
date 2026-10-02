@@ -393,7 +393,7 @@ export function browserEnvironmentPropertyValue(
     return owner?.recordProperties?.[unwrapped.name.text];
 }
 
-function nativeNavigatorProperties(realm: boolean): Record<string, Value> {
+function nativeNavigatorProperties(): Record<string, Value> {
     const graphics = "bbl::pal::WorkerRealm::current().graphics_identity()";
     return {
         language: { kind: "string", cpp: "bbl::preferred_language()" },
@@ -406,16 +406,22 @@ function nativeNavigatorProperties(realm: boolean): Record<string, Value> {
         onLine: { kind: "boolean", cpp: "true", staticBoolean: true },
         userAgentData: { kind: "json-null", cpp: "std::nullopt" },
         deviceMemory: { kind: "json-null", cpp: "std::nullopt" },
-        gpu: realm
-            ? {
-                  kind: "record",
-                  cpp: graphics,
-                  objectIdentityCpp: graphics,
-                  optionalFoundCpp: `(${graphics} != nullptr)`,
-                  truthinessCpp: `(${graphics} != nullptr)`,
-                  recordProperties: {},
-              }
-            : { kind: "json-null", cpp: "std::nullopt" },
+        gpu: {
+            kind: "record",
+            nativeGpu: true,
+            cpp: graphics,
+            objectIdentityCpp: graphics,
+            optionalFoundCpp: `(${graphics} != nullptr)`,
+            truthinessCpp: `(${graphics} != nullptr)`,
+            requiresApplicationRealm: true,
+            recordProperties: {
+                requestAdapter: {
+                    kind: "callback",
+                    cpp: "",
+                    hostFunction: "gpu-request-adapter",
+                },
+            },
+        },
         clipboard: {
             kind: "record",
             cpp: "",
@@ -466,7 +472,7 @@ export function browserEnvironmentValue(
         cpp: "",
         truthinessCpp: "true",
         objectIdentityCpp: "bbl::native_navigator_identity()",
-        recordProperties: nativeNavigatorProperties(!!context.options.workers),
+        recordProperties: nativeNavigatorProperties(),
     };
 }
 

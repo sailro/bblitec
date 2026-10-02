@@ -25,6 +25,7 @@ import {
 } from "./symbols.js";
 import {
     dataTypesEqual,
+    isOpaqueReference,
     isTypedArrayType,
     passesByReference,
     type DataType,
@@ -772,25 +773,40 @@ export class NativeFunctionLowerer {
         argument: ts.Expression,
         parameter: DataFunctionParameter,
     ): boolean {
+        if (this.context.knownValueWithoutEvaluation(argument)?.nativeGpu)
+            return false;
         // Type annotations do not replace the representation of a parsed
         // object. Bind that actual value inline instead of materializing a
         // fixed native shape that would lose fields and object identity.
         // A member of a parsed object is itself parsed (`data.player`).
-        const parsed = (expression: ts.Expression): boolean => {
+        const carries = (
+            expression: ts.Expression,
+            predicate: (type: DataType | undefined) => boolean,
+        ): boolean => {
             const node = this.context.unwrap(expression);
             const known = this.context.knownValueWithoutEvaluation(node);
-            if (known) return known.dataType?.kind === "json";
+            if (known)
+                return predicate(
+                    known.dataType?.kind === "optional"
+                        ? known.dataType.inner
+                        : known.dataType,
+                );
             return (
                 (ts.isPropertyAccessExpression(node) ||
                     ts.isElementAccessExpression(node)) &&
-                parsed(node.expression)
+                carries(node.expression, predicate)
             );
         };
-        if (parsed(argument) && parameter.type.kind !== "json") {
-            const target =
-                parameter.type.kind === "optional"
-                    ? parameter.type.inner
-                    : parameter.type;
+        const target =
+            parameter.type.kind === "optional"
+                ? parameter.type.inner
+                : parameter.type;
+        if (target.kind === "struct" && carries(argument, isOpaqueReference))
+            return false;
+        if (
+            carries(argument, (type) => type?.kind === "json") &&
+            parameter.type.kind !== "json"
+        ) {
             if (
                 target.kind === "struct" ||
                 target.kind === "vector" ||
@@ -803,6 +819,18 @@ export class NativeFunctionLowerer {
         if (parameter.type.kind !== "struct") {
             return true;
         }
+        const argumentType = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(argument),
+            argument,
+        );
+        if (
+            isOpaqueReference(
+                argumentType?.kind === "optional"
+                    ? argumentType.inner
+                    : argumentType,
+            )
+        )
+            return false;
         const mutableReference = parameter.byReference && !parameter.readOnly;
         if (
             !mutableReference &&
@@ -814,10 +842,6 @@ export class NativeFunctionLowerer {
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return true;
         }
-        const argumentType = this.context.dataTypes.fromTsType(
-            this.context.checker.getTypeAtLocation(argument),
-            argument,
-        );
         return (
             argumentType !== undefined &&
             dataTypesEqual(argumentType, parameter.type)

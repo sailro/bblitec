@@ -9,6 +9,7 @@
 #include <bblite/features/storage_readback.hpp>
 
 #include "pal_dawn_device.hpp"
+#include "pal_dawn_adapter.hpp"
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
@@ -250,6 +251,7 @@ private:
 
 struct DawnOffscreenDevice final : OffscreenDevice {
     const void* device_identity() const override { return queue; }
+    std::optional<GpuAdapterInfo> adapter_info() const override { return info; }
 #if BBLITE_GPU_TASK_TIMING
     bool supports_gpu_timestamps() const override {
         return wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery) != 0;
@@ -299,7 +301,8 @@ struct DawnOffscreenDevice final : OffscreenDevice {
 #endif
     explicit DawnOffscreenDevice(const DawnDevice& value)
         : instance(value.instance), adapter(value.adapter), device(value.device),
-          queue(value.queue), surface_format(value.surface_format) {}
+          queue(value.queue), surface_format(value.surface_format),
+          info(dawn_adapter_info(value.adapter)) {}
     ComputeShaderLimits compute_shader_limits() const override {
         WGPULimits limits = WGPU_LIMITS_INIT;
         if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success)
@@ -403,6 +406,7 @@ struct DawnOffscreenDevice final : OffscreenDevice {
     const WGPUDevice device;
     const WGPUQueue queue;
     const WGPUTextureFormat surface_format;
+    const GpuAdapterInfo info;
 };
 #endif
 

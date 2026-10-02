@@ -1,4 +1,5 @@
 import { requireWindowHost } from "./window-events.js";
+import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { EmissionSet, writable } from "./emission-transaction.js";
@@ -2531,6 +2532,12 @@ export class ExpressionLowerer {
             hostFunction,
         );
         if (windowService) return windowService;
+        const gpuAdapter = compileGpuAdapterCall(
+            this.context.dataLowerer,
+            call,
+            hostFunction,
+        );
+        if (gpuAdapter) return gpuAdapter;
         const imported = this.context.symbols.importedName(call.expression);
         const boundIntrinsic = ts.isIdentifier(target)
             ? this.context.bindings.lookupOptional(target)?.intrinsicName

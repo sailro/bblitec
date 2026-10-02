@@ -1431,6 +1431,12 @@ export class DataTypeRegistry {
                     : declaredInDefaultLibrary(type.symbol)),
         );
         if (libraryObject) return { kind: libraryObject[2] };
+        if (declaredIn(type.symbol, "dom", "webgpu")) {
+            if (type.symbol?.name === "GPUAdapterInfo")
+                return { kind: "gpu-adapter-info" };
+            if (type.symbol?.name === "GPUAdapter")
+                return { kind: "gpu-adapter" };
+        }
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);

@@ -159,7 +159,8 @@ test("aliased navigator diagnostics preserve native values and optional browser 
     const result = compileSource(`
         const nav = navigator as Navigator & {userAgentData?: {platform?: unknown}; deviceMemory?: unknown};
         const agent = nav.userAgentData?.platform;
-        if (agent !== undefined || nav.deviceMemory !== undefined || nav.gpu) throw new Error("browser-only diagnostics");
+        if (agent !== undefined || nav.deviceMemory !== undefined) throw new Error("browser-only diagnostics");
+        if (nav.gpu !== window.navigator.gpu) throw new Error("graphics identity");
         if (nav !== window.navigator) throw new Error("navigator identity");
         localStorage.setItem("platform", nav.platform);
         localStorage.setItem("threads", String(nav.hardwareConcurrency));
@@ -168,6 +169,7 @@ test("aliased navigator diagnostics preserve native values and optional browser 
     assert.match(result.cpp, /bbl::native_platform\(\)/);
     assert.match(result.cpp, /bbl::logical_processor_count\(\)/);
     assert.match(result.cpp, /bbl::preferred_language\(\)/);
+    assert.match(result.cpp, /graphics_identity\(\)/);
     assert.doesNotMatch(result.cpp, /browser-only diagnostics/);
 });
 

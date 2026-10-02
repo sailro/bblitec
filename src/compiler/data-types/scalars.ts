@@ -30,6 +30,8 @@ export const scalarKinds: DataKindOperations<
     | "error"
     | "search-params"
     | "http-response"
+    | "gpu-adapter"
+    | "gpu-adapter-info"
     | "storage"
     | "date"
     | "date-time-format"
@@ -53,6 +55,11 @@ export const scalarKinds: DataKindOperations<
     error: leaf("bbl::js::Error", "error"),
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
     "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),
+    "gpu-adapter": opaqueLeaf("bbl::pal::GpuAdapterHandle", "gpu-adapter"),
+    "gpu-adapter-info": opaqueLeaf(
+        "bbl::pal::GpuAdapterInfoHandle",
+        "gpu-adapter-info",
+    ),
     "search-params": opaqueLeaf("bbl::js::SearchParams", "search-params"),
     storage: opaqueLeaf("bbl::js::Storage", "storage"),
     date: opaqueLeaf("bbl::js::Date", "date"),

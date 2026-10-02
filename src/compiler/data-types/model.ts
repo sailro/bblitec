@@ -96,6 +96,8 @@ interface DataKinds {
     error: { kind: "error" };
     "event-target": { kind: "event-target" };
     "http-response": { kind: "http-response" };
+    "gpu-adapter": { kind: "gpu-adapter" };
+    "gpu-adapter-info": { kind: "gpu-adapter-info" };
     "search-params": { kind: "search-params" };
     promise: { kind: "promise"; result?: DataType };
     "weak-ref": { kind: "weak-ref"; target: DataType };

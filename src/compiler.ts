@@ -4596,11 +4596,13 @@ class Compiler implements LoweringServices {
     ): Value | undefined {
         const ownerExpression = this.unwrap(expression.expression);
         const owner = ts.isIdentifier(ownerExpression)
-            ? this.bindings.lookupOptional(ownerExpression)
+            ? (this.bindings.lookupOptional(ownerExpression) ??
+              browserEnvironmentValue(this, ownerExpression))
             : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
               ? this.activeThis()
               : ts.isPropertyAccessExpression(ownerExpression)
                 ? (this.resolveRecordMember(ownerExpression) ??
+                  browserEnvironmentValue(this, ownerExpression) ??
                   this.propertyAccess.lookupRecordProperty(ownerExpression))
                 : undefined;
         if (owner?.kind !== "record") {
@@ -5665,6 +5667,8 @@ class Compiler implements LoweringServices {
     );
 
     public useNativeValue(value: Value): void {
+        if (value.requiresApplicationRealm && !this.options.workers)
+            throw new ApplicationRealmRequired();
         for (const binding of this.nativeValueCaptures.bindingsOf(value))
             this.useNativeBinding(binding);
     }
