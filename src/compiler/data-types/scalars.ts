@@ -26,6 +26,7 @@ function typedArray(kind: TypedArrayKind) {
 }
 
 export const scalarKinds: DataKindOperations<
+    | "undefined"
     | "error"
     | "search-params"
     | "http-response"
@@ -48,6 +49,7 @@ export const scalarKinds: DataKindOperations<
     | "handle"
     | TypedArrayKind
 > = {
+    undefined: leaf("bbl::js::Undefined", "undefined"),
     error: leaf("bbl::js::Error", "error"),
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
     "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),

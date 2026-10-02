@@ -55,6 +55,7 @@ function uncloneablePosition(
     const refuse = (name: string): string =>
         `'${path}' is ${name}, which has no native structured-clone codec`;
     switch (type.kind) {
+        case "undefined":
         case "number":
         case "boolean":
         case "string":

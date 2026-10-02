@@ -5,6 +5,7 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
+import { provenUndefinedValue } from "./undefined-values.js";
 import { renderClosure, type CapturedClosure } from "./closure-captures.js";
 import {
     tryResolveFunctionDeclaration,
@@ -201,7 +202,13 @@ export class AsyncLowerer {
             );
             const settled = awaited.promiseResult!;
             if (settled.kind === "void")
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                    ...(!provenUndefinedValue(context, node)
+                        ? { erasedVoidCompletion: true as const }
+                        : {}),
+                };
             // The settled data belongs to the expression awaiting it, so a
             // declaration it initializes takes it rather than copying it.
             if (settled.dataType !== undefined || settled.kind === "string")

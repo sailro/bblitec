@@ -52,6 +52,7 @@ import {
     isStoringDataCall,
 } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -4101,6 +4102,14 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
+        if (
+            dataType.undefinedCompletion &&
+            !hasUndefinedCompletion(this.checker, declaration)
+        )
+            context.fail(
+                expression,
+                "A stored callback requires a proven undefined completion.",
+            );
         // A stored closure may be called before the later declaration runs.
         context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);

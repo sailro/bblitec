@@ -228,6 +228,7 @@ interface DataLoweringContext extends Pick<
     | "checker"
     | "evaluationOrder"
     | "bindings"
+    | "sharedClosures"
     | "dataTypes"
     | "classLowerer"
     | "compileValue"
@@ -2435,6 +2436,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression.left,
                     )
                   : computed;
+        if (left.dataType?.kind === "undefined") {
+            this.context.emitDiscardedValue(left);
+            return this.context.compileValue(expression.right);
+        }
         if (left.kind === "json-null") {
             return this.context.compileValue(expression.right);
         }
@@ -8475,6 +8480,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : ".";
             const slot = `${narrowed.cpp}${access}${field.name}`;
             // A union arm's field is narrowed by its tag, not its storage.
+            if (field.presentForTags && field.type.kind === "undefined")
+                this.context.fail(
+                    ownerNode,
+                    "A tagged undefined field requires its discriminant for own-property membership.",
+                );
             if (field.presentForTags)
                 return field.type.kind === "optional"
                     ? optionalPresentCpp(slot)
@@ -10415,6 +10425,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * whatever it holds -- is `presenceCpp`'s.
      */
     public truthinessCondition(value: Value): string | undefined {
+        if (value.dataType?.kind === "undefined")
+            return `(static_cast<void>(${value.cpp}), false)`;
         if (value.kind === "promise")
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
@@ -10774,6 +10786,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     literal === undefined ||
                     (value.cpp === "std::nullopt" ? "undefined" : "null") ===
                         literal;
+                return equal !== negated ? "true" : "false";
+            }
+            if (value.dataType?.kind === "undefined") {
+                this.context.emitDiscardedValue(value);
+                const equal =
+                    loose || literal === undefined || literal === "undefined";
                 return equal !== negated ? "true" : "false";
             }
             if (value?.kind === "data" && value.dataType?.kind === "optional") {
@@ -11283,6 +11301,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (isOpaqueReference(value.dataType) ||
                 value.dataType.kind === "event-target" ||
                 value.dataType.kind === "iterator" ||
+                value.dataType.kind === "undefined" ||
                 value.dataType.kind === "function" ||
                 value.dataType?.kind === "enum" ||
                 value.dataType?.kind === "string" ||

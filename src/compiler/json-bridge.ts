@@ -29,6 +29,7 @@ interface JsonBridgeContext extends Pick<
     | "libraryGlobal"
     | "bindings"
     | "compileValue"
+    | "emitDiscardedValue"
     | "compileNumber"
     | "conditions"
     | "castNumber"
@@ -198,6 +199,10 @@ function compileStringify(
     }
     const argument = argumentAt(call, 0);
     const represented = context.compileValue(argument);
+    if (represented.dataType?.kind === "undefined") {
+        context.emitDiscardedValue(represented);
+        return { kind: "json-null", cpp: "std::nullopt" };
+    }
     const dataType = containsJsonValue(represented)
         ? jsonType
         : (represented.dataType ?? context.dataLowerer.dataTypeAt(argument));

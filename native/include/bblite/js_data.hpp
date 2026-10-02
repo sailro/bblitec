@@ -48,6 +48,11 @@
 
 namespace bbl::js {
 
+/** A required record field can hold undefined while retaining its own key. */
+struct Undefined {
+    friend bool operator==(Undefined, Undefined) = default;
+};
+
 /** Transfer a compiler-owned temporary into its source binding. */
 template <typename T> [[nodiscard]] T take_temporary(T& value) {
     static_assert(!std::is_const_v<T>);

@@ -215,6 +215,8 @@ inline void json_write(JsonWriter& writer, double value) { writer.number(value);
 
 inline void json_write(JsonWriter& writer, bool value) { writer.boolean(value); }
 
+inline void json_write(JsonWriter& writer, Undefined) { writer.null_value(); }
+
 inline void json_write(JsonWriter& writer, const std::string& value) { writer.string(value); }
 
 inline void json_write(JsonWriter& writer, const JsonValue& value);
@@ -895,6 +897,7 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
 }
 
 [[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
+[[nodiscard]] inline JsonValue json_value(Undefined) { return {}; }
 [[nodiscard]] inline JsonValue json_value(double value) { return JsonValue::from_number(value); }
 [[nodiscard]] inline JsonValue json_value(bool value) { return JsonValue::from_boolean(value); }
 [[nodiscard]] inline JsonValue json_value(const std::string& value) {

@@ -1978,6 +1978,8 @@ export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
 /** Field types for payloads; producers use the discriminated Value type. */
 export interface ValueFields {
+    /** Awaited void may hide a value erased by a source callback annotation. */
+    erasedVoidCompletion?: true;
     /** Exact immutable packaged response bytes retained by a text result. */
     packagedBodySource?: string;
     /** Closed packaged candidates of a generation-time Response. */

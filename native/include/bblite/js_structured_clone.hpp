@@ -96,6 +96,13 @@ template <typename T> struct CloneCodec {
     }
 };
 
+template <> struct CloneCodec<Undefined> {
+    static pal::CloneNode encode(pal::CloneWriter&, Undefined) { return pal::CloneUndefined{}; }
+    static void read_into(pal::CloneReader& reader, pal::CloneId id, Undefined&) {
+        reader.get<pal::CloneUndefined>(id);
+    }
+};
+
 template <typename T> struct CloneCodec<Ref<T>> {
     static pal::CloneId write(pal::CloneWriter& writer, const Ref<T>& value) {
         if (!value)

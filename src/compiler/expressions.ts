@@ -335,6 +335,8 @@ export function stringConcatPart(
         return `(${slotFoundCpp} ? ${text} : std::string("undefined"))`;
     }
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
+    if (value.dataType?.kind === "undefined")
+        return `(static_cast<void>(${value.cpp}), "undefined")`;
     if (
         value.nativeError &&
         value.recordProperties?.name &&
@@ -1343,6 +1345,12 @@ export class ExpressionLowerer {
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
                 : compiledOperand;
+            if (operand.dataType?.kind === "undefined") {
+                this.context.emitDiscardedValue(operand);
+                return staticStringValue("undefined", (text) =>
+                    this.context.cppString(text),
+                );
+            }
             if (operand.kind === "json-null") {
                 return staticStringValue(
                     operand.cpp === "std::nullopt" ? "undefined" : "object",
@@ -2964,6 +2972,7 @@ export class ExpressionLowerer {
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
+                value.dataType?.kind === "undefined" ||
                 // An absent value spells "undefined" or "null", as in a
                 // concatenation.
                 value.dataType?.kind === "optional"

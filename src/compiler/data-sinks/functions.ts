@@ -217,6 +217,11 @@ function valueFunction(
     // itself again refuses rather than recursing.
     const stored = storedSignature(lowerer, value);
     if (stored) {
+        if (dataType.undefinedCompletion && !stored.undefinedCompletion)
+            lowerer.context.fail(
+                node,
+                "A stored callback requires a proven undefined completion.",
+            );
         if (
             dataTypesEqual(
                 { ...stored, identity: true },

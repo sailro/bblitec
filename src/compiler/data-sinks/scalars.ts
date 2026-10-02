@@ -6,6 +6,7 @@ import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
 import { thrownMessage } from "../error-values.js";
+import { provenUndefinedValue } from "../undefined-values.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
@@ -261,6 +262,7 @@ const opaqueSink = {
 };
 
 export const scalarsSinks: DataSinkOperations<
+    | "undefined"
     | "error"
     | "event-target"
     | "search-params"
@@ -279,6 +281,38 @@ export const scalarsSinks: DataSinkOperations<
     | "json"
     | "borrowed-platform-event"
 > = {
+    undefined: {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (_type, lowerer, value, node) => {
+            if (value.dataType?.kind === "undefined") return value.cpp;
+            if (value.erasedVoidCompletion)
+                lowerer.context.fail(
+                    node,
+                    "A stored void field requires a proven undefined completion.",
+                );
+            if (
+                value.kind === "void" &&
+                !provenUndefinedValue(lowerer.context, node)
+            )
+                lowerer.context.fail(
+                    node,
+                    "A stored void field requires a proven undefined completion.",
+                );
+            if (
+                value.kind === "void" ||
+                (value.kind === "json-null" && value.cpp === "std::nullopt")
+            ) {
+                lowerer.context.emitDiscardedValue(value);
+                return "bbl::js::Undefined{}";
+            }
+            return undefined;
+        },
+    },
     error: {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(
