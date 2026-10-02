@@ -757,7 +757,8 @@ export class DataTypeRegistry {
             allocates: boolean;
         }
     >();
-    private readonly structNamesInProgress = new EmissionMap<
+    /** @unjournaled Scoped recursion stack; each insertion is removed in finally. */
+    private readonly structNamesInProgress = new Map<
         ts.Symbol | ts.Type | string,
         string
     >();
