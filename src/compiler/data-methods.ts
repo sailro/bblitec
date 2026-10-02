@@ -944,18 +944,35 @@ function compileKnownDataMethod(
         }
     }
     if (dataType?.kind === "iterator") {
-        if (method !== "next" || call.arguments.length !== 0)
+        if (!["next", "return"].includes(method) || call.arguments.length !== 0)
             lowerer.context.fail(
                 call,
-                "Stored collection iterators support next() without arguments.",
+                "Stored iterators support next() and return() without arguments.",
             );
         const result =
             lowerer.context.allocateTemporaryCppName("iterator_result");
+        if (dataType.asynchronous) {
+            const output = lowerer.context.dataTypes.ownedRecordType([
+                { sourceName: "done", type: { kind: "boolean" } },
+                {
+                    sourceName: "value",
+                    type: { kind: "optional", inner: dataType.element },
+                },
+            ]);
+            const cppType = lowerer.context.dataTypes.cppType(output);
+            return {
+                kind: "promise",
+                cpp: `bbl::js::Promise<${cppType}>::view(${narrowed.cpp}.${method === "return" ? "return_" : "next"}(), [](const auto& ${result}) { return bbl::js::make_ref<bblscene::${output.name}Data>(bblscene::${output.name}Data{${result}.done, ${result}.value}); })`,
+                promiseResult: lowerer.leafValue("", output),
+                promiseType: cppType,
+                dataType: { kind: "promise", result: output },
+            };
+        }
         lowerer.context.emit({
             kind: "declaration",
             type: "auto",
             name: result,
-            initializer: `${narrowed.cpp}.next()`,
+            initializer: `${narrowed.cpp}.${method === "return" ? "return_" : "next"}()`,
         });
         const nativeCaptures = [lowerer.context.registerNativeBinding(result)];
         return {
@@ -2976,7 +2993,7 @@ function compileSetDataMethod(
             : dataType.element;
         return lowerer.leafValue(
             `bbl::js::set_iterator<${lowerer.context.dataTypes.cppType(element)}, ${entries}>(${narrowed.cpp})`,
-            { kind: "iterator", element },
+            { kind: "iterator", element, traced: true },
         );
     }
     if (method === "forEach")

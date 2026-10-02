@@ -540,14 +540,17 @@ export class SharedClosureAnalysis {
                 // or IIFE: it can suspend past the caller's return. Its mutable
                 // outer bindings must therefore use the same cells as callbacks.
                 if (
-                    this.context.options.workers &&
                     isSupportedFunction(node) &&
-                    ts
-                        .getModifiers(node)
-                        ?.some(
-                            (modifier) =>
-                                modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                        )
+                    (("asteriskToken" in node &&
+                        node.asteriskToken !== undefined) ||
+                        (this.context.options.workers &&
+                            ts
+                                .getModifiers(node)
+                                ?.some(
+                                    (modifier) =>
+                                        modifier.kind ===
+                                        ts.SyntaxKind.AsyncKeyword,
+                                )))
                 ) {
                     addRoot(node);
                 }

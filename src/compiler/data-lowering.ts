@@ -7199,6 +7199,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
         node: ts.Node,
     ): string {
+        if (
+            dataType.kind === "iterator" &&
+            value.dataType?.kind === "iterator"
+        ) {
+            if (dataType.traced && !value.dataType.traced)
+                this.context.fail(
+                    node,
+                    "A generator cannot enter traced collection iterator storage.",
+                );
+            if (
+                dataType.asynchronous === value.dataType.asynchronous &&
+                dataTypesEqual(dataType.element, value.dataType.element)
+            ) {
+                this.context.useNativeValue(value);
+                return value.cpp;
+            }
+        }
         if (value.nativePromiseSettlement && dataType.kind === "function") {
             if (dataType.result)
                 this.context.fail(

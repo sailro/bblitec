@@ -848,6 +848,8 @@ class Compiler implements LoweringServices {
     private readonly nativeConstBindings =
         new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeStoredValues = new EmissionWeakSet<Value>();
+    private readonly iteratorStorageBindings =
+        new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] =
         emissionArray([]);
     private readonly realmEngineCaptures = new EmissionMap<
@@ -5704,6 +5706,11 @@ class Compiler implements LoweringServices {
                 value.sharedStorageCpp === undefined,
             ),
         ];
+        if (
+            value.dataType &&
+            this.dataTypes.carriesOpaqueIterator(value.dataType)
+        )
+            this.iteratorStorageBindings.add(value.nativeCaptures![0]!);
         for (const key of nativeCompanionKeys) {
             const companion = value[key];
             if (
@@ -5850,6 +5857,16 @@ class Compiler implements LoweringServices {
         }
         const identifiers = cppIdentifiers(lines.join("\n"));
         capture.retainReferenced(identifiers);
+        if (
+            byReference !== "call" &&
+            capture.nativeCaptures.some((binding) =>
+                this.iteratorStorageBindings.has(binding),
+            )
+        )
+            this.fail(
+                this.loweringStatements.at(-1)?.statement ?? this.sourceFile,
+                "Retained closures cannot capture opaque iterator storage until suspended frame cycles have traced ownership.",
+            );
         const localBindings = [...identifiers].filter(
             (name) =>
                 (this.nativeBindings.get(name)?.sequence ?? 0) >
@@ -5971,6 +5988,23 @@ class Compiler implements LoweringServices {
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {
         const frame = this.returnFrames.at(-1);
+        if (frame?.kind === "native" && frame.generator) {
+            if (statement.expression)
+                this.fail(
+                    statement,
+                    "Generator return values require a typed completion channel.",
+                );
+            this.emit({
+                kind: "control",
+                code:
+                    this.synchronousCleanupFrames.includes(frame) ||
+                    this.statements.needsReturnCompletion(statement)
+                        ? "throw bbl::js::GeneratorClose{};"
+                        : "co_return;",
+                transfer: "suspend",
+            });
+            return;
+        }
         const coroutine = frame?.kind === "native" && frame.coroutine;
         const returnKeyword = coroutine ? "co_return" : "return";
         const returnType = this.activeNativeReturnType();
@@ -5987,7 +6021,9 @@ class Compiler implements LoweringServices {
                       );
             this.emit({
                 kind: "control",
-                code: `co_return ${result};`,
+                code: this.statements.needsReturnCompletion(statement)
+                    ? `throw bbl::js::AsyncReturn<${returnType === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(returnType)}>(${result});`
+                    : `co_return ${result};`,
                 transfer: "suspend",
             });
             return;
@@ -6007,13 +6043,22 @@ class Compiler implements LoweringServices {
                 this.emitExpressionAsStatement(statement.expression);
             }
             this.emit(
-                coroutine ? "co_return bbl::js::PromiseVoid{};" : "return;",
+                coroutine
+                    ? this.statements.needsReturnCompletion(statement)
+                        ? "throw bbl::js::AsyncReturn<bbl::js::PromiseVoid>(bbl::js::PromiseVoid{});"
+                        : "co_return bbl::js::PromiseVoid{};"
+                    : "return;",
             );
             return;
         }
         if (!statement.expression) {
             if (returnType.kind === "optional") {
-                this.emit(`${returnKeyword} std::nullopt;`);
+                this.emit(
+                    coroutine &&
+                        this.statements.needsReturnCompletion(statement)
+                        ? `throw bbl::js::AsyncReturn<${this.dataTypes.cppType(returnType)}>(std::nullopt);`
+                        : `${returnKeyword} std::nullopt;`,
+                );
                 return;
             }
             this.fail(
@@ -6054,6 +6099,51 @@ class Compiler implements LoweringServices {
         this.emit(
             `${returnKeyword} ${this.movesReturnedLocal(statement, returned) ? `std::move(${returned})` : returned};`,
         );
+    }
+
+    public emitNativeYield(expression: ts.YieldExpression): void {
+        const frame = this.returnFrames.at(-1);
+        if (frame?.kind !== "native" || !frame.generator)
+            this.fail(expression, "Yield requires an active generator body.");
+        if (expression.asteriskToken || !expression.expression)
+            this.fail(
+                expression,
+                "Generator delegation and empty yields require a typed protocol channel.",
+            );
+        for (
+            let owner: ts.Node = expression.parent;
+            !ts.isFunctionLike(owner);
+            owner = owner.parent
+        ) {
+            if (
+                ts.isBlock(owner) &&
+                ts.isTryStatement(owner.parent) &&
+                owner.parent.finallyBlock === owner
+            )
+                this.fail(
+                    expression,
+                    "Yield in finally requires a resumable cleanup protocol.",
+                );
+        }
+        const value = frame.generator.asynchronous
+            ? this.asyncActivations.compileAsyncReturn(
+                  expression.expression,
+                  frame.generator.element,
+              )
+            : this.dataLowerer.compileForSink(
+                  expression.expression,
+                  frame.generator.element,
+              );
+        this.emit({
+            kind: "control",
+            code: `co_yield ${frame.generator.asynchronous ? `co_await bbl::js::generator_yield_value<${this.dataTypes.cppType(frame.generator.element)}>(${value})` : value};`,
+            transfer: "suspend",
+        });
+    }
+
+    public activeGeneratorType(): DataType<"iterator"> | undefined {
+        const frame = this.returnFrames.at(-1);
+        return frame?.kind === "native" ? frame.generator : undefined;
     }
 
     /**

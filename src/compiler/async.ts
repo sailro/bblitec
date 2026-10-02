@@ -425,6 +425,7 @@ export class AsyncLowerer {
               : undefined;
         if (
             !declaration ||
+            ("asteriskToken" in declaration && declaration.asteriskToken) ||
             !ts
                 .getModifiers(declaration)
                 ?.some(
@@ -456,6 +457,7 @@ export class AsyncLowerer {
         node: ts.Node,
     ): Value | undefined {
         if (
+            ("asteriskToken" in declaration && declaration.asteriskToken) ||
             !ts
                 .getModifiers(declaration)
                 ?.some(

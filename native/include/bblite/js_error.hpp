@@ -4,6 +4,25 @@
 
 namespace bbl::js {
 
+/** Source control transfers cross cleanup regions without entering source catch handlers. */
+struct AbruptCompletion {};
+struct LoopCompletion : AbruptCompletion {
+    explicit LoopCompletion(unsigned value) : target(value) {}
+    unsigned target;
+};
+
+inline bool is_throw_completion(const std::exception_ptr& value) {
+    if (!value)
+        return false;
+    try {
+        std::rethrow_exception(value);
+    } catch (const AbruptCompletion&) {
+        return false;
+    } catch (...) {
+        return true;
+    }
+}
+
 class NamedError final : public std::runtime_error {
 public:
     NamedError(std::string name, std::string message, std::exception_ptr cause = {})

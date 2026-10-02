@@ -115,9 +115,13 @@ export const containerKinds: DataKindOperations<
     },
     iterator: {
         cpp: (type, context) =>
-            `bbl::js::Iterator<${context.cppType(type.element)}>`,
-        key: (type, key) => `iterator(${key(type.element)})`,
-        equal: (left, right, equal) => equal(left.element, right.element),
+            `bbl::js::${type.asynchronous ? "AsyncIterator" : "Iterator"}<${context.cppType(type.element)}>`,
+        key: (type, key) =>
+            `${type.asynchronous ? "async-" : ""}${type.traced ? "traced-" : ""}iterator(${key(type.element)})`,
+        equal: (left, right, equal) =>
+            left.asynchronous === right.asynchronous &&
+            left.traced === right.traced &&
+            equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "always",

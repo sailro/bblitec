@@ -102,6 +102,10 @@ construction; a call its separate body cannot represent, or that would lose a st
 specializes inline. Closure environments are named structs of numbered captures, one per shape. Concrete
 capture types place shared bodies in their owning source unit; unresolved capture types use templates.
 
+Generator calls own initially suspended coroutine frames; iterator aliases share their pull position.
+Asynchronous cleanup carries pending return, exception and loop-exit completions across suspension.
+Explicit iterator close runs source cleanup; abandoning a suspended frame only releases its storage.
+
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Rebound parameters own their binding while object and container mutations preserve shared identity.
 Escaping callbacks capture copyable handles by value, including handles borrowed by local aliases or parameters.

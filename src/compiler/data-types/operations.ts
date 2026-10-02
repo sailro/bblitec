@@ -60,14 +60,15 @@ export function containsDataKind(
     fields: StructFieldTypes,
     signatures: boolean,
     seen: Set<string>,
+    matches?: (type: DataType) => boolean,
 ): boolean {
-    if (type.kind === target) return true;
+    if (type.kind === target && (!matches || matches(type))) return true;
     if (type.kind === "struct") {
         if (seen.has(type.name)) return false;
         seen.add(type.name);
     }
     return children(type, fields, signatures).some((child) =>
-        containsDataKind(child, target, fields, signatures, seen),
+        containsDataKind(child, target, fields, signatures, seen, matches),
     );
 }
 

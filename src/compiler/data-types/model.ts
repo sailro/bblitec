@@ -204,6 +204,8 @@ interface DataKinds {
     iterator: {
         kind: "iterator";
         element: DataType;
+        asynchronous?: true;
+        traced?: true;
     };
     span: {
         kind: "span";

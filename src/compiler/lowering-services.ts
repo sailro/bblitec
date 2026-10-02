@@ -73,6 +73,7 @@ export interface LoweringStatement {
 
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
+    generator?: DataType<"iterator">;
     /** A namespace-scope definition: the entry's bindings, its engine among them, are out of scope. */
     namespaceScope?: boolean;
     runtimeDataLoops?: boolean;
@@ -433,6 +434,8 @@ export interface LoweringServices {
     activeNativeReturnType(): DataType | "void" | undefined;
     activeInlineWrapper(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
+    emitNativeYield(expression: ts.YieldExpression): void;
+    activeGeneratorType(): DataType<"iterator"> | undefined;
     emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean;
     assignOptionalResourceValue(
         target: Value,

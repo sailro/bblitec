@@ -1166,7 +1166,7 @@ export class DataTypeRegistry {
             case "iterator":
             case "set":
                 return {
-                    kind: dataType.kind,
+                    ...dataType,
                     element: this.markStoredObjectReferences(dataType.element),
                 };
             case "map":
@@ -1644,13 +1644,28 @@ export class DataTypeRegistry {
                     "IterableIterator",
                     "IteratorObject",
                     "Iterator",
+                    "Generator",
+                    "AsyncGenerator",
+                    "AsyncIterableIterator",
+                    "AsyncIterator",
                 ].includes(symbolName)
             ) {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 const element = elementType
                     ? this.fromStoredTsType(elementType, node)
                     : undefined;
-                return element ? { kind: "iterator", element } : undefined;
+                return element
+                    ? {
+                          kind: "iterator",
+                          element,
+                          ...(symbolName === "SetIterator"
+                              ? { traced: true }
+                              : {}),
+                          ...(symbolName.startsWith("Async")
+                              ? { asynchronous: true }
+                              : {}),
+                      }
+                    : undefined;
             }
             if (symbolName === "ArrayLike") {
                 const [elementType] = this.checker.getTypeArguments(reference);
@@ -4076,6 +4091,18 @@ export class DataTypeRegistry {
             (name) => this.structFieldTypes(name),
             false,
             seen,
+        );
+    }
+
+    /** Iterator frames cannot currently describe every suspended local edge to the cycle collector. */
+    public carriesOpaqueIterator(type: DataType): boolean {
+        return containsDataKind(
+            type,
+            "iterator",
+            (name) => this.structFieldTypes(name),
+            false,
+            new Set(),
+            (candidate) => candidate.kind === "iterator" && !candidate.traced,
         );
     }
 

@@ -19,6 +19,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import { CompileError } from "./compile-error.js";
@@ -89,6 +90,7 @@ import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 export interface CallbackInvocationOptions {
     coroutine?: true;
     frameDriven?: true;
+    generator?: DataType<"iterator">;
 }
 
 const directCallBindingCache = new EmissionWeakMap<
@@ -888,16 +890,6 @@ export function resolveFunctionDeclaration(
     if (!declaration) {
         return undefined;
     }
-    if (
-        (ts.isFunctionExpression(declaration) ||
-            ts.isFunctionDeclaration(declaration)) &&
-        declaration.asteriskToken
-    ) {
-        fail(
-            declaration.asteriskToken,
-            "Generator functions are not supported.",
-        );
-    }
     for (const parameter of declaration.parameters) {
         if (
             !ts.isIdentifier(parameter.name) &&
@@ -1643,6 +1635,13 @@ export class UserFunctionLowerer {
             argumentValues,
         );
         return this.withCallTypeArguments(context, call, ir.declaration, () => {
+            if (
+                "asteriskToken" in ir.declaration &&
+                ir.declaration.asteriskToken
+            )
+                return inBodyScope(() =>
+                    this.lowerGenerator(context, ir, argumentValues, call),
+                );
             const asynchronous = inBodyScope(() =>
                 context.asyncActivations.compileAsyncCall(
                     ir.declaration,
@@ -1697,6 +1696,8 @@ export class UserFunctionLowerer {
         pinArguments = true,
         closedEffectsOnly = false,
     ): Value | undefined {
+        if ("asteriskToken" in ir.declaration && ir.declaration.asteriskToken)
+            return undefined;
         if (
             closedEffectsOnly &&
             ir.declaration.body &&
@@ -1787,6 +1788,8 @@ export class UserFunctionLowerer {
         const returnType =
             returned &&
             context.dataTypes.fromSharedReturnType(returned, ir.declaration);
+        if (returnType && context.dataTypes.carriesOpaqueIterator(returnType))
+            return undefined;
         if (
             !returned ||
             (returnType && !context.dataTypes.carriesFunction(returnType))
@@ -4018,7 +4021,13 @@ export class UserFunctionLowerer {
             );
         }
         const values = arguments_.slice(0, ir.parameters.length);
-        if (!body?.coroutine) {
+        if (
+            !body?.generator &&
+            "asteriskToken" in ir.declaration &&
+            ir.declaration.asteriskToken
+        )
+            return this.lowerGenerator(context, ir, values, callNode);
+        if (!body?.coroutine && !body?.generator) {
             const asynchronous = context.asyncActivations.compileAsyncCall(
                 ir.declaration,
                 values,
@@ -4053,7 +4062,7 @@ export class UserFunctionLowerer {
                         true,
                         false,
                     )
-                  : body?.coroutine || body?.frameDriven
+                  : body?.coroutine || body?.frameDriven || body?.generator
                     ? undefined
                     : this.trySharedCall(
                           context,
@@ -4068,14 +4077,7 @@ export class UserFunctionLowerer {
             context.emitDiscardedValue(shared);
             return { kind: "void", cpp: "" };
         }
-        return this.lower(
-            context,
-            ir,
-            values,
-            callNode,
-            discardReturn,
-            body?.coroutine ? { coroutine: true } : undefined,
-        );
+        return this.lower(context, ir, values, callNode, discardReturn, body);
     }
 
     /** Materializes a read-only closure as a copyable native function value. */
@@ -4202,12 +4204,40 @@ export class UserFunctionLowerer {
                 : dataType.result;
         const promiseType =
             resultType?.kind === "promise" ? resultType : undefined;
-        const bodyResult = asynchronous ? promiseType?.result : dataType.result;
-        const returnCpp = asynchronous
-            ? context.dataTypes.cppType(promiseType ?? { kind: "promise" })
-            : dataType.result
-              ? context.dataTypes.cppType(dataType.result)
-              : "void";
+        const generator =
+            "asteriskToken" in declaration && declaration.asteriskToken
+                ? resultType?.kind === "iterator"
+                    ? resultType
+                    : context.fail(
+                          declaration,
+                          "Stored generators require a typed iterator result.",
+                      )
+                : undefined;
+        if (generator?.traced)
+            context.fail(
+                declaration,
+                "A generator cannot declare traced collection iterator storage.",
+            );
+        if (
+            generator &&
+            declaration.parameters.some((parameter) => parameter.initializer)
+        )
+            context.fail(
+                declaration,
+                "Stored generators with default parameters require call-time initializer binding.",
+            );
+        const bodyResult = generator
+            ? undefined
+            : asynchronous
+              ? promiseType?.result
+              : dataType.result;
+        const returnCpp = generator
+            ? context.dataTypes.cppType(generator)
+            : asynchronous
+              ? context.dataTypes.cppType(promiseType ?? { kind: "promise" })
+              : dataType.result
+                ? context.dataTypes.cppType(dataType.result)
+                : "void";
         const ownIdentifier = this.referencedSelfIdentifier(declaration);
         const selfIdentifier =
             ownIdentifier &&
@@ -4264,7 +4294,10 @@ export class UserFunctionLowerer {
         context.beginNativeFunctionBody(
             bodyResult,
             asynchronous && !promiseType,
-            { coroutine: asynchronous },
+            {
+                coroutine: asynchronous && !generator,
+                ...(generator ? { generator, runtimeDataLoops: true } : {}),
+            },
         );
         let closure: CapturedClosure;
         try {
@@ -4334,8 +4367,21 @@ export class UserFunctionLowerer {
                     }
                     const terminated = emitReachableStatements(
                         context,
-                        ir.statements,
+                        generator &&
+                            declaration.body &&
+                            ts.isBlock(declaration.body)
+                            ? declaration.body.statements
+                            : ir.statements,
                     );
+                    if (generator) {
+                        if (!terminated)
+                            context.emit({
+                                kind: "control",
+                                code: "co_return;",
+                                transfer: "suspend",
+                            });
+                        return;
+                    }
                     if (!terminated && ir.returnExpression) {
                         if (asynchronous) {
                             context.emit({
@@ -4376,11 +4422,14 @@ export class UserFunctionLowerer {
                         );
                     }
                 });
-            closure = asynchronous
-                ? context.withOwnedCallbackBody(() =>
-                      context.asyncActivations.withAsyncActivation(compileBody),
-                  )
-                : compileBody();
+            closure =
+                asynchronous || generator
+                    ? context.withOwnedCallbackBody(() =>
+                          context.asyncActivations.withAsyncActivation(
+                              compileBody,
+                          ),
+                      )
+                    : compileBody();
         } finally {
             context.endNativeFunctionBody();
             context.bindings.popScope();
@@ -4400,39 +4449,40 @@ export class UserFunctionLowerer {
                   ? "{bbl::js::next_callback_identity(), "
                   : `{${context.callbackIdentity(declaration, owner)}u, `
             : " = ";
-        const lambda = asynchronous
-            ? renderAsyncClosure(
-                  closure,
-                  parameters.map(({ type, cppName: name }) => ({
-                      type: context.dataTypes.cppType(type),
-                      dataType: type,
-                      name,
-                  })),
-                  returnCpp,
-                  !promiseType,
-                  (closure, type, declarations, args, environment) =>
-                      context.nativeEmission.renderSharedCoroutine(
-                          closure,
-                          type,
-                          declaration,
-                          declarations,
-                          args,
-                          environment,
-                          parameters.map(({ cppName }) => cppName),
-                      ),
-              )
-            : context.nativeEmission.renderSharedClosure(
-                  closure,
-                  returnCpp,
-                  declaration,
-                  parameters
-                      .map(
-                          ({ type, cppName: name }) =>
-                              `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`,
-                      )
-                      .join(", "),
-                  parameters.map(({ cppName }) => cppName),
-              );
+        const lambda =
+            asynchronous || generator
+                ? renderAsyncClosure(
+                      closure,
+                      parameters.map(({ type, cppName: name }) => ({
+                          type: context.dataTypes.cppType(type),
+                          dataType: type,
+                          name,
+                      })),
+                      returnCpp,
+                      !promiseType && !generator,
+                      (closure, type, declarations, args, environment) =>
+                          context.nativeEmission.renderSharedCoroutine(
+                              closure,
+                              type,
+                              declaration,
+                              declarations,
+                              args,
+                              environment,
+                              parameters.map(({ cppName }) => cppName),
+                          ),
+                  )
+                : context.nativeEmission.renderSharedClosure(
+                      closure,
+                      returnCpp,
+                      declaration,
+                      parameters
+                          .map(
+                              ({ type, cppName: name }) =>
+                                  `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`,
+                          )
+                          .join(", "),
+                      parameters.map(({ cppName }) => cppName),
+                  );
         context.emit(
             selfIdentifier
                 ? dataType.identity
@@ -4604,14 +4654,102 @@ export class UserFunctionLowerer {
         }
     }
 
+    private lowerGenerator(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        arguments_: readonly Value[],
+        node: ts.Node,
+    ): Value {
+        const signature = this.checker.getSignatureFromDeclaration(
+            ir.declaration,
+        );
+        const type =
+            signature &&
+            context.dataTypes.fromTsType(
+                this.checker.getReturnTypeOfSignature(signature),
+                ir.declaration,
+            );
+        if (type?.kind !== "iterator")
+            return context.fail(
+                node,
+                "A generator requires a typed yielded value.",
+            );
+        if (type.traced)
+            context.fail(
+                node,
+                "A generator cannot declare traced collection iterator storage.",
+            );
+        if (type.asynchronous && !context.options.workers)
+            throw new ApplicationRealmRequired();
+        context.reachJsData();
+        const values = arguments_.map((value) =>
+            context.bindings.pinValueToTemporary(value, "generator_argument"),
+        );
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
+        try {
+            this.bindCallParameters(context, ir, values, node);
+            const compileBody = () =>
+                context.captureManagedClosureLines(() => {
+                    this.lower(context, ir, values, node, false, {
+                        generator: type,
+                    });
+                });
+            const closure = context.withOwnedCallbackBody(() =>
+                type.asynchronous
+                    ? context.asyncActivations.withAsyncActivation(compileBody)
+                    : compileBody(),
+            );
+            return context.dataValue(
+                context.nativeEmission.renderSharedCoroutine(
+                    closure,
+                    context.dataTypes.cppType(type),
+                    ir.declaration,
+                ),
+                type,
+            );
+        } finally {
+            context.bindings.popScope();
+        }
+    }
+
+    private bindCallParameters(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): void {
+        ir.parameters.forEach((parameter, index) => {
+            const value = this.parameterValue(
+                context,
+                parameter,
+                arguments_[index],
+                ts.isCallExpression(callNode)
+                    ? callNode.arguments[index]
+                    : undefined,
+            );
+            this.bindSpecializedParameter(
+                context,
+                ir.declaration,
+                parameter,
+                value,
+            );
+        });
+    }
+
     private lower(
         context: UserFunctionContext,
         ir: UserFunctionIr,
         arguments_: readonly Value[],
         callNode: ts.Node,
         discardReturn = false,
-        body?: { coroutine: true },
+        body?: CallbackInvocationOptions,
     ): Value {
+        if (
+            !body?.generator &&
+            "asteriskToken" in ir.declaration &&
+            ir.declaration.asteriskToken
+        )
+            return this.lowerGenerator(context, ir, arguments_, callNode);
         if (this.active.has(ir.declaration)) {
             context.fail(
                 callNode,
@@ -4626,23 +4764,35 @@ export class UserFunctionLowerer {
             });
         context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
-            ir.parameters.forEach((parameter, index) => {
-                const argument = arguments_[index];
-                const value = this.parameterValue(
-                    context,
-                    parameter,
-                    argument,
-                    ts.isCallExpression(callNode)
-                        ? callNode.arguments[index]
-                        : undefined,
-                );
-                this.bindSpecializedParameter(
-                    context,
-                    ir.declaration,
-                    parameter,
-                    value,
-                );
-            });
+            if (!body?.generator)
+                this.bindCallParameters(context, ir, arguments_, callNode);
+            if (body?.generator) {
+                context.beginNativeFunctionBody(undefined, false, {
+                    generator: body.generator,
+                    runtimeDataLoops: true,
+                });
+                try {
+                    const block = ir.declaration.body;
+                    if (!block || !ts.isBlock(block))
+                        context.fail(
+                            ir.declaration,
+                            "A generator requires a statement body.",
+                        );
+                    const terminated = emitReachableStatements(
+                        context,
+                        block.statements,
+                    );
+                    if (!terminated)
+                        context.emit({
+                            kind: "control",
+                            code: "co_return;",
+                            transfer: "suspend",
+                        });
+                    return { kind: "void", cpp: "" };
+                } finally {
+                    context.endNativeFunctionBody();
+                }
+            }
             if (ir.needsValueLambda) {
                 if (body?.coroutine) {
                     // The caller owns this coroutine frame. Its early returns
@@ -5096,7 +5246,23 @@ export class UserFunctionLowerer {
         const leadingStatements = finalReturn
             ? body.statements.slice(0, -1)
             : body.statements;
-        const needsValueLambda = this.containsValueReturn(leadingStatements);
+        const needsValueLambda =
+            this.containsValueReturn(leadingStatements) ||
+            someAnalysisNode(
+                body,
+                (node) =>
+                    (ts.isForOfStatement(node) && !!node.awaitModifier) ||
+                    (ts.isTryStatement(node) &&
+                        !!node.finallyBlock &&
+                        someAnalysisNode(
+                            node.finallyBlock,
+                            (child) =>
+                                ts.isAwaitExpression(child) ||
+                                ts.isReturnStatement(child),
+                            { functions: "skip" },
+                        )),
+                { functions: "skip" },
+            );
         const statements = needsValueLambda
             ? body.statements
             : leadingStatements;

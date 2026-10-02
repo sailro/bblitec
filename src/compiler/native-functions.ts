@@ -352,6 +352,12 @@ export class NativeFunctionLowerer {
             callee,
             (node, message) => this.context.fail(node, message),
         );
+        if (
+            declaration &&
+            "asteriskToken" in declaration &&
+            declaration.asteriskToken
+        )
+            return undefined;
         if (!declaration) {
             return undefined;
         }
@@ -396,12 +402,16 @@ export class NativeFunctionLowerer {
         }
         if (
             signature.returnType &&
-            this.context.dataTypes.carriesFunction(signature.returnType)
+            (this.context.dataTypes.carriesFunction(signature.returnType) ||
+                this.context.dataTypes.carriesOpaqueIterator(
+                    signature.returnType,
+                ))
         ) {
             // A closure-bearing result can capture the entry engine and any
             // locals selected while the factory runs. Keep the factory
             // specialized inline; a namespace data function has neither the
             // entry engine binding nor JavaScript closure lifetime.
+            // Iterator factories also retain their actual traced producer type.
             return undefined;
         }
         if (
