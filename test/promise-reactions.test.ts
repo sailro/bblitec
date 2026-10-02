@@ -31,6 +31,10 @@ test("promise boundaries snapshot scalar Map lookups before source mutation", (t
             values.set("missing",13);
             if(await settled!==3||await returned!==5||await reaction!==7||await argument!==11||await missing!==undefined)
                 throw new Error("promise payload aliases a rebound map slot");
+            const snapshot=await settled;
+            const forwarded=settled.then(value=>value);
+            if(snapshot!==3||await forwarded!==3)
+                throw new Error("promise consumer re-reads the original map slot");
             values.delete("settled");values.clear();
             if(await settled!==3||await returned!==5||await reaction!==7||await argument!==11||await missing!==undefined)
                 throw new Error("promise payload depends on a deleted map slot");
