@@ -75,6 +75,41 @@ test("CSS feature scans ignore custom values, strings and comments", () => {
     assert.equal(result.manifest.deferredCapabilities, undefined);
 });
 
+test("deferred grid contracts retain strict surrounding syntax validation", () => {
+    for (const value of [
+        "10% bananas(",
+        "[start] unknown",
+        "subgrid broken",
+        "10em repeat(2,)",
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(
+                    prefix +
+                        `panel.style.cssText=${JSON.stringify(`grid-template-columns:${value}`)};`,
+                    { deferredCapabilities },
+                ),
+            /Retained UI style/,
+        );
+    }
+    for (const value of [
+        "[start] 1fr [end]",
+        "10% 2rem",
+        "repeat(2, minmax(1em, 1fr))",
+        "subgrid [first]",
+    ]) {
+        const result = compileSource(
+            prefix +
+                `panel.style.cssText=${JSON.stringify(`grid-template-columns:${value}`)};`,
+            { deferredCapabilities },
+        );
+        assert.equal(
+            result.manifest.deferredCapabilities?.[0]?.id,
+            "css:grid-tracks:grid-template-columns",
+        );
+    }
+});
+
 test("CSS stubs evaluate values once and throw at each reached installation", (t) => {
     const directory = resolve("artifacts/deferred-ui-style");
     mkdirSync(directory, { recursive: true });

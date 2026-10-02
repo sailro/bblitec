@@ -260,37 +260,27 @@ export class DeferredCapabilities {
                     parameterType &&
                     context.dataTypes.fromTsType(parameterType, argument);
                 const value = context.compileValue(argument);
-                if (expected) {
-                    const cpp = context.dataLowerer.compileKnownValueForSink(
-                        value,
-                        expected,
-                        argument,
-                    );
-                    context.emit({
-                        kind: "expression",
-                        code: `static_cast<void>(${cpp});`,
-                    });
-                } else {
-                    // An unrepresented parameter is not permission to hide its authored value.
-                    const actual = context.dataTypes.fromTsType(
+                // An unrepresented parameter cannot hide its authored value.
+                const owned =
+                    expected ??
+                    context.dataTypes.fromTsType(
                         context.checker.getTypeAtLocation(argument),
                         argument,
                     );
-                    if (!actual)
-                        return context.fail(
-                            argument,
-                            `Deferred capability '${descriptor.api}' argument has no owned native representation.`,
-                        );
-                    const cpp = context.dataLowerer.compileKnownValueForSink(
-                        value,
-                        actual,
+                if (!owned)
+                    return context.fail(
                         argument,
+                        `Deferred capability '${descriptor.api}' argument has no owned native representation.`,
                     );
-                    context.emit({
-                        kind: "expression",
-                        code: `static_cast<void>(${cpp});`,
-                    });
-                }
+                const cpp = context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    owned,
+                    argument,
+                );
+                context.emit({
+                    kind: "expression",
+                    code: `static_cast<void>(${cpp});`,
+                });
             }
             return this.emitKnown(
                 call,

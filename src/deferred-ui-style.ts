@@ -3,8 +3,9 @@ import {
     stripUiCssComments,
     uiCssBlockEnd,
 } from "./ui-css-syntax.js";
+import { supportedUiGridTracks } from "./ui-grid.js";
 
-/** Missing rendering features, admitted only at an explicit throwing operation. */
+/** Missing projection contracts, admitted only at an explicit throwing operation. */
 const properties = new Set([
     "aspect-ratio",
     "zoom",
@@ -65,15 +66,33 @@ export function deferredUiStyleCapability(
 ): string | undefined {
     if (properties.has(property)) return `css:property:${property}`;
     if (value === undefined) return undefined;
-    // Recognize supported CSS features absent from the native track model, not
-    // every rejected track string (which also includes malformed declarations).
-    if (
-        /^grid-(?:template|auto)-(?:columns|rows)$/.test(property) &&
-        /(?:\bsubgrid\b|\[[\w -]+\]|(?:\d|\.\d)(?:%|(?:em|rem|vw|vh)\b))/i.test(
-            value,
-        )
-    )
-        return `css:grid-tracks:${property}`;
+    if (/^grid-(?:template|auto)-(?:columns|rows)$/.test(property)) {
+        // Validate the surrounding grammar with the same track parser as strict
+        // admission. Replacing a known missing unit/name must not admit malformed
+        // function syntax or an unrelated unknown track token.
+        let missing = false;
+        const explicit = property.startsWith("grid-template-");
+        let represented = stripUiCssComments(value).trim().toLowerCase();
+        if (explicit)
+            represented = represented.replace(
+                /\[\s*[-_a-z][-_a-z0-9]*(?:\s+[-_a-z][-_a-z0-9]*)*\s*\]/g,
+                () => {
+                    missing = true;
+                    return " ";
+                },
+            );
+        if (explicit && represented.trim() === "subgrid")
+            return `css:grid-tracks:${property}`;
+        represented = represented.replace(
+            /(?:\d+(?:\.\d*)?|\.\d+)(?:%|(?:em|rem|vw|vh)\b)/g,
+            () => {
+                missing = true;
+                return "1px";
+            },
+        );
+        if (missing && supportedUiGridTracks(represented, !explicit))
+            return `css:grid-tracks:${property}`;
+    }
     return undefined;
 }
 
