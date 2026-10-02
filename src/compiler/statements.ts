@@ -299,7 +299,7 @@ export class StatementLowerer {
     private readonly cleanupRegions = emissionArray<{
         node: ts.Node;
         returns: boolean;
-        jumps: Map<ts.BreakStatement | ts.ContinueStatement, number>;
+        jumps: Set<ts.BreakStatement | ts.ContinueStatement>;
     }>();
 
     public needsReturnCompletion(statement: ts.ReturnStatement): boolean {
@@ -329,14 +329,10 @@ export class StatementLowerer {
             if (current === region.node) {
                 if (!statement.label && ts.isIterationStatement(current, false))
                     return false;
-                let target = region.jumps.get(statement);
-                if (target === undefined) {
-                    target = statement.pos + 1;
-                    region.jumps.set(statement, target);
-                }
+                region.jumps.add(statement);
                 context.emit({
                     kind: "control",
-                    code: `throw bbl::js::LoopCompletion(${target}u);`,
+                    code: `throw bbl::js::LoopCompletion(${statement.pos + 1}u);`,
                     transfer: "throw",
                 });
                 return true;
@@ -1457,10 +1453,7 @@ export class StatementLowerer {
         const region = {
             node: statement,
             returns: false,
-            jumps: new EmissionMap<
-                ts.BreakStatement | ts.ContinueStatement,
-                number
-            >(),
+            jumps: new EmissionSet<ts.BreakStatement | ts.ContinueStatement>(),
         };
         const pending = context.allocateTemporaryCppName("cleanup_exception");
         this.cleanupRegions.push(region);
@@ -1525,10 +1518,10 @@ export class StatementLowerer {
             const jump = context.allocateTemporaryCppName("cleanup_jump");
             context.emit(`} catch (const bbl::js::LoopCompletion& ${jump}) {`);
             context.increaseIndent();
-            for (const [source, target] of region.jumps) {
+            for (const source of region.jumps) {
                 context.emit({
                     kind: "open",
-                    code: `if (${jump}.target == ${target}u) {`,
+                    code: `if (${jump}.target == ${source.pos + 1}u) {`,
                 });
                 context.increaseIndent();
                 this.lowerStatement(context, source);
