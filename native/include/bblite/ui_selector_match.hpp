@@ -22,7 +22,7 @@ template <class Tree> class UiSelectorMatcher {
         std::int64_t index = 0, count = 0;
         for (std::size_t child = 0; child < tree.child_count(parent); ++child) {
             const auto candidate = tree.child(parent, child);
-            if (!tree.element(candidate) || (of_type && tree.tag(candidate) != tree.tag(element)))
+            if (!tree.element(candidate) || (of_type && !tree.same_type(candidate, element)))
                 continue;
             ++count;
             if (candidate == element)
@@ -52,7 +52,7 @@ public:
     bool matches(Node element, const UiSelectorTest& test) const {
         switch (test.kind) {
         case UiSelectorTestKind::Tag:
-            return tree.tag(element) == test.name;
+            return tree.matches_tag(element, test.name);
         case UiSelectorTestKind::Id:
             return tree.attribute(element, "id") == std::optional<std::string_view>{test.name};
         case UiSelectorTestKind::Class:

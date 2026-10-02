@@ -523,6 +523,8 @@ export function isDomElementType(symbol: ts.Symbol): boolean {
         declaredInDomLibrary(symbol) &&
         (symbol.name === "Element" ||
             symbol.name === "HTMLElement" ||
+            symbol.name === "SVGElement" ||
+            /^SVG[A-Za-z0-9]*Element$/.test(symbol.name) ||
             /^HTML[A-Za-z0-9]*Element$/.test(symbol.name))
     );
 }

@@ -55,6 +55,7 @@ export interface UiSelectorStep {
 
 export function parseUiSelectorSequence(
     source: string,
+    options: { preserveNames?: boolean } = {},
     depth = 0,
 ): UiSelectorStep[] | undefined {
     if (depth > 64) return undefined;
@@ -69,7 +70,9 @@ export function parseUiSelectorSequence(
             if (tag[1] !== "*")
                 tests.push({
                     kind: "tag",
-                    name: tag[1]!.toLowerCase(),
+                    name: options.preserveNames
+                        ? tag[1]!
+                        : tag[1]!.toLowerCase(),
                     value: "",
                 });
             rest = rest.slice(tag[0].length);
@@ -99,7 +102,9 @@ export function parseUiSelectorSequence(
                     return undefined;
                 tests.push({
                     kind: value === undefined ? "attribute" : "equals",
-                    name: attribute[1]!.toLowerCase(),
+                    name: options.preserveNames
+                        ? attribute[1]!
+                        : attribute[1]!.toLowerCase(),
                     value: value ?? "",
                 });
                 rest = rest.slice(attribute[0].length);
@@ -146,6 +151,7 @@ export function parseUiSelectorSequence(
                                 relative && /^[>+~]/.test(part);
                             const sequence = parseUiSelectorSequence(
                                 leadingCombinator ? `* ${part}` : part,
+                                options,
                                 depth + 1,
                             );
                             if (!sequence) return undefined;

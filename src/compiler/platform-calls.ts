@@ -1129,12 +1129,30 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "createElement" &&
+            (callee.name.text === "createElement" ||
+                callee.name.text === "createElementNS") &&
             this.context.libraryGlobal(callee.expression) === "document"
         ) {
-            this.context.expectArgumentCount(call, 1, 1);
-            const tag = this.context.compileStringLiteral(argumentAt(call, 0));
-            const normalizedTag = tag.toLowerCase();
+            const svg = callee.name.text === "createElementNS";
+            this.context.expectArgumentCount(call, svg ? 2 : 1, svg ? 2 : 1);
+            if (
+                svg &&
+                this.context.compileStringLiteral(argumentAt(call, 0)) !==
+                    "http://www.w3.org/2000/svg"
+            )
+                this.context.fail(
+                    call,
+                    "Native UI createElementNS supports only the SVG namespace.",
+                );
+            const tag = this.context.compileStringLiteral(
+                argumentAt(call, svg ? 1 : 0),
+            );
+            const normalizedTag = svg ? tag : tag.toLowerCase();
+            if (svg && !["svg", "path", "rect", "circle"].includes(tag))
+                this.context.fail(
+                    call,
+                    `Native SVG element '${tag}' is outside the bounded svg/path/rect/circle subset.`,
+                );
             if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                 this.context.fail(
                     argumentAt(call, 0),
@@ -1149,11 +1167,12 @@ export class PlatformCalls {
             }
             const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
+            if (svg) this.context.reachFeature("ui:inline-svg", call);
             const uiStaticId = this.ui.createUiStaticElement(normalizedTag);
             this.ui.uiStaticIdsByCreation.set(call, uiStaticId);
             return {
                 kind: "ui-element",
-                cpp: `bbl::ui_create_element(${engine}, ${this.context.cppString(normalizedTag)})`,
+                cpp: `bbl::ui_create_${svg ? "svg_" : ""}element(${engine}, ${this.context.cppString(normalizedTag)})`,
                 engineCpp: engine,
                 uiTag: normalizedTag,
                 uiStaticId,
@@ -1728,7 +1747,10 @@ export class PlatformCalls {
         }
         if (element && callee.name.text === "removeAttribute") {
             this.context.expectArgumentCount(call, 1, 1);
-            const name = this.ui.uiAttributeName(argumentAt(call, 0));
+            const sourceName = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
+            const name = sourceName.toLowerCase();
             const engine = this.context.requireEngine(element, call);
             if (name === "class" || name === "id")
                 this.ui.recordUiStaticAttribute(
@@ -1740,12 +1762,15 @@ export class PlatformCalls {
             else if (name === "style") this.ui.recordUiStaticStyle(element, "");
             return {
                 kind: "void",
-                cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(name)})`,
+                cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(sourceName)})`,
             };
         }
         if (element && callee.name.text === "setAttribute") {
             this.context.expectArgumentCount(call, 2, 2);
-            const name = this.ui.uiAttributeName(argumentAt(call, 0));
+            const sourceName = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
+            const name = sourceName.toLowerCase();
             const engine = this.context.requireEngine(element, call);
             const browserFile = this.ui.compileUiBrowserFileAttribute(
                 element,
@@ -1803,7 +1828,7 @@ export class PlatformCalls {
                 kind: "void",
                 cpp:
                     `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
-                    `${this.context.cppString(name)}, ` +
+                    `${this.context.cppString(sourceName)}, ` +
                     `${value})`,
             };
         }
@@ -2207,7 +2232,9 @@ export class PlatformCalls {
         this.context.expectArgumentCount(call, 1, 1);
         const source = this.context.compileStringLiteral(argumentAt(call, 0));
         const selectors = splitUiSelectorList(source).map((part) => {
-            const sequence = parseUiSelectorSequence(part);
+            const sequence = parseUiSelectorSequence(part, {
+                preserveNames: true,
+            });
             if (!sequence)
                 this.context.fail(
                     call,

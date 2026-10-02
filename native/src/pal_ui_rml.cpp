@@ -57,6 +57,7 @@
 #include "pal_ui_style_properties.hpp"
 #include "pal_ui_background.hpp"
 #include "pal_ui_text.hpp"
+#include "pal_ui_svg.hpp"
 #include "pal_system_preferences.hpp"
 
 #include <algorithm>
@@ -325,7 +326,15 @@ struct RetainedUiSelectorTree {
     bool element(Node node) const {
         return valid(node) && node != document && ui_element(engine, node).tag != "#text";
     }
-    std::string_view tag(Node node) const { return ui_element(engine, node).tag; }
+    bool matches_tag(Node node, const std::string& name) const {
+        const auto& record = ui_element(engine, node);
+        return record.tag == (record.svg_namespace ? name : js::string_lower(name));
+    }
+    bool same_type(Node a, Node b) const {
+        const auto& first = ui_element(engine, a);
+        const auto& second = ui_element(engine, b);
+        return first.svg_namespace == second.svg_namespace && first.tag == second.tag;
+    }
     Node parent(Node node) const {
         if (node == document)
             return {};
@@ -346,8 +355,9 @@ struct RetainedUiSelectorTree {
                                 : ui_element(engine, node).children.at(index);
     }
     std::optional<std::string_view> attribute(Node node, const std::string& name) const {
-        const auto& attributes = ui_element(engine, node).attributes;
-        const auto found = attributes.find(name);
+        const auto& record = ui_element(engine, node);
+        const auto& attributes = record.attributes;
+        const auto found = attributes.find(record.svg_namespace ? name : js::string_lower(name));
         return found == attributes.end() ? std::nullopt
                                          : std::optional<std::string_view>{found->second};
     }
@@ -432,6 +442,14 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
         element.canvas.emplace();
     engine.ui_elements.push_back(std::move(element));
     mark_ui_changed(engine);
+    return handle;
+}
+
+UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag) {
+    if (tag != "svg" && tag != "path" && tag != "rect" && tag != "circle")
+        throw std::runtime_error("Unsupported retained SVG tag.");
+    const auto handle = ui_create_element(engine, tag);
+    ui_element(engine, handle).svg_namespace = true;
     return handle;
 }
 
@@ -579,6 +597,8 @@ UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id) {
 }
 
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
+    if (pal::ui_svg_shape(ui_element(engine, element)))
+        throw std::runtime_error("SVG shape geometry reads require SVG DOM layout.");
     if (engine.ui_measure_element)
         return engine.ui_measure_element(engine, element);
     UiElementRecord& record = ui_element(engine, element);
@@ -590,6 +610,8 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
 }
 
 std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property) {
+    if (pal::ui_svg_shape(ui_element(engine, element)))
+        throw std::runtime_error("SVG shape computed styles require SVG DOM layout.");
     if (UiElementRecord& record = ui_element(engine, element); !record.computed_style_requested) {
         record.computed_style_requested = true;
         // A Window display learns of the request through the next document snapshot.
@@ -863,13 +885,16 @@ UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint
 
 std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
     const UiElementRecord& record = ui_element(engine, element);
-    const auto found = record.attributes.find(std::string(name));
+    const auto found = record.attributes.find(
+        record.svg_namespace ? std::string(name) : js::string_lower(std::string(name)));
     return found == record.attributes.end() ? std::string{} : found->second;
 }
 js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle element,
                                            std::string_view name) {
-    const auto& attributes = ui_element(engine, element).attributes;
-    const auto found = attributes.find(std::string(name));
+    const auto& record = ui_element(engine, element);
+    const auto& attributes = record.attributes;
+    const auto found = attributes.find(record.svg_namespace ? std::string(name)
+                                                            : js::string_lower(std::string(name)));
     return found == attributes.end() ? js::Nullable<std::string>{}
                                      : js::Nullable<std::string>{found->second};
 }
@@ -977,10 +1002,14 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     if (name.empty()) {
         throw std::runtime_error("Native UI attribute name cannot be empty.");
     }
+    UiElementRecord& record = ui_element(engine, element);
+    if (!record.svg_namespace)
+        name = js::string_lower(std::move(name));
+    else
+        pal::ui_validate_svg_attribute(record, name, value);
     if (name == "hidden" && ascii_iequals(value, "until-found")) {
         throw std::runtime_error("Native UI hidden='until-found' requires find-in-page support.");
     }
-    UiElementRecord& record = ui_element(engine, element);
     const auto existing = record.attributes.find(name);
 #if BBLITE_HAS_BROWSER_FILE
     if (name == "type" && record.file_input && !ascii_iequals(value, "file"))
@@ -1026,12 +1055,15 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
 }
 
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
-    return ui_element(engine, element).attributes.contains(std::string(name));
+    const auto& record = ui_element(engine, element);
+    return record.attributes.contains(record.svg_namespace ? std::string(name)
+                                                           : js::string_lower(std::string(name)));
 }
 
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
-    const std::string normalized = js::string_lower(std::string(name));
     auto& record = ui_element(engine, element);
+    const std::string normalized =
+        record.svg_namespace ? std::string(name) : js::string_lower(std::string(name));
 #if BBLITE_HAS_BROWSER_FILE
     if (normalized == "type" && record.file_input)
         throw std::runtime_error("Removing the type of a native file input is not represented.");
@@ -3093,6 +3125,7 @@ struct ProjectedUiElement {
     Rml::Element* element = nullptr;
     std::string text;
     std::string inner_rml;
+    std::string svg_markup;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
     std::vector<std::string> style_property_order;
@@ -4862,6 +4895,8 @@ struct UiRmlRuntime {
         invalidate_gradient_text();
         ensure_projection_size();
         const UiElementRecord& record = ui_element(engine, handle);
+        if (ui_svg_shape(record))
+            throw std::runtime_error("An SVG shape can render only inside a retained SVG root.");
         if (record.tag == "#text") {
             ProjectedUiElement& projected = handle_at(projected_elements, handle);
             projected = {};
@@ -4896,7 +4931,11 @@ struct UiRmlRuntime {
         for (const auto& [name, source_value] : record.attributes) {
             if (name == "style")
                 continue;
-            raw->SetAttribute(name, projected_attribute_value(name, source_value));
+            raw->SetAttribute(name,
+                              projected_attribute_value(
+                                  name, record.svg_namespace && (name == "fill" || name == "stroke")
+                                            ? ui_svg_paint(source_value)
+                                            : source_value));
         }
         if (record.tag == "input" && record.checked) {
             if (*record.checked)
@@ -4939,6 +4978,11 @@ struct UiRmlRuntime {
         projected.style_properties = record.style_properties;
         projected.style_property_order = record.style_property_order;
         attach_listeners(projected, handle);
+        if (record.svg_namespace) {
+            sync_svg_element(handle, *raw, true);
+            parent.AppendChild(std::move(element));
+            return;
+        }
         for (const UiElementHandle child : record.children) {
             if (ui_element(engine, child).tag != "style")
                 append_element(*raw, child);
@@ -5086,6 +5130,8 @@ struct UiRmlRuntime {
         }
         const bool text_changed = projected.text != record.text;
         const bool inner_rml_changed = projected.inner_rml != record.inner_rml;
+        const bool svg_attributes_changed =
+            record.svg_namespace && projected.attributes != record.attributes;
         const Rml::String active_gradient = raw.GetProperty<Rml::String>("bbl-text-gradient");
         const bool had_gradient = active_gradient.find('|') != Rml::String::npos;
 
@@ -5100,7 +5146,11 @@ struct UiRmlRuntime {
                 continue;
             const auto existing = projected.attributes.find(name);
             if (existing == projected.attributes.end() || existing->second != value) {
-                raw.SetAttribute(name, projected_attribute_value(name, value));
+                raw.SetAttribute(
+                    name, projected_attribute_value(
+                              name, record.svg_namespace && (name == "fill" || name == "stroke")
+                                        ? ui_svg_paint(value)
+                                        : value));
             }
         }
         if (record.tag == "input" &&
@@ -5185,6 +5235,12 @@ struct UiRmlRuntime {
         projected.style_properties = record.style_properties;
         projected.style_property_order = record.style_property_order;
 
+        if (record.svg_namespace) {
+            sync_svg_element(handle, raw, svg_attributes_changed);
+            attach_listeners(projected, handle);
+            return;
+        }
+
         const bool text_wrapped = !record.text.empty() && text_needs_flex_wrapper(resolved_display);
         if (projected.text != record.text || projected.inner_rml != record.inner_rml ||
             projected.text_wrapped != text_wrapped) {
@@ -5232,6 +5288,31 @@ struct UiRmlRuntime {
             projected.child_order = record.children;
         }
         project_select_selection(raw, handle);
+    }
+
+    void sync_svg_element(UiElementHandle handle, Rml::Element& raw, bool attributes_changed) {
+        const auto& root = ui_element(engine, handle);
+        auto markup = ui_svg_markup(engine, root);
+        const RetainedUiSelectorTree tree{engine};
+        const UiSelectorMatcher matcher{tree};
+        for_each_active_style_rule([&](const UiStyleRule& rule) {
+            const auto sequence = ui_svg_style_sequence(rule);
+            for (const auto child : root.children)
+                if (matcher.sequence(child, sequence))
+                    throw std::runtime_error(
+                        "Stylesheet rules on SVG shapes require SVG DOM projection.");
+        });
+        auto& projected = handle_at(projected_elements, handle);
+        if (markup.current_color)
+            raw.SetAttribute("data-bbl-current-color", "true");
+        else {
+            raw.RemoveAttribute("data-bbl-current-color");
+            raw.RemoveProperty("image-color");
+        }
+        if (attributes_changed || projected.svg_markup != markup.source) {
+            raw.SetInnerRML(markup.source);
+            projected.svg_markup = std::move(markup.source);
+        }
     }
 
     bool sync_text_updates() {

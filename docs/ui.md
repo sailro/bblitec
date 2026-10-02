@@ -139,9 +139,14 @@ iOS uses UIKit Files with local storage and security-scoped imports; other platf
 
 ### Markup
 
-Closed innerHTML admits text/div/span and reviewed SVG/path/rect attributes. Scripts, event attributes,
+Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path/rect attributes. Scripts, event attributes,
 dynamic attributes and malformed nesting refuse. Runtime text is escaped. SVG rasterizes at CSS size;
-mixed currentColor/literal paints and internal SVG queries refuse.
+mixed currentColor/literal paints and queries inside static SVG markup refuse.
+
+`createElementNS` admits SVG svg/path/rect/circle nodes with retained identity, case-sensitive attributes,
+and live append/remove/replace operations. RmlUi's SVG plugin rasterizes shape XML; inherited currentColor
+tracks the SVG root's computed color. Shape styles, listeners, layout reads, nested SVG, paint servers,
+CSS-wide paint keywords and variable paints refuse.
 
 ## Canvas2D
 

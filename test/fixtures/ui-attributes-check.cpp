@@ -56,6 +56,12 @@ int main() {
             pal::UiRmlRuntime runtime(engine, window, 640, 480);
             auto* raw_image = runtime.projected_elements.at(image.value).element;
             auto* raw_panel = runtime.projected_elements.at(panel.value).element;
+            const auto markup = ui_get_element_by_id(engine, "markup");
+            auto* raw_markup = runtime.projected_elements.at(markup.value).element;
+            auto* picture = raw_markup->QuerySelector(".picture");
+            assert(picture && picture->GetTagName() == "img" && picture->GetClientWidth() == 24.f);
+            ui_remove(engine, markup);
+            pal::update_ui_rml_runtime(runtime, 640, 480);
             const auto has_texture = [&] {
                 const auto& frame = pal::record_ui_rml_frame(runtime, 640, 480);
                 return std::any_of(frame.draws.begin(), frame.draws.end(),
