@@ -757,12 +757,29 @@ void ui_set_form_value(Engine& engine, UiElementHandle element, std::string valu
     ui_set_attribute(engine, element, "value", std::move(value));
 }
 
-void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
-    UiElementRecord& record = ui_element(engine, element);
-    if (!record.markup_children.empty() || record.markup_has_element_children)
+namespace {
+bool ui_prepare_content_replacement(Engine& engine, UiElementRecord& record) {
+    bool queried_descendants = !record.markup_children.empty();
+    if (record.markup_owner.value != invalid_handle) {
+        for (const auto child : ui_element(engine, record.markup_owner).markup_children) {
+            const auto& candidate = ui_element(engine, child);
+            queried_descendants |= candidate.markup_begin > record.markup_begin &&
+                                   candidate.markup_begin < record.markup_end;
+        }
+    }
+    if (queried_descendants)
         throw std::runtime_error(
             "Replacing queried innerHTML descendants requires an authored markup tree.");
-    if (record.text == text && record.inner_rml.empty() && record.children.empty())
+    return record.markup_owner.value != invalid_handle &&
+           !std::exchange(record.markup_content_overridden, true);
+}
+} // namespace
+
+void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
+    UiElementRecord& record = ui_element(engine, element);
+    const bool replaces_markup = ui_prepare_content_replacement(engine, record);
+    if (!replaces_markup && record.text == text && record.inner_rml.empty() &&
+        record.children.empty())
         return;
     // Nonempty plain leaf text cannot change structural selectors or the
     // anonymous flex/grid wrapper. All other writes retain full projection.
@@ -787,10 +804,9 @@ void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
 
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup) {
     UiElementRecord& record = ui_element(engine, element);
-    if (!record.markup_children.empty() || record.markup_owner.value != invalid_handle)
-        throw std::runtime_error(
-            "Replacing queried innerHTML descendants requires an authored markup tree.");
-    if (record.inner_rml == markup && record.text.empty() && record.children.empty())
+    const bool replaces_markup = ui_prepare_content_replacement(engine, record);
+    if (!replaces_markup && record.inner_rml == markup && record.text.empty() &&
+        record.children.empty())
         return;
     if (!record.children.empty())
         ui_replace_children(engine, element);
@@ -800,6 +816,37 @@ void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string marku
 }
 
 namespace {
+bool ui_markup_replaced(Engine& engine, UiElementHandle owner, std::size_t position) {
+    for (const auto child : ui_element(engine, owner).markup_children) {
+        const auto& record = ui_element(engine, child);
+        if (record.markup_content_overridden && position > record.markup_begin &&
+            position < record.markup_end)
+            return true;
+    }
+    return false;
+}
+
+std::size_t ui_markup_subtree_end(std::string_view source, std::size_t marker_at) {
+    const auto closing = source.find('>', marker_at);
+    // Compiler-authored tags are balanced, void tags self-close and text is
+    // escaped. Only retained handles need the original subtree's bounds.
+    std::size_t depth = source[closing - 1] == '/' ? 0 : 1;
+    for (auto next = closing + 1; depth > 0;) {
+        const auto begin = source.find('<', next);
+        const auto end = source.find('>', begin);
+        if (begin == std::string::npos || end == std::string::npos)
+            throw std::runtime_error("Static UI markup subtree is not balanced.");
+        if (source[begin + 1] == '/')
+            --depth;
+        else if (source[end - 1] != '/')
+            ++depth;
+        if (depth == 0)
+            return begin;
+        next = end + 1;
+    }
+    return closing;
+}
+
 UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
                                  std::string_view expected_tag) {
     UiElementRecord& owner_record = ui_element(engine, owner);
@@ -811,7 +858,8 @@ UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uin
     const std::size_t closing = marker_at == std::string::npos
                                     ? std::string::npos
                                     : owner_record.inner_rml.find('>', marker_at);
-    if (opening == std::string::npos || closing == std::string::npos) {
+    if (opening == std::string::npos || closing == std::string::npos ||
+        ui_markup_replaced(engine, owner, marker_at)) {
         throw std::runtime_error("Static UI markup node was not materialized.");
     }
     std::size_t cursor = opening + 1;
@@ -834,12 +882,7 @@ UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uin
     record.parent = owner;
     record.markup_owner = owner;
     record.markup_node_id = node_id;
-    // The compiler emits balanced tags and escapes text; the next tag of a
-    // non-void leaf is therefore its own closing tag.
-    const auto next_tag = owner_record.inner_rml.find('<', closing + 1);
-    record.markup_has_element_children = owner_record.inner_rml[closing - 1] != '/' &&
-                                         next_tag != std::string::npos &&
-                                         owner_record.inner_rml[next_tag + 1] != '/';
+    record.markup_begin = marker_at;
     while (cursor < closing) {
         while (cursor < closing &&
                std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor]))) {
@@ -919,6 +962,8 @@ UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint
         }
     }
     auto record = ui_markup_record(engine, owner, node_id, expected_tag);
+    record.markup_end =
+        ui_markup_subtree_end(ui_element(engine, owner).inner_rml, record.markup_begin);
     const UiElementHandle handle{static_cast<std::uint32_t>(engine.ui_elements.size())};
     engine.ui_elements.push_back(std::move(record));
     handle_at(engine.ui_elements, owner).markup_children.push_back(handle);
@@ -933,7 +978,8 @@ js::Array<UiElementHandle> ui_query_markup_all(Engine& engine, UiElementHandle o
     const auto& source = ui_element(engine, owner).inner_rml;
     for (const auto candidate : candidates) {
         const auto position = source.find("data-bbl-node=\"" + std::to_string(candidate.id) + "\"");
-        if (position != std::string::npos && ui_markup_matches(engine, owner, candidate, test))
+        if (position != std::string::npos && !ui_markup_replaced(engine, owner, position) &&
+            ui_markup_matches(engine, owner, candidate, test))
             present.emplace_back(position, candidate);
     }
     std::sort(present.begin(), present.end(),
@@ -954,7 +1000,8 @@ js::Nullable<UiElementHandle> ui_query_markup_first(Engine& engine, UiElementHan
     const UiMarkupNode* selected = nullptr;
     for (const auto& candidate : candidates) {
         const auto position = source.find("data-bbl-node=\"" + std::to_string(candidate.id) + "\"");
-        if (position < first && ui_markup_matches(engine, owner, candidate, test)) {
+        if (position < first && !ui_markup_replaced(engine, owner, position) &&
+            ui_markup_matches(engine, owner, candidate, test)) {
             first = position;
             selected = &candidate;
         }
@@ -1498,16 +1545,15 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
     if (parent == engine.ui_document_roots.html)
         throw std::runtime_error("Replacing the document root children is not supported.");
     UiElementRecord& record = ui_element(engine, parent);
-    if (!record.markup_children.empty() || record.markup_owner.value != invalid_handle)
-        throw std::runtime_error(
-            "Replacing queried innerHTML descendants requires an authored markup tree.");
+    const bool replaces_markup = ui_prepare_content_replacement(engine, record);
     for (const UiElementHandle child : record.children) {
 #if BBLITE_HAS_BROWSER_FILE
         release_browser_file_subtree(engine, child);
 #endif
         ui_element(engine, child).parent = {};
     }
-    if (record.children.empty() && record.text.empty() && record.inner_rml.empty()) {
+    if (!replaces_markup && record.children.empty() && record.text.empty() &&
+        record.inner_rml.empty()) {
         return;
     }
     record.children.clear();
@@ -3417,6 +3463,7 @@ struct ProjectedUiElement {
     std::string intrinsic_min_width;
     std::optional<float> form_spacing;
     bool text_wrapped = false;
+    bool markup_content_overridden = false;
     bool intrinsic_width_applied = false;
     std::uint8_t interaction_states = 0;
     bool outline_positioned_parent = false;
@@ -5158,26 +5205,49 @@ struct UiRmlRuntime {
 
     void clear_markup_descendants(UiElementHandle owner) {
         for (const UiElementHandle child : ui_element(engine, owner).markup_children) {
+            clear_markup_descendants(child);
             if (child.value < projected_elements.size()) {
                 handle_at(projected_elements, child) = {};
             }
         }
     }
 
-    void bind_markup_descendants(UiElementHandle owner, Rml::Element& owner_raw) {
-        ensure_projection_size();
-        for (const UiElementHandle child : ui_element(engine, owner).markup_children) {
-            const UiElementRecord& record = ui_element(engine, child);
-            const std::string selector =
-                "[data-bbl-node=\"" + std::to_string(record.markup_node_id) + "\"]";
-            Rml::Element* raw = owner_raw.QuerySelector(selector);
-            if (!raw || raw->GetTagName() != record.tag) {
-                throw std::runtime_error("RmlUi could not bind lowered static markup node " +
-                                         std::to_string(record.markup_node_id) + ".");
+    void bind_markup_descendant(UiElementHandle owner, Rml::Element& owner_raw,
+                                UiElementHandle child) {
+        const auto& record = ui_element(engine, child);
+        Rml::ElementList matches;
+        owner_raw.QuerySelectorAll(matches, "[data-bbl-node=\"" +
+                                                std::to_string(record.markup_node_id) + "\"]");
+        for (auto* raw : matches) {
+            bool replaced = false;
+            for (auto* parent = raw->GetParentNode(); parent && parent != &owner_raw;
+                 parent = parent->GetParentNode()) {
+                for (const auto sibling : ui_element(engine, owner).markup_children) {
+                    if (ui_element(engine, sibling).markup_content_overridden &&
+                        handle_at(projected_elements, sibling).element == parent)
+                        replaced = true;
+                }
             }
+            if (replaced)
+                continue;
+            if (raw->GetTagName() != record.tag)
+                break;
             ProjectedUiElement& projected = handle_at(projected_elements, child);
             projected = {};
             projected.element = raw;
+            return;
+        }
+        throw std::runtime_error("RmlUi could not bind lowered static markup node " +
+                                 std::to_string(record.markup_node_id) + ".");
+    }
+
+    void bind_markup_descendants(UiElementHandle owner, Rml::Element& owner_raw) {
+        ensure_projection_size();
+        for (const UiElementHandle child : ui_element(engine, owner).markup_children)
+            bind_markup_descendant(owner, owner_raw, child);
+        // Replacements have their own marker IDs. Bind the original siblings
+        // before applying any replacement that could reuse those IDs.
+        for (const UiElementHandle child : ui_element(engine, owner).markup_children) {
             update_element(child);
         }
     }
@@ -5432,6 +5502,8 @@ struct UiRmlRuntime {
         }
         const bool text_changed = projected.text != record.text;
         const bool inner_rml_changed = projected.inner_rml != record.inner_rml;
+        const bool markup_content_changed =
+            projected.markup_content_overridden != record.markup_content_overridden;
         const bool svg_attributes_changed =
             record.svg_namespace && projected.attributes != record.attributes;
         const Rml::String active_gradient = raw.GetProperty<Rml::String>("bbl-text-gradient");
@@ -5489,7 +5561,7 @@ struct UiRmlRuntime {
                    changed("bbl-text-gradient-scale");
         };
         if (selector_changed || resolved_style_changed || gradient_property_changed() ||
-            inner_rml_changed ||
+            inner_rml_changed || markup_content_changed ||
             (text_changed &&
              (had_gradient || resolved_style.find("bbl-text-gradient:") != std::string::npos))) {
             invalidate_gradient_text();
@@ -5545,7 +5617,7 @@ struct UiRmlRuntime {
 
         const bool text_wrapped = !record.text.empty() && text_needs_flex_wrapper(resolved_display);
         if (projected.text != record.text || projected.inner_rml != record.inner_rml ||
-            projected.text_wrapped != text_wrapped) {
+            markup_content_changed || projected.text_wrapped != text_wrapped) {
             // Updating the text prefix or its anonymous flex wrapper must not
             // recreate retained controls appended after it.
             auto children = detach_authored_children(raw, record);
@@ -5563,6 +5635,7 @@ struct UiRmlRuntime {
             projected.text = record.text;
             projected.inner_rml = record.inner_rml;
             projected.text_wrapped = text_wrapped;
+            projected.markup_content_overridden = record.markup_content_overridden;
             for (auto& child : children)
                 raw.AppendChild(std::move(child));
         }
@@ -5575,10 +5648,9 @@ struct UiRmlRuntime {
             sync_element(children_parent, child);
         }
         for (const UiElementHandle child : record.markup_children) {
-            if (child.value != handle.value && child.value < projected_elements.size() &&
-                handle_at(projected_elements, child).element) {
-                update_element(child);
-            }
+            if (!handle_at(projected_elements, child).element)
+                bind_markup_descendant(handle, raw, child);
+            update_element(child);
         }
         if (projected.child_order != record.children) {
             if (record.tag == "select") {

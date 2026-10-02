@@ -145,7 +145,8 @@ Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path
 conditional fragments select parsed alternatives; immutable aliases and helpers retain one runtime text span
 inside fixed authored fragments. Runtime text is escaped and stored text is read from its captured value.
 Queries on the markup owner preserve selected order, absence and live attributes; mixed retained/markup subtree queries
-and removing, reparenting or replacing queried markup trees refuse. Queried leaf text remains writable.
+and removing or reparenting queried markup nodes refuse. Queried nodes accept text or closed markup replacement while
+their descendants have no retained handles; later queries exclude replaced content.
 Scripts, event attributes, unbounded attributes and malformed nesting refuse. SVG rasterizes at CSS size;
 mixed currentColor/literal paints and queries inside static SVG markup refuse.
 

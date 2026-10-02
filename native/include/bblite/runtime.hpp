@@ -3751,7 +3751,10 @@ struct UiElementRecord {
      */
     UiElementHandle markup_owner{};
     std::uint32_t markup_node_id = invalid_handle;
-    bool markup_has_element_children = false;
+    /** Original marker-to-closing-tag span; replacement content has its own owner. */
+    std::size_t markup_begin = 0;
+    std::size_t markup_end = 0;
+    bool markup_content_overridden = false;
     /** Materialized static-markup nodes owned by this element. */
     std::vector<UiElementHandle> markup_children;
     std::vector<std::function<void()>> click_callbacks;
