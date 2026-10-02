@@ -1,3 +1,4 @@
+import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
 import { nullability } from "../type-facts.js";
 
@@ -326,7 +327,8 @@ export const scalarsSinks: DataSinkOperations<
                 expression,
             ),
         value: (_type, lowerer, value, node) => {
-            if (value.dataType?.kind === "undefined") return value.cpp;
+            if (isUndefinedDataType(value.dataType))
+                return `(static_cast<void>(${value.cpp}), bbl::js::Undefined{})`;
             if (
                 value.erasedVoidCompletion ||
                 (value.kind === "void" &&

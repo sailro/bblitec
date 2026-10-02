@@ -78,6 +78,7 @@ import {
 } from "./statements.js";
 import {
     dataTypesEqual,
+    isUndefinedDataType,
     doubleLiteral,
     isTypedArrayType,
     isOpaqueReference,
@@ -548,7 +549,11 @@ export class DataLowerer {
                 break;
             }
             const value = values[sourceIndex];
-            if (!value && parameter.kind !== "optional")
+            if (
+                !value &&
+                parameter.kind !== "optional" &&
+                !type.optionalParameters?.includes(runtimeIndex - 1)
+            )
                 this.context.fail(
                     node,
                     "Callback requires more arguments than the operation supplies.",
@@ -556,7 +561,7 @@ export class DataLowerer {
             argumentsCpp.push(
                 value
                     ? this.compileKnownValueForSink(value, parameter, node)
-                    : "std::nullopt",
+                    : this.context.dataTypes.absentValue(parameter),
             );
         }
         const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
@@ -683,7 +688,10 @@ export class DataLowerer {
                 } else argumentsCpp.push(value);
                 continue;
             }
-            if (parameter.kind !== "optional") {
+            if (
+                parameter.kind !== "optional" &&
+                !functionType.optionalParameters?.includes(runtimeIndex - 1)
+            ) {
                 this.context.fail(
                     call,
                     `${label} expects ${sourceParameterCount} arguments.`,
@@ -1743,6 +1751,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         knownValue?: Value,
     ): Value | undefined {
         const known = knownValue ?? this.context.compileValue(expression);
+        if (
+            known.kind === "data" &&
+            (known.dataType?.kind === "vector" ||
+                known.dataType?.kind === "span")
+        )
+            return known;
         if (known.kind !== "tuple") {
             return undefined;
         }
@@ -2456,7 +2470,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression.left,
                     )
                   : computed;
-        if (left.dataType?.kind === "undefined") {
+        if (isUndefinedDataType(left.dataType)) {
             this.context.emitDiscardedValue(left);
             return this.context.compileValue(expression.right);
         }
@@ -8026,7 +8040,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (
                     spread.kind === "data" &&
                     spread.dataType?.kind === "struct" &&
-                    dataTypesEqual(spread.dataType, dataType)
+                    dataTypesEqual(spread.dataType, dataType) &&
+                    (!declared ||
+                        !this.context.dataTypes
+                            .structFields(dataType.name, property)
+                            .some((field) => field.type.kind === "optional"))
                 ) {
                     if (!declared) {
                         this.context.emit(
@@ -9053,13 +9071,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.SyntaxKind.QuestionQuestionEqualsToken;
         // An optional is present when engaged; a shared object is its
         // reference, whose null is the binding's absent state.
-        const presence =
-            targetType?.kind === "optional"
-                ? optionalPresentCpp(`(${target.cpp})`)
-                : targetType?.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(targetType.name)
-                  ? this.referencePresence(target.cpp)
-                  : undefined;
+        const presence = isUndefinedDataType(targetType)
+            ? `(static_cast<void>(${target.cpp}), false)`
+            : targetType?.kind === "optional"
+              ? optionalPresentCpp(`(${target.cpp})`)
+              : targetType?.kind === "struct" &&
+                  this.context.dataTypes.isReferenceStruct(targetType.name)
+                ? this.referencePresence(target.cpp)
+                : undefined;
         if (nullish && (scalarKind || presence === undefined)) {
             // A non-nullable target never takes the right side.
             return;
@@ -10612,7 +10631,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * whatever it holds -- is `presenceCpp`'s.
      */
     public truthinessCondition(value: Value): string | undefined {
-        if (value.dataType?.kind === "undefined")
+        if (isUndefinedDataType(value.dataType))
             return `(static_cast<void>(${value.cpp}), false)`;
         if (value.kind === "promise")
             return `(static_cast<void>(${value.cpp}), true)`;
@@ -10787,6 +10806,101 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return undefined;
     }
 
+    private absentComparison(
+        value: Value,
+        node: ts.Expression,
+        literal: "null" | "undefined" | undefined,
+        negated: boolean,
+        loose: boolean,
+    ): string | undefined {
+        if (isJsonValue(value)) {
+            const temporary = this.context.allocateTemporaryCppName(
+                "json_absence_compare",
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: temporary,
+                initializer: value.cpp,
+            });
+            const equal = loose
+                ? `(${temporary}.is_null() || ${temporary}.is_undefined())`
+                : `${temporary}.is_${literal ?? "undefined"}()`;
+            return negated ? `!(${equal})` : equal;
+        }
+        // `==` takes null and undefined as one; `===` asks which absent
+        // state the operand is in (`absenceKind`).
+        const absentTest = (
+            present: string,
+            absent = `!(${present})`,
+        ): string => {
+            if (loose || literal === undefined)
+                return negated ? present : absent;
+            const state = absenceKind(this.context.checker, value, node);
+            if (state === "either")
+                this.context.fail(
+                    node,
+                    `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
+                );
+            // A read that knows whether its slot existed tells a missing
+            // one (`undefined`) from a stored `null` exactly.
+            if (typeof state === "object") {
+                const found = state.slotFoundCpp;
+                if (literal === "undefined")
+                    return negated ? found : `!${found}`;
+                const storedNull = `(${found} && ${absent})`;
+                return negated ? `!${storedNull}` : storedNull;
+            }
+            if (state !== literal && state !== "unconstrained")
+                return negated ? "true" : "false";
+            return negated ? present : absent;
+        };
+        if (value.kind === "json-null") {
+            const equal =
+                loose ||
+                literal === undefined ||
+                (value.cpp === "std::nullopt" ? "undefined" : "null") ===
+                    literal;
+            return equal !== negated ? "true" : "false";
+        }
+        if (isUndefinedDataType(value.dataType)) {
+            this.context.emitDiscardedValue(value);
+            const equal =
+                loose || literal === undefined || literal === "undefined";
+            return equal !== negated ? "true" : "false";
+        }
+        if (value?.kind === "data" && value.dataType?.kind === "optional") {
+            return absentTest(
+                optionalPresentCpp(value.cpp),
+                `!${optionalPresentCpp(value.cpp)}`,
+            );
+        }
+        if (value?.dataType?.kind === "function") {
+            return absentTest(
+                `static_cast<bool>(${value.cpp})`,
+                `!static_cast<bool>(${value.cpp})`,
+            );
+        }
+        const found = presenceFlagCpp(value);
+        if (found !== undefined) {
+            return absentTest(found);
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(value.dataType.name)
+        ) {
+            return absentTest(this.referencePresence(value.cpp));
+        }
+        // A value whose representation is already non-nullable has
+        // either been flow-narrowed by TypeScript or was statically
+        // non-nullish to begin with.
+        if (value.kind !== "browser") {
+            return negated ? "true" : "false";
+        }
+        return undefined;
+    }
+
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
@@ -10830,6 +10944,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (ts.isIdentifier(candidate) &&
                 this.context.bindings.lookupOptional(candidate)?.kind ===
                     "json-null");
+        if (
+            !isNullish(left) &&
+            !isNullish(right) &&
+            [left, right].some(
+                (operand) =>
+                    (this.context.checker.getTypeAtLocation(operand).flags &
+                        (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !==
+                    0,
+            )
+        ) {
+            const undefinedResult = this.context.probeEmission(() => {
+                const a = this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(left),
+                    "comparison_left",
+                );
+                const b = this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(right),
+                    "comparison_right",
+                );
+                const aUndefined = isUndefinedDataType(a.dataType);
+                if (!aUndefined && !isUndefinedDataType(b.dataType))
+                    return undefined;
+                const other = aUndefined ? b : a,
+                    node = aUndefined ? right : left;
+                if (!other.cpp)
+                    this.context.fail(
+                        node,
+                        "Undefined comparison requires a represented operand.",
+                    );
+                return this.absentComparison(
+                    other,
+                    node,
+                    "undefined",
+                    negated,
+                    loose,
+                );
+            });
+            if (undefinedResult !== undefined) return undefinedResult;
+        }
         if (loose && !isNullish(left) && !isNullish(right)) return undefined;
         if (
             !loose &&
@@ -10921,96 +11074,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined) ??
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
-            if (isJsonValue(value)) {
-                const temporary = this.context.allocateTemporaryCppName(
-                    "json_absence_compare",
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: temporary,
-                    initializer: value.cpp,
-                });
-                const equal = loose
-                    ? `(${temporary}.is_null() || ${temporary}.is_undefined())`
-                    : `${temporary}.is_${literal ?? "undefined"}()`;
-                return negated ? `!(${equal})` : equal;
-            }
-            // `==` takes null and undefined as one; `===` asks which absent
-            // state the operand is in (`absenceKind`).
-            const absentTest = (
-                present: string,
-                absent = `!(${present})`,
-            ): string => {
-                if (loose || literal === undefined)
-                    return negated ? present : absent;
-                const state = absenceKind(
-                    this.context.checker,
-                    value,
-                    nullSide,
-                );
-                if (state === "either")
-                    this.context.fail(
-                        nullSide,
-                        `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
-                    );
-                // A read that knows whether its slot existed tells a missing
-                // one (`undefined`) from a stored `null` exactly.
-                if (typeof state === "object") {
-                    const found = state.slotFoundCpp;
-                    if (literal === "undefined")
-                        return negated ? found : `!${found}`;
-                    const storedNull = `(${found} && ${absent})`;
-                    return negated ? `!${storedNull}` : storedNull;
-                }
-                if (state !== literal && state !== "unconstrained")
-                    return negated ? "true" : "false";
-                return negated ? present : absent;
-            };
-            if (value.kind === "json-null") {
-                const equal =
-                    loose ||
-                    literal === undefined ||
-                    (value.cpp === "std::nullopt" ? "undefined" : "null") ===
-                        literal;
-                return equal !== negated ? "true" : "false";
-            }
-            if (value.dataType?.kind === "undefined") {
-                this.context.emitDiscardedValue(value);
-                const equal =
-                    loose || literal === undefined || literal === "undefined";
-                return equal !== negated ? "true" : "false";
-            }
-            if (value?.kind === "data" && value.dataType?.kind === "optional") {
-                return absentTest(
-                    optionalPresentCpp(value.cpp),
-                    `!${optionalPresentCpp(value.cpp)}`,
-                );
-            }
-            if (value?.dataType?.kind === "function") {
-                return absentTest(
-                    `static_cast<bool>(${value.cpp})`,
-                    `!static_cast<bool>(${value.cpp})`,
-                );
-            }
-            const found = presenceFlagCpp(value);
-            if (found !== undefined) {
-                return absentTest(found);
-            }
-            if (
-                value.kind === "data" &&
-                value.dataType?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(value.dataType.name)
-            ) {
-                return absentTest(this.referencePresence(value.cpp));
-            }
-            // A value whose representation is already non-nullable has
-            // either been flow-narrowed by TypeScript or was statically
-            // non-nullish to begin with.
-            if (value.kind !== "browser") {
-                return negated ? "true" : "false";
-            }
-            return undefined;
+            return this.absentComparison(
+                value,
+                nullSide,
+                literal,
+                negated,
+                loose,
+            );
         }
         if (!loose) {
             const union = dataUnionEquality(this, left, right, negated);
@@ -12264,6 +12334,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "optional";
         },
     ): string {
+        if (dataType.inner.kind === "undefined")
+            return this.context.dataTypes.presentValue(
+                dataType,
+                this.compileForSink(expression, dataType.inner),
+            );
         const unwrapped = this.context.unwrap(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return this.context.dataTypes.absentValue(dataType);

@@ -1,6 +1,7 @@
 import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
+    someAnalysisNode,
 } from "./analysis-walk.js";
 import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
@@ -444,6 +445,28 @@ export class SharedClosureAnalysis {
             // A function a run-time choice selects is a callback object
             // wherever it lands, called in place or not.
             if (selected) return true;
+            // Recursive local arrows use native callback storage even when all
+            // source uses are direct calls, so their mutable captures are shared.
+            if (
+                ts.isVariableDeclaration(parent) &&
+                ts.isIdentifier(parent.name)
+            ) {
+                const symbol = this.context.symbols.valueSymbol(parent.name);
+                if (
+                    symbol &&
+                    someAnalysisNode(
+                        node.body,
+                        (call) =>
+                            ts.isCallExpression(call) &&
+                            ts.isIdentifier(call.expression) &&
+                            this.context.symbols.valueSymbol(
+                                call.expression,
+                            ) === symbol,
+                        { functions: "skip" },
+                    )
+                )
+                    return true;
+            }
             // An explicitly callable local is emitted as a stored callback,
             // including when every use is a direct call. Its helpers must
             // share captured mutable bindings with the surrounding scope.

@@ -41,6 +41,14 @@ export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
 
+/** An optional undefined field stores key presence, never a different value. */
+export function isUndefinedDataType(type: DataType | undefined): boolean {
+    return (
+        type?.kind === "undefined" ||
+        (type?.kind === "optional" && type.inner.kind === "undefined")
+    );
+}
+
 export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }

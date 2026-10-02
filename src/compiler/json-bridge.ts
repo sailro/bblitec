@@ -1,3 +1,4 @@
+import { isUndefinedDataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 // The JSON bridge: `JSON.stringify` over the plain-data model, and
 // `JSON.parse` plus the surface a parsed document is interrogated with.
@@ -199,7 +200,7 @@ function compileStringify(
     }
     const argument = argumentAt(call, 0);
     const represented = context.compileValue(argument);
-    if (represented.dataType?.kind === "undefined") {
+    if (isUndefinedDataType(represented.dataType)) {
         context.emitDiscardedValue(represented);
         return { kind: "json-null", cpp: "std::nullopt" };
     }

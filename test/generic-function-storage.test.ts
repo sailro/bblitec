@@ -177,13 +177,6 @@ test("generic storage retains unsupported native boundaries", () => {
             ),
         /Stored generic function conversion requires matching concrete signature families/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                prefix + `state.read(()=>({} as {value?:undefined}));`,
-            ),
-        /Optional undefined-only fields require separate own-property presence storage/,
-    );
 });
 
 test("stored polymorphic recursion and detached receivers refuse", () => {

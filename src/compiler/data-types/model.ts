@@ -160,6 +160,8 @@ interface DataKinds {
          * placeholder runtime value is invented.
          */
         erasedParameters?: number[];
+        /** Native parameter positions which accept an omitted source argument. */
+        optionalParameters?: number[];
     };
     struct: {
         kind: "struct";

@@ -32,7 +32,7 @@ import ts from "typescript";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
-import { isHandleKind } from "./data-types.js";
+import { isHandleKind, isUndefinedDataType } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
@@ -340,7 +340,7 @@ export function stringConcatPart(
         return `(${slotFoundCpp} ? ${text} : std::string("undefined"))`;
     }
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
-    if (value.dataType?.kind === "undefined")
+    if (isUndefinedDataType(value.dataType))
         return `(static_cast<void>(${value.cpp}), "undefined")`;
     if (
         value.nativeError &&
@@ -1350,7 +1350,7 @@ export class ExpressionLowerer {
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
                 : compiledOperand;
-            if (operand.dataType?.kind === "undefined") {
+            if (isUndefinedDataType(operand.dataType)) {
                 this.context.emitDiscardedValue(operand);
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
@@ -3003,7 +3003,7 @@ export class ExpressionLowerer {
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
-                value.dataType?.kind === "undefined" ||
+                isUndefinedDataType(value.dataType) ||
                 // An absent value spells "undefined" or "null", as in a
                 // concatenation.
                 value.dataType?.kind === "optional"

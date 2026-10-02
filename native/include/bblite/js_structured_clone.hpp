@@ -18,6 +18,10 @@ struct CloneObjectWriter {
     template <typename T> void operator()(std::string_view name, const T& value) const {
         object.properties.emplace_back(name, clone_write(writer, value));
     }
+    void operator()(std::string_view name, const Nullable<Undefined>& value) const {
+        if (value.has_value())
+            (*this)(name, *value);
+    }
     template <typename T> void operator()(std::string_view name, const T& value, bool) const {
         (*this)(name, value);
     }
@@ -49,7 +53,10 @@ struct CloneObjectReader {
     }
     template <typename T> void operator()(std::string_view name, Nullable<T>& value) const {
         if (const auto id = reader.find_property(object, name))
-            value = clone_read<Nullable<T>>(reader, *id);
+            if constexpr (std::is_same_v<T, Undefined>)
+                value = Nullable<Undefined>{clone_read<Undefined>(reader, *id)};
+            else
+                value = clone_read<Nullable<T>>(reader, *id);
         else
             value = std::nullopt;
     }

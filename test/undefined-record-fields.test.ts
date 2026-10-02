@@ -144,11 +144,12 @@ test("cloned undefined fields retain required keys and aliases", (t) => {
     const directory = resolve("artifacts/undefined-record-fields/clone");
     mkdirSync(directory, { recursive: true });
     const declarations = `
-        export interface Item {value:undefined;optional?:number;}
-        export interface Payload {item:Item;same:Item;}
+        export interface Item {value:undefined;optional?:number;held?:undefined;}
+        export interface Payload {item:Item;same:Item;absent:Item;}
         export function verify(copy:Payload):void {
             if(copy.item!==copy.same||copy.item.value!==undefined)throw new Error('clone values');
-            if(!('value' in copy.item)||'optional' in copy.item||Object.keys(copy.item).join()!=='value')throw new Error('clone keys');
+            if(!('value' in copy.item)||'optional' in copy.item||Object.keys(copy.item).join()!=='value,held')throw new Error('clone keys');
+            if(!Object.hasOwn(copy.item,'held')||Object.hasOwn(copy.absent,'held')||copy.item.held!==undefined||copy.absent.held!==undefined)throw new Error('clone optional undefined presence');
             if(JSON.stringify(copy.item)!=='{}')throw new Error('clone JSON');
         }
     `;
@@ -156,7 +157,7 @@ test("cloned undefined fields retain required keys and aliases", (t) => {
         ts.transpileModule(
             declarations.replaceAll("export ", "") +
                 `
-        const item:Item={value:undefined};verify(structuredClone({item,same:item}));
+        const item:Item={value:undefined,held:undefined};verify(structuredClone({item,same:item,absent:{value:undefined}}));
     `,
             { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
         ).outputText,
@@ -174,7 +175,7 @@ test("cloned undefined fields retain required keys and aliases", (t) => {
         `
         import {verify,type Item,type Payload} from './types';
         const worker=new Worker(new URL('./echo.ts',import.meta.url),{type:'module'});
-        const item:Item={value:undefined};const payload:Payload={item,same:item};
+        const item:Item={value:undefined,held:undefined};const payload:Payload={item,same:item,absent:{value:undefined}};
         worker.addEventListener('message',(event:MessageEvent<Payload>)=>{
             verify(event.data);if(event.data.item===item)throw new Error('clone identity');globalThis.close();
         });
@@ -189,10 +190,11 @@ test("cloned undefined fields retain required keys and aliases", (t) => {
     }
     runGeneratedProgram(tools, "undefined-record-fields/clone", result.cpp, {
         defines: ["BBLITE_WORKERS=1"],
+        timeoutMs: 10000,
     });
 });
 
-test("erased void completion and optional undefined refuse", () => {
+test("erased void completion and unrepresented undefined containers refuse", () => {
     for (const source of [
         `const f:()=>void=()=>7;const records:Array<{value:void}>=[{value:f()}];JSON.stringify(records);`,
         `let f=()=>{};f=()=>7;const records:Array<{value:void}>=[{value:f()}];JSON.stringify(records);`,
@@ -201,13 +203,6 @@ test("erased void completion and optional undefined refuse", () => {
             () => compileSource(source),
             /requires a proven undefined completion/,
         );
-    assert.throws(
-        () =>
-            compileSource(
-                `const records:Array<{value?:undefined}>=[{}];Object.keys(records[0]!);`,
-            ),
-        /Optional undefined-only fields require separate own-property presence storage/,
-    );
     assert.throws(
         () =>
             compileSource(
@@ -221,13 +216,6 @@ test("erased void completion and optional undefined refuse", () => {
                 `const records:Array<{value:undefined}>=[{value:undefined}];if(JSON.stringify([records[0]!.value])!=='[null]')throw new Error('array');`,
             ),
         /JSON.stringify serializes a plain-data value/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                `type Item={ok:true;value?:undefined}|{ok:false};const records:Item[]=[{ok:true}];JSON.stringify(records);`,
-            ),
-        /Optional undefined-only fields require separate own-property presence storage/,
     );
     assert.throws(
         () =>

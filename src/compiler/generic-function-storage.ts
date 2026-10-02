@@ -8,21 +8,38 @@ export interface GenericFunctionDemand {
     parameters: readonly (ts.Type | undefined)[];
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
     ancestors: readonly string[];
+    /** The call is inside a checked recursive dynamic-value boundary. */
+    dynamicJsonStorage?: true;
 }
 
 export function sameTypeFrames(
     left: GenericFunctionDemand["frames"],
     right: GenericFunctionDemand["frames"],
 ): boolean {
-    return (
+    if (
         left.length === right.length &&
-        left.every((frame, index) => {
-            const other = right[index]!;
-            return (
-                frame.size === other.size &&
-                [...frame].every(([symbol, type]) => other.get(symbol) === type)
-            );
-        })
+        left.every(
+            (frame, index) =>
+                frame.size === right[index]!.size &&
+                [...frame].every(
+                    ([symbol, type]) => right[index]!.get(symbol) === type,
+                ),
+        )
+    )
+        return true;
+    const bindings = (
+        frames: GenericFunctionDemand["frames"],
+    ): Map<ts.Symbol, ts.Type> => {
+        const visible = new Map<ts.Symbol, ts.Type>();
+        for (const frame of frames)
+            for (const [symbol, type] of frame) visible.set(symbol, type);
+        return visible;
+    };
+    const a = bindings(left),
+        b = bindings(right);
+    return (
+        a.size === b.size &&
+        [...a].every(([symbol, type]) => b.get(symbol) === type)
     );
 }
 

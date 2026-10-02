@@ -4316,19 +4316,15 @@ export class UserFunctionLowerer {
                             name,
                             type,
                         );
-                        if (
-                            parameter.declaration.initializer &&
-                            type.kind === "optional"
-                        ) {
-                            const fallback = context.compileForDataSink(
-                                parameter.declaration.initializer,
-                                type.inner,
-                            );
-                            value = context.dataValue(
-                                `(${optionalPresentCpp(name)} ? *${name} : ${fallback})`,
-                                type.inner,
-                            );
-                        }
+                        value = this.parameterValue(
+                            context,
+                            parameter,
+                            value,
+                            undefined,
+                            dataType.optionalParameters?.includes(
+                                runtimeIndex - 1,
+                            ),
+                        );
                         this.bindSpecializedParameter(
                             context,
                             ir.declaration,
@@ -5680,6 +5676,7 @@ export class UserFunctionLowerer {
         parameter: UserFunctionParameterIr,
         argument: Value | undefined,
         source: ts.Expression | undefined,
+        optionalArgument = false,
     ): Value {
         const initializer = parameter.declaration.initializer;
         if (!initializer)
@@ -5706,7 +5703,7 @@ export class UserFunctionLowerer {
             ? this.checker.getTypeAtLocation(source)
             : parameter.type;
         const absent = nullability(sourceType);
-        const mayBeUndefined = absent.undefined;
+        const mayBeUndefined = optionalArgument || absent.undefined;
         const referenceAbsence =
             (mayBeUndefined || argument.preserveUncheckedLookup) &&
             (storage.kind === "function" ||

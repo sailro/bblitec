@@ -10,6 +10,7 @@ import {
     dataTypesEqual,
     passesByReferenceKind,
     containsDataKind,
+    isUndefinedDataType,
     tracedEdgeCondition,
     recordTraceConditions,
     type DataTypeCppContext,
@@ -33,6 +34,7 @@ export {
     dataTypesEqual,
     passesByReferenceKind,
     isOpaqueReference,
+    isUndefinedDataType,
 } from "./data-types/operations.js";
 import {
     emissionArray,
@@ -69,7 +71,7 @@ import {
     isStaticMember,
 } from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { unwrapExpression } from "./syntax.js";
+import { propertyNameText, unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
@@ -829,7 +831,7 @@ export class DataTypeRegistry {
      * found them. Nothing else emits a codec: a scene that serializes one
      * record does not carry a writer for every other record it declares.
      */
-    private readonly jsonSerializedStructs = new EmissionSet<string>();
+    private readonly jsonSerializedStructs = new EmissionMap<string, ts.Node>();
     private readonly jsonBoxedStructs = new EmissionMap<string, ts.Node>();
     /** Each field's own-key presence, merged over every type shape the struct stands for. */
     private readonly fieldPresence = new EmissionMap<
@@ -1810,6 +1812,7 @@ export class DataTypeRegistry {
                 : undefined;
         }
         const erasedParameters: number[] = [];
+        const optionalParameters: number[] = [];
         let restParameter: number | undefined;
         const parameters = signature
             .getParameters()
@@ -1820,8 +1823,21 @@ export class DataTypeRegistry {
                     parameter,
                     declaration ?? node,
                 );
+                const override = parameterOverrides?.[index];
+                const declaredCallable =
+                    this.checker.getNonNullableType(declaredType);
+                const declaredSignature =
+                    declaredCallable.getCallSignatures()[0];
+                const actualSignature = override
+                    ? this.checker
+                          .getNonNullableType(override)
+                          .getCallSignatures()[0]
+                    : undefined;
                 const parameterType =
-                    parameterOverrides?.[index] ?? declaredType;
+                    declaredCallable.getCallSignatures().length &&
+                    !actualSignature
+                        ? declaredType
+                        : (override ?? declaredType);
                 if (
                     (parameterType.flags &
                         (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
@@ -1830,10 +1846,8 @@ export class DataTypeRegistry {
                     erasedParameters.push(index);
                     return [];
                 }
-                const declaredCallable =
-                    this.checker.getNonNullableType(declaredType);
-                const actualSignature =
-                    parameterOverrides?.[index]?.getCallSignatures()[0];
+                if (nullability(declaredType).undefined)
+                    optionalParameters.push(index - erasedParameters.length);
                 const mapped =
                     actualSignature &&
                     declaredCallable.getCallSignatures().length === 1
@@ -1842,12 +1856,27 @@ export class DataTypeRegistry {
                               declaration ?? node,
                               false,
                               undefined,
-                              actualSignature,
+                              (this.checker.getReturnTypeOfSignature(
+                                  actualSignature,
+                              ).flags &
+                                  ts.TypeFlags.Never) !==
+                                  0 &&
+                                  declaredSignature &&
+                                  (this.checker.getReturnTypeOfSignature(
+                                      declaredSignature,
+                                  ).flags &
+                                      ts.TypeFlags.Void) !==
+                                      0
+                                  ? undefined
+                                  : actualSignature,
                           )
-                        : this.fromStoredTsType(
+                        : ((this.dynamicJsonStorage
+                              ? this.dynamicJsonType(parameterType)
+                              : undefined) ??
+                          this.fromStoredTsType(
                               parameterType,
                               declaration ?? node,
-                          );
+                          ));
                 if (
                     declaration &&
                     ts.isParameter(declaration) &&
@@ -1879,7 +1908,9 @@ export class DataTypeRegistry {
                       signature.declaration,
                   );
         const mappedResult = resultType
-            ? this.fromStoredTsType(resultType, node)
+            ? ((this.dynamicJsonStorage
+                  ? this.dynamicJsonType(resultType)
+                  : undefined) ?? this.fromStoredTsType(resultType, node))
             : undefined;
         const result = mappedResult
             ? this.ownReturnedArray(mappedResult)
@@ -1901,6 +1932,7 @@ export class DataTypeRegistry {
                 ? { undefinedCompletion: true as const }
                 : {}),
             ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
+            ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
         };
     }
 
@@ -1993,7 +2025,10 @@ export class DataTypeRegistry {
         const previous = this.genericFunctionAncestors;
         this.genericFunctionAncestors = [...demand.ancestors, demand.family];
         try {
-            return apply(0);
+            return this.withDynamicJsonTypes(
+                demand.dynamicJsonStorage === true,
+                () => apply(0),
+            );
         } finally {
             this.genericFunctionAncestors = previous;
         }
@@ -2023,6 +2058,11 @@ export class DataTypeRegistry {
             .map((parameter, index) => {
                 const declared = this.checker.getTypeOfSymbol(parameter);
                 if (
+                    this.dynamicJsonStorage &&
+                    (declared.flags & ts.TypeFlags.Unknown) !== 0
+                )
+                    return declared;
+                if (
                     (declared.flags & ts.TypeFlags.Unknown) === 0 &&
                     !this.checker
                         .getNonNullableType(declared)
@@ -2040,6 +2080,24 @@ export class DataTypeRegistry {
                 }
                 return this.checker.getTypeAtLocation(argument);
             });
+        const dynamicJsonStorage =
+            this.dynamicJsonStorage ||
+            parameters.some(
+                (parameter, index) =>
+                    parameter !== undefined &&
+                    (this.checker.getTypeOfSymbol(
+                        generic.signature.getParameters()[index]!,
+                    ).flags &
+                        ts.TypeFlags.Unknown) !==
+                        0 &&
+                    this.dynamicJsonType(parameter) !== undefined,
+            );
+        if (dynamicJsonStorage)
+            generic.signature.getParameters().forEach((parameter, index) => {
+                const declared = this.checker.getTypeOfSymbol(parameter);
+                if ((declared.flags & ts.TypeFlags.Unknown) !== 0)
+                    parameters[index] = declared;
+            });
         const frames = this.typeArgumentFrames();
         const sameTypes = (
             left: readonly (ts.Type | undefined)[],
@@ -2051,6 +2109,8 @@ export class DataTypeRegistry {
             ({ demand }) =>
                 sameTypes(demand.arguments, arguments_) &&
                 sameTypes(demand.parameters, parameters) &&
+                demand.dynamicJsonStorage ===
+                    (dynamicJsonStorage || undefined) &&
                 sameTypeFrames(demand.frames, frames),
         );
         if (field) return field;
@@ -2061,6 +2121,7 @@ export class DataTypeRegistry {
             );
         throw new GenericFunctionStorageRequired({
             family: generic.family,
+            ...(dynamicJsonStorage ? { dynamicJsonStorage: true } : {}),
             key: String(generic.fields.length),
             arguments: arguments_,
             parameters,
@@ -2281,20 +2342,37 @@ export class DataTypeRegistry {
                     memberProperties[index],
                 ),
             );
-            const first = candidates[0];
+            let first = candidates[0];
             if (
                 !first ||
                 candidates.some(
                     (candidate) =>
-                        !candidate || !dataTypesEqual(candidate, first),
+                        !candidate ||
+                        !dataTypesEqual(candidate, candidates[0]!),
                 )
             ) {
-                return undefined;
+                const shared = type.getProperty(property.name);
+                first = shared
+                    ? this.fromRecordFieldType(
+                          this.checker.getTypeOfSymbolAtLocation(shared, node),
+                          node,
+                          shared,
+                      )
+                    : undefined;
+                if (!first) return undefined;
             }
+            const optional = memberProperties.some(
+                (member) => (member.flags & ts.SymbolFlags.Optional) !== 0,
+            );
+            const stored = this.markStoredObjectReferences(first);
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),
-                type: this.markStoredObjectReferences(first),
+                type: stored,
+                ...(optional ? { optionalProperty: true } : {}),
+                ...(optional && stored.kind !== "optional"
+                    ? { defaultWhenMissing: true }
+                    : {}),
                 ...(propertiesByMember.every((properties) =>
                     propertyIsReadOnly(
                         properties.find(({ name }) => name === property.name)!,
@@ -2316,7 +2394,7 @@ export class DataTypeRegistry {
         const key = fields
             .map(
                 (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:required:${field.readOnly ? "readonly" : "mutable"}`,
+                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}`,
             )
             .join(",");
         const existing = this.structsByKey.get(key);
@@ -3009,17 +3087,19 @@ export class DataTypeRegistry {
         node: ts.Node,
         property?: ts.Symbol,
     ): DataType | undefined {
+        const resolved = this.resolveTypeParameter(type);
+        const members = resolved.isUnion() ? resolved.types : [resolved];
         if (
-            (this.resolveTypeParameter(type).flags &
-                (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) ===
-            0
+            !members.every(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                    0,
+            )
         )
             return this.fromTsType(type, node);
         if (property && (property.flags & ts.SymbolFlags.Optional) !== 0)
-            this.fail(
-                node,
-                "Optional undefined-only fields require separate own-property presence storage.",
-            );
+            return this.nullableType({ kind: "undefined" }, true);
         return { kind: "undefined" };
     }
 
@@ -3072,20 +3152,21 @@ export class DataTypeRegistry {
                       this.fromRecordFieldType(
                           propertyType,
                           declaration ?? node,
+                          property,
                       );
             if (!mappedValue) {
                 return undefined;
             }
             const optional =
                 partial || (property.flags & ts.SymbolFlags.Optional) !== 0;
-            if (optional && mappedValue.kind === "undefined")
-                this.fail(
-                    declaration ?? node,
-                    "Optional undefined-only fields require separate own-property presence storage.",
-                );
             const mapped: DataType = this.markStoredObjectReferences(
                 markIdentityFunctions(
-                    optional ? this.nullableType(mappedValue) : mappedValue,
+                    optional
+                        ? this.nullableType(
+                              mappedValue,
+                              mappedValue.kind === "undefined",
+                          )
+                        : mappedValue,
                 ),
             );
             const accessor = this.propertyAccessor(property, view);
@@ -4382,7 +4463,7 @@ export class DataTypeRegistry {
                     if (this.jsonSerializedStructs.has(current.name)) {
                         return;
                     }
-                    this.jsonSerializedStructs.add(current.name);
+                    this.jsonSerializedStructs.set(current.name, node);
                     path.push(current.name);
                     for (const field of this.structFields(
                         current.name,
@@ -4396,6 +4477,17 @@ export class DataTypeRegistry {
                             this.fail(
                                 node,
                                 `JSON.stringify of accessor property '${field.sourceName}' requires a getter that always returns a value.`,
+                            );
+                        if (
+                            field.optionalProperty &&
+                            field.type.kind === "struct" &&
+                            this.isReferenceStruct(field.type.name)
+                        )
+                            this.ownPropertyPresentCpp(
+                                current.name,
+                                field,
+                                "value",
+                                node,
                             );
                         visit(field.type);
                     }
@@ -4453,6 +4545,8 @@ export class DataTypeRegistry {
         cpp: string,
         node: ts.Node,
     ): string | undefined {
+        if (isUndefinedDataType(type))
+            return `(static_cast<void>(${cpp}), bbl::js::JsonValue{})`;
         if (type.kind === "enum") {
             this.enumToStringCpp(type, cpp, node);
             this.jsonBoxedEnums.add(type.name);
@@ -4508,6 +4602,25 @@ export class DataTypeRegistry {
             );
         }
         if (this.jsonBoxedStructs.has(type.name)) return;
+        const stored = this.classStructLayout(type.name);
+        const source = this.classStruct(type.name);
+        if (source)
+            for (const member of classInstanceProperties(source.declaration)) {
+                const name = ts.isPrivateIdentifier(member.name)
+                    ? member.name.text
+                    : ts.isObjectBindingPattern(member.name) ||
+                        ts.isArrayBindingPattern(member.name)
+                      ? undefined
+                      : propertyNameText(member.name);
+                if (
+                    name === undefined ||
+                    !stored.some((field) => field.sourceName === name)
+                )
+                    this.fail(
+                        node,
+                        `Dynamic class storage requires a represented field '${name ?? member.name.getText()}'.`,
+                    );
+            }
         this.jsonBoxedStructs.set(type.name, node);
         this.cppType(type);
         for (const field of this.structFields(type.name, node, "accessors")) {
@@ -4541,7 +4654,7 @@ export class DataTypeRegistry {
                 ),
             );
             lines.push(
-                `inline bbl::js::JsonValue json_value_property(const ${name}& value, std::string_view key) {`,
+                `inline bbl::js::JsonValue json_value_property(const ${name}&${fields.length ? " value" : ""}, std::string_view${fields.length ? " key" : ""}) {`,
             );
             fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
@@ -4591,7 +4704,7 @@ export class DataTypeRegistry {
      * either order -- resolves.
      */
     private renderJsonCodecs(used: ReadonlySet<string>): string[] {
-        const names = [...this.jsonSerializedStructs].filter((name) =>
+        const names = [...this.jsonSerializedStructs.keys()].filter((name) =>
             used.has(name),
         );
         if (names.length === 0) {
@@ -4611,13 +4724,34 @@ export class DataTypeRegistry {
                 "    writer.begin_object();",
             );
             for (const field of definition?.fields ?? []) {
-                if (field.type.kind === "undefined") {
+                if (isUndefinedDataType(field.type)) {
                     lines.push(
                         `    static_cast<void>(value.${field.name}${field.accessor ? ".get()" : ""});`,
                     );
                     continue;
                 }
                 const key = stringLiteral(field.sourceName);
+                if (
+                    field.optionalProperty &&
+                    field.type.kind === "struct" &&
+                    this.isReferenceStruct(field.type.name)
+                ) {
+                    const slot = `value.${field.name}`;
+                    const present =
+                        this.ownPropertyPresentCpp(
+                            name,
+                            field,
+                            slot,
+                            this.jsonSerializedStructs.get(name)!,
+                        ) ?? "true";
+                    lines.push(
+                        `    if (${present}) {`,
+                        `        writer.key(${key});`,
+                        `        json_write(writer, ${slot});`,
+                        "    }",
+                    );
+                    continue;
+                }
                 // An `f?: T` property is JavaScript's `undefined` when it is not
                 // set, and `JSON.stringify` drops such a member outright. An
                 // `f: T | null` one is present, so its key is written with `null`.

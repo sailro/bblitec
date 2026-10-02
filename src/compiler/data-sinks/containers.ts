@@ -67,6 +67,11 @@ function valueOptional(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    if (dataType.inner.kind === "undefined")
+        return lowerer.context.dataTypes.presentValue(
+            dataType,
+            lowerer.compileKnownValueForSink(value, dataType.inner, node),
+        );
     const absent = lowerer.context.dataTypes.absentValue(dataType);
     if (value.kind === "void") {
         lowerer.context.emitDiscardedValue(value);
