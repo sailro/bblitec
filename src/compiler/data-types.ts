@@ -40,6 +40,7 @@ import {
     emissionArray,
     EmissionMap,
     EmissionSet,
+    EmissionTransaction,
     journaled,
 } from "./emission-transaction.js";
 import {
@@ -2193,13 +2194,22 @@ export class DataTypeRegistry {
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
-        const discriminated = this.fromDiscriminatedObjectUnion(type, node);
-        if (discriminated === null) return undefined;
-        return (
-            discriminated ??
-            this.fromCommonObjectUnion(type, node) ??
-            this.fromMixedUnion(type, node)
-        );
+        const object = members.every(
+            (member) => (member.flags & ts.TypeFlags.Object) !== 0,
+        )
+            ? this.mapRecursiveStruct(type, type.aliasSymbol?.name, (name) => {
+                  const discriminated = this.fromDiscriminatedObjectUnion(
+                      type,
+                      node,
+                      name,
+                  );
+                  return discriminated !== undefined
+                      ? discriminated
+                      : this.fromCommonObjectUnion(type, node, name);
+              })
+            : undefined;
+        if (object === null) return undefined;
+        return object ?? this.fromMixedUnion(type, node);
     }
 
     /** Fixed tuple alternatives share lanes where their stored representations agree. */
@@ -2312,6 +2322,7 @@ export class DataTypeRegistry {
     private fromCommonObjectUnion(
         type: ts.UnionType,
         node: ts.Node,
+        name: string,
     ): DataType | undefined {
         if (
             type.types.length < 2 ||
@@ -2321,9 +2332,6 @@ export class DataTypeRegistry {
         ) {
             return undefined;
         }
-        const identity = this.structIdentity(type);
-        const completed = this.structTypesByIdentity.get(identity);
-        if (completed) return completed;
         const propertiesByMember = type.types.map((member) =>
             this.checker.getPropertiesOfType(member),
         );
@@ -2399,31 +2407,13 @@ export class DataTypeRegistry {
             presences.push(unionPresence(memberProperties, memberTypes, first));
         }
 
-        const preferredName = type.aliasSymbol?.name;
-        const name = this.uniqueName(
-            preferredName
-                ? sanitizeIdentifier(preferredName)
-                : `Record${++this.anonymousStructIndex}`,
-            this.structNames,
-        );
         const key = fields
             .map(
                 (field) =>
                     `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}`,
             )
             .join(",");
-        const existing = this.structsByKey.get(key);
-        if (existing) {
-            this.recordFieldPresence(existing.name, fields, presences);
-            const result = { kind: "struct" as const, name: existing.name };
-            this.structTypesByIdentity.set(identity, result);
-            return result;
-        }
-        this.recordFieldPresence(name, fields, presences);
-        this.registerStructDefinition(key, { name, fields });
-        const result = { kind: "struct" as const, name };
-        this.structTypesByIdentity.set(identity, result);
-        return result;
+        return this.internMappedStruct(name, key, fields, presences);
     }
 
     /**
@@ -2436,6 +2426,7 @@ export class DataTypeRegistry {
     private fromDiscriminatedObjectUnion(
         type: ts.UnionType,
         node: ts.Node,
+        name: string,
     ): DataType | undefined | null {
         if (
             type.types.length < 2 ||
@@ -2445,9 +2436,6 @@ export class DataTypeRegistry {
         ) {
             return undefined;
         }
-        const identity = this.structIdentity(type);
-        const completed = this.structTypesByIdentity.get(identity);
-        if (completed) return completed;
         const propertiesByMember = type.types.map((member) =>
             this.checker.getPropertiesOfType(member),
         );
@@ -2522,13 +2510,6 @@ export class DataTypeRegistry {
         )
             return undefined;
 
-        const preferredName = type.aliasSymbol?.name;
-        const name = this.uniqueName(
-            preferredName
-                ? sanitizeIdentifier(preferredName)
-                : `Record${++this.anonymousStructIndex}`,
-            this.structNames,
-        );
         const propertyNames: string[] = [];
         for (const properties of propertiesByMember) {
             for (const property of properties) {
@@ -2617,6 +2598,17 @@ export class DataTypeRegistry {
                 sourceName: propertyName,
                 name: sanitizeIdentifier(propertyName),
                 type: this.markStoredObjectReferences(mapped),
+                ...(memberProperties.some(
+                    (property) =>
+                        (property.flags & ts.SymbolFlags.Optional) !== 0,
+                )
+                    ? {
+                          optionalProperty: true,
+                          ...(mapped.kind !== "optional"
+                              ? { defaultWhenMissing: true }
+                              : {}),
+                      }
+                    : {}),
                 ...(memberProperties.length === type.types.length &&
                 memberProperties.every(propertyIsReadOnly)
                     ? { readOnly: true }
@@ -2668,21 +2660,10 @@ export class DataTypeRegistry {
         const key = fields
             .map(
                 (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${JSON.stringify(field.presentForTags)}`,
+                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${JSON.stringify(field.presentForTags)}`,
             )
             .join(",");
-        const existing = this.structsByKey.get(key);
-        if (existing) {
-            this.recordFieldPresence(existing.name, fields, presences);
-            const result = { kind: "struct" as const, name: existing.name };
-            this.structTypesByIdentity.set(identity, result);
-            return result;
-        }
-        this.recordFieldPresence(name, fields, presences);
-        this.registerStructDefinition(key, { name, fields });
-        const result = { kind: "struct" as const, name };
-        this.structTypesByIdentity.set(identity, result);
-        return result;
+        return this.internMappedStruct(name, key, fields, presences);
     }
 
     private fromTupleType(
@@ -2781,6 +2762,31 @@ export class DataTypeRegistry {
     }
 
     private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
+        const preferredName =
+            type.aliasSymbol?.name ??
+            (type.symbol &&
+            type.symbol.name !== "__type" &&
+            type.symbol.name !== "__object"
+                ? type.symbol.name
+                : undefined);
+        return (
+            this.mapRecursiveStruct(type, preferredName, (name) =>
+                this.fromStructTypeInner(
+                    type,
+                    node,
+                    name,
+                    preferredName !== undefined || this.classDemanded,
+                ),
+            ) ?? undefined
+        );
+    }
+
+    /** Recursive fields resolve to one provisional identity; declined layouts leave no stored types. */
+    private mapRecursiveStruct(
+        type: ts.Type,
+        preferredName: string | undefined,
+        build: (name: string) => DataType | undefined | null,
+    ): DataType | undefined | null {
         const identity = this.structIdentity(type);
         const completed = this.structTypesByIdentity.get(identity);
         if (completed) {
@@ -2791,34 +2797,26 @@ export class DataTypeRegistry {
             this.referenceStructNames.add(activeName);
             return { kind: "struct", name: activeName };
         }
-        const preferredName =
-            type.aliasSymbol?.name ??
-            (type.symbol &&
-            type.symbol.name !== "__type" &&
-            type.symbol.name !== "__object"
-                ? type.symbol.name
-                : undefined);
-        const provisionalName = this.uniqueName(
-            preferredName
-                ? sanitizeIdentifier(preferredName)
-                : `Record${++this.anonymousStructIndex}`,
-            this.structNames,
+        return new EmissionTransaction().run(
+            () => {
+                const name = this.uniqueName(
+                    preferredName
+                        ? sanitizeIdentifier(preferredName)
+                        : `Record${++this.anonymousStructIndex}`,
+                    this.structNames,
+                );
+                this.structNamesInProgress.set(identity, name);
+                try {
+                    const mapped = build(name);
+                    if (mapped?.kind === "struct")
+                        this.structTypesByIdentity.set(identity, mapped);
+                    return mapped;
+                } finally {
+                    this.structNamesInProgress.delete(identity);
+                }
+            },
+            (mapped) => mapped?.kind === "struct",
         );
-        this.structNamesInProgress.set(identity, provisionalName);
-        try {
-            const mapped = this.fromStructTypeInner(
-                type,
-                node,
-                provisionalName,
-                preferredName !== undefined || this.classDemanded,
-            );
-            if (mapped?.kind === "struct") {
-                this.structTypesByIdentity.set(identity, mapped);
-            }
-            return mapped;
-        } finally {
-            this.structNamesInProgress.delete(identity);
-        }
     }
 
     /**
@@ -3222,6 +3220,15 @@ export class DataTypeRegistry {
                     `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}${accessorKey(field)}`,
             )
             .join(",")}`;
+        return this.internMappedStruct(provisionalName, key, fields, presences);
+    }
+
+    private internMappedStruct(
+        provisionalName: string,
+        key: string,
+        fields: DataStructField[],
+        presences: OwnPropertyPresence[],
+    ): DataType<"struct"> {
         const existing = this.structsByKey.get(key);
         const name =
             existing && !this.referenceStructNames.has(provisionalName)

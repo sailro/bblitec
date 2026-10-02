@@ -8428,7 +8428,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return;
             }
             const field = this.compileDataPath(target, "write");
-            if (field?.dataType?.kind === "function") {
+            if (
+                field?.dataType?.kind === "function" ||
+                (field?.dataType?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(
+                        field.dataType.name,
+                    ))
+            ) {
                 const property = this.context.checker.getPropertyOfType(
                     this.context.checker.getTypeAtLocation(target.expression),
                     target.name.text,
