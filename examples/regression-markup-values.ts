@@ -4,7 +4,7 @@ body { margin:0; background:#202830; }
 .panel { position:absolute; top:80px; width:360px; height:240px; padding:20px; background:#384858; }
 .choices { display:flex; gap:20px; }
 .stacked { flex-direction:column; }
-.choice { display:block; width:150px; height:72px; border:0; padding:0; color:#182028; font:20px Arial; }
+.choice { display:block; width:150px; height:72px; border:0; padding:0; color:#182028; font:20px Arial; line-height:72px; }
 .go { background:#80b8f0; }
 .cancel { background:#e09840; }
 `;
