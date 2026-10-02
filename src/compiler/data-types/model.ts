@@ -136,6 +136,8 @@ interface DataKinds {
     function: {
         kind: "function";
         parameters: DataType[];
+        /** Owned table of the reached concrete signatures of a generic callable. */
+        generic?: string;
         /** Native parameter index of the final, freshly packed rest array. */
         restParameter?: number;
         result?: DataType;

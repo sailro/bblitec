@@ -507,6 +507,11 @@ export class DataLowerer {
                 node,
                 "Callback requires a native function signature.",
             );
+        if (type.generic)
+            this.context.fail(
+                node,
+                "Stored generic callbacks require a source call with concrete type arguments.",
+            );
         this.context.useNativeValue(callback);
         const erased = new Set(type.erasedParameters ?? []);
         const argumentsCpp: string[] = [];
@@ -5949,6 +5954,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         receiver?: string,
         argumentOffset = 0,
     ): Value {
+        if (functionType.generic) {
+            if (argumentOffset !== 0)
+                this.context.fail(
+                    call,
+                    "Stored generic Function.call requires a concrete signature.",
+                );
+            const field = this.context.dataTypes.genericFunctionCall(
+                functionType.generic,
+                call,
+            );
+            callable = `(${callable}).select(&bblscene::${functionType.generic}Data::${field.name})`;
+            functionType = field.type;
+        }
         if (
             call.questionDotToken ||
             (ts.isPropertyAccessExpression(call.expression) &&
@@ -8280,6 +8298,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return;
             }
             const field = this.compileDataPath(target, "write");
+            if (field?.dataType?.kind === "function") {
+                const property = this.context.checker.getPropertyOfType(
+                    this.context.checker.getTypeAtLocation(target.expression),
+                    target.name.text,
+                );
+                if (
+                    property &&
+                    (property.flags & ts.SymbolFlags.Optional) !== 0
+                ) {
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${field.cpp} = {};`,
+                    });
+                    this.invalidateStaticElements(field);
+                    return;
+                }
+            }
             if (field?.kind === "data" && field.dataType?.kind === "optional") {
                 this.context.reachJsData();
                 this.context.emit({

@@ -15,6 +15,29 @@ namespace bbl::js {
 
 template <typename Sig> class Callback;
 
+/** One function identity and the concrete signatures reached by generated calls. */
+template <typename Table> class GenericCallback {
+public:
+    GenericCallback() = default;
+    GenericCallback(std::size_t identity, Table methods)
+        : identity_(identity), methods_(std::move(methods)) {}
+    explicit operator bool() const { return static_cast<bool>(methods_); }
+    template <typename Member, typename Record>
+    [[nodiscard]] Member select(Member Record::* field) const {
+        return methods_ ? methods_.get()->*field : Member{};
+    }
+    [[nodiscard]] std::size_t identity() const { return identity_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(methods_); }
+    [[nodiscard]] friend bool operator==(const GenericCallback& left,
+                                         const GenericCallback& right) {
+        return left.identity_ == right.identity_;
+    }
+
+private:
+    std::size_t identity_ = 0;
+    Table methods_;
+};
+
 /** A compiler-described closure. The invoker receives the live environment,
  * so tracing observes replaced captures and shared mutable cells as they are. */
 template <typename Environment, typename Invoke> struct Closure {

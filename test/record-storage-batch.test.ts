@@ -133,14 +133,18 @@ test("JSON serialization refuses Set and Map storage, including union alternativ
     }
 });
 
-test("nullable callback records retain unrepresented signature refusals", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            let enabled=true;
-            const optional=enabled?{call:<T>(value:T):T=>value}:null;
-            optional?.call(1);
-        `),
-        /Conditional expressions require matching native value branches/,
-    );
-});
+check(
+    "nullable-generic-callback-records",
+    `
+    let enabled=true;
+    function create(){return enabled?{call:<T>(value:T):T=>value}:null;}
+    const present=create();
+    const text=present?.call('text');
+    if(present?.call(1)!==1||text!=='text')throw new Error('generic conditional record');
+    enabled=false;
+    const absent=create();
+    let calls=0;
+    function argument():number{calls++;return 2;}
+    if(absent?.call(argument())!==undefined||calls!==0)throw new Error('absent conditional record');
+`,
+);

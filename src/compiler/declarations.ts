@@ -291,7 +291,11 @@ export class DeclarationLowerer {
     ): DataType | undefined {
         return (
             this.context.dataLowerer.dataTypeAt(name) ??
-            this.context.dataTypes.fromCheckedObjectInitializer(initializer)
+            this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
+            this.context.dataTypes.fromStoredTsType(
+                this.context.checker.getTypeAtLocation(name),
+                name,
+            )
         );
     }
 

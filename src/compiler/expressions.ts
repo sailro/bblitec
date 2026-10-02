@@ -4906,6 +4906,14 @@ export class ExpressionLowerer {
             this.context.expectArgumentCount(call, 1, 1);
             const callable = this.compileFunctionObject(callee.expression);
             if (
+                callable.dataType?.kind === "function" &&
+                callable.dataType.generic
+            )
+                this.context.fail(
+                    call,
+                    "Stored generic Function.bind requires a concrete signature.",
+                );
+            if (
                 callable.kind !== "data" ||
                 callable.dataType?.kind !== "function"
             )

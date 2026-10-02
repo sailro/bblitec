@@ -71,6 +71,13 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp } from "./types.js";
+import { callTypeArguments } from "./type-arguments.js";
+import {
+    GenericFunctionStorageRequired,
+    GenericFunctionStorage,
+    sameTypeFrames,
+    type GenericFunctionDemand,
+} from "./generic-function-storage.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -719,6 +726,22 @@ export class DataTypeRegistry {
         DataType & { kind: "struct" }
     >();
     private readonly referenceStructNames = new EmissionSet<string>();
+    private readonly genericFunctions = new EmissionMap<
+        string,
+        {
+            family: string;
+            signature: ts.Signature;
+            declaration: ts.SignatureDeclaration;
+            fields: Array<{
+                name: string;
+                type: DataType<"function">;
+                demand: GenericFunctionDemand;
+            }>;
+        }
+    >();
+    private readonly genericFunctionNames = new EmissionMap<string, string>();
+    @journaled private accessor genericFunctionAncestors: readonly string[] =
+        [];
     private readonly nativeRecordSources = new EmissionMap<
         string,
         NativeRecordStorageDemand
@@ -789,6 +812,7 @@ export class DataTypeRegistry {
         /** Which local classes extend which, for class-backed structs and dispatch. */
         public readonly classHierarchy: ClassHierarchy,
         private readonly asynchronous = false,
+        private readonly genericFunctionDemands = new GenericFunctionStorage(),
     ) {}
 
     /**
@@ -1530,8 +1554,9 @@ export class DataTypeRegistry {
             const reference = type as ts.TypeReference;
             const target = reference.target;
             if (library && type.symbol.name === "Promise") {
-                const [resolvedType] = this.checker.getTypeArguments(reference);
-                if (!resolvedType) return undefined;
+                const [argument] = this.checker.getTypeArguments(reference);
+                if (!argument) return undefined;
+                const resolvedType = this.resolveTypeParameter(argument);
                 if (this.asynchronous) {
                     if (
                         (resolvedType.flags &
@@ -1687,6 +1712,8 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
         storedClassField = false,
+        parameterOverrides?: readonly (ts.Type | undefined)[],
+        resultOverride?: ts.Type,
     ): DataType | undefined {
         const signatures = type.getCallSignatures();
         if (signatures.length !== 1) return undefined;
@@ -1708,6 +1735,24 @@ export class DataTypeRegistry {
                 owner = owner.parent;
             }
         }
+        if (
+            signature.typeParameters?.some(
+                (parameter) => !this.substituteTypeParameter(parameter),
+            ) ||
+            (!parameterOverrides &&
+                signature
+                    .getParameters()
+                    .some(
+                        (parameter) =>
+                            (this.checker.getTypeOfSymbol(parameter).flags &
+                                ts.TypeFlags.Unknown) !==
+                            0,
+                    ))
+        ) {
+            return this.classDemanded
+                ? this.fromGenericFunction(signature, node)
+                : undefined;
+        }
         const erasedParameters: number[] = [];
         let restParameter: number | undefined;
         const parameters = signature
@@ -1715,10 +1760,12 @@ export class DataTypeRegistry {
             .flatMap((parameter, index) => {
                 const declaration =
                     parameter.valueDeclaration ?? parameter.declarations?.[0];
-                const parameterType = this.checker.getTypeOfSymbolAtLocation(
+                const declaredType = this.checker.getTypeOfSymbolAtLocation(
                     parameter,
                     declaration ?? node,
                 );
+                const parameterType =
+                    parameterOverrides?.[index] ?? declaredType;
                 if (
                     (parameterType.flags &
                         (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
@@ -1727,10 +1774,26 @@ export class DataTypeRegistry {
                     erasedParameters.push(index);
                     return [];
                 }
-                const mapped = this.fromStoredTsType(
-                    parameterType,
-                    declaration ?? node,
-                );
+                const declaredCallable =
+                    this.checker.getNonNullableType(declaredType);
+                const actualSignature =
+                    parameterOverrides?.[index]?.getCallSignatures()[0];
+                const mapped =
+                    actualSignature &&
+                    declaredCallable.getCallSignatures().length === 1
+                        ? this.fromFunctionType(
+                              declaredCallable,
+                              declaration ?? node,
+                              false,
+                              undefined,
+                              this.checker.getReturnTypeOfSignature(
+                                  actualSignature,
+                              ),
+                          )
+                        : this.fromStoredTsType(
+                              parameterType,
+                              declaration ?? node,
+                          );
                 if (
                     declaration &&
                     ts.isParameter(declaration) &&
@@ -1747,8 +1810,9 @@ export class DataTypeRegistry {
         if (parameters.some((parameter) => parameter === undefined)) {
             return undefined;
         }
-        const signatureResult =
-            this.checker.getReturnTypeOfSignature(signature);
+        const signatureResult = this.resolveTypeParameter(
+            resultOverride ?? this.checker.getReturnTypeOfSignature(signature),
+        );
         const resultType =
             this.asynchronous &&
             (signatureResult.flags &
@@ -1780,6 +1844,177 @@ export class DataTypeRegistry {
             ...(result ? { result } : {}),
             ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
         };
+    }
+
+    private fromGenericFunction(
+        signature: ts.Signature,
+        node: ts.Node,
+    ): DataType<"function"> | undefined {
+        const declaration = signature.declaration;
+        if (!declaration || ts.isJSDocSignature(declaration)) return undefined;
+        const family = this.genericFunctionDemands.family(
+            signature,
+            this.typeArgumentFrames(),
+        );
+        const existing = this.genericFunctionNames.get(family);
+        if (existing)
+            return { kind: "function", parameters: [], generic: existing };
+        const name = this.uniqueName(
+            `GenericFunction${++this.anonymousStructIndex}`,
+            this.structNames,
+        );
+        this.genericFunctionNames.set(family, name);
+        this.referenceStructNames.add(name);
+        const fields: Array<{
+            name: string;
+            type: DataType<"function">;
+            demand: GenericFunctionDemand;
+        }> = [];
+        this.genericFunctions.set(name, {
+            family,
+            signature,
+            declaration,
+            fields,
+        });
+        for (const demand of this.genericFunctionDemands.get(family)) {
+            const type = this.withGenericFunctionArguments(
+                declaration,
+                demand,
+                () =>
+                    this.fromFunctionType(
+                        this.checker.getTypeAtLocation(declaration),
+                        node,
+                        false,
+                        demand.parameters,
+                    ),
+            );
+            if (type?.kind !== "function" || type.generic)
+                this.fail(
+                    node,
+                    "Stored generic function instantiation requires a fully represented native signature.",
+                );
+            fields.push({
+                name: `call_${fields.length}`,
+                type: { ...type, identity: true },
+                demand,
+            });
+        }
+        this.registerStructDefinition(`generic:${family}`, {
+            name,
+            fields: fields.map((field) => ({
+                sourceName: field.name,
+                name: field.name,
+                type: field.type,
+            })),
+        });
+        return { kind: "function", parameters: [], generic: name };
+    }
+
+    public genericFunctionFields(name: string): ReadonlyArray<{
+        name: string;
+        type: DataType<"function">;
+        demand: GenericFunctionDemand;
+    }> {
+        return this.genericFunctions.get(name)!.fields;
+    }
+
+    /** Bind an implementation's parameters by position, independent of its interface's symbols. */
+    public withGenericFunctionArguments<T>(
+        declaration: ts.SignatureDeclaration,
+        demand: GenericFunctionDemand,
+        work: () => T,
+    ): T {
+        const arguments_ = new Map<ts.Symbol, ts.Type>();
+        declaration.typeParameters?.forEach((parameter, index) => {
+            const argument = demand.arguments[index];
+            if (argument)
+                arguments_.set(
+                    this.checker.getTypeAtLocation(parameter).symbol,
+                    argument,
+                );
+        });
+        const frames = [...demand.frames, arguments_];
+        const apply = (index: number): T =>
+            index === frames.length
+                ? work()
+                : this.withTypeArguments(frames[index], () => apply(index + 1));
+        const previous = this.genericFunctionAncestors;
+        this.genericFunctionAncestors = [...demand.ancestors, demand.family];
+        try {
+            return apply(0);
+        } finally {
+            this.genericFunctionAncestors = previous;
+        }
+    }
+
+    public genericFunctionCall(
+        name: string,
+        call: ts.CallExpression,
+    ): { name: string; type: DataType<"function"> } {
+        const generic = this.genericFunctions.get(name)!;
+        const declaration = generic.declaration;
+        const substitution = callTypeArguments(
+            this.checker,
+            call,
+            declaration,
+            this.fail,
+        );
+        const arguments_ = (generic.signature.typeParameters ?? []).map(
+            (parameter) => {
+                return this.resolveTypeParameter(
+                    substitution!.get(parameter.symbol)!,
+                );
+            },
+        );
+        const parameters = generic.signature
+            .getParameters()
+            .map((parameter, index) => {
+                const declared = this.checker.getTypeOfSymbol(parameter);
+                if (
+                    (declared.flags & ts.TypeFlags.Unknown) === 0 &&
+                    !this.checker
+                        .getNonNullableType(declared)
+                        .getCallSignatures().length
+                )
+                    return undefined;
+                const argument = call.arguments[index];
+                if (!argument) {
+                    if ((declared.flags & ts.TypeFlags.Unknown) !== 0)
+                        this.fail(
+                            call,
+                            "Stored unknown parameters require a represented argument.",
+                        );
+                    return undefined;
+                }
+                return this.checker.getTypeAtLocation(argument);
+            });
+        const frames = this.typeArgumentFrames();
+        const sameTypes = (
+            left: readonly (ts.Type | undefined)[],
+            right: readonly (ts.Type | undefined)[],
+        ): boolean =>
+            left.length === right.length &&
+            left.every((type, index) => type === right[index]);
+        const field = generic.fields.find(
+            ({ demand }) =>
+                sameTypes(demand.arguments, arguments_) &&
+                sameTypes(demand.parameters, parameters) &&
+                sameTypeFrames(demand.frames, frames),
+        );
+        if (field) return field;
+        if (this.genericFunctionAncestors.includes(generic.family))
+            this.fail(
+                call,
+                "Recursive stored generic functions require an already represented signature.",
+            );
+        throw new GenericFunctionStorageRequired({
+            family: generic.family,
+            key: String(generic.fields.length),
+            arguments: arguments_,
+            parameters,
+            frames,
+            ancestors: this.genericFunctionAncestors,
+        });
     }
 
     private fromUnionType(
@@ -2548,6 +2783,17 @@ export class DataTypeRegistry {
             }
         }
         return undefined;
+    }
+
+    private resolveTypeParameter(type: ts.Type): ts.Type {
+        const seen = new Set<ts.Type>();
+        while (!seen.has(type)) {
+            seen.add(type);
+            const next = this.substituteTypeParameter(type);
+            if (!next) break;
+            type = next;
+        }
+        return type;
     }
 
     /**
@@ -4651,6 +4897,8 @@ export class DataTypeRegistry {
                     visit(dataType.value);
                     return;
                 case "function":
+                    if (dataType.generic)
+                        visit({ kind: "struct", name: dataType.generic });
                     for (const parameter of dataType.parameters)
                         visit(parameter);
                     if (dataType.result) visit(dataType.result);

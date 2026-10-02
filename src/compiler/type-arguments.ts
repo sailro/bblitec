@@ -1,5 +1,4 @@
 import ts from "typescript";
-import type { SupportedFunction } from "./user-functions.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -16,7 +15,7 @@ type Fail = (node: ts.Node, message: string) => never;
 export function callTypeArguments(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
-    declaration: SupportedFunction,
+    declaration: ts.SignatureDeclaration,
     fail: Fail,
 ): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
     const parameters = declaration.typeParameters;
