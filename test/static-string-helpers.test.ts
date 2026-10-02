@@ -199,6 +199,20 @@ test("static string specialization evaluates argument effects once and preserves
         function next(): Tone { keys++; return Tone.Ocean; }
         const selected = labels[next()];
         if (keys !== 1 || selected !== "Water") throw new Error("indexed key evaluated more than once");
+        interface Paint { fill: string; nested: { ink: string }; }
+        const palette: Record<Tone, Paint> = {
+            [Tone.Ocean]: { fill: "blue", nested: { ink: "white" } },
+            [Tone.Sand]: { fill: "yellow", nested: { ink: "black" } },
+        };
+        const paint = palette[Tone.Ocean];
+        const alias = paint;
+        const nested = alias.nested;
+        paint.fill = "green";
+        nested.ink = "gray";
+        if (paint !== alias || paint !== palette[Tone.Ocean] || nested !== palette[Tone.Ocean].nested ||
+            palette[Tone.Ocean].fill !== "green" || palette[Tone.Ocean].nested.ink !== "gray" ||
+            palette[Tone.Sand].fill !== "yellow" || palette[Tone.Sand].nested.ink !== "black")
+            throw new Error("selected records retain identity and mutable fields");
         let calls = 0;
         function label(): string { calls++; return "ready"; }
         function consume(text: string): void { if (text !== "ready") throw new Error("argument value"); }

@@ -880,11 +880,19 @@ export class DeclarationLowerer {
             );
             return;
         }
-        value =
-            this.context.bindings.referenceRecordValue(
-                value,
-                declaration.initializer,
-            ) ?? value;
+        const initializer = this.context.unwrap(declaration.initializer);
+        const aliasesRecord =
+            ts.isIdentifier(initializer) ||
+            ts.isPropertyAccessExpression(initializer) ||
+            ts.isElementAccessExpression(initializer);
+        // A named or selected record already owns its fields. Allocating a
+        // fresh object here would split aliases and discard their known facts.
+        if (!aliasesRecord)
+            value =
+                this.context.bindings.referenceRecordValue(
+                    value,
+                    declaration.initializer,
+                ) ?? value;
         if (nullableResource && value.kind === nullableResource.kind) {
             // Copy nullable resource STORAGE, not its present-value spelling.
             // A bound nullable resource exposes `(*storage)` for code that a
@@ -971,11 +979,6 @@ export class DeclarationLowerer {
             );
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
-            const initializer = this.context.unwrap(declaration.initializer);
-            const aliasesRecord =
-                ts.isIdentifier(initializer) ||
-                ts.isPropertyAccessExpression(initializer) ||
-                ts.isElementAccessExpression(initializer);
             if (
                 value.kind === "record" &&
                 !aliasesRecord &&
@@ -1029,7 +1032,6 @@ export class DeclarationLowerer {
                 });
                 return;
             }
-            const initializer = this.context.unwrap(declaration.initializer);
             const constructs =
                 ts.isCallExpression(initializer) ||
                 ts.isNewExpression(initializer) ||
