@@ -8,6 +8,7 @@
 
 #include <bblite/js_structured_clone.hpp>
 #include <bblite/js_promise.hpp>
+#include <bblite/js_generator.hpp>
 #include <bblite/js_gpu_adapter.hpp>
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_host_services.hpp>

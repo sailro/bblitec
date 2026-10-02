@@ -6,7 +6,6 @@
 #include <bblite/js_error.hpp>
 #include <bblite/js_accessor.hpp>
 #include <bblite/dom_event_state.hpp>
-#include <bblite/features/workers.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
 // arrays, nullable objects, readonly views, all-number tuples, JavaScript
@@ -5014,6 +5013,3 @@ inline void set_random_override(Callback<double()> callback) {
 
 #include <bblite/js_text_codec.hpp>
 #include <bblite/js_search_params.hpp>
-#if BBLITE_WORKERS
-#include <bblite/js_generator.hpp>
-#endif
