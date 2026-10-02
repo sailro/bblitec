@@ -248,7 +248,7 @@ export function listenerOptions(
     };
 }
 
-function pinDetached(
+export function pinDetached(
     context: Pick<Context, "bindings">,
     value: Value,
     label: string,

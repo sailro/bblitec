@@ -3,7 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import { domTargetIdentity } from "./dom-targets.js";
-import { isCustomDomEventName } from "./dom-listeners.js";
+import { isCustomDomEventName, pinDetached } from "./dom-listeners.js";
 
 type Context = Pick<
     LoweringServices,
@@ -108,10 +108,9 @@ export function compileCustomEventDispatch(
         !(type?.kind === "handle" && type.handle === "custom-event")
     )
         return undefined;
-    const receiver = { ...context.compileValue(callee.expression) };
-    delete receiver.nativeBinding;
-    const owner = context.bindings.pinValueToTemporary(
-        receiver,
+    const owner = pinDetached(
+        context,
+        context.compileValue(callee.expression),
         "dispatch_target",
         callee.expression,
     );

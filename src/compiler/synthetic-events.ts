@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
@@ -142,10 +143,9 @@ export function compileSyntheticEventDispatch(
         !(type?.kind === "handle" && type.handle === "dom-event")
     )
         return undefined;
-    const receiver = { ...context.compileValue(callee.expression) };
-    delete receiver.nativeBinding;
-    const owner = context.bindings.pinValueToTemporary(
-        receiver,
+    const owner = pinDetached(
+        context,
+        context.compileValue(callee.expression),
         "dispatch_target",
         callee.expression,
     );

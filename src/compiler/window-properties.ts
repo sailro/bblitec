@@ -114,6 +114,25 @@ export class WindowProperties {
         return `${field.functionCpp}(${eventTargetCpp(this.context, target.owner, target.node.expression)})`;
     }
 
+    private snapshotTarget(target: {
+        node: ts.PropertyAccessExpression;
+        owner: Value;
+    }): string {
+        const context = this.context;
+        const owner = context.allocateTemporaryCppName("window_target");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: owner,
+            initializer: eventTargetCpp(
+                context,
+                target.owner,
+                target.node.expression,
+            ),
+        });
+        return owner;
+    }
+
     private declaredField(target: ts.PropertyAccessExpression) {
         const sourceType = this.context.checker.getTypeAtLocation(target);
         if (!nullability(sourceType).undefined) return undefined;
@@ -161,17 +180,7 @@ export class WindowProperties {
                 call,
                 "Window extension call requires function storage.",
             );
-        const owner = this.context.allocateTemporaryCppName("window_target");
-        this.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: owner,
-            initializer: eventTargetCpp(
-                this.context,
-                target.owner,
-                target.node.expression,
-            ),
-        });
+        const owner = this.snapshotTarget(target);
         const valueCpp = `${field.functionCpp}(${owner})`;
         const cpp =
             field.type.kind === "optional"
@@ -212,17 +221,7 @@ export class WindowProperties {
                       inner: { ...field.type.inner, identity: true },
                   }
                 : field.type;
-        const owner = context.allocateTemporaryCppName("window_target");
-        context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: owner,
-            initializer: eventTargetCpp(
-                context,
-                target.owner,
-                target.node.expression,
-            ),
-        });
+        const owner = this.snapshotTarget(target);
         context.emit({
             kind: "expression",
             code: `${field.functionCpp}(${owner}) = ${context.dataLowerer.compileForRetainedSink(expression.right, stored, "a Window extension")};`,
