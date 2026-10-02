@@ -1,0 +1,18 @@
+{
+  "scene": "regression-grid-placement",
+  "notes": "Pointer activation updates two-axis placement, auto-fit tracks and isolation while preserving independent cells.",
+  "capture": false,
+  "phases": [
+    { "id": "idle", "frame": 24 },
+    {
+      "id": "activate",
+      "frame": 24,
+      "tape": ["-*10", "+UiMouseLeft@225:495", "-UiMouseLeft@225:495"]
+    }
+  ],
+  "expect": [
+    { "kind": "image-mad", "phase": "activate", "vs": "idle", "min": 0.1 },
+    { "kind": "backends-agree", "phase": "*", "imageMad": 0.1 },
+    { "kind": "plugin", "module": "checks/plugins/grid-placement.mjs" }
+  ]
+}

@@ -8566,18 +8566,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.reachJsData();
                 return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
             }
-            const name = this.context.allocateTemporaryCppName("property_key");
-            this.context.emit({
-                kind: "declaration",
-                type: "const std::string",
-                name: name,
-                initializer: this.compileKnownValueForSink(
-                    key,
-                    { kind: "string" },
-                    keyNode,
-                ),
-                attributes: "[[maybe_unused]] ",
-            });
+            const name = this.membershipStringKeyCpp(key, keyNode);
             const tests = keys.map(
                 (key) => `${name} == ${this.context.cppString(key)}`,
             );
@@ -8610,19 +8599,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (narrowed.kind === "data" && dataType?.kind === "struct") {
             if (key.staticString === undefined) {
-                const keyCpp =
-                    this.context.allocateTemporaryCppName("property_key");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const std::string",
-                    name: keyCpp,
-                    initializer: this.compileKnownValueForSink(
-                        key,
-                        { kind: "string" },
-                        keyNode,
-                    ),
-                    attributes: "[[maybe_unused]] ",
-                });
+                const keyCpp = this.membershipStringKeyCpp(key, keyNode);
                 const fields = this.context.dataTypes.structFields(
                     dataType.name,
                     ownerNode,
@@ -8667,6 +8644,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? "'in' is decided for compile-time records, dictionaries and structs."
                 : "Object.hasOwn is decided for compile-time records, dictionaries and structs.",
         );
+    }
+
+    private membershipStringKeyCpp(key: Value, node: ts.Expression): string {
+        if (key.nativeBinding && isStringValue(key)) return key.cpp;
+        const name = this.context.allocateTemporaryCppName("property_key");
+        this.context.emit({
+            kind: "declaration",
+            type: "const std::string",
+            name,
+            initializer: this.compileKnownValueForSink(
+                key,
+                { kind: "string" },
+                node,
+            ),
+            attributes: "[[maybe_unused]] ",
+        });
+        return name;
     }
 
     private structFieldMembershipCpp(

@@ -1386,26 +1386,9 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Creates storage for the entry module's own rebound top-level names.
-     *
-     * `main()` is a body, not the module: a scene written that way leaves its
-     * module-scope statements out of the emitted program entirely, so a `let`
-     * declared beside `main` and written by the functions `main` calls has
-     * nothing behind it. Reads folded back to the declaration's initializer
-     * -- which is what `staticConstants` does for the entry file -- would give
-     * every reader the value the first write replaced.
-     *
-     * The declaration is emitted here, before the entry body, which is where
-     * JavaScript creates that storage: after the imported modules it depends
-     * on have initialized and before `main` can run. It goes through the same
-     * declaration lowering a `let` inside `main` takes, so the shared-closure
-     * analysis decides its native form -- a plain local, or a `gc_shared` cell
-     * when a stored callback captures it -- and that lowering drops the symbol
-     * from `staticConstants` so every later read and write resolves through
-     * the binding.
-     *
-     * A scene with no `main` already emits its module-scope statements as the
-     * entry, so those are skipped here rather than declared twice.
+     * Materialize shared module state before an implicit main body, using
+     * ordinary declaration and capture lowering. Authored module entries
+     * already include their declarations and must not initialize them twice.
      */
     private emitEntryModuleState(entry: readonly ts.Statement[]): void {
         const emitted = new EmissionSet<ts.Statement>(entry);
@@ -1483,24 +1466,29 @@ class Compiler implements LoweringServices {
                 statement.name?.text === "main" &&
                 statement.body !== undefined,
         );
-        // A Window module that supplies its own entry call owns startup
+        // A module that supplies its own entry call owns startup
         // order. Lowering only the function body would lose module-level
         // producers, listeners and work after an async call suspends.
-        const authoredEntry =
-            main && this.options.workers && this.moduleReferencesEntry(main);
+        const authoredEntry = main && this.moduleReferencesEntry(main);
         if (main && !authoredEntry) {
             this.hasMainEntry = true;
             return main.body!.statements;
         }
 
-        const statements = this.sourceFile.statements
-            .filter(
-                (statement) =>
-                    !ts.isImportDeclaration(statement) &&
-                    !ts.isFunctionDeclaration(statement) &&
-                    !ts.isExportDeclaration(statement),
-            )
-            .map((statement) => this.unwrapEntryReporter(statement));
+        const moduleStatements = this.sourceFile.statements.filter(
+            (statement) =>
+                !ts.isImportDeclaration(statement) &&
+                !ts.isFunctionDeclaration(statement) &&
+                !ts.isExportDeclaration(statement),
+        );
+        const terminal = moduleStatements.at(-1);
+        if (main && terminal && this.isTerminalMainCall(terminal, main)) {
+            this.hasMainEntry = true;
+            return [...moduleStatements.slice(0, -1), ...main.body!.statements];
+        }
+        const statements = moduleStatements.map((statement) =>
+            this.unwrapEntryReporter(statement),
+        );
         if (statements.length === 0) {
             this.failAtFile(
                 "Expected top-level scene statements or a function named main with a body.",
@@ -1509,18 +1497,69 @@ class Compiler implements LoweringServices {
         return statements;
     }
 
+    /** Preserve the implicit-entry adapter only where no caller continuation follows. */
+    private isTerminalMainCall(
+        statement: ts.Statement,
+        main: ts.FunctionDeclaration,
+    ): boolean {
+        if (
+            !ts.isExpressionStatement(statement) ||
+            main.parameters.length !== 0 ||
+            (main.name && this.sharedClosures.identifierIsRebound(main.name))
+        )
+            return false;
+        let expression = this.unwrap(statement.expression);
+        if (ts.isVoidExpression(expression) || ts.isAwaitExpression(expression))
+            expression = this.unwrap(expression.expression);
+        if (
+            ts.isCallExpression(expression) &&
+            ts.isPropertyAccessExpression(expression.expression) &&
+            expression.expression.name.text === "catch"
+        ) {
+            const promise = this.entryReporterPromise(expression);
+            if (!promise) return false;
+            expression = promise;
+        }
+        const signature = ts.isCallExpression(expression)
+            ? this.checker.getResolvedSignature(expression)
+            : undefined;
+        const result =
+            signature && this.checker.getReturnTypeOfSignature(signature);
+        const returned =
+            result && (this.checker.getAwaitedType(result) ?? result);
+        return (
+            ts.isCallExpression(expression) &&
+            expression.arguments.length === 0 &&
+            ts.isIdentifier(expression.expression) &&
+            this.symbols.valueSymbol(expression.expression)
+                ?.valueDeclaration === main &&
+            signature?.declaration === main &&
+            returned !== undefined &&
+            (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                0
+        );
+    }
+
     private moduleReferencesEntry(entry: ts.FunctionDeclaration): boolean {
+        const statements = this.sourceFile.statements.filter(
+            (statement) => !ts.isFunctionDeclaration(statement),
+        );
+        const isEntryReference = (node: ts.Node): boolean =>
+            ts.isIdentifier(node) &&
+            this.symbols.valueSymbol(node)?.valueDeclaration === entry;
+        const policy = { types: "skip", memberNames: "skip" } as const;
+        if (
+            statements.some((statement) =>
+                someAnalysisNode(statement, isEntryReference, policy),
+            )
+        )
+            return true;
         const visited = new Set<ts.Node>();
         const referencesEntry = (root: ts.Node): boolean =>
             someAnalysisNode(
                 root,
                 (node) => {
-                    if (
-                        ts.isIdentifier(node) &&
-                        this.symbols.valueSymbol(node)?.valueDeclaration ===
-                            entry
-                    )
-                        return true;
+                    if (isEntryReference(node)) return true;
                     if (!ts.isCallExpression(node)) return false;
                     const callee =
                         this.checker.getResolvedSignature(node)?.declaration;
@@ -1534,26 +1573,18 @@ class Compiler implements LoweringServices {
                     visited.add(callee);
                     return referencesEntry(callee.body);
                 },
-                { types: "skip", memberNames: "skip" },
+                policy,
             );
-        return this.sourceFile.statements.some(
-            (statement) =>
-                !ts.isFunctionDeclaration(statement) &&
-                referencesEntry(statement),
-        );
+        return statements.some(referencesEntry);
     }
 
     /**
      * `entry(...).catch(<reporter>)`, which is how a scene whose entry is an
      * imported async helper ends.
      *
-     * The `main` form above erases the same wrapper by never treating it as
-     * entry text: the body becomes the program and the trailing
-     * `main().catch(console.error)` goes with the declaration. A scene with
-     * no `main` has no body to take, so the chain IS the program -- and the
-     * `.catch` on it is the browser's unhandled-rejection reporting, which a
-     * native program does by aborting. Both forms therefore record the same
-     * adaptation.
+     * The terminal `main` adapter uses the same reporting-only proof.
+     * Native scene entries report escaping failures through their application
+     * reporter; Window applications retain their actual promise handlers.
      *
      * This is an entry-point rule, so it is applied to entry text once per
      * compile rather than to every `.catch` a program contains: mid-scene,
@@ -1561,16 +1592,25 @@ class Compiler implements LoweringServices {
      * a silent change of meaning.
      */
     private unwrapEntryReporter(statement: ts.Statement): ts.Statement {
-        if (this.options.workers) return statement;
         if (!ts.isExpressionStatement(statement)) return statement;
-        const call = this.unwrap(statement.expression);
+        const promise = this.entryReporterPromise(statement.expression);
+        if (!promise) return statement;
+        this.hasMainEntry = true;
+        return ts.factory.createExpressionStatement(promise);
+    }
+
+    private entryReporterPromise(
+        expression: ts.Expression,
+    ): ts.CallExpression | undefined {
+        if (this.options.workers) return undefined;
+        const call = this.unwrap(expression);
         if (
             !ts.isCallExpression(call) ||
             !ts.isPropertyAccessExpression(call.expression) ||
             call.expression.name.text !== "catch" ||
             call.arguments.length !== 1
         ) {
-            return statement;
+            return undefined;
         }
         const promise = this.unwrap(call.expression.expression);
         if (
@@ -1579,21 +1619,12 @@ class Compiler implements LoweringServices {
                 this.checker.getTypeAtLocation(promise),
             ) === this.checker.getTypeAtLocation(promise)
         ) {
-            return statement;
+            return undefined;
         }
         const handler = this.unwrap(argumentAt(call, 0));
-        if (!this.browserErasure.isBrowserOnlyHandler(handler)) {
-            this.fail(
-                handler,
-                "A scene's entry may end in `.catch(<reporter>)`, whose " +
-                    "handler reports and nothing more -- a native program " +
-                    "reports a rejection by aborting. This handler does " +
-                    "something else, which would be a recovery path the " +
-                    "native entry has no place to run.",
-            );
-        }
-        this.hasMainEntry = true;
-        return ts.factory.createExpressionStatement(promise);
+        return this.browserErasure.isBrowserOnlyHandler(handler, true)
+            ? promise
+            : undefined;
     }
 
     public emitStatement(statement: ts.Statement): void {

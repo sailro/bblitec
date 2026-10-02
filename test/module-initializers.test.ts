@@ -12,6 +12,28 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
+test("authored entry preserves destructured module bindings across rebinding", (t) => {
+    const result = compileSource(`
+        let initializations = 0;
+        function initial(): [number] { initializations++; return [3]; }
+        let [slot] = initial();
+        function read(): number { return slot; }
+        function main(): void {
+            if (initializations !== 1 || read() !== 3)
+                throw new Error("module destructuring initialization");
+            slot = 7;
+            if (read() !== 7) throw new Error("module binding replacement");
+        }
+        main();
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-destructured-entry", result.cpp);
+});
+
 test("initializer planning retains every alias origin across eager calls and recursive helpers", () => {
     const directory = mkdtempSync(join(tmpdir(), "bbl-module-plan-"));
     try {

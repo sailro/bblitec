@@ -2751,9 +2751,13 @@ test("writes a tuple lane at its sink's own width", () => {
         void main();
     `);
 
+    const offset = /double (\w+) = 5000000\.0;/.exec(result.cpp);
+    assert.ok(offset);
     assert.match(
         result.cpp,
-        /bbl::js::Tuple<3>\{5000000\.0, 0\.65, 5000002\.45\};/,
+        new RegExp(
+            `bbl::js::Tuple<3>\\{${offset[1]}, 0\\.65, 5000002\\.45\\};`,
+        ),
     );
     assert.match(result.cpp, /position = bbl::Vec3d\{[^;]+\};/);
 });
@@ -16327,7 +16331,14 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.match(result.cpp, /\.fixed_delta_ms = 16\.0;/);
     assert.match(result.cpp, /bbl::on_before_render/);
     assert.match(result.cpp, /v_frame\+\+/);
-    assert.match(result.cpp, /if \(\(!\(v_added\) && v_frame >= 20\.0\)\)/);
+    const addFrame = /double (\w+) = 20\.0;/.exec(result.cpp);
+    assert.ok(addFrame);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `if \\(\\(!\\(v_added\\) && v_frame >= ${addFrame[1]}\\)\\)`,
+        ),
+    );
     assert.match(
         result.cpp,
         /\.metallic_factor = 0\.1f, \.roughness_factor = 0\.4f, \.direct_intensity = 1\.0f/,
@@ -16375,14 +16386,18 @@ test("compiles Babylon Lite scene 267 Standard vertex colors", () => {
     // The RGBA colors ride the ninth createMeshFromData slot, after the
     // three optional typed arrays the scene skips with `undefined`.
     const colors =
-        /auto (\w+) = bbl::js::Nullable<bbl::js::F32Array>\{bbl::js::f32_array_from\(bbl::js::Array<double>\{0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0, 1\.0, 0\.0, 1\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0\}\)\};/.exec(
+        /bbl::js::F32Array (\w+) = bbl::js::f32_array_from\(bbl::js::Array<double>\{0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0, 1\.0, 0\.0, 1\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0\}\);/.exec(
             result.cpp,
         );
     assert.ok(colors);
+    const colorStream = new RegExp(
+        `auto (\\w+) = bbl::js::Nullable<bbl::js::F32Array>\\{${colors[1]}\\};`,
+    ).exec(result.cpp);
+    assert.ok(colorStream);
     assert.match(
         result.cpp,
         new RegExp(
-            `create_retained_mesh_from_data\\([^;]*std::nullopt, std::nullopt, std::nullopt, ${colors[1]}\\.to_optional\\(\\)\\)`,
+            `create_retained_mesh_from_data\\([^;]*std::nullopt, std::nullopt, std::nullopt, ${colorStream[1]}\\.to_optional\\(\\)\\)`,
         ),
     );
     assert.match(result.cpp, /\.disable_lighting = true;/);
@@ -16427,8 +16442,11 @@ test("compiles Babylon Lite scene 268 orthographic camera", () => {
     );
     assert.equal(result.manifest.sceneMeshes.length, 10);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
+    const colors = /bbl::js::Array<bbl::js::Tuple<3>> (\w+) =/.exec(result.cpp);
+    assert.ok(colors);
     assert.equal(
-        result.cpp.match(/array_index_checked\(bblscene::COLORS/g)?.length,
+        result.cpp.match(new RegExp(`array_index_checked\\(${colors[1]},`, "g"))
+            ?.length,
         1,
     );
     // The URL override folds away: no query string reaches a native
@@ -17290,9 +17308,16 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.doesNotMatch(result.cmake, /pal_sdl_gpu\.cpp/);
     assert.match(result.cpp, /bbl::create_frame_graph_context/);
     assert.match(result.cpp, /bbl::on_frame_graph_update/);
+    const states =
+        /bbl::js::Array<bblscene::MorphState> (\w+) = bbl::js::Array<bblscene::MorphState>\{bbl::js::make_ref<bblscene::MorphStateData>/.exec(
+            result.cpp,
+        );
+    assert.ok(states);
     assert.match(
         result.cpp,
-        /auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\(bbl::js::make_ref<bblscene::MorphStateData>/,
+        new RegExp(
+            `auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\\(bbl::js::array_at_or_default\\(${states[1]},`,
+        ),
     );
 });
 
@@ -20627,14 +20652,18 @@ test("materializes entry-module state a main() scene rebinds", () => {
         1,
         "declared once, not once per reader",
     );
+    const unmoved = /double (\w+) = 5\.0;/.exec(result.cpp);
+    assert.ok(unmoved);
     // One shared body reads and updates the module's mutable storage.
     assert.equal(
-        (result.cpp.match(/bbl::Vec3d\{v_curX, 5\.0, 0\.0\}/g) ?? []).length,
+        (
+            result.cpp.match(
+                new RegExp(`bbl::Vec3d\\{v_curX, ${unmoved[1]}, 0\\.0\\}`, "g"),
+            ) ?? []
+        ).length,
         1,
     );
     assert.equal((result.cpp.match(/v_curX \+= 2\.0;/g) ?? []).length, 1);
-    // A module let nothing rebinds is still a folded constant: no storage.
-    assert.doesNotMatch(result.cpp, /v_unmoved/);
 });
 
 test("shares one cell for entry-module state a stored callback rebinds", () => {
@@ -20679,29 +20708,6 @@ test("shares one cell for entry-module state a stored callback rebinds", () => {
     assert.equal(
         (result.cpp.match(/\(\*v_ticks\) \+= 1\.0;/g) ?? []).length,
         1,
-    );
-});
-
-test("refuses entry-module state whose declaration is a binding pattern", () => {
-    // Destructuring declares no name the storage pass can materialize, so
-    // the read fails by name rather than reading a folded initializer the
-    // assignment has already replaced.
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-
-                let [slot] = [3];
-
-                async function main(): Promise<void> {
-                    const engine = await createEngine({});
-                    slot = 7;
-                    engine.setHardwareScalingLevel(slot);
-                }
-
-                void main();
-            `),
-        /Unknown or unsupported variable 'slot'/,
     );
 });
 

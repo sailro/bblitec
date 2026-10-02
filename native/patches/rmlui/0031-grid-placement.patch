@@ -608,7 +608,7 @@ index 00000000..3411b83e
 +
 +} // namespace Rml
 diff --git a/Source/Core/Layout/GridTrackSizing.h b/Source/Core/Layout/GridTrackSizing.h
-index 1dd4d61d..52264c1c 100644
+index 1dd4d61d..33907b69 100644
 --- a/Source/Core/Layout/GridTrackSizing.h
 +++ b/Source/Core/Layout/GridTrackSizing.h
 @@ -6,18 +6,21 @@
@@ -738,7 +738,7 @@ index 1dd4d61d..52264c1c 100644
  				for (int i = 0; i < int(count_value); ++i) result.insert(result.end(), pattern.begin(), pattern.end());
  			} else {
  				result.push_back(Track());
-@@ -113,27 +153,128 @@ private:
+@@ -113,27 +153,129 @@ private:
  
  inline float GridTracksExtent(const Vector<GridTrack>& tracks, float gap)
  {
@@ -783,17 +783,18 @@ index 1dd4d61d..52264c1c 100644
 +	float minimum, maximum;
 +};
 +
-+inline void GrowGridIntrinsicTracks(Vector<GridTrack>& tracks, Vector<GridContribution> contributions, float gap)
++inline void GrowGridIntrinsicTracks(Vector<GridTrack>& tracks, Vector<GridContribution>& contributions, float gap)
 +{
 +	// Apply equal-span contributions together so document order cannot change
 +	// track bases or growth limits. Flexible spans contribute their maximum
 +	// later, when resolving an indefinite fr size.
 +	std::stable_sort(contributions.begin(), contributions.end(), [](const auto& a, const auto& b) { return a.span < b.span; });
++	Vector<float> planned(tracks.size()), increases(tracks.size());
 +	for (size_t first = 0; first < contributions.size();) {
 +		size_t end = first + 1;
 +		while (end < contributions.size() && contributions[end].span == contributions[first].span) ++end;
 +		for (bool maximum : {false, true}) {
-+			Vector<float> planned(tracks.size(), 0.f);
++			std::fill(planned.begin(), planned.end(), 0.f);
 +			for (size_t index = first; index < end; ++index) {
 +				const auto& item = contributions[index];
 +				bool flexible = false;
@@ -811,7 +812,7 @@ index 1dd4d61d..52264c1c 100644
 +				}
 +				float extra = std::max(0.f, (maximum ? item.maximum : item.minimum) - current);
 +				if (extra == 0.f || factors == 0.f) continue;
-+				Vector<float> increases(item.span, 0.f);
++				std::fill_n(increases.begin(), item.span, 0.f);
 +				// Freeze finite growth limits before redistributing the remainder.
 +				// If every affected track reaches its limit, the item's required
 +				// minimum can still grow their bases beyond those limits.
@@ -873,7 +874,7 @@ index 1dd4d61d..52264c1c 100644
  			changed |= next > track.size; track.size = next;
  		}
  		if (!changed) break;
-@@ -141,33 +282,52 @@ inline float ResolveGridTracks(Vector<GridTrack>& tracks, float available, float
+@@ -141,33 +283,52 @@ inline float ResolveGridTracks(Vector<GridTrack>& tracks, float available, float
  
  	float fraction_size = 0.f;
  	if (available < 0.f) {

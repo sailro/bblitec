@@ -37,6 +37,29 @@ export interface WorkerLoweringContext
 const realm = "bbl::pal::WorkerRealm::current()";
 const loop = "bbl::pal::EventLoop::current()";
 
+const nativeRealmFunctions = new Set([
+    "matchMedia",
+    "requestAnimationFrame",
+    "cancelAnimationFrame",
+    "setTimeout",
+    "setInterval",
+    "clearTimeout",
+    "clearInterval",
+    "queueMicrotask",
+    "postMessage",
+    "close",
+]);
+
+/** Realm services have native effects even before a reached call activates its realm. */
+export function isNativeRealmFunction(
+    context: Pick<WorkerLoweringContext, "libraryGlobal" | "unwrap">,
+    expression: ts.Expression,
+): boolean {
+    return nativeRealmFunctions.has(
+        context.libraryGlobal(context.unwrap(expression)) ?? "",
+    );
+}
+
 /**
  * The first position in a message shape without a native structured-clone
  * codec (js_structured_clone.hpp), described for a refusal. An OffscreenCanvas
@@ -268,23 +291,14 @@ export function isNativeWorkerExpression(
     if (
         globalMember !== undefined &&
         ts.isPropertyAccessExpression(node) &&
-        [
-            "Worker",
-            "OffscreenCanvas",
-            "ResizeObserver",
-            "matchMedia",
-            "devicePixelRatio",
-            "isSecureContext",
-            "requestAnimationFrame",
-            "cancelAnimationFrame",
-            "setTimeout",
-            "setInterval",
-            "clearTimeout",
-            "clearInterval",
-            "queueMicrotask",
-            "postMessage",
-            "close",
-        ].includes(globalMember)
+        (nativeRealmFunctions.has(globalMember) ||
+            [
+                "Worker",
+                "OffscreenCanvas",
+                "ResizeObserver",
+                "devicePixelRatio",
+                "isSecureContext",
+            ].includes(globalMember))
     )
         return true;
     const root = rootIdentifier(node, (inner) => context.unwrap(inner));
@@ -295,22 +309,10 @@ export function isNativeWorkerExpression(
         return true;
     return (
         context.libraryGlobal(root) !== undefined &&
-        [
-            "Worker",
-            "OffscreenCanvas",
-            "ResizeObserver",
-            "matchMedia",
-            "self",
-            "requestAnimationFrame",
-            "cancelAnimationFrame",
-            "setTimeout",
-            "setInterval",
-            "clearTimeout",
-            "clearInterval",
-            "queueMicrotask",
-            "postMessage",
-            "close",
-        ].includes(root.text)
+        (nativeRealmFunctions.has(root.text) ||
+            ["Worker", "OffscreenCanvas", "ResizeObserver", "self"].includes(
+                root.text,
+            ))
     );
 }
 

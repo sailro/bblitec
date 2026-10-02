@@ -182,10 +182,17 @@ export class WindowProperties {
             );
         const owner = this.snapshotTarget(target);
         const valueCpp = `${field.functionCpp}(${owner})`;
-        const cpp =
-            field.type.kind === "optional"
-                ? `(${optionalPresentCpp(valueCpp)} ? *${valueCpp} : ${this.context.dataTypes.cppType(type)}{})`
-                : valueCpp;
+        let cpp = valueCpp;
+        if (field.type.kind === "optional") {
+            const slot = this.context.allocateTemporaryCppName("window_slot");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: slot,
+                initializer: valueCpp,
+            });
+            cpp = `(${optionalPresentCpp(slot)} ? *${slot} : ${this.context.dataTypes.cppType(type)}{})`;
+        }
         return this.context.dataLowerer.compileStoredCall(call, cpp, type);
     }
 

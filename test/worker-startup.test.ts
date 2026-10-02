@@ -7,7 +7,84 @@ import { compileSource } from "../src/compiler.js";
 import {
     buildNativeFixture,
     optionalNativeFixtureTools,
+    runGeneratedProgram,
 } from "./native-fixture.js";
+
+test("authored timer startup activates its realm before the named entry runs", (t) => {
+    const result = compileSource(`
+        let state = 0;
+        function main(): void {
+            if (state !== 1) throw new Error("startup order");
+            globalThis.close();
+        }
+        setTimeout(() => { state = 1; main(); }, 0);
+    `);
+    assert.ok(result.manifest.features.includes("platform:workers"));
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "timer-module-startup", result.cpp, {
+        defines: ["BBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});
+
+for (const [name, source] of [
+    [
+        "recovery",
+        `
+        async function main(): Promise<void> { throw new Error("expected"); }
+        main().catch(() => { globalThis.close(); });
+    `,
+    ],
+    [
+        "reporter-argument-effects",
+        `
+        let recovered = 0;
+        function recover(): number { recovered++; return recovered; }
+        async function main(): Promise<void> { throw new Error("expected"); }
+        main().catch(() => { console.error(recover()); }).then(() => {
+            if (recovered !== 1) throw new Error("missing recovery effect");
+            globalThis.close();
+        });
+    `,
+    ],
+    [
+        "stored-reporter",
+        `
+        async function main(): Promise<void> { throw new Error("expected"); }
+        main().catch(console.error).then(() => { globalThis.close(); });
+        `,
+    ],
+    [
+        "default-parameter",
+        `
+        function main(value = 7): void {
+            if (value !== 7) throw new Error("default parameter");
+        }
+        main();
+    `,
+    ],
+    ["discarded-result", `function main(): number { return 7; } main();`],
+] as const) {
+    test(`authored terminal entry preserves ${name}`, (t) => {
+        const result = compileSource(source);
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        runGeneratedProgram(tools, `terminal-entry-${name}`, result.cpp, {
+            defines: result.manifest.features.includes("platform:workers")
+                ? ["BBLITE_WORKERS=1"]
+                : [],
+            timeoutMs: 10000,
+        });
+    });
+}
 
 for (const variant of [
     "direct",

@@ -251,6 +251,22 @@ export function resolvedSymbol(
     return symbol && aliasTarget(checker, symbol);
 }
 
+/** The member a dotted access or a literal-typed computed key names. */
+export function accessedPropertySymbol(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): ts.Symbol | undefined {
+    if (ts.isElementAccessExpression(access)) {
+        const key = checker.getTypeAtLocation(access.argumentExpression);
+        if (key.isStringLiteral() || key.isNumberLiteral())
+            return checker.getPropertyOfType(
+                checker.getTypeAtLocation(access.expression),
+                String(key.value),
+            );
+    }
+    return resolvedSymbol(checker, access);
+}
+
 /**
  * The constant an enum member access (`Shape.Ball`, `Shape["Ball"]`)
  * names. The checker answers `getConstantValue` on the access itself only

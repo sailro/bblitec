@@ -204,12 +204,9 @@ export function planImportedModuleInitializers(
  * The entry module's own mutable state: its top-level `let`/`var`
  * declarations that the file rebinds.
  *
- * A scene whose entry is `main()` never emits its module-scope statements --
- * the body of `main` is the program -- so nothing creates storage for a name
- * the module's functions share. A `const` needs none: its initializer never
- * stops being its value, and the static evaluator answers every read from it.
- * A rebound `let` does, because after the first write the initializer
- * describes a value that no longer exists.
+ * An implicit main body needs storage for names its functions share.
+ * Authored module entries emit their own declarations and skip this plan's
+ * duplicates. Immutable values can remain on the static evaluator path.
  */
 export function planEntryModuleState(
     program: ts.Program,
