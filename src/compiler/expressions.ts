@@ -4986,25 +4986,32 @@ export class ExpressionLowerer {
             };
         }
         if (callee.name.text === "call") {
-            const objectCall = compileObjectPrototypeCall(this.context, call);
-            if (objectCall) return objectCall;
-            const callable = this.context.checker
-                .getTypeAtLocation(callee.expression)
-                .getCallSignatures().length
-                ? this.compileFunctionObject(callee.expression)
-                : this.compileValue(callee.expression);
-            if (
-                callable.kind === "data" &&
-                callable.dataType?.kind === "function"
-            ) {
-                return this.context.dataLowerer.compileStoredCall(
+            const functionCall = this.context.probeEmission(() => {
+                const objectCall = compileObjectPrototypeCall(
+                    this.context,
                     call,
-                    callable.cpp,
-                    callable.dataType,
-                    undefined,
-                    1,
                 );
-            }
+                if (objectCall) return objectCall;
+                const callable = this.context.checker
+                    .getTypeAtLocation(callee.expression)
+                    .getCallSignatures().length
+                    ? this.compileFunctionObject(callee.expression)
+                    : this.compileValue(callee.expression);
+                if (
+                    callable.kind === "data" &&
+                    callable.dataType?.kind === "function"
+                ) {
+                    return this.context.dataLowerer.compileStoredCall(
+                        call,
+                        callable.cpp,
+                        callable.dataType,
+                        undefined,
+                        1,
+                    );
+                }
+                return undefined;
+            });
+            if (functionCall) return functionCall;
         }
         const staticOwner = this.context.libraryGlobal(callee.expression);
         if (

@@ -137,14 +137,27 @@ check(
     "nullable-generic-callback-records",
     `
     let enabled=true;
-    function create(){return enabled?{call:<T>(value:T):T=>value}:null;}
+    let invocations=0;
+    function create(){return enabled?{call:<T>(value:T):T=>{invocations++;return value;}}:null;}
     const present=create();
-    const text=present?.call('text');
-    if(present?.call(1)!==1||text!=='text')throw new Error('generic conditional record');
+    if(present?.call(1)!==1||present?.call('text')!=='text')throw new Error('generic conditional record');
+    if(invocations!==2)throw new Error('comparison call count');
+    if(present?.call(2)===2){
+        const text:string=present?.call('sink');
+        if(text!=='sink')throw new Error('narrowed string sink');
+    }
+    if(invocations!==4)throw new Error('string sink call count');
+    let receivers=0;
+    function receiver(){receivers++;return present;}
+    if(receiver()?.call('receiver')!=='receiver'||receivers!==1||invocations!==5)throw new Error('receiver call count');
     enabled=false;
     const absent=create();
     let calls=0;
     function argument():number{calls++;return 2;}
     if(absent?.call(argument())!==undefined||calls!==0)throw new Error('absent conditional record');
+    let labels=0;
+    function label():'left'|'right'{labels++;return enabled?'left':'right';}
+    const text:string=label();
+    if(text!=='right'||labels!==1)throw new Error('enum string sink call count');
 `,
 );

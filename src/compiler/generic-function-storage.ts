@@ -28,14 +28,17 @@ export function sameTypeFrames(
 
 /** Source identities and reached signatures persist while emission replays one Program. */
 export class GenericFunctionStorage {
+    /** @unjournaled Source identities must remain stable across discarded probes and emission replays. */
     private readonly families = new Map<
         ts.Signature,
         Array<{ key: string; frames: GenericFunctionDemand["frames"] }>
     >();
+    /** @unjournaled Reached signatures accumulate between whole-program emission attempts. */
     private readonly demands = new Map<
         string,
         Map<string, GenericFunctionDemand>
     >();
+    /** @unjournaled Allocates identities retained by families across emission replays. */
     private nextFamily = 0;
 
     public family(

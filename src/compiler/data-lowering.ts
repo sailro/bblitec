@@ -10901,7 +10901,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         : undefined;
                 });
             }
-            const value = this.compileDataPath(unwrapped, "read");
+            const value =
+                this.compileDataPath(unwrapped, "read") ??
+                (ts.isCallExpression(unwrapped)
+                    ? this.context.compileValue(unwrapped)
+                    : undefined);
             return value?.kind === "data" && optionalComparable(value.dataType)
                 ? value
                 : undefined;
@@ -11159,9 +11163,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             type.kind === "boolean"
                 ? `(${leftCpp}) ${negated ? "!=" : "=="} (${rightCpp})`
                 : `${leftCpp} ${negated ? "!=" : "=="} ${rightCpp}`;
-        const leftValue = this.comparableOperand(left);
+        const leftValue = this.context.probeEmission(() =>
+            this.comparableOperand(left),
+        );
         if (leftValue) {
-            const rightValue = this.comparableOperand(right);
+            const rightValue = this.context.probeEmission(() =>
+                this.comparableOperand(right),
+            );
             if (
                 rightValue &&
                 !dataTypesEqual(leftValue.dataType, rightValue.dataType) &&
@@ -11201,7 +11209,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             return compare(leftValue.cpp, rightCpp, leftValue.dataType);
         }
-        const rightValue = this.comparableOperand(right);
+        const rightValue = this.context.probeEmission(() =>
+            this.comparableOperand(right),
+        );
         if (rightValue) {
             const leftCpp = this.compileForSink(left, rightValue.dataType);
             if (rightValue.dataType.kind === "string") {
@@ -11994,6 +12004,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
             }
         }
+        let computed: Value | undefined;
         if (
             ts.isCallExpression(unwrapped) ||
             ts.isBinaryExpression(unwrapped) ||
@@ -12002,12 +12013,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         ) {
-            const computed = this.context.compileValue(unwrapped);
+            computed = this.context.compileValue(unwrapped);
             if (isStringValue(computed)) {
                 return computed.cpp;
             }
         }
         const rawValue =
+            computed ??
             this.compileDataPath(unwrapped, "read") ??
             (ts.isCallExpression(unwrapped) ||
             ts.isIdentifier(unwrapped) ||
