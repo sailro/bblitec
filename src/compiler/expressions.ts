@@ -151,6 +151,7 @@ import {
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
+import type { NativeExpression } from "./closure-captures.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -238,6 +239,10 @@ export interface ExpressionContext
             | "withRecordScopes"
             | "captureRecordScopes"
             | "captureNativeDependencies"
+            | "captureNativeExpression"
+            | "useNativeValue"
+            | "captureEmittedStatements"
+            | "emitCapturedStatements"
             | "probeEmission"
             | "nativeEmission"
             | "requireEngine"
@@ -1499,22 +1504,18 @@ export class ExpressionLowerer {
                       ? false
                       : undefined;
             return {
-                kind: "boolean",
                 // Value position still needs the full runtime condition
                 // dispatcher: a concise callback commonly returns
                 // `!set.has(value)`, which is boolean but not a static
                 // literal expression.
-                cpp: this.context.conditions.compileCondition(unwrapped),
+                ...this.compileBooleanValue(unwrapped),
                 ...(staticBoolean === undefined ? {} : { staticBoolean }),
             };
         }
         // A comparison in value position is the same expression a
         // condition position already lowers; only where it lands differs.
         if (this.context.evaluator.isComparisonExpression(unwrapped)) {
-            return {
-                kind: "boolean",
-                cpp: this.context.conditions.compileCondition(unwrapped),
-            };
+            return this.compileBooleanValue(unwrapped);
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             return this.compileBrowserValue(unwrapped);
@@ -2081,12 +2082,65 @@ export class ExpressionLowerer {
         };
     }
 
+    private compileBooleanValue(expression: ts.Expression): Value {
+        let value: Value = { kind: "boolean", cpp: "" };
+        const lines = this.context.captureEmittedStatements(() => {
+            value = {
+                kind: "boolean",
+                ...this.context.captureNativeExpression(() =>
+                    this.context.conditions.compileCondition(expression),
+                ),
+            };
+        });
+        this.context.emitCapturedStatements(lines);
+        return lines.length
+            ? this.context.bindings.pinValueToTemporary(
+                  value,
+                  "condition_value",
+                  expression,
+              )
+            : value;
+    }
+
     private selectValue(
-        condition: string,
+        selection: NativeExpression,
         whenTrue: Value,
         whenFalse: Value,
         node: ts.Node,
     ): Value {
+        const selected = this.selectValueInner(
+            selection,
+            whenTrue,
+            whenFalse,
+            node,
+        );
+        // Static aggregates retain their dependencies on each selected lane.
+        // Every native expression also reads its condition, even when a branch
+        // is a literal or an optional carrier has no additional storage.
+        if (selected.kind === "record" || selected.kind === "tuple")
+            return selected;
+        const { nativeCaptures } = this.context.captureNativeDependencies(
+            () => {
+                this.context.useNativeValue(whenTrue);
+                this.context.useNativeValue(whenFalse);
+                this.context.useNativeValue(selected);
+            },
+        );
+        return {
+            ...selected,
+            nativeCaptures: [
+                ...new Set([...selection.nativeCaptures, ...nativeCaptures]),
+            ],
+        };
+    }
+
+    private selectValueInner(
+        selection: NativeExpression,
+        whenTrue: Value,
+        whenFalse: Value,
+        node: ts.Node,
+    ): Value {
+        const condition = selection.cpp;
         if (whenTrue.kind !== whenFalse.kind) {
             const trueAsset = projectAssetContainer(
                 this.context,
@@ -2144,7 +2198,7 @@ export class ExpressionLowerer {
                 cpp: "",
                 tupleElements: trueElements.map((element, index) =>
                     this.selectValue(
-                        condition,
+                        selection,
                         element,
                         falseElements[index]!,
                         node,
@@ -2196,7 +2250,7 @@ export class ExpressionLowerer {
                 const falseValue = falseProperties[name];
                 if (trueValue && falseValue) {
                     selected[name] = this.selectValue(
-                        condition,
+                        selection,
                         trueValue,
                         falseValue,
                         node,
@@ -2222,11 +2276,13 @@ export class ExpressionLowerer {
                 // The registry's nullable rule keeps a reference struct bare,
                 // so its absent arm is the null reference.
                 const optional = this.context.dataTypes.nullableType(inner);
-                const valueCpp =
-                    this.context.dataLowerer.compileKnownValueForSink(
-                        present,
-                        inner,
-                        node,
+                const { value: valueCpp, nativeCaptures } =
+                    this.context.captureNativeDependencies(() =>
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            present,
+                            inner,
+                            node,
+                        ),
                     );
                 const populated =
                     inner.kind === "optional"
@@ -2236,14 +2292,23 @@ export class ExpressionLowerer {
                               valueCpp,
                           );
                 const absent = this.context.dataTypes.absentValue(optional);
-                selected[name] = {
+                const populatedValue: Value = {
                     kind: "data",
-                    cpp:
-                        trueValue !== undefined
-                            ? `(${condition} ? ${populated} : ${absent})`
-                            : `(${condition} ? ${absent} : ${populated})`,
+                    cpp: populated,
+                    dataType: optional,
+                    nativeCaptures,
+                };
+                const absentValue: Value = {
+                    kind: "data",
+                    cpp: absent,
                     dataType: optional,
                 };
+                selected[name] = this.selectValue(
+                    selection,
+                    trueValue ? populatedValue : absentValue,
+                    trueValue ? absentValue : populatedValue,
+                    node,
+                );
             }
             const selectedRecord: Value = {
                 kind: "record",
@@ -3748,9 +3813,12 @@ export class ExpressionLowerer {
         }
         const ownerExpression = this.context.unwrap(unwrapped.expression);
         if (ts.isConditionalExpression(ownerExpression)) {
-            const condition = this.context.conditions.compileCondition(
-                ownerExpression.condition,
+            const selection = this.context.captureNativeExpression(() =>
+                this.context.conditions.compileCondition(
+                    ownerExpression.condition,
+                ),
             );
+            const condition = selection.cpp;
             const selectedOwner =
                 condition === "true"
                     ? ownerExpression.whenTrue
@@ -3777,7 +3845,7 @@ export class ExpressionLowerer {
             // selected element, rather than trying to index a
             // generation-only tuple.
             return this.selectValue(
-                condition,
+                selection,
                 indexed(ownerExpression.whenTrue),
                 indexed(ownerExpression.whenFalse),
                 unwrapped,
@@ -4196,7 +4264,10 @@ export class ExpressionLowerer {
             let selected = elements[0]!;
             for (let lane = 1; lane < elements.length; lane += 1) {
                 selected = this.selectValue(
-                    `(${index.cpp}) == ${lane}`,
+                    this.context.captureNativeExpression(() => {
+                        this.context.useNativeValue(index);
+                        return `(${index.cpp}) == ${lane}`;
+                    }),
                     elements[lane]!,
                     selected,
                     unwrapped,
@@ -4444,9 +4515,10 @@ export class ExpressionLowerer {
                     : {}),
             };
         }
-        const condition = this.context.conditions.compileCondition(
-            unwrapped.condition,
+        const selection = this.context.captureNativeExpression(() =>
+            this.context.conditions.compileCondition(unwrapped.condition),
         );
+        const condition = selection.cpp;
         if (condition === "true" || condition === "false") {
             return this.compileSelectedOperand(
                 condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,
@@ -4527,7 +4599,7 @@ export class ExpressionLowerer {
             if (conditionalType && sunk !== undefined)
                 return this.context.dataValue(sunk, conditionalType);
             return this.selectValue(
-                condition,
+                selection,
                 this.lazyArmValue(trueArm, unwrapped.whenTrue),
                 this.lazyArmValue(falseArm, unwrapped.whenFalse),
                 unwrapped,
@@ -4553,7 +4625,7 @@ export class ExpressionLowerer {
                 cpp: "",
                 tupleElements: trueElements.map((element, index) =>
                     this.selectValue(
-                        condition,
+                        selection,
                         element,
                         falseElements[index]!,
                         unwrapped,
@@ -4561,7 +4633,7 @@ export class ExpressionLowerer {
                 ),
             };
         }
-        return this.selectValue(condition, whenTrue, whenFalse, unwrapped);
+        return this.selectValue(selection, whenTrue, whenFalse, unwrapped);
     }
 
     private tryCompileJsonConditional(

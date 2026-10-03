@@ -55,6 +55,7 @@ import {
     parameterIsReadOnly,
 } from "./user-functions.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -1012,13 +1013,45 @@ export class BindingScopes {
     }
 
     public bindParameterValue(identifier: ts.Identifier, value: Value): void {
-        const narrowed =
+        let narrowed =
             value.kind === "data"
                 ? this.context.dataLowerer.narrowForDeclaration(
                       value,
                       identifier,
                   )
                 : value;
+        if (narrowed.kind === "record" && !this.context.classOf(narrowed)) {
+            const represented = this.context.dataTypes.fromStoredTsType(
+                this.context.checker.getTypeAtLocation(identifier),
+                identifier,
+            );
+            if (
+                represented?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(represented.name)
+            ) {
+                const declaration = this.recordDeclaration(
+                    narrowed,
+                    identifier,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+                narrowed = this.pinValueToTemporary(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            narrowed,
+                            represented,
+                            identifier,
+                        ),
+                        represented,
+                    ),
+                    "parameter_object",
+                    identifier,
+                );
+            }
+        }
         if (
             narrowed.dataType?.kind === "struct" &&
             this.context.sharedClosures.identifierIsRebound(identifier)
@@ -1055,6 +1088,12 @@ export class BindingScopes {
                 this.context.checker,
                 identifier.parent.parent,
                 identifier,
+            );
+        if (parameter && !readOnlyParameter && value.kind === "record")
+            value = this.materializeRecordScalars(
+                value,
+                `${identifier.text}_parameter`,
+                true,
             );
         if (value.kind === "void") {
             this.context.fail(
@@ -1237,6 +1276,11 @@ export class BindingScopes {
                   }
                 : {}),
         };
+        if (stored.parameterBinding) {
+            delete writable(stored).staticNumber;
+            delete writable(stored).staticString;
+            delete writable(stored).staticBoolean;
+        }
         delete writable(stored).nativeOwnedRvalue;
         // The value now reads its own storage, not a counted loop's counter.
         delete writable(stored).integerCounterCpp;

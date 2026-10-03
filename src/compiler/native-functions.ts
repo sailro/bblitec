@@ -964,9 +964,10 @@ export class NativeFunctionLowerer {
                         expression,
                     ).cpp;
                 }
-                return this.context.dataLowerer.compileForSink(
-                    expression,
+                return this.context.dataLowerer.compileKnownValueForSink(
+                    value,
                     dataType,
+                    expression,
                 );
             }
             if (parameter.readOnly) {

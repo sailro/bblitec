@@ -1577,6 +1577,7 @@ namespace detail {
  * reads it without the guard a function-local static checks on every call.
  */
 template <typename T> inline constinit const Ref<T> empty_ref{};
+template <typename Signature> inline const Callback<Signature> empty_callback{};
 } // namespace detail
 
 template <typename T> struct MapGetResult<Ref<T>> {
@@ -1584,6 +1585,14 @@ template <typename T> struct MapGetResult<Ref<T>> {
 
     [[nodiscard]] static Type missing() { return detail::empty_ref<T>; }
     [[nodiscard]] static Type found(Ref<T>& value) { return value; }
+};
+
+/** Stored callbacks carry absence in their empty function identity. */
+template <typename R, typename... Args> struct MapGetResult<Callback<R(Args...)>> {
+    using Type = const Callback<R(Args...)>&;
+
+    [[nodiscard]] static Type missing() { return detail::empty_callback<R(Args...)>; }
+    [[nodiscard]] static Type found(Callback<R(Args...)>& value) { return value; }
 };
 
 /** An unmapped arguments object owns indexed values independently of the rest array. */

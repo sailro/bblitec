@@ -6103,6 +6103,12 @@ export class UserFunctionLowerer {
                     ),
             );
             if (
+                value.dataType?.kind === "struct" &&
+                !context.dataTypes.isClassStruct(value.dataType.name) &&
+                !callArgumentIsReadOnly(this.checker, call, index)
+            )
+                context.dataTypes.markStoredObjectReferences(value.dataType);
+            if (
                 pinArguments &&
                 value.kind === "data" &&
                 value.dataType &&
