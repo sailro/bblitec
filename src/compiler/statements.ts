@@ -2580,6 +2580,22 @@ export class StatementLowerer {
                 "for...of bindings cannot carry initializers.",
             );
         }
+        // A retained callback can run after another closure registers members.
+        // Its initial empty cardinality is not a proof that its loop is empty.
+        const subject = context.unwrap(statement.expression);
+        const containerType = ts.isIdentifier(subject)
+            ? (context.bindings.lookupOptional(subject)?.dataType ??
+              context.dataLowerer.dataTypeAt(subject))
+            : undefined;
+        const liveElement =
+            containerType && "element" in containerType
+                ? containerType.element
+                : undefined;
+        if (
+            liveElement?.kind === "function" &&
+            this.emitRuntimeForOf(context, statement, declaration)
+        )
+            return;
         const runtimeCardinality = context.runtimeCollectionCardinality(
             statement.expression,
         );
@@ -2622,25 +2638,6 @@ export class StatementLowerer {
             return;
         }
         if (this.emitHandleCollectionForOf(context, statement, declaration)) {
-            return;
-        }
-        // A callback list is a live subscription set, even if its generation
-        // snapshot is an empty tuple before another stored closure adds to it.
-        const subject = context.unwrap(statement.expression);
-        const containerType = ts.isIdentifier(subject)
-            ? (context.bindings.lookupOptional(subject)?.dataType ??
-              context.dataLowerer.dataTypeAt(subject))
-            : undefined;
-        // Inspect the type before asking for storage: resolving an unrelated
-        // tuple here would materialize its records and lose static options.
-        const liveElement =
-            containerType && "element" in containerType
-                ? containerType.element
-                : undefined;
-        if (
-            liveElement?.kind === "function" &&
-            this.emitRuntimeForOf(context, statement, declaration)
-        ) {
             return;
         }
         if (
