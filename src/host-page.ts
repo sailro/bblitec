@@ -367,6 +367,10 @@ export function hostPageFromDocument(
                     true,
                     ts.ScriptKind.JS,
                 );
+                if (moduleSpecifiers(parsed).length)
+                    refuse(
+                        "classic <script> imports require module activation before parser microtask checkpoints.",
+                    );
                 if (
                     parsed.statements.some(
                         (statement) =>

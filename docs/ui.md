@@ -36,7 +36,7 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 - Pages without classic scripts have their elements present before entry evaluation: their lookups' null guards fold.
 - Icon links, resource hints and fixed-scale viewport, theme-color, description and light color-scheme metadata are
   inert.
-- External/head classic scripts, classic global declarations, sheets after classic scripts, data scripts, inline handlers, external sheets, foreign markup, quirks mode and other head content refuse,
+- External/head classic scripts, classic global declarations/imports, sheets after classic scripts, data scripts, inline handlers, external sheets, foreign markup, quirks mode and other head content refuse,
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.

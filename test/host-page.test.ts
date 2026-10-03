@@ -175,6 +175,21 @@ test("markup the host model cannot represent refuses, naming the page", () => {
                     [],
                     [
                         element("script", undefined, [
+                            {
+                                text: '(async () => { await import("./entry.js"); })();',
+                            },
+                        ]),
+                        entryScript,
+                    ],
+                ),
+            /module activation before parser/,
+        ],
+        [
+            () =>
+                page(
+                    [],
+                    [
+                        element("script", undefined, [
                             { text: "var shared = 1;" },
                         ]),
                         entryScript,
