@@ -60,22 +60,22 @@ import {
 } from "./type-facts.js";
 
 /**
- * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
- * every statically typed value is decided at generation time.
+ * Array and binary-view predicates share the same finite data discrimination.
+ * Parsed JSON is dynamic only for Array.isArray.
  */
-export function compileIsArrayOverData(
+export function compileArrayPredicateOverData(
     lowerer: DataLowerer,
     call: ts.CallExpression,
 ): Value | undefined {
     const callee = lowerer.context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "isArray" ||
-        lowerer.context.libraryGlobal(callee.expression) !== "Array" ||
-        call.arguments.length !== 1
-    ) {
+    if (!ts.isPropertyAccessExpression(callee) || call.arguments.length !== 1) {
         return undefined;
     }
+    const global = lowerer.context.libraryGlobal(callee.expression);
+    const binaryView =
+        global === "ArrayBuffer" && callee.name.text === "isView";
+    if (!binaryView && !(global === "Array" && callee.name.text === "isArray"))
+        return undefined;
     const value = lowerer.context.compileValue(argumentAt(call, 0));
     const decided = (answer: boolean): Value => {
         lowerer.context.emitDiscardedValue(value);
@@ -86,7 +86,7 @@ export function compileIsArrayOverData(
             dataType: { kind: "boolean" },
         };
     };
-    if (value.kind === "tuple") return decided(true);
+    if (value.kind === "tuple") return decided(!binaryView);
     if (
         [
             "record",
@@ -95,6 +95,7 @@ export function compileIsArrayOverData(
             "boolean",
             "string",
             "callback",
+            "void",
         ].includes(value.kind)
     )
         return decided(false);
@@ -110,21 +111,27 @@ export function compileIsArrayOverData(
             dataType.members.some((member) => member.kind === "numberindex"))
     )
         return undefined;
-    if (dataType.kind === "json" && !optional)
+    if (dataType.kind === "json" && !optional && !binaryView)
         return {
             kind: "boolean",
             cpp: `${value.cpp}.is_array()`,
             dataType: { kind: "boolean" },
         };
-    const arrayType = (type: DataType): boolean =>
-        ["vector", "span", "tuple", "product", "table"].includes(type.kind);
+    const matchesType = (type: DataType): boolean =>
+        binaryView
+            ? isTypedArrayType(type) ||
+              type.kind === "dataview" ||
+              type.kind === "bufferview"
+            : ["vector", "span", "tuple", "product", "table"].includes(
+                  type.kind,
+              );
     const member = optional ? "(*candidate)" : "candidate";
     const predicate =
-        dataType.kind === "json"
+        dataType.kind === "json" && !binaryView
             ? `${member}.is_array()`
             : dataType.kind === "union"
-              ? `std::array<bool, ${dataType.members.length}>{${dataType.members.map(arrayType).join(", ")}}[${member}.index()]`
-              : arrayType(dataType)
+              ? `std::array<bool, ${dataType.members.length}>{${dataType.members.map(matchesType).join(", ")}}[${member}.index()]`
+              : matchesType(dataType)
                 ? "true"
                 : "false";
     if (predicate === "false" || (predicate === "true" && !optional))

@@ -1350,7 +1350,30 @@ export class DataTypeRegistry {
         if (!type.isUnion() || !isNullable(type)) {
             return this.fromNonNullableType(type, node);
         }
-        const absent = nullability(type);
+        const absent = { ...nullability(type) };
+        // Flow narrowing distributes an unconstrained T into `T & undefined`
+        // (or null). A concrete instantiation can make that arm impossible.
+        for (const [kind, absence] of [
+            ["null", this.checker.getNullType()],
+            ["undefined", this.checker.getUndefinedType()],
+            ["void", this.checker.getVoidType()],
+        ] as const) {
+            absent[kind] &&= type.types.some(
+                (member) =>
+                    nullability(member)[kind] &&
+                    (!member.isIntersection() ||
+                        member.types.every((part) => {
+                            const concrete = this.resolveTypeParameter(part);
+                            return (
+                                concrete === part ||
+                                this.checker.isTypeAssignableTo(
+                                    absence,
+                                    concrete,
+                                )
+                            );
+                        })),
+            );
+        }
         // A lone member maps as itself, which also registers it as its own
         // record source; the checker's NonNullable<T> intersection would map
         // through the intersection arm of `fromNonNullableType` instead.
@@ -1375,7 +1398,9 @@ export class DataTypeRegistry {
             ["number", "boolean", "string", "enum"].includes(inner.kind)
         )
             return { kind: "json" };
-        return inner ? this.nullableType(inner, !absent.null) : undefined;
+        return inner && (absent.null || absent.undefined || absent.void)
+            ? this.nullableType(inner, !absent.null)
+            : inner;
     }
 
     /** Nullable objects retain identity; callbacks also carry their own absent state. */
@@ -1527,6 +1552,15 @@ export class DataTypeRegistry {
                 (member) => !this.isNonNullConstraint(member),
             );
             if (constrained.length === 1) {
+                const concrete = this.resolveTypeParameter(constrained[0]!);
+                if (
+                    concrete !== constrained[0] &&
+                    (concrete.flags & ts.TypeFlags.TypeParameter) === 0
+                )
+                    return this.fromTsType(
+                        this.checker.getNonNullableType(concrete),
+                        node,
+                    );
                 return this.fromTsType(constrained[0]!, node);
             }
             return this.fromStructType(type, node);

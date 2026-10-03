@@ -7673,19 +7673,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.compileDataPath(expression, "read") ??
             this.materializeStaticTable(expression) ??
             this.context.compileValue(expression);
-        const value =
-            dataType.kind !== "optional" &&
-            rawValue.kind === "data" &&
-            rawValue.dataType?.kind === "optional" &&
-            dataTypesEqual(rawValue.dataType.inner, dataType)
-                ? withNativeMetadata(
-                      this.leafValue(
-                          `(*${rawValue.cpp})`,
-                          rawValue.dataType.inner,
-                      ),
-                      rawValue,
-                  )
-                : rawValue;
+        const value = this.narrowOptional(rawValue, expression);
         if (isJsonValue(value))
             return this.compileKnownValueForSink(value, dataType, expression);
         if (value.dataType?.kind === "tuple")

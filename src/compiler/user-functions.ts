@@ -39,6 +39,7 @@ import {
     dataTypesEqual,
     isOpaqueReference,
     isHandleKind,
+    isTypedArrayType,
     tupleComponents,
     type DataType,
     type DataTypeRegistry,
@@ -2015,7 +2016,10 @@ export class UserFunctionLowerer {
                 ...(browserValue ? { browserValue } : {}),
             };
         }
-        const value = context.compileValue(argument);
+        const value = context.dataLowerer.narrowOptional(
+            context.compileValue(argument),
+            argument,
+        );
         if (
             value.kind === "callback" &&
             value.callbackRecordOwner?.repeatedCallbackEvaluation &&
@@ -2901,12 +2905,26 @@ export class UserFunctionLowerer {
                 ? arrayReturnStorage(this.checker, declaration)
                 : undefined;
             const parameterTypes = ir.parameters.map(
-                ({ type, declaration: parameter }) => {
+                ({ type, declaration: parameter }, index) => {
                     let mapped =
                         dynamicReturn && type === returnTsType
                             ? ({ kind: "json" } as const)
                             : (context.dataTypes.dynamicJsonType(type) ??
                               context.dataTypes.fromTsType(type, parameter));
+                    const supplied =
+                        declaration === root.declaration
+                            ? rootArguments[index]?.dataType
+                            : undefined;
+                    // A concrete typed view remains a live object when passed
+                    // through ArrayLike<number>; widening into a double span
+                    // would sever aliases and cannot read buffer-backed views.
+                    if (
+                        mapped?.kind === "span" &&
+                        mapped.element.kind === "number" &&
+                        supplied &&
+                        isTypedArrayType(supplied)
+                    )
+                        mapped = supplied;
                     const freshMatchingArray =
                         arrayStorage === "fresh" &&
                         mapped?.kind === "span" &&
@@ -5822,8 +5840,12 @@ export class UserFunctionLowerer {
         fail: Fail,
     ): void {
         const rest = restParameterIndex(ir.declaration);
-        const minimum = ir.parameters.filter(
-            ({ declaration }) =>
+        const resolved = this.checker.getResolvedSignature(call);
+        const parameters =
+            resolved?.getDeclaration()?.parameters ??
+            ir.parameters.map((parameter) => parameter.declaration);
+        const minimum = parameters.filter(
+            (declaration) =>
                 !declaration.initializer &&
                 !declaration.questionToken &&
                 !declaration.dotDotDotToken,
@@ -5840,7 +5862,6 @@ export class UserFunctionLowerer {
         // A returned callback can mention its factory's type parameters
         // without declaring any itself. The source call's signature carries
         // those captured substitutions as well as directly generic calls.
-        const resolved = this.checker.getResolvedSignature(call);
         call.arguments.forEach((argument, index) => {
             const parameter = ir.parameters[index];
             if (
@@ -6068,6 +6089,18 @@ export class UserFunctionLowerer {
         });
         if (rest !== undefined && values.length === rest) {
             values.push({ kind: "tuple", cpp: "", tupleElements: expanded });
+        }
+        // Contextual methods can implement an optional signature without a
+        // question token in their own syntax. Omission is decided by the call's
+        // signature; the implementation still owns default evaluation.
+        const parameters = this.checker
+            .getResolvedSignature(call)
+            ?.getDeclaration()?.parameters;
+        while (values.length < ir.parameters.length) {
+            const parameter = parameters?.[values.length];
+            if (!parameter || !this.checker.isOptionalParameter(parameter))
+                break;
+            values.push({ kind: "json-null", cpp: "std::nullopt" });
         }
         return values;
     }

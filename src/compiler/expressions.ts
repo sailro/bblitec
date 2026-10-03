@@ -111,7 +111,7 @@ import {
     compileCompressedJsonCall,
     compileCompressedJsonPromiseThen,
 } from "./compressed-json.js";
-import { compileIsArrayOverData } from "./data-methods.js";
+import { compileArrayPredicateOverData } from "./data-methods.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 import { readCallableProperty } from "./properties.js";
 import {
@@ -2927,12 +2927,12 @@ export class ExpressionLowerer {
         }
 
         if (!ts.isIdentifier(callee)) {
-            const isArray = compileIsArrayOverData(
+            const predicate = compileArrayPredicateOverData(
                 this.context.dataLowerer,
                 call,
             );
-            if (isArray) {
-                return isArray;
+            if (predicate) {
+                return predicate;
             }
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
