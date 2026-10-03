@@ -711,7 +711,7 @@ test("refuses every store of a borrowed event at the store", () => {
             name: "weakset-constructor",
             declarations: [],
             body: "const saved = new WeakSet<Event>([event]);",
-            pattern: /through Set constructor/,
+            pattern: /through Array literal/,
         },
         {
             name: "weakset-tuple-constructor",
