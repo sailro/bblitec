@@ -13,6 +13,7 @@ import {
 import { classHasStaticState, classMemberTable } from "./class-members.js";
 import {
     assignmentTargets,
+    expressionMayRunCode,
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
@@ -81,16 +82,6 @@ export function isModuleInitializerStatement(
         ts.isTypeAliasDeclaration(statement) ||
         ts.isEnumDeclaration(statement) ||
         ts.isModuleDeclaration(statement)
-    );
-}
-
-/** A top-level class whose `static { ... }` block runs at module evaluation. */
-function declaresClassStaticBlock(
-    statement: ts.Statement,
-): statement is ts.ClassDeclaration {
-    return (
-        ts.isClassDeclaration(statement) &&
-        statement.members.some(ts.isClassStaticBlockDeclaration)
     );
 }
 
@@ -684,14 +675,32 @@ class ModuleInitializerPlanner {
         return dependencies;
     }
 
+    /** @unjournaled Potential host effects depend only on the checked source. */
+    private readonly hostInitializerEffects = new Map<ts.SourceFile, boolean>();
+
     private moduleHasObservableInitializer(
         file: ts.SourceFile,
         moduleState: ReadonlySet<ts.Symbol>,
     ): boolean {
-        // A static block runs when the module evaluates, whatever it
-        // touches, so the module's initializer is emitted -- where the class
-        // lowering refuses the block rather than dropping it.
-        if (file.statements.some(declaresClassStaticBlock)) return true;
+        // Authored statements run even when their effects target host state
+        // instead of a module variable. This also retains static class work,
+        // where unsupported forms must be refused by class lowering.
+        let hostEffects = this.hostInitializerEffects.get(file);
+        if (hostEffects === undefined) {
+            hostEffects = file.statements.some((statement) => {
+                if (!isModuleInitializerStatement(statement, this.checker))
+                    return false;
+                if (ts.isVariableStatement(statement))
+                    return statement.declarationList.declarations.some(
+                        (declaration) =>
+                            declaration.initializer &&
+                            expressionMayRunCode(declaration.initializer),
+                    );
+                return !ts.isEmptyStatement(statement);
+            });
+            this.hostInitializerEffects.set(file, hostEffects);
+        }
+        if (hostEffects) return true;
         if (moduleState.size === 0) return false;
         for (const symbol of this.moduleInitializerMutations(file)) {
             if (moduleState.has(symbol)) return true;

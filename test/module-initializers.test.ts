@@ -12,6 +12,36 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
+for (const declaration of [false, true])
+    test(`side-effect-only dependencies retain ${declaration ? "ignored initializers" : "statements"} without observed bindings`, (t) => {
+        const directory = resolve("artifacts/module-host-side-effects");
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+            join(directory, "dependency.ts"),
+            declaration
+                ? 'function effect():number { if(Date.now()>=0) throw new Error("dependency executed"); return 1; } const ignored=effect();'
+                : 'if(Date.now()>=0) throw new Error("dependency executed");',
+        );
+        const result = compileSource(
+            'import "./dependency.js"; if(Date.now()>=0) throw new Error("entry executed");',
+            { fileName: join(directory, "entry.ts") },
+        );
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        assert.throws(
+            () =>
+                runGeneratedProgram(
+                    tools,
+                    "module-host-side-effects",
+                    result.cpp,
+                ),
+            /dependency executed/,
+        );
+    });
+
 for (const [entry, invocation] of [
     ["implicit", ""],
     ["terminal", "main();"],

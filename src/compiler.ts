@@ -193,7 +193,10 @@ import {
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
-import { ModuleNamespaces } from "./compiler/module-namespaces.js";
+import {
+    ModuleActivationRequired,
+    ModuleNamespaces,
+} from "./compiler/module-namespaces.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
@@ -598,6 +601,7 @@ function compileSourceApplication(
             NativeRecordStorageDemand
         >();
         const genericFunctions = new GenericFunctionStorage();
+        const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planning: boolean): Compiler => {
             recordStorageCompileAttempt(planning);
             return new Compiler(
@@ -608,6 +612,7 @@ function compileSourceApplication(
                 dynamicBindings,
                 ownedRecords,
                 genericFunctions,
+                lazyModules,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -643,6 +648,11 @@ function compileSourceApplication(
             return true;
         };
         const acceptReplay = (error: unknown): boolean => {
+            if (error instanceof ModuleActivationRequired) {
+                if (lazyModules.has(error.file)) return false;
+                lazyModules.add(error.file);
+                return true;
+            }
             if (isStorageDemand(error))
                 return acceptStorage(storageRequest(error));
             if (
@@ -955,6 +965,7 @@ class Compiler implements LoweringServices {
             NativeRecordStorageDemand
         >,
         genericFunctions: GenericFunctionStorage,
+        private readonly lazyModules: ReadonlySet<ts.SourceFile>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -1038,6 +1049,7 @@ class Compiler implements LoweringServices {
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
+        this.moduleNamespaces.prepare(this.lazyModules);
         if (this.options.pageStartup?.length) {
             if (!this.options.workers) throw new ApplicationRealmRequired();
             this.emitNativeHostUi();
@@ -1048,6 +1060,7 @@ class Compiler implements LoweringServices {
         this.emitImportedModuleInitializers();
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
+        this.moduleNamespaces.defineInitializers();
         this.emitEntryBody(entry);
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();

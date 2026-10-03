@@ -4,12 +4,22 @@ import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
 import { aliasTarget, declaredIn, declaredSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
+import { someAnalysisNode } from "./analysis-walk.js";
+import { EmissionMap } from "./emission-transaction.js";
+import { emitReachableStatements } from "./loop-control.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
     isModuleInitializerStatement,
     planEntryModuleState,
     runtimeModuleDependencies,
 } from "./module-initializers.js";
+
+/** A reached lazy module needs its lexical homes before entry emission. */
+export class ModuleActivationRequired extends Error {
+    public constructor(readonly file: ts.SourceFile) {
+        super("A lazy module requires retained activation storage.");
+    }
+}
 
 /** Omitted evaluation must terminate without allocating mutable module state. */
 function isTotalDefinition(expression: ts.Expression): boolean {
@@ -38,8 +48,174 @@ export class ModuleNamespaces {
         string,
         ReadonlyMap<string, ts.Symbol>
     >();
+    private readonly activations = new EmissionMap<
+        ts.SourceFile,
+        { cpp: string; prefix: string }
+    >();
 
     public constructor(private readonly context: LoweringServices) {}
+
+    private evaluatedModules(): ReadonlySet<ts.SourceFile> {
+        if (!this.staticModules) {
+            const modules = new Set<ts.SourceFile>();
+            const visit = (file: ts.SourceFile): void => {
+                if (modules.has(file)) return;
+                modules.add(file);
+                runtimeModuleDependencies(this.context.checker, file).forEach(
+                    visit,
+                );
+            };
+            visit(this.context.sourceFile);
+            this.staticModules = modules;
+        }
+        return this.staticModules;
+    }
+
+    /** Allocate shared homes without running any authored initializer. */
+    public prepare(required: ReadonlySet<ts.SourceFile>): void {
+        const context = this.context;
+        const visit = (file: ts.SourceFile): void => {
+            if (this.evaluatedModules().has(file) || this.activations.has(file))
+                return;
+            if (file.isDeclarationFile) {
+                if (
+                    declaredIn(declaredSymbol(context.checker, file), "babylon")
+                )
+                    return;
+                return context.fail(
+                    file,
+                    "Dynamic import of a declaration-only module has no native implementation.",
+                );
+            }
+            const cpp = context.allocateTemporaryCppName("module_activation");
+            this.activations.set(file, {
+                cpp,
+                prefix: `lazy_module${this.activations.size}_`,
+            });
+            for (const dependency of runtimeModuleDependencies(
+                context.checker,
+                file,
+            )) {
+                if (dependency === context.sourceFile)
+                    context.fail(
+                        file,
+                        "Lazy dependencies on the entry require shared entry module storage.",
+                    );
+                visit(dependency);
+            }
+        };
+        required.forEach(visit);
+        for (const [file, { cpp }] of this.activations) {
+            context.reachJsData();
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: cpp,
+                initializer: `bbl::js::make_gc_shared<bbl::js::ModuleActivation>(${context.cppString(file.fileName)})`,
+            });
+            context.registerNativeBinding(
+                cpp,
+                false,
+                false,
+                "std::shared_ptr<bbl::js::ModuleActivation>",
+            );
+        }
+        for (const [file, { prefix }] of this.activations) {
+            context.bindings.pushScope(prefix);
+            const scope = context.bindings.variableScopes.at(-1)!;
+            try {
+                for (const statement of file.statements) {
+                    if (ts.isVariableStatement(statement)) {
+                        for (const declaration of statement.declarationList
+                            .declarations)
+                            context.declarations.prepareModuleBinding(
+                                declaration,
+                            );
+                    } else if (
+                        ts.isModuleDeclaration(statement) ||
+                        ts.isClassDeclaration(statement)
+                    )
+                        context.fail(
+                            statement,
+                            "Lazy namespace/class evaluation requires represented module storage.",
+                        );
+                    if (
+                        ts.isEnumDeclaration(statement) &&
+                        statement.members.some(
+                            (member) =>
+                                context.checker.getConstantValue(member) ===
+                                undefined,
+                        )
+                    )
+                        context.fail(
+                            statement,
+                            "Lazy enum evaluation requires represented module storage.",
+                        );
+                    if (
+                        someAnalysisNode(statement, ts.isAwaitExpression, {
+                            functions: "skip",
+                        })
+                    )
+                        context.fail(
+                            statement,
+                            "Top-level await in a lazy module requires asynchronous module activation.",
+                        );
+                }
+            } finally {
+                const root = context.bindings.variableScopes[0]!;
+                for (const [symbol, binding] of scope)
+                    root.set(symbol, binding);
+                context.bindings.popScope();
+            }
+        }
+    }
+
+    /** Initializer closures share predeclared homes, including cyclic dependencies. */
+    public defineInitializers(): void {
+        const context = this.context;
+        for (const [file, { cpp, prefix }] of this.activations) {
+            context.bindings.pushScope(prefix);
+            try {
+                const closure = context.captureManagedClosureLines(() => {
+                    context.beginNativeFunctionBody(undefined, true);
+                    try {
+                        for (const dependency of runtimeModuleDependencies(
+                            context.checker,
+                            file,
+                        )) {
+                            const activation = this.activations.get(dependency);
+                            if (!activation) continue;
+                            context.useNativeValue({
+                                kind: "void",
+                                cpp: activation.cpp,
+                            });
+                            context.emit({
+                                kind: "expression",
+                                code: `${activation.cpp}->evaluate();`,
+                            });
+                        }
+                        emitReachableStatements(
+                            context,
+                            file.statements.filter((statement) =>
+                                isModuleInitializerStatement(
+                                    statement,
+                                    context.checker,
+                                ),
+                            ),
+                        );
+                    } finally {
+                        context.endNativeFunctionBody();
+                    }
+                });
+                context.emit({
+                    kind: "expression",
+                    code: `${cpp}->set_initializer(${context.nativeEmission.renderSharedClosure(closure, "void", file, "", [])});`,
+                });
+            } finally {
+                context.bindings.popScope();
+            }
+        }
+    }
 
     public value(type: DataType<"module-namespace">, cpp?: string): Value {
         this.context.reachJsData();
@@ -197,30 +373,30 @@ export class ModuleNamespaces {
             );
         return {
             kind: "promise",
-            cpp: `bbl::js::Promise<bbl::js::ModuleNamespace>::resolved(${result.cpp})`,
+            cpp: this.importCpp(file, result),
             dataType: { kind: "promise", result: result.dataType! },
             promiseType: "bbl::js::ModuleNamespace",
             promiseResult: result,
         };
     }
 
+    private importCpp(file: ts.SourceFile, namespace: Value): string {
+        const activation = this.activations.get(file);
+        if (!activation)
+            return `bbl::js::Promise<bbl::js::ModuleNamespace>::resolved(${namespace.cpp})`;
+        this.context.useNativeValue({ kind: "void", cpp: activation.cpp });
+        return `bbl::js::import_module(${activation.cpp})`;
+    }
+
     private requireEvaluatedOrPure(file: ts.SourceFile, node: ts.Node): void {
-        if (!this.staticModules) {
-            const modules = new Set<ts.SourceFile>();
-            const visit = (current: ts.SourceFile): void => {
-                if (modules.has(current)) return;
-                modules.add(current);
-                runtimeModuleDependencies(
-                    this.context.checker,
-                    current,
-                ).forEach(visit);
-            };
-            visit(this.context.sourceFile);
-            this.staticModules = modules;
-        }
+        const evaluated = this.evaluatedModules();
         const visited = new Set<ts.SourceFile>();
         const visit = (current: ts.SourceFile): void => {
-            if (visited.has(current) || this.staticModules!.has(current))
+            if (
+                visited.has(current) ||
+                evaluated.has(current) ||
+                this.activations.has(current)
+            )
                 return;
             visited.add(current);
             if (current.isDeclarationFile) {
@@ -240,11 +416,7 @@ export class ModuleNamespaces {
                 this.context.checker,
                 this.context.symbols,
             );
-            if (state.length)
-                this.context.fail(
-                    state[0]!,
-                    "Lazy module initialization with observable state requires a retained once-only module activation.",
-                );
+            if (state.length) throw new ModuleActivationRequired(file);
             for (const statement of current.statements) {
                 if (
                     ts.isModuleDeclaration(statement) ||
@@ -294,10 +466,7 @@ export class ModuleNamespaces {
                     )
                 )
                     continue;
-                this.context.fail(
-                    statement,
-                    "Lazy module initialization with observable state requires a retained once-only module activation.",
-                );
+                throw new ModuleActivationRequired(file);
             }
         };
         visit(file);

@@ -2,6 +2,7 @@
 
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
+#include <bblite/js_module_namespace.hpp>
 #include <bblite/pal_event_loop.hpp>
 
 #include <optional>
@@ -413,6 +414,22 @@ private:
     std::shared_ptr<State> state_;
     std::shared_ptr<View> view_;
 };
+
+/** Import evaluation and settlement occur after the current synchronous job. */
+inline Promise<ModuleNamespace> import_module(std::shared_ptr<ModuleActivation> module) {
+    Promise<ModuleNamespace> result;
+    pal::EventLoop::current().queue_microtask([module = std::move(module), result] {
+        try {
+            module->evaluate();
+            result.resolve(module->module_namespace());
+        } catch (const pal::WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            result.reject(std::current_exception());
+        }
+    });
+    return result;
+}
 
 inline std::string promise_error_message(std::exception_ptr error) {
     try {

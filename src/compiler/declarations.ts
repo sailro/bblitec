@@ -396,6 +396,38 @@ export class DeclarationLowerer {
         this.forwardBindings.set(symbol, "hoisted");
     }
 
+    /** A module's retained lexical home exists before its lazy evaluation. */
+    public prepareModuleBinding(declaration: ts.VariableDeclaration): void {
+        if (
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.BlockScoped) === 0
+        )
+            return this.context.fail(
+                declaration,
+                "Lazy module var bindings require hoisted undefined storage.",
+            );
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
+            return this.context.fail(
+                declaration,
+                "Lazy module bindings require an identifier and initializer.",
+            );
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        const mapped = this.lexicalBindingType(
+            declaration.name,
+            declaration.initializer,
+        );
+        if (!symbol || !mapped)
+            return this.context.fail(
+                declaration,
+                "Lazy module bindings require an owned data representation.",
+            );
+        const type = this.context.dataTypes.markStoredObjectReferences(mapped);
+        this.forwardBindings.set(symbol, {
+            cppName: this.declareLexicalBinding(declaration.name, symbol, type),
+            type,
+        });
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
