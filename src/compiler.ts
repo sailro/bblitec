@@ -1480,13 +1480,30 @@ class Compiler implements LoweringServices {
             try {
                 for (const statement of file.statements) {
                     if (ts.isVariableStatement(statement)) {
-                        for (const declaration of statement.declarationList
-                            .declarations) {
-                            if (!staticDeclarations.has(declaration))
-                                this.declarations.emitVariableDeclaration(
-                                    declaration,
-                                );
-                        }
+                        const declarations =
+                            statement.declarationList.declarations.filter(
+                                (declaration) =>
+                                    !staticDeclarations.has(declaration),
+                            );
+                        if (declarations.length === 0) continue;
+                        // Keep checker-bound declarations and original source
+                        // identity; only the filtered statement is synthetic.
+                        const runtimeStatement =
+                            declarations.length ===
+                            statement.declarationList.declarations.length
+                                ? statement
+                                : Object.assign(
+                                      ts.factory.updateVariableStatement(
+                                          statement,
+                                          statement.modifiers,
+                                          ts.factory.updateVariableDeclarationList(
+                                              statement.declarationList,
+                                              declarations,
+                                          ),
+                                      ),
+                                      { parent: statement.parent },
+                                  );
+                        this.emitStatement(runtimeStatement);
                         continue;
                     }
                     if (

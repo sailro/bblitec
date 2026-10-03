@@ -97,6 +97,80 @@ test("survey coverage exposes refused and incomplete containing statements", () 
     );
 });
 
+test("imported initializer refusals retain original statement identities and survey recovery", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblite-import-coverage-"));
+    const dependency = join(directory, "dependency.ts");
+    const source = `
+        export const first = 7, sampled = Date.now(), missing = new FinalizationRegistry(() => {}), last = 11;
+        export const ready = Date.now();
+        localStorage.setItem("after-import", String(first + last + ready));
+    `;
+    writeFileSync(dependency, source);
+    const entry = `
+        import { first, last } from "./dependency.js";
+        localStorage.setItem("entry", String(first + last));
+    `;
+    const options = { fileName: join(directory, "entry.ts") };
+    const strict = new SourceCoverage();
+    assert.throws(
+        () => strict.run(() => compileSource(entry, options)),
+        /Unsupported constructor expression/,
+    );
+    const strictRealm = strict.report().realms[0]!;
+    assert.equal(strictRealm.complete, false);
+    assert.equal(strictRealm.sites.length, 1);
+    assert.equal(strictRealm.sites[0]?.state, "refused");
+
+    const collector = new SourceCoverage();
+    const outcome = collector.run(() => surveySource(entry, options));
+    assert.equal(outcome.report.complete, true);
+    assert.equal(outcome.report.terminal, undefined);
+    assert.equal(outcome.report.refusals.length, 1);
+    const refusal = outcome.report.refusals[0]!;
+    assert.equal(resolve(refusal.statement.file), dependency);
+    assert.equal(
+        outcome.report.refusals[0]?.statement.kind,
+        "VariableStatement",
+    );
+    assert.equal(outcome.report.refusals[0]?.statement.function, "<module>");
+    assert.ok(outcome.result);
+    assert.doesNotMatch(
+        outcome.result.cpp,
+        /v_module\d+_(?:first|last|sampled)/,
+    );
+    const realm = collector.report().realms[0]!;
+    assert.equal(realm.complete, false);
+    const imported = realm.sites.filter((site) => site.file === dependency);
+    const parsed = ts.createSourceFile(
+        dependency,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    assert.deepEqual(
+        imported.map((site) => ({
+            start: site.start,
+            end: site.end,
+            sha256: site.sha256,
+            state: site.state,
+            attempts: site.attempts,
+        })),
+        parsed.statements.map((statement, index) => ({
+            start: statement.getStart(parsed),
+            end: statement.end,
+            sha256: createHash("sha256").update(source).digest("hex"),
+            state: index === 0 ? "refused" : "lowered",
+            attempts: 1,
+        })),
+    );
+    assert.ok(
+        realm.sites.some(
+            (site) =>
+                site.file === options.fileName && site.state === "lowered",
+        ),
+    );
+});
+
 test("coverage honors transactions, failed probes, realm replay and nested collectors", () => {
     const frontend = createCompilerProgram(
         "let first = 1; let second = 2; let third = 3;",
