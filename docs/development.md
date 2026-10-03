@@ -273,8 +273,9 @@ generated files.
 
 ## Validation
 
-Use focused checks per unit. Run the full checks below only for final validation or on explicit request;
-do not repeat them after individual fixes. `npm run sweep` builds and measures every registered scene on
+Use focused checks per unit. The full checks below are required before publishing a compiler PR;
+run them only for final validation or on explicit request, not after individual fixes.
+`npm run sweep` builds and measures every registered scene on
 both backends: about 20 minutes on a warm cache, hours from a cold one. A new worktree starts cold (its
 precompiled headers and the units built on them are cached per checkout).
 
@@ -282,10 +283,10 @@ precompiled headers and the units built on them are cached per checkout).
 npm run lint:ts
 npm run lint:tools
 npm run format:check
-npm run lint:cpp -- <representative-native-build-directory>
 npm run simplify:verify
 npm test
 npm run sweep
+npm run lint:cpp -- all --generated --backend both
 node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 

@@ -1980,7 +1980,7 @@ export class ExpressionLowerer {
     private laneValue(expression: ts.Expression): Value {
         const raw = this.context.compileValue(expression);
         const value =
-            raw.kind === "data"
+            raw.kind === "data" && !raw.preserveUncheckedLookup
                 ? this.context.dataLowerer.narrowOptional(raw, expression)
                 : raw;
         // Array/object members retain the result of a resource-producing call.

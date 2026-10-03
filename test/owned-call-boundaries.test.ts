@@ -139,6 +139,34 @@ if(present.signal!==date||!Object.hasOwn(present,'signal')||Object.hasOwn(missin
 );
 
 check(
+    "unchecked-dictionary-lanes-retain-nullable-snapshots",
+    `
+interface Snapshot { present: string | undefined; missing: string | undefined; }
+function snapshot(values: Record<string, string>, observe: () => void): Snapshot {
+    observe();
+    return { present: values.present, missing: values.missing };
+}
+const values: Record<string, string> = { present: 'original' };
+let calls = 0;
+const saved = snapshot(values, () => { calls++; });
+const records: Snapshot[] = [{ present: values.present, missing: values.missing }];
+const lanes: Array<string | undefined> = [values.present, values.missing];
+const readers: Array<() => void> = [() => {
+    if (saved.present !== 'original' || saved.missing !== undefined)
+        throw new Error('returned record lost its nullable snapshot');
+    if (records[0]!.present !== 'original' || records[0]!.missing !== undefined)
+        throw new Error('stored record lost its nullable snapshot');
+    if (lanes[0] !== 'original' || lanes[1] !== undefined)
+        throw new Error('array lanes lost their nullable snapshot');
+}];
+delete values.present;
+values.missing = 'later';
+readers[0]!();
+if (calls !== 1) throw new Error('snapshot producer repeated');
+`,
+);
+
+check(
     "native-services-retain-identity-through-structural-views",
     `
 interface Store{getItem(key:string):string|null;setItem(key:string,value:string):void}
