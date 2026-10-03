@@ -5077,7 +5077,7 @@ export class DataTypeRegistry {
             }
         }
         const emitted = new EmissionSet<string>();
-        const structs = [...this.structsByKey.values()].filter((definition) =>
+        const structs = [...this.structsByName.values()].filter((definition) =>
             used.structs.has(definition.name),
         );
         for (const name of this.referenceStructNames) {
