@@ -12,6 +12,81 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
+test("imported scratch records retain writes through call arguments and aliases", (t) => {
+    const directory = resolve("artifacts/module-call-mutations");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        type Hit = { point: [number, number, number]; distance: number };
+        const scratch: Hit = { point: [0, 0, 0], distance: 0 };
+        const alias = scratch;
+        const indirect: Hit = { point: [0, 0, 0], distance: 0 };
+        const firstAlias = indirect;
+        const secondAlias = firstAlias;
+        function write(out: Hit, value: number): void {
+            out.point[0] = value;
+            out.distance += value;
+        }
+        function writeWrapped(wrapper: { out: Hit }, value: number): void {
+            wrapper.out.point[1] = value;
+        }
+        export function viaAliases(value: number): number {
+            write(secondAlias, value);
+            return indirect.point[0] + indirect.distance;
+        }
+        export function sample(value: number): number {
+            write(alias, value);
+            writeWrapped({out: scratch}, value + 1);
+            Object.assign(scratch, {distance: scratch.distance + 1});
+            return scratch.point[0] + scratch.point[1] + scratch.distance;
+        }
+    `,
+    );
+    const result = compileSource(
+        `
+        import {sample, viaAliases} from "./dependency.js";
+        if (sample(2) !== 8 || sample(5) !== 20) throw new Error("module call mutation lost");
+        if (viaAliases(2) !== 4 || viaAliases(5) !== 12) throw new Error("module alias mutation lost");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-call-mutations", result.cpp, {
+        timeoutMs: 5000,
+    });
+});
+
+test("read-only call arguments leave immutable imported records on the static path", () => {
+    const directory = resolve("artifacts/module-read-only-call");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        const source = { value: 7 };
+        function read(input: { value: number }): number { return input.value; }
+        export function sample(): number { return read(source) + Object.keys(source).length; }
+    `,
+    );
+    const { program, sourceFile, checker } = createCompilerProgram(
+        'import {sample} from "./dependency.js"; if (sample() !== 8) throw new Error("read");',
+        join(directory, "entry.ts"),
+    );
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            new CompilerSymbols(checker),
+        ),
+        [],
+    );
+});
+
 test("initializer planning preserves throwing container and accessor operations", () => {
     const directory = resolve("artifacts/module-abrupt-initializers");
     mkdirSync(directory, { recursive: true });

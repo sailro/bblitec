@@ -4,6 +4,8 @@ import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
+import { libraryArgumentIsReadOnly } from "./library-call-effects.js";
+import { callArgumentIsReadOnly } from "./user-functions.js";
 import {
     accessedPropertySymbol,
     aliasTarget,
@@ -236,6 +238,8 @@ function collectMutatedContainerSymbols(
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
     const mutated = new EmissionSet<ts.Symbol>();
+    const argumentWrites = new Set<ts.Symbol>();
+    const aliases = new Map<ts.Symbol, ts.Symbol>();
     const record = (target: ts.Expression): void => {
         const symbol = moduleContainerSymbol(target, checker, symbols);
         if (symbol) mutated.add(symbol);
@@ -250,6 +254,50 @@ function collectMutatedContainerSymbols(
             record(current.expression);
     };
     forEachAnalysisNode(sourceFile, (node) => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer &&
+            typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
+        ) {
+            const alias = symbols.valueSymbol(node.name);
+            const origin = moduleContainerSymbol(
+                node.initializer,
+                checker,
+                symbols,
+            );
+            if (alias && origin) aliases.set(alias, origin);
+        }
+        if (ts.isCallExpression(node)) {
+            node.arguments.forEach((argument, index) => {
+                if (
+                    !typeCanCarryReference(
+                        checker.getTypeAtLocation(argument),
+                    ) ||
+                    libraryArgumentIsReadOnly(checker, node, index) ||
+                    callArgumentIsReadOnly(checker, node, index)
+                )
+                    return;
+                forEachAnalysisNode(
+                    argument,
+                    (part) => {
+                        if (
+                            ts.isIdentifier(part) ||
+                            ts.isPropertyAccessExpression(part) ||
+                            ts.isElementAccessExpression(part)
+                        ) {
+                            const symbol = moduleContainerSymbol(
+                                part,
+                                checker,
+                                symbols,
+                            );
+                            if (symbol) argumentWrites.add(symbol);
+                        }
+                    },
+                    { functions: "skip" },
+                );
+            });
+        }
         if (isAssignmentExpression(node)) {
             assignmentTargets(node.left).forEach(recordThrough);
         } else if (isUpdateExpression(node)) {
@@ -263,6 +311,11 @@ function collectMutatedContainerSymbols(
             if (target) record(target);
         }
     });
+    for (const symbol of argumentWrites) {
+        mutated.add(symbol);
+        const origin = aliases.get(symbol);
+        if (origin) argumentWrites.add(origin);
+    }
     return mutated;
 }
 

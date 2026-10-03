@@ -202,11 +202,9 @@ import { RecordProxies } from "./compiler/proxies.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
-    declarationInDefaultLibrary,
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
-    libraryGlobal,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import {
@@ -230,6 +228,7 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
+import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
     bindingNameIdentifiers,
@@ -240,7 +239,6 @@ import {
     objectProperty,
     sourceFunctionName,
     stringLiteralText,
-    unwrapExpression,
     unwrappedIdentifier,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
@@ -462,36 +460,6 @@ export { CompileError };
 
 /** A transaction that is not a probe: its work stands unless it throws. */
 const commitAlways = (): boolean => true;
-
-/** The library calls that write through their first argument. */
-const writingLibraryCalls: ReadonlySet<string> = new Set([
-    "Object.assign",
-    "Object.defineProperty",
-    "Object.defineProperties",
-    "Object.setPrototypeOf",
-    "Reflect.set",
-    "Reflect.defineProperty",
-    "Reflect.deleteProperty",
-    "Reflect.setPrototypeOf",
-]);
-
-/**
- * Whether a language or platform library call leaves an argument alone:
- * every one but the first argument of a call that writes through it.
- */
-function libraryArgumentIsReadOnly(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-    index: number,
-): boolean {
-    const called = checker.getResolvedSignature(call)?.declaration;
-    if (!called || !declarationInDefaultLibrary(called)) return false;
-    const callee = unwrapExpression(call.expression);
-    const name = ts.isPropertyAccessExpression(callee)
-        ? `${libraryGlobal(checker, callee.expression) ?? ""}.${callee.name.text}`
-        : undefined;
-    return index > 0 || name === undefined || !writingLibraryCalls.has(name);
-}
 
 /**
  * Executed module constants: numbers are JavaScript doubles, and every value
