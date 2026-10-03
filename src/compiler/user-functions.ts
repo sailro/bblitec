@@ -277,6 +277,24 @@ export function requiresDefaultParameterBinding(
 }
 
 type Fail = (node: ts.Node, message: string) => never;
+/** Dynamic `this` belongs to the nearest non-arrow function. */
+export function functionUsesDynamicThis(
+    declaration: SupportedFunction,
+): boolean {
+    return (
+        !ts.isArrowFunction(declaration) &&
+        !!declaration.body &&
+        someAnalysisNode(
+            declaration.body,
+            (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+            {
+                skip: (node) =>
+                    ts.isFunctionLike(node) && !ts.isArrowFunction(node),
+            },
+        )
+    );
+}
+
 export type SupportedFunction =
     | ts.FunctionDeclaration
     | ts.FunctionExpression
@@ -4774,14 +4792,11 @@ export class UserFunctionLowerer {
         });
     }
 
-    private bindArgumentsObject(
-        context: UserFunctionContext,
-        ir: UserFunctionIr,
-        input: readonly Value[] | (() => readonly Value[]),
-        callNode: ts.Node,
-    ): readonly Value[] | undefined {
-        const declaration = ir.declaration;
-        if (ts.isArrowFunction(declaration) || !declaration.body) return;
+    /** The implicit arguments owner is shared by native storage and finite-call admission. */
+    public argumentsReference(
+        declaration: SupportedFunction,
+    ): ts.Identifier | null {
+        if (ts.isArrowFunction(declaration) || !declaration.body) return null;
         let reference = this.argumentsReferences.get(declaration);
         if (reference === undefined) {
             reference =
@@ -4802,6 +4817,17 @@ export class UserFunctionLowerer {
                 ) ?? null;
             this.argumentsReferences.set(declaration, reference);
         }
+        return reference;
+    }
+
+    private bindArgumentsObject(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        input: readonly Value[] | (() => readonly Value[]),
+        callNode: ts.Node,
+    ): readonly Value[] | undefined {
+        const declaration = ir.declaration;
+        const reference = this.argumentsReference(declaration);
         if (!reference) return;
         const arguments_ = typeof input === "function" ? input() : input;
         const rest = restParameterIndex(declaration);
@@ -5811,12 +5837,10 @@ export class UserFunctionLowerer {
                 `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
             );
         }
-        // A generic declaration's parameters are typed in its own
-        // parameters; the resolved signature spells what this call made
-        // of them.
-        const resolved = ir.declaration.typeParameters?.length
-            ? this.checker.getResolvedSignature(call)
-            : undefined;
+        // A returned callback can mention its factory's type parameters
+        // without declaring any itself. The source call's signature carries
+        // those captured substitutions as well as directly generic calls.
+        const resolved = this.checker.getResolvedSignature(call);
         call.arguments.forEach((argument, index) => {
             const parameter = ir.parameters[index];
             if (

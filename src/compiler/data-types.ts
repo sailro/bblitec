@@ -99,7 +99,9 @@ interface GenericFunctionField {
 
 /** The suffix an accessor-backed field adds to its struct's identity key. */
 function accessorKey(field: DataStructField): string {
-    return field.accessor ? `:${field.accessor}` : "";
+    return field.accessor
+        ? `:${field.accessor}${field.accessorReceiver ? ":receiver" : ""}`
+        : "";
 }
 
 /** The callbacks an accessor-backed field stores, as the data walks see them. */
@@ -340,6 +342,8 @@ export interface DataStructField {
      * slot whose reads run the getter.
      */
     accessor?: StructFieldAccessor;
+    /** The finite record type supplied as `this` when the slot is read. */
+    accessorReceiver?: string;
 }
 
 /** The accessors an accessor-backed record field holds. */
@@ -969,6 +973,37 @@ export class DataTypeRegistry {
     private readonly recordViews = new EmissionSet<
         ts.Symbol | ts.Type | string
     >();
+    private readonly proxyRecords = new EmissionSet<
+        NativeRecordStorageDemand["identity"]
+    >();
+
+    /** Register stronger layout demands before any nested record is mapped. */
+    public prepareProxyRecords(
+        demands: Iterable<NativeRecordStorageDemand>,
+    ): void {
+        for (const demand of demands)
+            if (demand.proxy)
+                this.withRecordDemand(demand, () => {
+                    this.proxyRecords.add(this.structIdentity(demand.type));
+                });
+    }
+
+    /** A proxy and its target retain one field layout but distinct object identities. */
+    public requireProxyRecord(type: DataType<"struct">, node: ts.Node): void {
+        if (
+            this.structFields(type.name, node, "accessors").every(
+                (field) => field.accessorReceiver,
+            )
+        )
+            return;
+        const source = this.nativeRecordSources.get(type.name);
+        if (!source)
+            this.fail(
+                node,
+                "A Proxy target requires a retained source record layout.",
+            );
+        throw new NativeRecordStorageRequired({ ...source, proxy: true });
+    }
 
     private registerAccessor(
         node: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
@@ -1014,6 +1049,9 @@ export class DataTypeRegistry {
                     this.setterProperties.has(declaration),
             ) ||
             this.recordViews.has(
+                this.structIdentity(this.checker.getNonNullableType(owner)),
+            ) ||
+            this.proxyRecords.has(
                 this.structIdentity(this.checker.getNonNullableType(owner)),
             )
         );
@@ -1077,6 +1115,7 @@ export class DataTypeRegistry {
         const record = this.checker.getNonNullableType(type);
         return (
             this.recordViews.has(this.structIdentity(record)) ||
+            this.proxyRecords.has(this.structIdentity(record)) ||
             this.checker
                 .getPropertiesOfType(record)
                 .some((property) =>
@@ -1203,13 +1242,7 @@ export class DataTypeRegistry {
 
     /** Resolve ownership demands before any earlier initializer or alias is emitted. */
     public predeclareOwnedRecord(demand: NativeRecordStorageDemand): void {
-        const apply = (index: number): void => {
-            if (index < demand.frames.length) {
-                this.withTypeArguments(demand.frames[index], () =>
-                    apply(index + 1),
-                );
-                return;
-            }
+        this.withRecordDemand(demand, () => {
             const type = this.fromTsType(demand.type, demand.node);
             if (type?.kind !== "struct")
                 this.fail(
@@ -1217,8 +1250,22 @@ export class DataTypeRegistry {
                     "Demanded record no longer has a native object representation.",
                 );
             this.markStoredObjectReferences(type);
+        });
+    }
+
+    private withRecordDemand<T>(
+        demand: NativeRecordStorageDemand,
+        work: () => T,
+    ): T {
+        const apply = (index: number): T => {
+            if (index < demand.frames.length) {
+                return this.withTypeArguments(demand.frames[index], () =>
+                    apply(index + 1),
+                );
+            }
+            return work();
         };
-        apply(0);
+        return apply(0);
     }
 
     /** Map a checker type and retain its source for a later ownership demand. */
@@ -1286,6 +1333,16 @@ export class DataTypeRegistry {
     }
 
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+        const readonlyTarget =
+            type.aliasSymbol?.name === "Readonly" &&
+            declaredInDefaultLibrary(type.aliasSymbol)
+                ? type.aliasTypeArguments?.[0]
+                : undefined;
+        if (
+            readonlyTarget &&
+            this.proxyRecords.has(this.structIdentity(readonlyTarget))
+        )
+            return this.fromTsType(readonlyTarget, node);
         const module = type.getSymbol()?.declarations?.find(ts.isSourceFile);
         if (module)
             return { kind: "module-namespace", module: module.fileName };
@@ -3284,6 +3341,7 @@ export class DataTypeRegistry {
         const presences: OwnPropertyPresence[] = [];
         const partial = this.isPartialRecord(type);
         const view = this.recordViews.has(this.structIdentity(type));
+        const proxy = this.proxyRecords.has(this.structIdentity(type));
         for (const property of properties) {
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
@@ -3335,12 +3393,13 @@ export class DataTypeRegistry {
                         : mappedValue,
                 ),
             );
-            const accessor = this.propertyAccessor(property, view);
+            const accessor = this.propertyAccessor(property, view || proxy);
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),
                 type: mapped,
                 ...(accessor ? { accessor } : {}),
+                ...(proxy ? { accessorReceiver: provisionalName } : {}),
                 ...(propertyIsReadOnly(property) ? { readOnly: true } : {}),
                 ...(optional ? { optionalProperty: true } : {}),
                 ...(partial ? { uncheckedProperty: true } : {}),
@@ -3349,12 +3408,12 @@ export class DataTypeRegistry {
                     : {}),
             });
             presences.push(
-                optional && !accessor
+                optional && (!accessor || proxy)
                     ? storedPresence(mapped, nullability(propertyType).null)
                     : "own",
             );
         }
-        if (partial) {
+        if (partial || proxy) {
             this.referenceStructNames.add(provisionalName);
         }
         if (
@@ -3449,8 +3508,10 @@ export class DataTypeRegistry {
         if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
         if (presence === "own") return undefined;
         this.fieldPresenceReads.set(`${structName}.${field.sourceName}`, node);
+        const stored = field.accessorReceiver ? `${slot}.has_own()` : slot;
         if (presence === "nullable")
-            return `bbl::js::held_own_property(${slot}, ${stringLiteral(field.sourceName)})`;
+            return `bbl::js::held_own_property(${stored}, ${stringLiteral(field.sourceName)})`;
+        if (field.accessorReceiver) return stored;
         return field.type.kind === "optional"
             ? optionalPresentCpp(slot)
             : field.type.kind === "json"
@@ -4395,6 +4456,8 @@ export class DataTypeRegistry {
     /** The native slot type of a struct field: its value, or the accessor pair that produces it. */
     public structFieldCppType(field: DataStructField): string {
         const value = this.cppType(field.type);
+        if (field.accessorReceiver)
+            return `bbl::js::ReceiverAccessor<${value}, bblscene::${field.accessorReceiver}>`;
         return field.accessor ? `bbl::js::Accessor<${value}>` : value;
     }
 
@@ -5164,6 +5227,18 @@ export class DataTypeRegistry {
                     ? [`    int ${classTagMember}{};`]
                     : []),
                 ...this.renderKeyedSlot(definition),
+                ...(definition.fields.some((field) => field.accessorReceiver)
+                    ? [
+                          `    void bind_accessors(const ${definition.name}& receiver) {`,
+                          ...definition.fields
+                              .filter((field) => field.accessorReceiver)
+                              .map(
+                                  (field) =>
+                                      `        ${field.name}.bind_receiver(receiver);`,
+                              ),
+                          "    }",
+                      ]
+                    : []),
                 // Only a record that can own a traced edge joins cycle
                 // collection, and it visits only the fields that can.
                 ...(traceCondition === false

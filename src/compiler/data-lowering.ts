@@ -218,6 +218,7 @@ export function isNeverResized(
 interface DataLoweringContext extends Pick<
     LoweringServices,
     | "moduleNamespaces"
+    | "recordProxies"
     | "options"
     | "expectArgumentCount"
     | "sourceFile"
@@ -1079,6 +1080,9 @@ export class DataLowerer {
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
+            const instance = this.context.compileValue(unwrapped.expression);
+            if (instance.dataType?.kind === "struct")
+                return this.propertyRead(instance, unwrapped);
             // A class field resolves to the local it was bound to, so
             // container methods and alias tracking see the same
             // storage a field read outside the method sees.
@@ -8204,11 +8208,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         `Method '${field.sourceName}' requires a stored function field.`,
                     );
                 }
-                return this.context.compileStoredDataFunction(
+                this.context.recordProxies.requireIndependentFunction(
+                    field,
+                    initializer,
+                );
+                const callback = this.context.compileStoredDataFunction(
                     initializer,
                     field.type,
                 );
+                return this.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    callback,
+                );
             }
+            if (
+                ts.isArrowFunction(initializer) ||
+                ts.isFunctionExpression(initializer) ||
+                ts.isIdentifier(initializer)
+            )
+                this.context.recordProxies.requireIndependentFunction(
+                    field,
+                    initializer,
+                );
             return this.context.dataTypes.structFieldInitializerCpp(
                 field,
                 this.compileForSink(initializer, field.type),
@@ -8924,6 +8945,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const fields = this.context.dataTypes.structFields(
                     dataType.name,
                     ownerNode,
+                    "accessors",
                 );
                 const tests = fields.map((field) => {
                     const present = this.structFieldMembershipCpp(
@@ -8943,7 +8965,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return tests.length ? `(${tests.join(" || ")})` : "false";
             }
             const field = this.context.dataTypes
-                .structFields(dataType.name, ownerNode)
+                .structFields(dataType.name, ownerNode, "accessors")
                 .find((candidate) => candidate.sourceName === key.staticString);
             if (!field) {
                 if (operator === "in") {

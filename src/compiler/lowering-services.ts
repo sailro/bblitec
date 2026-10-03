@@ -96,6 +96,7 @@ export interface LoweringServices {
     readonly sourceFile: ts.SourceFile;
     readonly program: ts.Program;
     readonly moduleNamespaces: import("./module-namespaces.js").ModuleNamespaces;
+    readonly recordProxies: import("./proxies.js").RecordProxies;
     moduleContainerIsMutated(name: ts.Identifier): boolean;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
@@ -350,6 +351,7 @@ export interface LoweringServices {
     compileRecordGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
+        receiver?: Value,
     ): Value;
     compileRecordSetter(
         owner: Value,
@@ -560,6 +562,7 @@ export interface LoweringServices {
         owner: Value,
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
+        receiverType?: DataType<"struct">,
     ): string;
     compilePredicateWithValues(
         declaration:

@@ -1808,10 +1808,7 @@ export class BindingScopes {
         if (
             value.kind !== "record" ||
             value.staticJson !== undefined ||
-            this.context.classOf(value) !== undefined ||
-            Object.keys(value.recordMethods ?? {}).length !== 0 ||
-            Object.keys(value.recordGetters ?? {}).length !== 0 ||
-            Object.keys(value.recordSetters ?? {}).length !== 0
+            this.context.classOf(value) !== undefined
         )
             return undefined;
         return this.context.probeEmission(() => {
@@ -1832,6 +1829,29 @@ export class BindingScopes {
             const declared = storedCallbacks
                 ? this.context.dataTypes.fromStoredTsType(sourceType, node)
                 : this.context.dataTypes.fromTsType(sourceType, node);
+            const receiverRecord =
+                declared?.kind === "struct" &&
+                this.context.dataTypes
+                    .structFields(declared.name, node, "accessors")
+                    .some((field) => field.accessorReceiver);
+            if (receiverRecord)
+                return {
+                    ...this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            declared,
+                            node,
+                        ),
+                        declared,
+                    ),
+                    freshData: true,
+                };
+            if (
+                Object.keys(value.recordMethods ?? {}).length ||
+                Object.keys(value.recordGetters ?? {}).length ||
+                Object.keys(value.recordSetters ?? {}).length
+            )
+                return undefined;
             const stored =
                 declared &&
                 this.context.dataLowerer.retainedResultType(

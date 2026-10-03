@@ -168,7 +168,11 @@ alignment and bounds; set/slice/subarray/fill/copyWithin preserve overlap rules.
 consumers and some iteration paths refuse views. `ArrayBufferView` retains typed arrays and DataView.
 Numeric index-signature writes preserve element conversion and grow ordinary arrays.
 
-Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity, except that
+Finite record Proxies support literal get/set traps, optional-key deletion and value-only definitions
+of existing data properties; Reflect.get preserves represented getter receivers. Empty/class targets,
+dynamic-this methods, other traps, descriptor-inspecting traps and definitions requiring new
+property attributes refuse. Symbol and FinalizationRegistry values refuse.
+Array/object aliases retain identity, except that
 a plain record passed to a stored callback with an optional, default-initialized parameter can be copied
 into a returned closure, so later caller mutations are not observed. Spreads copy own scalar fields and
 share nested objects.

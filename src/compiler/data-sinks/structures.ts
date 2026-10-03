@@ -299,16 +299,30 @@ function valueStruct(
                             node,
                         );
                     if (method) {
-                        return lowerer.context.compileStoredDataFunction(
+                        lowerer.context.recordProxies.requireIndependentFunction(
+                            field,
                             method,
-                            field.type,
-                            value,
-                            ts.isMethodDeclaration(method) &&
-                                ts.isClassDeclaration(method.parent),
+                        );
+                        const callback =
+                            lowerer.context.compileStoredDataFunction(
+                                method,
+                                field.type,
+                                value,
+                                ts.isMethodDeclaration(method) &&
+                                    ts.isClassDeclaration(method.parent),
+                            );
+                        return lowerer.context.dataTypes.structFieldInitializerCpp(
+                            field,
+                            callback,
                         );
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
+                if (property?.callbackDeclaration)
+                    lowerer.context.recordProxies.requireIndependentFunction(
+                        field,
+                        property.callbackDeclaration,
+                    );
                 const stored = property
                     ? lowerer.compileKnownValueForSink(
                           property,
@@ -448,9 +462,23 @@ function accessorSlot(
             `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
         );
     const set = setter
-        ? lowerer.context.compileStoredAccessor(record, setter, field.type)
+        ? lowerer.context.compileStoredAccessor(
+              record,
+              setter,
+              field.type,
+              field.accessorReceiver
+                  ? { kind: "struct", name: field.accessorReceiver }
+                  : undefined,
+          )
         : "{}";
-    return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(record, getter, field.type)}, ${set})`;
+    return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(
+        record,
+        getter,
+        field.type,
+        field.accessorReceiver
+            ? { kind: "struct", name: field.accessorReceiver }
+            : undefined,
+    )}, ${set})`;
 }
 
 function valueEnummap(

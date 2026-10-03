@@ -916,7 +916,7 @@ function compileKnownDataMethod(
         const field = lowerer.context.dataTypes
             .structFields(recordType.name, callee.name, "accessors")
             .find((candidate) => candidate.sourceName === method);
-        const functionType = field?.accessor ? undefined : field?.type;
+        const functionType = field?.type;
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
@@ -938,7 +938,7 @@ function compileKnownDataMethod(
                   : undefined;
             return lowerer.compileStoredCall(
                 call,
-                `${record}${member}${field!.name}`,
+                `${record}${member}${field!.name}${field!.accessor ? ".get()" : ""}`,
                 functionType,
                 present,
             );

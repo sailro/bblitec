@@ -129,7 +129,10 @@ import { pickedMeshHandleCpp } from "./properties.js";
 import { absenceKind, nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
-import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import {
+    tryResolveFunctionDeclaration,
+    functionUsesDynamicThis,
+} from "./user-functions.js";
 import {
     booleanValue,
     commonResourceValue,
@@ -202,6 +205,7 @@ export interface ExpressionContext
             | "hasStableNativeBinding"
             | "options"
             | "moduleNamespaces"
+            | "recordProxies"
             | "referenceSearch"
             | "evaluator"
             | "sceneManifest"
@@ -861,6 +865,8 @@ export class ExpressionLowerer {
             return property;
         }
         if (ts.isNewExpression(unwrapped)) {
+            const proxy = this.context.recordProxies.construct(unwrapped);
+            if (proxy) return proxy;
             const deferred =
                 this.context.deferredCapabilities.compileConstructor(unwrapped);
             if (deferred) return deferred;
@@ -2482,6 +2488,8 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const reflected = this.context.recordProxies.reflect(call);
+        if (reflected) return reflected;
         if (call.expression.kind === ts.SyntaxKind.ImportKeyword)
             return this.context.moduleNamespaces.compileImport(call);
         const deferred = this.context.deferredCapabilities.compile(call);
@@ -4899,19 +4907,7 @@ export class ExpressionLowerer {
                       value.callbackDeclaration,
                   )
                 : value.callbackDeclaration;
-        if (
-            declaration &&
-            !ts.isArrowFunction(declaration) &&
-            declaration.body &&
-            someAnalysisNode(
-                declaration.body,
-                (node) => node.kind === ts.SyntaxKind.ThisKeyword,
-                {
-                    skip: (node) =>
-                        ts.isFunctionLike(node) && !ts.isArrowFunction(node),
-                },
-            )
-        )
+        if (declaration && functionUsesDynamicThis(declaration))
             this.context.fail(
                 expression,
                 "Function.call/bind requires a lexical receiver or a function without dynamic this.",

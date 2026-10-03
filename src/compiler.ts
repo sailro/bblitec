@@ -197,6 +197,7 @@ import {
     ModuleActivationRequired,
     ModuleNamespaces,
 } from "./compiler/module-namespaces.js";
+import { RecordProxies } from "./compiler/proxies.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
@@ -636,7 +637,9 @@ function compileSourceApplication(
                 dynamicBindings.set(request.declaration, request.storage);
             } else if (
                 request.kind === "record" &&
-                !ownedRecords.has(request.demand.identity)
+                (!ownedRecords.has(request.demand.identity) ||
+                    (request.demand.proxy &&
+                        !ownedRecords.get(request.demand.identity)?.proxy))
             ) {
                 ownedRecords.set(request.demand.identity, request.demand);
             } else if (
@@ -762,6 +765,7 @@ class Compiler implements LoweringServices {
         new PropertyAccessLowerer(this);
     /** Per-intrinsic option objects and the shader programs they reach. */
     public readonly deferredCapabilities = new DeferredCapabilities(this);
+    public readonly recordProxies: RecordProxies = new RecordProxies(this);
 
     public readonly intrinsicOptions: IntrinsicOptions = new IntrinsicOptions(
         this,
@@ -1226,6 +1230,7 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
+        this.dataTypes.prepareProxyRecords(this.ownedRecords.values());
         for (const demand of this.ownedRecords.values())
             this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {
@@ -2062,6 +2067,7 @@ class Compiler implements LoweringServices {
     }
 
     public emitDelete(expression: ts.DeleteExpression): void {
+        if (this.recordProxies.remove(expression)) return;
         if (this.windowProperties.remove(expression)) return;
         this.dataLowerer.emitDelete(expression);
     }
@@ -4958,6 +4964,7 @@ class Compiler implements LoweringServices {
     public compileRecordGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
+        receiver?: Value,
     ): Value {
         const dispatched = this.classLowerer.dispatchGetter(
             owner,
@@ -4990,7 +4997,7 @@ class Compiler implements LoweringServices {
             // object-literal accessors. The record may have crossed a return
             // boundary that copied its compile-time Value wrapper, so its
             // identity in classInstances is not a reliable dispatch guard.
-            this.defineThis(owner);
+            this.defineThis(receiver ?? owner);
             try {
                 emitReachableStatements(this, leading);
                 // A getter is an evaluation, even when its return happens
@@ -7473,13 +7480,36 @@ class Compiler implements LoweringServices {
         owner: Value,
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
+        receiverType?: DataType<"struct">,
     ): string {
         const getter = ts.isGetAccessorDeclaration(accessor);
         const valueCpp = this.dataTypes.cppType(valueType);
         const argument = this.allocateTemporaryCppName("accessor_value");
+        const receiverName = receiverType
+            ? this.allocateTemporaryCppName("accessor_receiver")
+            : "";
+        const receiverCpp =
+            receiverType && this.dataTypes.cppType(receiverType);
         const body = this.captureManagedClosureLines(() => {
+            const receiver: Value | undefined = receiverType
+                ? {
+                      ...this.dataLowerer.leafValue(receiverName, receiverType),
+                      nativeCaptures: [
+                          this.registerNativeBinding(
+                              receiverName,
+                              false,
+                              false,
+                              receiverCpp,
+                          ),
+                      ],
+                  }
+                : undefined;
             if (getter) {
-                const value = this.compileRecordGetter(owner, accessor);
+                const value = this.compileRecordGetter(
+                    owner,
+                    accessor,
+                    receiver,
+                );
                 this.emit(
                     `return ${this.dataLowerer.compileKnownValueForSink(value, valueType, accessor)};`,
                 );
@@ -7503,15 +7533,20 @@ class Compiler implements LoweringServices {
                 owner,
                 () =>
                     this.classLowerer.compileSetter(
-                        owner,
+                        receiver ?? owner,
                         accessor,
                         parameterName,
                         argumentValue,
                     ),
                 accessor,
             );
+            if (receiverType) this.emit("return true;");
         });
         this.reachJsData();
+        if (receiverCpp)
+            return getter
+                ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`
+                : `bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${argument}`, "bool")})`;
         return getter
             ? `bbl::js::Callback<${valueCpp}()>(${renderClosure(body, "", valueCpp)})`
             : `bbl::js::Callback<void(${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${valueCpp} ${argument}`, "void")})`;

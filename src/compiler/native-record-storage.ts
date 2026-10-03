@@ -6,6 +6,8 @@ export interface NativeRecordStorageDemand {
     type: ts.Type;
     node: ts.Node;
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
+    /** Every field must retain a receiver-aware accessor slot. */
+    proxy?: true;
 }
 
 /** Re-emit earlier storage and aliases after a dynamic boundary demands ownership. */

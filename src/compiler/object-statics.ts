@@ -76,13 +76,23 @@ export function structOwnEntries(
         : ".";
     const fields = owner.recordOwnKeys
         ? owner.recordOwnKeys.map((key) =>
-              context.dataTypes.structField(dataType.name, key, node),
+              context.dataTypes.structField(
+                  dataType.name,
+                  key,
+                  node,
+                  "accessors",
+              ),
           )
-        : context.dataTypes.structFields(dataType.name, node);
+        : context.dataTypes.structFields(dataType.name, node, "accessors");
+    if (fields.some((field) => field.accessor && !field.accessorReceiver))
+        context.dataTypes.structFields(dataType.name, node);
     return fields.map((field) => {
         const key = field.sourceName;
         const slot = `${owner.cpp}${access}${field.name}`;
-        const value = context.dataLowerer.leafValue(slot, field.type);
+        const value = context.dataLowerer.leafValue(
+            `${slot}${field.accessor ? ".get()" : ""}`,
+            field.type,
+        );
         const presentCpp = owner.recordOwnKeys
             ? undefined
             : context.dataTypes.ownPropertyPresentCpp(
@@ -100,7 +110,9 @@ export function structOwnEntries(
         return {
             key,
             value: {
-                ...(definitelyPresent && field.type.kind === "optional"
+                ...(!field.accessorReceiver &&
+                definitelyPresent &&
+                field.type.kind === "optional"
                     ? context.dataLowerer.leafValue(
                           `(*${value.cpp})`,
                           field.type.inner,

@@ -2508,6 +2508,11 @@ export class PropertyAccessLowerer {
             // Field reads resolve through the instance record the
             // constructor built.
             const instance = this.context.compileValue(ownerExpression);
+            const native = this.context.dataLowerer.compilePropertyFromValue(
+                instance,
+                expression,
+            );
+            if (native) return native;
             const field = instance.recordProperties?.[expression.name.text];
             if (!field) {
                 const accessor = instance.recordGetters?.[expression.name.text];

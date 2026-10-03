@@ -653,7 +653,10 @@ template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... 
         block->attach();
     auto* value = block.get();
     value->lifetime = std::move(block);
-    return Ref<T>(value);
+    Ref<T> result(value);
+    if constexpr (requires { result->bind_accessors(result); })
+        result->bind_accessors(result);
+    return result;
 }
 
 /**
