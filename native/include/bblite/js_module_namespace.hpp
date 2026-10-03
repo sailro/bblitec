@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/js_callback.hpp>
+#include <bblite/js_error.hpp>
 
 #include <algorithm>
 #include <exception>
@@ -33,7 +34,7 @@ public:
             evaluate(evaluation);
             active_evaluation_ = nullptr;
         } catch (...) {
-            const auto error = std::current_exception();
+            const Error error = std::current_exception();
             for (auto* module : evaluation.stack) {
                 module->error_ = error;
                 module->state_ = State::failed;
@@ -48,7 +49,10 @@ public:
     }
 
     ModuleNamespace module_namespace() const { return namespace_; }
-    void gc_trace(const TraceVisitor& visitor) const { visitor(initializer_); }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(initializer_);
+        visitor(error_);
+    }
 
 private:
     enum class State { pending, evaluating, evaluated, failed };
@@ -91,7 +95,7 @@ private:
     inline static thread_local Evaluation* active_evaluation_ = nullptr;
     ModuleNamespace namespace_;
     Callback<void()> initializer_;
-    std::exception_ptr error_;
+    Error error_;
     State state_ = State::pending;
     std::size_t index_ = 0;
     std::size_t ancestor_ = 0;
