@@ -51,8 +51,10 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Per-intrinsic option objects; asset registration and its recorded facts; capability admissions deferred until the program reaches the capability |
 | `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
-Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
-initializers use the selected representation. Immutable storage-demand and lexical-dependency indexes
+Repeated storage demands trigger one bounded, discarded discovery pass before fresh strict emission.
+Discovery stops at ordinary refusals or dependencies on rolled-back declarations; coverage and surveys
+retain only strict attempts. Earlier aliases and initializers use the selected representation.
+Immutable storage-demand and lexical-dependency indexes
 are shared by the checked program. Scoped collection facts use a derived alias graph that observes
 mutations and rollback. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies

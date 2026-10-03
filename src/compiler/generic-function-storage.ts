@@ -3,7 +3,6 @@ import type ts from "typescript";
 /** One reached instantiation of a stored generic function. */
 export interface GenericFunctionDemand {
     family: string;
-    key: string;
     arguments: readonly ts.Type[];
     parameters: readonly (ts.Type | undefined)[];
     /** Concrete element types supplied to an unknown[] rest parameter. */
@@ -12,6 +11,30 @@ export interface GenericFunctionDemand {
     ancestors: readonly string[];
     /** The call is inside a checked recursive dynamic-value boundary. */
     dynamicJsonStorage?: true;
+}
+
+/** Signature identity survives several demands collected from one emission attempt. */
+export function sameGenericFunctionSignature(
+    left: GenericFunctionDemand,
+    right: GenericFunctionDemand,
+): boolean {
+    const sameTypes = (
+        a: readonly (ts.Type | undefined)[],
+        b: readonly (ts.Type | undefined)[],
+    ): boolean =>
+        a.length === b.length && a.every((type, index) => type === b[index]);
+    return (
+        left.family === right.family &&
+        sameTypes(left.arguments, right.arguments) &&
+        sameTypes(left.parameters, right.parameters) &&
+        (left.restArguments?.length ?? 0) ===
+            (right.restArguments?.length ?? 0) &&
+        (left.restArguments ?? []).every((type) =>
+            right.restArguments!.includes(type),
+        ) &&
+        left.dynamicJsonStorage === right.dynamicJsonStorage &&
+        sameTypeFrames(left.frames, right.frames)
+    );
 }
 
 export function sameTypeFrames(
@@ -53,10 +76,7 @@ export class GenericFunctionStorage {
         Array<{ key: string; frames: GenericFunctionDemand["frames"] }>
     >();
     /** @unjournaled Reached signatures accumulate between whole-program emission attempts. */
-    private readonly demands = new Map<
-        string,
-        Map<string, GenericFunctionDemand>
-    >();
+    private readonly demands = new Map<string, GenericFunctionDemand[]>();
     /** @unjournaled Allocates identities retained by families across emission replays. */
     private nextFamily = 0;
 
@@ -76,15 +96,14 @@ export class GenericFunctionStorage {
     }
 
     public get(family: string): readonly GenericFunctionDemand[] {
-        return [...(this.demands.get(family)?.values() ?? [])];
+        return [...(this.demands.get(family) ?? [])];
     }
 
     public add(demand: GenericFunctionDemand): boolean {
-        const family =
-            this.demands.get(demand.family) ??
-            new Map<string, GenericFunctionDemand>();
-        if (family.has(demand.key)) return false;
-        family.set(demand.key, demand);
+        const family = this.demands.get(demand.family) ?? [];
+        if (family.some((known) => sameGenericFunctionSignature(known, demand)))
+            return false;
+        family.push(demand);
         this.demands.set(demand.family, family);
         return true;
     }

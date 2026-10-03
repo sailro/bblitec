@@ -79,6 +79,7 @@ import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
     GenericFunctionStorage,
+    sameGenericFunctionSignature,
     sameTypeFrames,
     type GenericFunctionDemand,
 } from "./generic-function-storage.js";
@@ -2289,25 +2290,17 @@ export class DataTypeRegistry {
                 if ((declared.flags & ts.TypeFlags.Unknown) !== 0)
                     parameters[index] = declared;
             });
-        const frames = this.typeArgumentFrames();
-        const sameTypes = (
-            left: readonly (ts.Type | undefined)[],
-            right: readonly (ts.Type | undefined)[],
-        ): boolean =>
-            left.length === right.length &&
-            left.every((type, index) => type === right[index]);
-        const field = generic.fields.find(
-            ({ demand }) =>
-                sameTypes(demand.arguments, arguments_) &&
-                sameTypes(demand.parameters, parameters) &&
-                (demand.restArguments?.length ?? 0) ===
-                    (restArguments?.length ?? 0) &&
-                (restArguments ?? []).every((type) =>
-                    demand.restArguments!.includes(type),
-                ) &&
-                demand.dynamicJsonStorage ===
-                    (dynamicJsonStorage || undefined) &&
-                sameTypeFrames(demand.frames, frames),
+        const demand: GenericFunctionDemand = {
+            family: generic.family,
+            ...(dynamicJsonStorage ? { dynamicJsonStorage: true } : {}),
+            arguments: arguments_,
+            parameters,
+            ...(restArguments ? { restArguments } : {}),
+            frames: this.typeArgumentFrames(),
+            ancestors: this.genericFunctionAncestors,
+        };
+        const field = generic.fields.find((field) =>
+            sameGenericFunctionSignature(field.demand, demand),
         );
         if (field) return field;
         if (this.genericFunctionAncestors.includes(generic.family))
@@ -2315,16 +2308,7 @@ export class DataTypeRegistry {
                 call,
                 "Recursive stored generic functions require an already represented signature.",
             );
-        throw new GenericFunctionStorageRequired({
-            family: generic.family,
-            ...(dynamicJsonStorage ? { dynamicJsonStorage: true } : {}),
-            key: String(generic.fields.length),
-            arguments: arguments_,
-            parameters,
-            ...(restArguments ? { restArguments } : {}),
-            frames,
-            ancestors: this.genericFunctionAncestors,
-        });
+        throw new GenericFunctionStorageRequired(demand);
     }
 
     private fromUnionType(

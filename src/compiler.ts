@@ -77,6 +77,12 @@ import {
     GenericFunctionStorageRequired,
     GenericFunctionStorage,
 } from "./compiler/generic-function-storage.js";
+import {
+    isStorageDemand,
+    recordStorageCompileAttempt,
+    storageDemandPlanningEnabled,
+    StorageDemandPlanner,
+} from "./compiler/storage-demand-planner.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import {
@@ -596,61 +602,86 @@ function compileSourceApplication(
             NativeRecordStorageDemand
         >();
         const genericFunctions = new GenericFunctionStorage();
+        const newCompiler = (planning: boolean): Compiler => {
+            recordStorageCompileAttempt(planning);
+            return new Compiler(
+                input.program,
+                input.sourceFile,
+                input.checker,
+                resolved,
+                dynamicBindings,
+                ownedRecords,
+                genericFunctions,
+            );
+        };
         // A replay lowers the realm again from the start, so a survey keeps
         // only the attempt that ran to the end.
         const lower = (): CompileResult =>
             coverSourceRealm(input.program, input.sourceFile.fileName, () => {
-                const compiler = new Compiler(
-                    input.program,
-                    input.sourceFile,
-                    input.checker,
-                    resolved,
-                    dynamicBindings,
-                    ownedRecords,
-                    genericFunctions,
-                );
+                const compiler = newCompiler(false);
                 const result = traceSourceProgram(input.program, () =>
                     compiler.compile(),
                 );
                 result.manifest.inputs = input.localFiles;
                 return result;
             });
+        const acceptReplay = (error: unknown): boolean => {
+            if (
+                error instanceof DynamicBindingStorageRequired &&
+                (!dynamicBindings.has(error.declaration) ||
+                    (error.storage && !dynamicBindings.get(error.declaration)))
+            ) {
+                dynamicBindings.set(error.declaration, error.storage);
+            } else if (
+                error instanceof NativeRecordStorageRequired &&
+                !ownedRecords.has(error.demand.identity)
+            ) {
+                ownedRecords.set(error.demand.identity, error.demand);
+            } else if (
+                error instanceof GenericFunctionStorageRequired &&
+                genericFunctions.add(error.demand)
+            ) {
+                return true;
+            } else if (
+                error instanceof RuntimeSearchParamsRequired &&
+                (!resolved.runtimeSearchParams ||
+                    (error.location && !resolved.runtimeLocationSearch))
+            ) {
+                resolved.runtimeSearchParams = true;
+                if (error.location) resolved.runtimeLocationSearch = true;
+            } else if (
+                error instanceof PendingActivationsRequired &&
+                !resolved.pendingActivations
+            ) {
+                resolved.pendingActivations = true;
+            } else return false;
+            return true;
+        };
+        let storageReplays = 0;
         for (;;) {
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
                     : lower();
             } catch (error) {
+                if (!acceptReplay(error)) throw error;
                 if (
-                    error instanceof DynamicBindingStorageRequired &&
-                    (!dynamicBindings.has(error.declaration) ||
-                        (error.storage &&
-                            !dynamicBindings.get(error.declaration)))
+                    isStorageDemand(error) &&
+                    ++storageReplays === 2 &&
+                    storageDemandPlanningEnabled()
                 ) {
-                    dynamicBindings.set(error.declaration, error.storage);
-                } else if (
-                    error instanceof NativeRecordStorageRequired &&
-                    !ownedRecords.has(error.demand.identity)
-                ) {
-                    ownedRecords.set(error.demand.identity, error.demand);
-                } else if (
-                    error instanceof GenericFunctionStorageRequired &&
-                    genericFunctions.add(error.demand)
-                ) {
-                    continue;
-                } else if (
-                    error instanceof RuntimeSearchParamsRequired &&
-                    (!resolved.runtimeSearchParams ||
-                        (error.location && !resolved.runtimeLocationSearch))
-                ) {
-                    resolved.runtimeSearchParams = true;
-                    if (error.location) resolved.runtimeLocationSearch = true;
-                } else if (
-                    error instanceof PendingActivationsRequired &&
-                    !resolved.pendingActivations
-                ) {
-                    resolved.pendingActivations = true;
-                } else throw error;
+                    const planner = new StorageDemandPlanner();
+                    // No coverage realm or survey attempt can publish this
+                    // discarded compiler. The next strict attempt owns both.
+                    try {
+                        planner.run(() => {
+                            newCompiler(true).compile();
+                        });
+                    } catch (planningError) {
+                        if (!acceptReplay(planningError)) throw planningError;
+                    }
+                    for (const demand of planner.demands) acceptReplay(demand);
+                }
             }
         }
     };
