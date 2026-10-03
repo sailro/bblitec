@@ -166,8 +166,10 @@ alignment and bounds; set/slice/subarray/fill/copyWithin preserve overlap rules.
 consumers and some iteration paths refuse views. `ArrayBufferView` retains typed arrays and DataView.
 Numeric index-signature writes preserve element conversion and grow ordinary arrays.
 
-Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity. Spreads copy own scalar
-fields and share nested objects.
+Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity, except that
+a plain record passed to a stored callback with an optional, default-initialized parameter can be copied
+into a returned closure, so later caller mutations are not observed. Spreads copy own scalar fields and
+share nested objects.
 Object enumeration places numeric index keys before insertion-ordered names. Fixed record key
 snapshots retain initialized keys; module namespace keys are lexical and values remain live.
 String-literal-union searches accept outside strings as misses. `invertMat4` returns nullable fresh
