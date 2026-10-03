@@ -759,6 +759,7 @@ export class DataTypeRegistry {
     @journaled private accessor emittedJsonType = false;
     @journaled private accessor emittedFileType = false;
     @journaled private accessor emittedDeferredDomType = false;
+    @journaled private accessor emittedWindowType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
     /**
@@ -4807,7 +4808,23 @@ export class DataTypeRegistry {
         if (dataType.kind === "json") this.emittedJsonType = true;
         if (dataType.kind === "deferred-dom-object")
             this.emittedDeferredDomType = true;
+        if (this.isWindowType(dataType)) this.emittedWindowType = true;
         return dataTypeCppType(dataType, this.cppContext);
+    }
+
+    private isWindowType(type: DataType): boolean {
+        return (
+            type.kind === "handle" &&
+            (type.handle === "worker-media-query" ||
+                type.handle === "worker-mutation-observer")
+        );
+    }
+
+    public usesWindowStorage(): boolean {
+        return (
+            this.emittedWindowType ||
+            this.usesNamedKind("handle", (type) => this.isWindowType(type))
+        );
     }
 
     public usesDeferredDomStorage(): boolean {
@@ -4831,6 +4848,7 @@ export class DataTypeRegistry {
 
     private usesNamedKind(
         kind: DataType["kind"] | readonly DataType["kind"][],
+        matches?: (type: DataType) => boolean,
     ): boolean {
         const seen = new Set<string>();
         return [...this.emittedNamedTypes].some(
@@ -4842,6 +4860,7 @@ export class DataTypeRegistry {
                     (record) => this.structFieldTypes(record),
                     true,
                     seen,
+                    matches,
                 ),
         );
     }

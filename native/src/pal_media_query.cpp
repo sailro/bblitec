@@ -1,4 +1,5 @@
-#include <bblite/pal_window_realm.hpp>
+#include <bblite/pal_window_objects.hpp>
+#include <bblite/pal_event_loop.hpp>
 #include <regex>
 #include <cctype>
 #include <bblite/js_data.hpp>

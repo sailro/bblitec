@@ -8422,6 +8422,7 @@ class Compiler implements LoweringServices {
             deferredCapabilitiesReached:
                 this.deferredCapabilities.sites.length > 0 ||
                 this.dataTypes.usesDeferredDomStorage(),
+            windowStorageReached: this.dataTypes.usesWindowStorage(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,
