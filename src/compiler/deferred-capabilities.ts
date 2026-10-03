@@ -97,6 +97,8 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "MediaRecorder.state",
         "MediaRecorder.addEventListener",
         "BlobEvent.data",
+        "Response.headers",
+        "Headers.get",
         "HTMLCanvasElement.captureStream",
         "AudioContext.createMediaStreamSource",
         "AudioContext.createMediaStreamDestination",
@@ -508,6 +510,11 @@ export class DeferredCapabilities {
             return type?.kind === "deferred-dom-object" && type.name === owner;
         const handle = type?.kind === "handle" ? type.handle : value.kind;
         if (owner === "SurfaceContext") return value.kind === "engine";
+        if (owner === "Response")
+            return (
+                type?.kind === "http-response" ||
+                value.kind === "static-fetch-response"
+            );
         if (owner === "MediaStream") return handle === "media-stream";
         if (owner === "MediaStreamTrack")
             return handle === "media-stream-track";

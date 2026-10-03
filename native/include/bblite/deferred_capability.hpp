@@ -8,6 +8,9 @@
 namespace bbl {
 
 // Nominal storage for deferred DOM APIs. There is no successful producer.
+class DeferredHeaders final {
+    DeferredHeaders() = delete;
+};
 class DeferredAbortController final {
     DeferredAbortController() = delete;
 };

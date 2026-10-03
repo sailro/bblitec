@@ -195,6 +195,7 @@ Async `fetch(url, options)` (application realm) uses absolute HTTP(S) URLs with 
 a static cache mode (only-if-cached refuses). Known asset fetches without options or with
 only a cache mode use packaged responses. Responses expose ok/status/url/bodyUsed and
 text/json/arrayBuffer reads; bodies consume once. HTTP errors fulfill; transport/missing-file errors reject.
+Response headers are unavailable; deferred mode gives `Response.headers` and `Headers.get` typed throwing boundaries.
 Descriptor arrays and typed helpers retain closed local URL selections; filename patterns package only
 matching files in an authored directory. URL expressions run once, and keys outside the package reject.
 Request objects, streaming and wider options/methods refuse. Transport limits are in [fidelity](fidelity.md).

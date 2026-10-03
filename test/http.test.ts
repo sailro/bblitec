@@ -12,7 +12,10 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("runtime HTTP selects the application realm and preserves requests, responses and rejection", async (t) => {
+async function checkRuntimeHttp(
+    t: test.TestContext,
+    deferred: boolean,
+): Promise<void> {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
@@ -67,13 +70,27 @@ test("runtime HTTP selects the application realm and preserves requests, respons
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     const base = `http://127.0.0.1:${address.port}`;
-    const directory = resolve("artifacts/runtime-http");
+    const directory = resolve(
+        `artifacts/runtime-http${deferred ? "-headers" : ""}`,
+    );
     mkdirSync(directory, { recursive: true });
+    const headerProbe = deferred
+        ? `
+            let headersFailed=false, keys=0;
+            function headerName():string{keys++;return 'content-encoding';}
+            try { response.headers?.get(headerName()); } catch(error) {
+                if(!error.message.includes('dom:Response.headers'))throw error;
+                headersFailed=true;
+            }
+            if(!headersFailed||keys!==0||response.bodyUsed)throw new Error('header boundary ordering');
+    `
+        : "";
     const source = `
         const request = fetch;
         async function run():Promise<void> {
             const response = await fetch("${base}/submit", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({message:"hello 🌍"})});
             if (!response.ok || response.status !== 201 || response.bodyUsed) throw new Error("response metadata");
+            ${headerProbe}
             const text = await response.text();
             if (text !== '{"answer":42}' || !response.bodyUsed) throw new Error("response text");
             let refused = false;
@@ -99,7 +116,14 @@ test("runtime HTTP selects the application realm and preserves requests, respons
     `;
     const entry = resolve(directory, "entry.ts");
     writeFileSync(entry, source);
-    const compiled = compileSource(source, { fileName: entry });
+    const compiled = compileSource(source, {
+        fileName: entry,
+        ...(deferred ? { deferredCapabilities: "runtime-throw" as const } : {}),
+    });
+    assert.deepEqual(
+        compiled.manifest.deferredCapabilities?.map((site) => site.id),
+        deferred ? ["dom:Response.headers", "dom:Headers.get"] : undefined,
+    );
     assert.ok(compiled.manifest.features.includes("platform:http"));
     assert.ok(compiled.manifest.runtimeSources.includes("src/pal_http.cpp"));
     const cpp = resolve(directory, "main.cpp"),
@@ -142,7 +166,12 @@ test("runtime HTTP selects the application realm and preserves requests, respons
         requests.find((request) => request.path === "/redirect")?.contentType,
         "text/plain;charset=UTF-8",
     );
-});
+}
+
+test("strict runtime HTTP preserves requests, responses and rejection", (t) =>
+    checkRuntimeHttp(t, false));
+test("deferred response headers preserve HTTP bodies and recovery", (t) =>
+    checkRuntimeHttp(t, true));
 
 test("fetch refuses a cache mode a native response cannot honour", () => {
     for (const options of [

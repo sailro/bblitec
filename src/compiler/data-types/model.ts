@@ -92,6 +92,7 @@ export type TypedArrayKind =
     | "u32array"
     | "i32array";
 export const DEFERRED_DOM_OBJECTS = [
+    "Headers",
     "AbortController",
     "AbortSignal",
     "MediaRecorder",
