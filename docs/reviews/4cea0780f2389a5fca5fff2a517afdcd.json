@@ -53,6 +53,22 @@
     {
       "summary": "Preserve structured emission and capture dependencies for boolean values.",
       "applied": true
+    },
+    {
+      "summary": "Request retained record ownership at actual storage sinks while preserving parameter facts.",
+      "applied": true
+    },
+    {
+      "summary": "Share transactional indexed-owner probing and presence-aware truth tests.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse native nullish conversion for flat and wrapped collection handles.",
+      "applied": true
+    },
+    {
+      "summary": "Guard structural record projection through the existing optional conversion path.",
+      "applied": true
     }
   ]
 }
