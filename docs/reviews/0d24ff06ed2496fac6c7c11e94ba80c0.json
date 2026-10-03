@@ -33,6 +33,26 @@
     {
       "summary": "Share callable body and default-argument roots across effect analyses.",
       "applied": true
+    },
+    {
+      "summary": "Reuse the traced Error owner for cached module failures.",
+      "applied": true
+    },
+    {
+      "summary": "Cache source-only callee effects across module initializers.",
+      "applied": true
+    },
+    {
+      "summary": "Index class-field names and hoist class ancestry checks.",
+      "applied": true
+    },
+    {
+      "summary": "Carry condition and operand dependencies on every native selection.",
+      "applied": true
+    },
+    {
+      "summary": "Preserve structured emission and capture dependencies for boolean values.",
+      "applied": true
     }
   ]
 }
