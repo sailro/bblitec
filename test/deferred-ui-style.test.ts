@@ -35,7 +35,7 @@ test("CSS deferral inventories independent features without hiding language gaps
     );
     assert.throws(
         () =>
-            compileSource(source + `new Proxy({}, {});`, {
+            compileSource(source + `new FinalizationRegistry(() => {});`, {
                 deferredCapabilities,
             }),
         /Unsupported constructor/,
@@ -53,7 +53,8 @@ test("CSS deferral inventories independent features without hiding language gaps
     assert.throws(
         () =>
             compileSource(
-                prefix + `panel.style.clipPath=String(new Proxy({},{}));`,
+                prefix +
+                    `panel.style.clipPath=String(new FinalizationRegistry(() => {}));`,
                 {
                     deferredCapabilities,
                 },

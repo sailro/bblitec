@@ -135,7 +135,7 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
             compileSource(
                 family.replace(
                     "callbacksRun++;\n        const blob",
-                    "new Proxy({}, {});\n        const blob",
+                    "new FinalizationRegistry(() => {});\n        const blob",
                 ),
                 { deferredCapabilities },
             ),

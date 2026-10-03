@@ -22,7 +22,7 @@ test("source coverage preserves output and distinguishes unvisited source from l
     const source = `
         let count = 0;
         function used(value: number): void { count += value; }
-        function unused(): void { const item = new Proxy({}, {}); }
+        function unused(): void { const item = new FinalizationRegistry(() => {}); }
         used(2);
         if (false) { count += 100; }
         localStorage.setItem("count", String(count));
@@ -57,7 +57,7 @@ test("survey coverage exposes refused and incomplete containing statements", () 
     const source = `
         let count = 0;
         if (Date.now() > 0) {
-            const item = new Proxy({}, {});
+            const item = new FinalizationRegistry(() => {});
             count += 1;
         }
         localStorage.setItem("count", String(count));
@@ -78,7 +78,9 @@ test("survey coverage exposes refused and incomplete containing statements", () 
         realm.sites.some(
             (site) =>
                 site.state === "refused" &&
-                source.slice(site.start, site.end).includes("new Proxy"),
+                source
+                    .slice(site.start, site.end)
+                    .includes("new FinalizationRegistry"),
         ),
     );
     assert.ok(
@@ -200,7 +202,7 @@ test("CLI writes coverage on a strict compile refusal without producing a builda
     const output = join(directory, "coverage.json");
     writeFileSync(
         input,
-        `let value = 1; const missing = new Proxy({}, {}); value++;`,
+        `let value = 1; const missing = new FinalizationRegistry(() => {}); value++;`,
     );
     const result = spawnSync(
         process.execPath,
