@@ -509,6 +509,20 @@ export class StatementLowerer {
         );
     }
 
+    private emitReachableBody(
+        context: StatementLoweringContext,
+        statements: readonly ts.Statement[],
+    ): boolean {
+        return emitReachableStatements(
+            {
+                emitStatement: (nested) => this.emit(context, nested),
+                statementTerminatesAfterLowering: (nested) =>
+                    this.terminatesAfterLowering(nested),
+            },
+            statements,
+        );
+    }
+
     public emit(
         context: StatementLoweringContext,
         statement: ts.Statement,
@@ -2010,17 +2024,8 @@ export class StatementLowerer {
                         );
                         try {
                             this.inRuntimeControlFlow(context, () => {
-                                terminates = emitReachableStatements(
-                                    {
-                                        emitStatement: (nested) =>
-                                            this.emit(context, nested),
-                                        statementTerminatesAfterLowering: (
-                                            nested,
-                                        ) =>
-                                            this.terminatesAfterLowering(
-                                                nested,
-                                            ),
-                                    },
+                                terminates = this.emitReachableBody(
+                                    context,
                                     bodyStatements(statement),
                                 );
                             });
@@ -3396,8 +3401,10 @@ export class StatementLowerer {
                         loopContext,
                         () => {
                             this.inRuntimeControlFlow(loopContext, () => {
-                                for (const nested of bodyStatements(statement))
-                                    this.emit(loopContext, nested);
+                                this.emitReachableBody(
+                                    loopContext,
+                                    bodyStatements(statement),
+                                );
                             });
                         },
                         statement,
@@ -3586,9 +3593,7 @@ export class StatementLowerer {
                     context,
                     () => {
                         this.inRuntimeControlFlow(context, () => {
-                            for (const nested of statements) {
-                                this.emit(context, nested);
-                            }
+                            this.emitReachableBody(context, statements);
                         });
                     },
                     statement,
@@ -3673,12 +3678,12 @@ export class StatementLowerer {
             });
             context.increaseIndent();
         }
-        context.emitCapturedStatements(lines);
         if (!storedIterator)
             context.emit({
                 kind: "expression",
                 code: `static_cast<void>(${item});`,
             });
+        context.emitCapturedStatements(lines);
         context.decreaseIndent();
         context.emit({ kind: "close", code: "}" });
         if (storedIterator) {

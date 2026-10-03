@@ -514,6 +514,14 @@ export class ConditionLowerer {
                     unwrapped,
                     `Comparison requires represented operands, received ${leftValue.kind} and ${rightValue.kind}.`,
                 );
+            leftValue = this.context.dataLowerer.narrowOptional(
+                leftValue,
+                unwrapped.left,
+            );
+            rightValue = this.context.dataLowerer.narrowOptional(
+                rightValue,
+                unwrapped.right,
+            );
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

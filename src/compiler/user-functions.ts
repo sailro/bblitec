@@ -3003,6 +3003,21 @@ export class UserFunctionLowerer {
         const rootEntry = entryByDeclaration.get(root.declaration)!;
         root.parameters.forEach((parameter, index) => {
             const argument = rootArguments[index];
+            if (
+                parameter.declaration.initializer &&
+                (!argument ||
+                    (argument.kind === "json-null" &&
+                        argument.cpp === "std::nullopt"))
+            ) {
+                // Keep omission until the callee binds its parameters: defaults
+                // can read earlier parameters and must run on every invocation.
+                rootEntry.parameterTypes[index] = undefined;
+                rootEntry.captured[index] = argument ?? {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                };
+                return;
+            }
             const represented = argument?.dataType;
             const argumentType =
                 represented?.kind === "optional"
@@ -3100,17 +3115,15 @@ export class UserFunctionLowerer {
             if (rootEntry.parameterTypes[index]) return;
             const value =
                 argument ??
-                (parameter.declaration.initializer
-                    ? context.compileValue(parameter.declaration.initializer)
-                    : parameter.declaration.questionToken
-                      ? ({
-                            kind: "json-null",
-                            cpp: "std::nullopt",
-                        } satisfies Value)
-                      : context.fail(
-                            parameter.declaration,
-                            `Recursive function requires argument '${parameter.name.getText()}'.`,
-                        ));
+                (parameter.declaration.questionToken
+                    ? ({
+                          kind: "json-null",
+                          cpp: "std::nullopt",
+                      } satisfies Value)
+                    : context.fail(
+                          parameter.declaration,
+                          `Recursive function requires argument '${parameter.name.getText()}'.`,
+                      ));
             rootEntry.captured[index] = value;
         });
 
@@ -3701,8 +3714,15 @@ export class UserFunctionLowerer {
                                             ),
                                         ];
                                     }
+                                    const initialized = this.parameterValue(
+                                        context,
+                                        parameter,
+                                        value,
+                                        undefined,
+                                    );
                                     if (
                                         compileTime &&
+                                        initialized === value &&
                                         ts.isIdentifier(parameter.name)
                                     ) {
                                         context.bindings.bindCompileTimeValue(
@@ -3715,7 +3735,7 @@ export class UserFunctionLowerer {
                                         context,
                                         entry.declaration,
                                         parameter,
-                                        value,
+                                        initialized,
                                     );
                                 }
                                 const body = entry.declaration.body;
@@ -4486,14 +4506,17 @@ export class UserFunctionLowerer {
                             code: "co_return bbl::js::PromiseVoid{};",
                             transfer: "suspend",
                         });
-                    if (
-                        !terminated &&
-                        !ir.returnExpression &&
-                        bodyResult?.kind === "optional"
-                    ) {
-                        context.emit(
-                            `${asynchronous ? "co_return" : "return"} std::nullopt;`,
-                        );
+                    if (!terminated && !ir.returnExpression && bodyResult) {
+                        if (bodyResult.kind === "optional")
+                            context.emit(
+                                `${asynchronous ? "co_return" : "return"} std::nullopt;`,
+                            );
+                        else
+                            context.emit({
+                                kind: "control",
+                                code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                                transfer: "throw",
+                            });
                     }
                 });
             closure =
