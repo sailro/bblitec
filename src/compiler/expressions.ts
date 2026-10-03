@@ -232,6 +232,7 @@ export interface ExpressionContext
             | "classOf"
             | "withRecordScopes"
             | "captureRecordScopes"
+            | "captureNativeDependencies"
             | "probeEmission"
             | "nativeEmission"
             | "requireEngine"
@@ -3985,26 +3986,29 @@ export class ExpressionLowerer {
                           } as const);
                 const valueCpp = this.context.dataTypes.cppType(valueType);
                 let entries: string[] = [];
-                const entryLines = this.context.captureEmittedLines(() => {
-                    entries = Object.entries(owner.recordProperties ?? {}).map(
-                        ([name, value]) => {
-                            // The key's narrowed union need not contain every
-                            // property on its owner. Object property names stay
-                            // strings even when the index uses a finite union.
-                            if (dynamicString || dynamicEnum) {
-                                return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                            }
-                            const numericKey = Number(name);
-                            if (!Number.isFinite(numericKey)) {
-                                this.context.fail(
-                                    unwrapped.expression,
-                                    `Dynamic numeric record has non-numeric key '${name}'.`,
-                                );
-                            }
-                            return `{${doubleLiteral(numericKey)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                        },
+                const { value: entryLines, nativeCaptures } =
+                    this.context.captureNativeDependencies(() =>
+                        this.context.captureEmittedLines(() => {
+                            entries = Object.entries(
+                                owner.recordProperties ?? {},
+                            ).map(([name, value]) => {
+                                // The key's narrowed union need not contain every
+                                // property on its owner. Object property names stay
+                                // strings even when the index uses a finite union.
+                                if (dynamicString || dynamicEnum) {
+                                    return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                                }
+                                const numericKey = Number(name);
+                                if (!Number.isFinite(numericKey)) {
+                                    this.context.fail(
+                                        unwrapped.expression,
+                                        `Dynamic numeric record has non-numeric key '${name}'.`,
+                                    );
+                                }
+                                return `{${doubleLiteral(numericKey)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                            });
+                        }),
                     );
-                });
                 for (const line of entryLines) this.context.emit(line);
                 this.context.reachJsData();
                 const keyCpp =
@@ -4015,6 +4019,7 @@ export class ExpressionLowerer {
                     mapType,
                     entries,
                     entryLines.length === 0 &&
+                        nativeCaptures.length === 0 &&
                         (this.isModuleConstantRecord(unwrapped.expression) ||
                             Object.values(owner.recordProperties ?? {}).every(
                                 (value) => this.canHoistRecordValue(value),
