@@ -1464,12 +1464,14 @@ class Compiler implements LoweringServices {
                             statement.declarationList.declarations.length
                                 ? statement
                                 : Object.assign(
-                                      ts.factory.updateVariableStatement(
-                                          statement,
-                                          statement.modifiers,
-                                          ts.factory.updateVariableDeclarationList(
-                                              statement.declarationList,
-                                              declarations,
+                                      writable(
+                                          ts.factory.updateVariableStatement(
+                                              statement,
+                                              statement.modifiers,
+                                              ts.factory.updateVariableDeclarationList(
+                                                  statement.declarationList,
+                                                  declarations,
+                                              ),
                                           ),
                                       ),
                                       { parent: statement.parent },
