@@ -13,7 +13,6 @@ import {
 test("direct audio contexts preserve owned aliases and lifecycle promises", (t) => {
     const output = resolve("artifacts/audio-context-check");
     mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "worker.ts"), "self.close();");
     const wave = Buffer.alloc(44 + 1024 * 2);
     wave.write("RIFF");
     wave.writeUInt32LE(wave.length - 8, 4);
@@ -32,8 +31,6 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
     writeFileSync(join(output, "tone.wav"), wave);
     const result = compileSource(
         `
-        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
-        worker.terminate();
         function create(): {context: AudioContext} { return {context: new AudioContext()}; }
         function equal(actual:Float32Array,expected:number[]):boolean {
             if(actual.length!==expected.length)return false;
@@ -315,13 +312,15 @@ test("audio capability guards and constructor boundaries", () => {
             ),
         /constructor options/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                "const context = new AudioContext(); context.resume();",
-            ),
-        /asynchronous application realm/,
+    const lifecycle = compileSource(
+        "const context = new AudioContext(); context.resume();",
     );
+    assert.match(lifecycle.cpp, /bbl::pal::EventLoop loop/);
+    assert.match(lifecycle.cpp, /audio_context_transition/);
+    const listener = compileSource(
+        'const source=new AudioContext().createBufferSource();source.addEventListener("ended",()=>{});',
+    );
+    assert.match(listener.cpp, /bbl::pal::EventLoop loop/);
     const shadowed = compileSource(
         "class AudioContext { value = 7; } const context = new AudioContext(); if (context.value !== 7) throw new Error('local');",
     );

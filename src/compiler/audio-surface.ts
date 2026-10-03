@@ -435,11 +435,7 @@ function compileAudioReceiverMethod(
                     call,
                     `AudioContext.${method} takes no arguments.`,
                 );
-            if (!context.options.workers)
-                context.fail(
-                    call,
-                    "AudioContext lifecycle promises require an asynchronous application realm.",
-                );
+            if (!context.options.workers) throw new ApplicationRealmRequired();
             const action =
                 method === "resume"
                     ? "Resume"
@@ -568,10 +564,7 @@ function compileAudioReceiverMethod(
             case "removeEventListener": {
                 context.expectArgumentCount(call, 2, 3);
                 if (!context.options.workers)
-                    context.fail(
-                        call,
-                        "Audio event listeners require an asynchronous application realm.",
-                    );
+                    throw new ApplicationRealmRequired();
                 const selected = { ...receiver };
                 delete selected.nativeBinding;
                 const target = context.bindings.pinValueToTemporary(

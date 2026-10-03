@@ -94,7 +94,52 @@ export interface EngineIntrinsicContext
             | "objectProperty"
             | "propertyName"
             | "callbacks"
+            | "bindings"
+            | "conditions"
+            | "captureEmittedLines"
+            | "dataLowerer"
+            | "enterRuntimeControlFlow"
+            | "leaveRuntimeControlFlow"
         > {}
+
+/** The pinned RTT provider is an optional capability, selected in source order. */
+function compileDepthSampler(
+    context: EngineIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const node = context.unwrap(expression);
+    if (ts.isConditionalExpression(node)) {
+        const condition = context.conditions.compileCondition(node.condition);
+        if (condition === "true" || condition === "false")
+            return compileDepthSampler(
+                context,
+                condition === "true" ? node.whenTrue : node.whenFalse,
+            );
+        const arm = (branch: ts.Expression): string => {
+            let result = "";
+            context.enterRuntimeControlFlow();
+            try {
+                const lines = context.captureEmittedLines(() => {
+                    result = compileDepthSampler(context, branch);
+                });
+                return context.dataLowerer.armExpression(branch, lines, result);
+            } finally {
+                context.leaveRuntimeControlFlow();
+            }
+        };
+        return `(${condition} ? ${arm(node.whenTrue)} : ${arm(node.whenFalse)})`;
+    }
+    const value = context.compileValue(node);
+    if (value.intrinsicName === "withSampledDepthTexture") return "true";
+    if (value.kind === "json-null" || value.kind === "void") {
+        context.emitDiscardedValue(value);
+        return "false";
+    }
+    return context.fail(
+        node,
+        "Render-target depth sampling requires withSampledDepthTexture or an absent provider.",
+    );
+}
 
 function reachRenderer(
     context: EngineIntrinsicContext,
@@ -326,19 +371,16 @@ export function compileEngineIntrinsic(
         case "createRenderTargetTexture":
         case "createSurfaceRenderTargetTexture": {
             context.expectArgumentCount(call, 2, 3);
-            const sampleDepth = call.arguments[2];
-            if (
-                sampleDepth &&
-                context.symbols.importedName(sampleDepth) !==
-                    "withSampledDepthTexture"
-            ) {
-                context.fail(
-                    sampleDepth,
-                    "Render-target depth sampling requires withSampledDepthTexture.",
-                );
-            }
-            const engine = context.compileValue(argumentAt(call, 0));
-            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const provider = call.arguments[2];
+            const engineValue = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engineValue, "engine", argumentAt(call, 0));
+            const engine = provider
+                ? context.bindings.pinValueToTemporary(
+                      engineValue,
+                      "render_target_engine",
+                      argumentAt(call, 0),
+                  )
+                : engineValue;
             const options = context.intrinsicOptions.compileRenderTargetOptions(
                 argumentAt(call, 1),
             );
@@ -356,8 +398,27 @@ export function compileEngineIntrinsic(
             }
             if (options.surface)
                 context.expectSameEngine(engine, options.surface, call);
+            let optionsCpp = options.cpp;
+            let sampleDepth = "false";
+            if (provider) {
+                const descriptor = context.allocateTemporaryCppName(
+                    "render_target_options",
+                );
+                context.emit({
+                    kind: "declaration",
+                    type: "bbl::RenderTargetOptions",
+                    name: descriptor,
+                    initializer: optionsCpp,
+                });
+                sampleDepth = compileDepthSampler(context, provider);
+                context.emit({
+                    kind: "expression",
+                    code: `${descriptor}.sampled_depth = ${sampleDepth};`,
+                });
+                optionsCpp = descriptor;
+            }
             if (
-                sampleDepth &&
+                sampleDepth === "true" &&
                 (!options.signature.depthFormat ||
                     options.signature.samples !== 1)
             ) {
@@ -366,16 +427,13 @@ export function compileEngineIntrinsic(
                     "withSampledDepthTexture requires a single-sample depth attachment.",
                 );
             }
-            if (!options.hasColor && !sampleDepth) {
+            if (!options.hasColor && sampleDepth !== "true") {
                 context.fail(
                     call,
                     "A colorless render-target texture requires withSampledDepthTexture.",
                 );
             }
             context.reachFeature("frame-graph:resources", call);
-            const optionsCpp = sampleDepth
-                ? `[&]() { auto options = ${options.cpp}; options.sampled_depth = true; return options; }()`
-                : options.cpp;
             return {
                 kind: "render-target-texture",
                 cpp:
