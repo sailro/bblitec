@@ -47,6 +47,51 @@ export function moduleContainerSymbol(
     return symbol?.declarations?.some(ts.isSourceFile) ? undefined : symbol;
 }
 
+/** Checked-source references are immutable across storage-demand replays. */
+const moduleContainerFiles = new WeakMap<
+    ts.Program,
+    ReadonlyMap<ts.Symbol, readonly ts.SourceFile[]>
+>();
+
+/**
+ * Files whose alias analysis can start from this binding. A file with no
+ * occurrence of the original symbol cannot grow that analysis's alias set.
+ * Keep its full traversal policy, including function bodies and type nodes.
+ */
+export function moduleContainerReferenceFiles(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+    symbol: ts.Symbol,
+): readonly ts.SourceFile[] {
+    let indexed = moduleContainerFiles.get(program);
+    if (!indexed) {
+        const files = new Map<ts.Symbol, ts.SourceFile[]>();
+        for (const file of program.getSourceFiles()) {
+            if (file.isDeclarationFile) continue;
+            const referenced = new Set<ts.Symbol>();
+            forEachAnalysisNode(file, (node) => {
+                if (
+                    !ts.isIdentifier(node) &&
+                    !ts.isPropertyAccessExpression(node) &&
+                    !ts.isElementAccessExpression(node)
+                )
+                    return;
+                const owner = moduleContainerSymbol(node, checker, symbols);
+                if (owner) referenced.add(owner);
+            });
+            for (const owner of referenced) {
+                const references = files.get(owner);
+                if (references) references.push(file);
+                else files.set(owner, [file]);
+            }
+        }
+        indexed = files;
+        moduleContainerFiles.set(program, indexed);
+    }
+    return indexed.get(symbol) ?? [];
+}
+
 /** Immutable runtime edges in source order, excluding type-only dependencies. */
 export function runtimeModuleDependencies(
     checker: ts.TypeChecker,

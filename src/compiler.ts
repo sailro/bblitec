@@ -187,6 +187,7 @@ import {
 } from "./compiler/loop-control.js";
 import {
     isModuleInitializerStatement,
+    moduleContainerReferenceFiles,
     moduleContainerSymbol,
     planEntryModuleState,
     planImportedModuleState,
@@ -2660,7 +2661,7 @@ class Compiler implements LoweringServices {
      * an update or a mutating call through it, through a binding initialized
      * from an expression that mentions it, or through an iteration binding
      * over one; or it hands one to a call that may write it. The scan covers
-     * the constant's file, and every file when it is exported. A binding
+     * the constant's file, and referencing files when it is exported. A binding
      * that only mentions the constant counts as one, which can only refuse
      * more.
      */
@@ -2677,9 +2678,12 @@ class Compiler implements LoweringServices {
                 ts.ModifierFlags.Export) !==
             0;
         const files = exported
-            ? this.program
-                  .getSourceFiles()
-                  .filter((file) => !file.isDeclarationFile)
+            ? moduleContainerReferenceFiles(
+                  this.program,
+                  this.checker,
+                  this.symbols,
+                  symbol,
+              )
             : [declaration.getSourceFile()];
         const written = files.some((file) =>
             this.writesThroughBinding(file, symbol),
