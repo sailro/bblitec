@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import { valueForKind, type Value } from "./types.js";
+import { optionalPresentCpp, valueForKind, type Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { documentEngine } from "./window-events.js";
 import { compileBooleanOptions } from "./option-helpers.js";
@@ -29,6 +29,7 @@ type Context = Pick<
     | "emit"
     | "emitDiscardedValue"
     | "probeEmission"
+    | "deferredCapabilities"
 >;
 
 const pointerNames = new Set([
@@ -59,6 +60,7 @@ const pointerNames = new Set([
     "beforeinput",
     "input",
     "change",
+    "cancel",
 ]);
 
 const serviceNames = new Set([
@@ -211,6 +213,7 @@ export function listenerOptions(
     >,
     expression: ts.Expression | undefined,
     removing: boolean,
+    consumeSignal?: (value: Value, present?: string) => void,
 ): { capture: string; once: string; passive: string } {
     const result = { capture: "false", once: "false", passive: "false" };
     if (!expression) return result;
@@ -238,21 +241,159 @@ export function listenerOptions(
                 temporary: "event_option",
                 ...(removing
                     ? {}
-                    : {
-                          refused: {
-                              signal: "AbortSignal listener lifetime is not represented yet.",
-                          },
-                      }),
+                    : consumeSignal
+                      ? { consume: { signal: consumeSignal } }
+                      : {
+                            refused: {
+                                signal: "AbortSignal listener lifetime is not represented yet.",
+                            },
+                        }),
             },
         ),
     };
+}
+
+/** Convert a reached lifetime operand without fabricating an AbortSignal. */
+export function deferredListenerSignal(
+    context: Pick<
+        Context,
+        | "dataTypes"
+        | "fail"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "emitDiscardedValue"
+    >,
+    value: Value,
+    site: ts.Expression,
+    present?: string,
+): string {
+    const type =
+        value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : value.dataType;
+    if (value.kind === "json-null" || type?.kind === "undefined") {
+        if (value.kind === "json-null" && value.cpp !== "std::nullopt")
+            return context.fail(
+                site,
+                "Event listener signal accepts undefined or a DOM AbortSignal, not null.",
+            );
+        if (present)
+            context.emit({
+                kind: "expression",
+                code: `if (${present}) { static_cast<void>(${value.cpp}); }`,
+            });
+        else context.emitDiscardedValue(value);
+        return "false";
+    }
+    if (type?.kind !== "deferred-dom-object" || type.name !== "AbortSignal")
+        return context.fail(
+            site,
+            "Event listener signal requires the DOM AbortSignal identity.",
+        );
+    const name = context.allocateTemporaryCppName("listener_signal");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name,
+        initializer: present
+            ? `(${present} ? ${value.cpp} : ${context.dataTypes.cppType(value.dataType!)}{})`
+            : value.cpp,
+        attributes: "[[maybe_unused]] ",
+    });
+    const hasValue =
+        value.dataType?.kind === "optional"
+            ? optionalPresentCpp(name)
+            : `static_cast<bool>(${name})`;
+    return present ? `(${present} && ${hasValue})` : hasValue;
+}
+
+export function hasDeferredListenerSignal(
+    context: Pick<Context, "options" | "checker" | "unwrap">,
+    call: ts.CallExpression,
+): boolean {
+    const callee = context.unwrap(call.expression);
+    const hasSignal = (type: ts.Type): boolean =>
+        type.isUnion()
+            ? type.types.some(hasSignal)
+            : type.getProperty("signal") !== undefined;
+    return Boolean(
+        context.options.deferredCapabilities &&
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "addEventListener" &&
+        call.arguments[2] &&
+        hasSignal(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(call.arguments[2]),
+            ),
+        ),
+    );
+}
+
+export function compileDeferredListenerOptions(
+    context: Pick<
+        Context,
+        | "unwrap"
+        | "checker"
+        | "conditions"
+        | "compileValue"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "emitDiscardedValue"
+        | "dataTypes"
+        | "dataLowerer"
+        | "fail"
+        | "deferredCapabilities"
+    >,
+    call: ts.CallExpression,
+    listener: string,
+): { listener: string; capture: string; once: string; passive: string } {
+    const name = context.allocateTemporaryCppName("event_listener");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name,
+        initializer: listener,
+        attributes: "[[maybe_unused]] ",
+    });
+    let signal: string | undefined;
+    const options = listenerOptions(
+        context,
+        call.arguments[2],
+        false,
+        (value, present) => {
+            signal = deferredListenerSignal(
+                context,
+                value,
+                call.arguments[2]!,
+                present,
+            );
+        },
+    );
+    if (signal !== undefined) {
+        const trap = context.deferredCapabilities.emitKnown(call, {
+            id: "dom:EventTarget.addEventListener.signal",
+            origin: "dom",
+            operation: "call",
+            timing: "throw",
+            signature: context.checker.signatureToString(
+                context.checker.getResolvedSignature(call)!,
+                call,
+                ts.TypeFormatFlags.NoTruncation,
+            ),
+        })!;
+        context.emit({
+            kind: "expression",
+            code: `if (${signal}) { ${trap.cpp}; }`,
+        });
+    }
+    return { listener: name, ...options };
 }
 
 export function pinDetached(
     context: Pick<Context, "bindings">,
     value: Value,
     label: string,
-    node: ts.Expression,
+    node?: ts.Expression,
 ): Value {
     const snapshot = { ...value };
     delete snapshot.nativeBinding;
@@ -492,7 +633,14 @@ export function emitDomEventListener(
         identity = compiled.identity;
         listener = compiled.cpp;
     }
-    const options = listenerOptions(context, call.arguments[2], removing);
+    const deferredOptions =
+        hasDeferredListenerSignal(context, call) && listener
+            ? compileDeferredListenerOptions(context, call, listener)
+            : undefined;
+    if (deferredOptions) listener = deferredOptions.listener;
+    const options =
+        deferredOptions ??
+        listenerOptions(context, call.arguments[2], removing);
     context.emit({
         kind: "expression",
         code:

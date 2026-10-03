@@ -8,11 +8,14 @@ import { fileTypes } from "../src/file-types.js";
 import { validateFileAccept } from "../src/compiler/browser-file.js";
 
 import { CompileError, compileSource } from "../src/compiler.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import {
     cppFunction,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
+    runRmlUiFixture,
 } from "./native-fixture.js";
 
 function compileFileBody(body: string): ReturnType<typeof compileSource> {
@@ -172,7 +175,7 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
     assert.match(result.cpp, /bbl::on_dom_pointer\([^;]+"change"/);
     assert.match(result.cpp, /bbl::js::input_files/);
     assert.match(result.cpp, /bbl::js::file_at/);
-    assert.match(result.cpp, /static_cast<bool>\(v_[^)]+file[^)]*\)/);
+    assert.match(result.cpp, /v_\w*file\.has_value\(\)/);
     assert.match(result.cpp, /bbl::js::file_text/);
     assert.match(result.cpp, /bbl::js::json_parse/);
     assert.match(
@@ -220,7 +223,7 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
     assert.match(result.cpp, /bbl::js::FileReader\{\}/);
     assert.match(result.cpp, /\.set_onload\(/);
     assert.match(result.cpp, /\.set_onerror\(/);
-    assert.match(result.cpp, /\.read_as_text\(v_engine, /);
+    assert.match(result.cpp, /\.read_as_text\(\(\*v_\w*file\)\)/);
     // The reader's null result is typeof "object", as the browser's is.
     assert.match(
         result.cpp,
@@ -304,6 +307,85 @@ test("FileReader decodes a Blob as the Encoding Standard does, natively", async 
     ]);
     const execution = execFileSync(exe, { encoding: "utf8" });
     assert.equal(execution, "");
+});
+
+test("owned file results retain selection, cancellation and container identity", (t) => {
+    const directory = resolve("artifacts/file-selection");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(`
+        const lists:FileList[]=[];
+        function choose(accept:string):Promise<File|null> {
+            return new Promise((resolve,reject)=>{
+                const input=document.createElement("input");
+                input.type="file";input.accept=accept;
+                document.body.appendChild(input);
+                let settled=false;
+                function finish(file:File|null):void {
+                    if(settled)return;settled=true;
+                    input.removeEventListener("change",changed);
+                    input.removeEventListener("cancel",cancelled);
+                    input.remove();resolve(file);
+                }
+                function changed():void {lists.push(input.files!);finish(input.files?.[0]??null);}
+                function cancelled():void {finish(null);}
+                input.addEventListener("change",changed,{once:true});
+                input.addEventListener("cancel",cancelled,{once:true});
+                try{input.click();}catch(error){reject(error);}
+            });
+        }
+        async function main():Promise<void> {
+            const selected=await choose(".json");
+            if(!selected||selected.name!=="selected.json"||selected.size!==5)
+                throw new Error("owned selection result");
+            const files:File[]=[selected];
+            const table=new Map<string,File>();table.set("selected",selected);
+            const first=lists[0]!;
+            if(first!==lists[0]||first.length!==1||first[0]!==selected||files[0]!==selected||table.get("selected")!==selected)
+                throw new Error("stored file identity");
+            const read=()=>files[0]!.name;
+            if(await choose(".json")!==null||read()!=="selected.json"||await selected.text()!=="owned")
+                throw new Error("cancel and retained file bytes");
+            globalThis.close();
+        }
+        void main();
+    `);
+    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    emitUpstreamGenerated(directory, ["core", "backend:sdl"]);
+    runRmlUiFixture(t, "file-selection", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+            BBLITE_HAS_BROWSER_FILE: 1,
+            BBLITE_HAS_PBR_RENDERER: 0,
+            BBLITE_HAS_SDL_GPU: 1,
+            BBLITE_HAS_DAWN: 0,
+        },
+        includeDirectories: [join(directory, "upstream/include")],
+    });
+});
+
+test("Blob containers and promise results preserve shared identity", (t) => {
+    const result = compileSource(`
+        async function main():Promise<void> {
+            const original=new Blob(["payload"],{type:"text/plain"});
+            const values:Blob[]=[original];
+            const selected=await Promise.resolve(values[0]!);
+            const boxed:{value:Blob|null}={value:selected};
+            if(selected!==original||boxed.value!==original||selected.size!==7||selected.type!=="text/plain")
+                throw new Error("owned Blob values");
+            if(original===new Blob(["payload"],{type:"text/plain"}))throw new Error("distinct Blob identity");
+        }
+        void main();
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "blob-owned-storage", result.cpp, {
+        defines: ["BBLITE_HAS_UI=0", "BBLITE_HAS_BROWSER_FILE=1"],
+    });
 });
 
 test("registers one-shot pointer-lock listeners in the native registry", () => {

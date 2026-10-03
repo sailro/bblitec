@@ -79,6 +79,10 @@ export interface BooleanOptionsSpelling {
     readonly undefinedDefaults?: Readonly<Record<string, boolean>>;
     /** Members that refuse, with their message. */
     readonly refused?: Readonly<Record<string, string>>;
+    /** Additional typed dictionary members read after ordinary object evaluation. */
+    readonly consume?: Readonly<
+        Record<string, (value: Value, present?: string) => void>
+    >;
 }
 
 /**
@@ -139,7 +143,10 @@ export function compileBooleanOptions<N extends string>(
         return `([&]() { const auto ${cpp} = ${value.cpp}; return ${optionalPresentCpp(cpp)} ? ${truth} : ${fallback}; }())`;
     };
     const source = context.unwrap(expression);
-    if (!ts.isObjectLiteralExpression(source)) {
+    if (
+        !ts.isObjectLiteralExpression(source) ||
+        source.properties.some(ts.isSpreadAssignment)
+    ) {
         const owner = context.compileValue(expression);
         if (owner.kind === "json-null") {
             context.emitDiscardedValue(owner);
@@ -199,6 +206,8 @@ export function compileBooleanOptions<N extends string>(
             );
         for (const [name, message] of Object.entries(spelling.refused ?? {}))
             if (properties[name]) context.fail(expression, message);
+        for (const [name, consume] of Object.entries(spelling.consume ?? {}))
+            if (properties[name]) consume(properties[name], present);
         for (const name of names) {
             const property = properties[name];
             if (!property) continue;
@@ -229,7 +238,9 @@ export function compileBooleanOptions<N extends string>(
             : property.initializer;
         const refusal = spelling.refused?.[name];
         if (refusal) context.fail(property, refusal);
-        if (named(name)) {
+        const consume = spelling.consume?.[name];
+        if (consume) consume(context.compileValue(initializer));
+        else if (named(name)) {
             if (spelling.undefinedDefaults?.[name] === undefined)
                 store(name, context.conditions.compileCondition(initializer));
             else {

@@ -2701,8 +2701,8 @@ check(
 test("unsupported language shapes refuse explicitly", () => {
     for (const [source, message] of [
         [
-            "function* gen(): Generator<number> { yield 1; } for (const v of gen()) {}",
-            /Generator functions/,
+            "function* gen(): Generator<number> { yield* [1]; } for (const v of gen()) {}",
+            /delegation/,
         ],
         [
             "const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}",

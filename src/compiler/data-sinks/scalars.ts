@@ -1,3 +1,4 @@
+import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
 import { nullability } from "../type-facts.js";
 
@@ -262,10 +263,15 @@ const opaqueSink = {
 };
 
 export const scalarsSinks: DataSinkOperations<
+    | "module-namespace"
     | "weak-key"
     | "undefined"
     | "error"
+    | "file"
+    | "blob"
+    | "file-list"
     | "event-target"
+    | "deferred-dom-object"
     | "search-params"
     | "http-response"
     | "gpu-adapter"
@@ -284,6 +290,18 @@ export const scalarsSinks: DataSinkOperations<
     | "json"
     | "borrowed-platform-event"
 > = {
+    "module-namespace": {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (type, _lowerer, value) =>
+            value.dataType && dataTypesEqual(type, value.dataType)
+                ? value.cpp
+                : undefined,
+    },
     "weak-key": {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(
@@ -326,7 +344,8 @@ export const scalarsSinks: DataSinkOperations<
                 expression,
             ),
         value: (_type, lowerer, value, node) => {
-            if (value.dataType?.kind === "undefined") return value.cpp;
+            if (isUndefinedDataType(value.dataType))
+                return `(static_cast<void>(${value.cpp}), bbl::js::Undefined{})`;
             if (
                 value.erasedVoidCompletion ||
                 (value.kind === "void" &&
@@ -347,6 +366,10 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
+    file: opaqueSink,
+    blob: opaqueSink,
+    "file-list": opaqueSink,
+    "deferred-dom-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>

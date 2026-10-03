@@ -33,6 +33,7 @@ import {
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
 import { classMemberTable, classMethod } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
+import { storedSourceTypes } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
     borrowsReferenceParameter,
@@ -352,6 +353,12 @@ export class NativeFunctionLowerer {
             callee,
             (node, message) => this.context.fail(node, message),
         );
+        if (
+            declaration &&
+            "asteriskToken" in declaration &&
+            declaration.asteriskToken
+        )
+            return undefined;
         if (!declaration) {
             return undefined;
         }
@@ -396,12 +403,16 @@ export class NativeFunctionLowerer {
         }
         if (
             signature.returnType &&
-            this.context.dataTypes.carriesFunction(signature.returnType)
+            (this.context.dataTypes.carriesFunction(signature.returnType) ||
+                this.context.dataTypes.carriesOpaqueIterator(
+                    signature.returnType,
+                ))
         ) {
             // A closure-bearing result can capture the entry engine and any
             // locals selected while the factory runs. Keep the factory
             // specialized inline; a namespace data function has neither the
             // entry engine binding nor JavaScript closure lifetime.
+            // Iterator factories also retain their actual traced producer type.
             return undefined;
         }
         if (
@@ -2207,52 +2218,16 @@ export class NativeFunctionLowerer {
                     this.context.checker.isTypeAssignableTo(target, normalized))
             );
         };
-        const stored = this.context.sourceFiles().some(
-            (source) =>
-                !source.isDeclarationFile &&
-                someAnalysisNode(source, (node) => {
-                    let storedTypeNode: ts.TypeNode | undefined;
-                    if (ts.isArrayTypeNode(node)) {
-                        storedTypeNode = node.elementType;
-                    } else if (
-                        ts.isPropertyDeclaration(node) ||
-                        ts.isPropertySignature(node) ||
-                        ts.isMethodDeclaration(node)
-                    ) {
-                        // Fields own their object values, and native method returns
-                        // use the same reference representation (mapSignature).
-                        storedTypeNode = node.type;
-                    } else if (
-                        ts.isTypeReferenceNode(node) &&
-                        ts.isIdentifier(node.typeName)
-                    ) {
-                        const index = ["Map", "ReadonlyMap", "Record"].includes(
-                            node.typeName.text,
-                        )
-                            ? 1
-                            : ["Array", "ReadonlyArray", "Set"].includes(
-                                    node.typeName.text,
-                                )
-                              ? 0
-                              : -1;
-                        storedTypeNode =
-                            index >= 0
-                                ? node.typeArguments?.[index]
-                                : undefined;
-                    }
-                    if (
-                        storedTypeNode &&
-                        sameType(
-                            this.context.checker.getTypeFromTypeNode(
-                                storedTypeNode,
-                            ),
-                        )
-                    ) {
-                        return true;
-                    }
-                    return false;
-                }),
-        );
+        let stored = false;
+        for (const candidate of storedSourceTypes(
+            this.context.checker,
+            this.context.sourceFiles(),
+        )) {
+            if (sameType(candidate)) {
+                stored = true;
+                break;
+            }
+        }
         this.referenceStorageCache.set(structName, stored);
         return stored;
     }

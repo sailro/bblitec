@@ -45,6 +45,16 @@ test("closed markup values preserve snapshots, conditional order, queries and la
         ordered.innerHTML = '<div>' + mark("A") + (mark("B") === "B" ? '<span>' + mark("C") + '</span>' : '<span>' + mark("D") + '</span>') + mark("E") + '</div>';
         if (order !== "ABCE") throw new Error("markup evaluation order");
         document.body.append(ordered);
+        let mutableText = readLabel();
+        function changeText(next: string): string { mutableText = next; return next; }
+        const laterSpan = document.createElement("div");
+        laterSpan.id = "later-span";
+        laterSpan.innerHTML = '<div>' + (dynamic ? '<span>' + mutableText + '</span>' : '<span>unused</span>') + '<span>' + changeText("after span") + '</span></div>';
+        document.body.append(laterSpan);
+        const laterCondition = document.createElement("div");
+        laterCondition.id = "later-condition";
+        laterCondition.innerHTML = '<div>' + mutableText + (changeText("after condition") === "after condition" ? '<span>' + mutableText + '</span>' : '<span>unused</span>') + '</div>';
+        document.body.append(laterCondition);
         const optional = document.createElement("div");
         optional.innerHTML = dynamic ? "<span>empty</span>" : '<button class="absent">possible</button>';
         if (optional.querySelector(".absent") !== null) throw new Error("absent selected markup");
@@ -73,6 +83,17 @@ test("closed markup values preserve snapshots, conditional order, queries and la
     runRmlUiFixture(t, "ui-markup-values", {
         macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
     });
+});
+
+test("closed markup reuses immutable string storage", () => {
+    const result = compileSource(`
+        const label = String(performance.now());
+        const stored = '<span>' + label + '</span>';
+        const root = document.createElement("div");
+        root.innerHTML = performance.now() >= 0 ? stored : '<b>fallback</b>';
+    `);
+    assert.match(result.cpp, /string_substring\(v_stored,/);
+    assert.doesNotMatch(result.cpp, /v_bblite_markup_text_/);
 });
 
 test("closed markup refuses ambiguous stored spans, unknown attributes and unsupported alternatives", () => {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/js_callback.hpp>
+#include <bblite/js_error.hpp>
 #include <bblite/pal_event_loop.hpp>
 
 #include <optional>
@@ -20,6 +21,22 @@ template <typename T, typename Convert> struct PromiseAdoption {
 template <typename T, typename Convert> auto adopt_promise(Promise<T> source, Convert convert) {
     return PromiseAdoption<T, Convert>{std::move(source), std::move(convert)};
 }
+
+/** A return is evaluated before asynchronous cleanup and adopted after it completes. */
+template <typename T> struct AsyncReturn : AbruptCompletion {
+    using Adoption = Callback<void(const Promise<T>&)>;
+    std::variant<std::monostate, T, Promise<T>, Adoption> value;
+    explicit AsyncReturn(T result) : value(std::in_place_index<1>, std::move(result)) {}
+    explicit AsyncReturn(Promise<T> result) : value(std::in_place_index<2>, std::move(result)) {}
+    template <typename U, typename Convert>
+    explicit AsyncReturn(PromiseAdoption<U, Convert> result)
+        : value(std::in_place_index<3>,
+                make_closure(std::tuple{std::move(result.source), std::move(result.convert)},
+                             [](auto& captured, const Promise<T>& destination) {
+                                 destination.adopt(std::get<0>(captured),
+                                                   std::move(std::get<1>(captured)));
+                             })) {}
+};
 
 namespace promise_detail {
 template <typename T> struct State {
@@ -272,14 +289,11 @@ public:
             return {};
         }
         void return_value(T value) { completion.template emplace<1>(std::move(value)); }
+        void return_value(AsyncReturn<T> value) { completion = std::move(value.value); }
         void return_value(const Promise& value) { completion.template emplace<2>(value); }
         template <typename U, typename Convert>
         void return_value(PromiseAdoption<U, Convert> value) {
-            completion.template emplace<3>(make_closure(
-                std::tuple{std::move(value.source), std::move(value.convert)},
-                [](auto& captured, const Promise& result) {
-                    result.adopt(std::get<0>(captured), std::move(std::get<1>(captured)));
-                }));
+            return_value(AsyncReturn<T>(std::move(value)));
         }
         void unhandled_exception() {
             completion.template emplace<0>();

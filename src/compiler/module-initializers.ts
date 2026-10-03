@@ -5,6 +5,7 @@ import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import {
+    accessedPropertySymbol,
     aliasTarget,
     declaredSymbol,
     type CompilerSymbols,
@@ -15,9 +16,52 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
-    rootIdentifier,
     unwrapExpression,
 } from "./syntax.js";
+
+/** The owning binding beneath ordinary members and imported namespace exports. */
+export function moduleContainerSymbol(
+    expression: ts.Expression,
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+): ts.Symbol | undefined {
+    const current = unwrapExpression(expression);
+    let symbol: ts.Symbol | undefined;
+    if (ts.isIdentifier(current)) symbol = symbols.valueSymbol(current);
+    else if (
+        ts.isPropertyAccessExpression(current) ||
+        ts.isElementAccessExpression(current)
+    ) {
+        const owner = checker.getTypeAtLocation(current.expression).getSymbol();
+        if (owner?.declarations?.some(ts.isSourceFile)) {
+            const exported = accessedPropertySymbol(checker, current);
+            symbol = exported && aliasTarget(checker, exported);
+        } else
+            return moduleContainerSymbol(current.expression, checker, symbols);
+    }
+    return symbol?.declarations?.some(ts.isSourceFile) ? undefined : symbol;
+}
+
+/** Immutable runtime edges in source order, excluding type-only dependencies. */
+export function runtimeModuleDependencies(
+    checker: ts.TypeChecker,
+    file: ts.SourceFile,
+): ts.SourceFile[] {
+    return file.statements.flatMap((statement) => {
+        if (
+            (!ts.isImportDeclaration(statement) &&
+                !ts.isExportDeclaration(statement)) ||
+            !statement.moduleSpecifier ||
+            moduleImportKind(statement) === "type"
+        )
+            return [];
+        const dependency = declaredSymbol(
+            checker,
+            statement.moduleSpecifier,
+        )?.declarations?.find(ts.isSourceFile);
+        return dependency ? [dependency] : [];
+    });
+}
 
 /** Statements JavaScript executes while evaluating an imported module. */
 export function isModuleInitializerStatement(
@@ -148,17 +192,22 @@ function isMutatedContainer(
  */
 function collectMutatedContainerSymbols(
     sourceFile: ts.SourceFile,
+    checker: ts.TypeChecker,
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
     const mutated = new EmissionSet<ts.Symbol>();
     const record = (target: ts.Expression): void => {
-        const identifier = rootIdentifier(target);
-        const symbol = identifier && symbols.valueSymbol(identifier);
+        const symbol = moduleContainerSymbol(target, checker, symbols);
         if (symbol) mutated.add(symbol);
     };
     const recordThrough = (target: ts.Expression): void => {
         // A write to the name itself is a rebinding, not a write through it.
-        if (!ts.isIdentifier(target)) record(target);
+        const current = unwrapExpression(target);
+        if (
+            ts.isPropertyAccessExpression(current) ||
+            ts.isElementAccessExpression(current)
+        )
+            record(current.expression);
     };
     forEachAnalysisNode(sourceFile, (node) => {
         if (isAssignmentExpression(node)) {
@@ -191,13 +240,27 @@ export function planImportedModuleInitializers(
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
 ): ts.SourceFile[] {
+    return planImportedModuleState(program, sourceFile, checker, symbols)
+        .modules;
+}
+
+/** Native module activation and the content writes requiring owned declarations. */
+export function planImportedModuleState(
+    program: ts.Program,
+    sourceFile: ts.SourceFile,
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+): { modules: ts.SourceFile[]; mutatedContainers: ReadonlySet<ts.Symbol> } {
     const planner = new ModuleInitializerPlanner(
         program,
         sourceFile,
         checker,
         symbols,
     );
-    return planner.plan();
+    return {
+        modules: planner.plan(),
+        mutatedContainers: planner.mutatedContainerSymbols(),
+    };
 }
 
 /**
@@ -296,21 +359,7 @@ class ModuleInitializerPlanner {
             )
                 return;
             visited.add(file);
-            for (const statement of file.statements) {
-                if (
-                    (!ts.isImportDeclaration(statement) &&
-                        !ts.isExportDeclaration(statement)) ||
-                    !statement.moduleSpecifier ||
-                    moduleImportKind(statement) === "type"
-                )
-                    continue;
-                const symbol = declaredSymbol(
-                    this.checker,
-                    statement.moduleSpecifier,
-                );
-                const dependency = symbol?.declarations?.find(ts.isSourceFile);
-                if (dependency) visit(dependency);
-            }
+            runtimeModuleDependencies(this.checker, file).forEach(visit);
             ordered.push(file);
         };
         visit(this.sourceFile);
@@ -343,6 +392,7 @@ class ModuleInitializerPlanner {
         );
         const mutated = collectMutatedContainerSymbols(
             this.sourceFile,
+            this.checker,
             this.symbols,
         );
         const result: ts.Statement[] = [];
@@ -460,12 +510,13 @@ class ModuleInitializerPlanner {
     private mutatedContainerCache: Set<ts.Symbol> | undefined;
 
     /** Container names any project file writes into, entry included. */
-    private mutatedContainerSymbols(): Set<ts.Symbol> {
+    public mutatedContainerSymbols(): Set<ts.Symbol> {
         if (!this.mutatedContainerCache) {
             const mutated = new EmissionSet<ts.Symbol>();
             for (const file of this.runtimeModules()) {
                 for (const symbol of collectMutatedContainerSymbols(
                     file,
+                    this.checker,
                     this.symbols,
                 )) {
                     mutated.add(symbol);
@@ -489,8 +540,16 @@ class ModuleInitializerPlanner {
                     if (visitedFunctions.has(node)) return "skip";
                     visitedFunctions.add(node);
                 }
-                if (ts.isIdentifier(node)) {
-                    const symbol = this.symbols.valueSymbol(node);
+                if (
+                    ts.isIdentifier(node) ||
+                    ts.isPropertyAccessExpression(node) ||
+                    ts.isElementAccessExpression(node)
+                ) {
+                    const symbol = moduleContainerSymbol(
+                        node,
+                        this.checker,
+                        this.symbols,
+                    );
                     if (symbol && moduleState.has(symbol)) {
                         observed.add(symbol);
                     }
@@ -583,8 +642,16 @@ class ModuleInitializerPlanner {
             forEachAnalysisNode(
                 root,
                 (node) => {
-                    if (ts.isIdentifier(node)) {
-                        const symbol = this.symbols.valueSymbol(node);
+                    if (
+                        ts.isIdentifier(node) ||
+                        ts.isPropertyAccessExpression(node) ||
+                        ts.isElementAccessExpression(node)
+                    ) {
+                        const symbol = moduleContainerSymbol(
+                            node,
+                            this.checker,
+                            this.symbols,
+                        );
                         if (symbol && moduleState.has(symbol)) {
                             dependencies.add(symbol);
                         }
@@ -691,8 +758,11 @@ class ModuleInitializerPlanner {
         const expressionSymbol = (
             expression: ts.Expression,
         ): ts.Symbol | undefined => {
-            const identifier = rootIdentifier(expression);
-            return identifier && this.symbols.valueSymbol(identifier);
+            return moduleContainerSymbol(
+                expression,
+                this.checker,
+                this.symbols,
+            );
         };
         const record = (expression: ts.Expression, through = false): void => {
             const symbol = expressionSymbol(expression);

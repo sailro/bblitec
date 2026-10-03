@@ -48,15 +48,24 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 
 ## Program compilation
 
+`--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) admits explicitly registered missing APIs with
+owned argument/result representations. Their reached sites appear in `manifest.deferredCapabilities`;
+runtime calls throw or reject according to each descriptor. Later source still compiles normally.
+Registered audio graph operations retain typed failures; engine/source option variants reject only for present options, preserving the existing absent-options adapters.
+Unregistered APIs, unsupported type/ownership forms and dynamic argument spreads still refuse.
+The default mode retains strict admission and existing capability-absence guards.
+AbortController/AbortSignal use distinct opaque storage with no successful native producer. Their registered constructor, state reads, abort operations and signal-backed listener lifetimes throw when reached; an undefined listener signal uses ordinary native dispatch.
+
 | Area | Supported | Limits/adaptations |
 | --- | --- | --- |
-| Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization; authored entry calls preserve surrounding startup work | Runtime-selected modules; unrepresented mutable initializer dependencies |
-| Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
-| Functions | Typed/generic functions, defaults, omitted optional parameters, rest parameters, destructuring, supported recursion, contextual optional callback results, stored values shared or adapted across sink signatures, owned generic/unknown-parameter methods specialized at reached calls, type parameters narrowed past null inside generic bodies or bound through a discriminated union member | Unresolved type arguments; unbounded resource specialization; stored generic `this`, new recursive signatures, signature-family conversions and `Function.call/bind`; arguments/results without owned representations; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
+| Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization; literal dynamic imports of evaluated modules or primitive literal/function definitions retain asynchronous settlement, namespace identity and live exports; authored entry calls preserve surrounding startup work | Runtime-selected modules; lazy modules requiring runtime initialization; callable namespace `then` exports; unrepresented mutable initializer dependencies |
+| Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, suspending catch/finally with return and loop-exit completion | Arbitrary cleanup across `startEngine` |
+| Functions | Typed/generic functions, defaults, omitted optional parameters, rest parameters, destructuring, supported recursion, contextual optional callback results, stored values shared or adapted across sink signatures, owned generic/unknown-parameter methods specialized at reached calls, stored unknown-rest callbacks packed into owned arrays of their reached argument types; unmapped rest-function Arguments objects retain length, indexed reads, identity and captures; type parameters narrowed past null inside generic bodies or bound through a discriminated union member | Unresolved type arguments; unbounded resource specialization; stored generic `this`, new recursive signatures, signature-family conversions and `Function.call/bind`; Arguments mutation, reflection, optional/defaulted parameters and unconstrained argument queues; arguments/results without owned representations; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`); methods recursing through stored instances | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, also for callbacks kept by repository functions, methods or record members; function identity across repeated factory calls, optional calls, escaping recursive groups, named self-scheduling expressions, deferred cycles through owned function bindings, reassigned function locals; stored closures preserve the temporal dead zone of later bindings, including reads through reached functions/callbacks; native callbacks may materialize pure initializers ahead | Captures need owned representations; borrowed input events, and closures reading a binding that holds one, cannot escape dispatch; a stored closure reading a later binding without an owned data type refuses; a native callback initializes it ahead for direct reads and leaves it unbound through a reached function; the callback is registered at the declaring block's level |
-| Data | Typed/nullable records with required `undefined` fields, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON; stored records with `get`/`set` accessors (literal, or a class's for an `implements`ed type); a `?` property is an own key while it holds a value | An empty `?` property that also admits `null` refuses at run time; type shapes sharing a struct that disagree on a property's presence refuse; accessor records: spreads, enumeration, narrowing conversion, worker cloning; earlier class instances; optional undefined-only fields; required `void` fields without a proven undefined completion; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
-| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks; value-promise `catch`, stored or timer/frame-settled constructed promises, suspending callbacks (application realm); `Promise.resolve` takes the expected result type | Custom thenables; general async iteration |
+| Data | Typed/nullable records with required and optional `undefined` fields, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON; unknown arrays with finite source-written layouts, including owned Arguments queues across concrete callback signatures; checked recursive dynamic callback signatures and retained native class views; stored records with `get`/`set` accessors (literal, or a class's for an `implements`ed type); optional fields retain represented own-key presence | An empty `?` property that also admits `null` refuses at run time; type shapes sharing a struct that disagree on a property's presence refuse; accessor records: spreads, enumeration, narrowing conversion, worker cloning; dynamic class views with unrepresented fields; required `void` fields without a proven undefined completion; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
+| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks; value-promise `catch`, stored or timer/frame-settled constructed promises, suspending callbacks (application realm); `Promise.resolve` takes the expected result type | Custom thenables |
+| Generators | Lazy synchronous/asynchronous bodies, stored callbacks, shared iterator position, zero-argument `next`/`return`, `for...of`, `for await` over asynchronous iterators, IteratorClose and awaited cleanup | `yield*`, empty/consumed yields, inbound `next` values, `throw`, final return payloads, yields in finally, stored-generator parameter defaults, `for await` over synchronous iterables; retained closures cannot capture opaque generator storage |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
@@ -102,7 +111,9 @@ record ownership can trigger compiler replay, preserving earlier aliases and ini
 permit statements before a final return; early returns refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree;
 a typed record whose methods name its own binding is one shared object. Stored callback fields retain
-function identity and observe replacement through record aliases. Native function `call`/receiver-only
+function identity and observe replacement through record aliases. Structural views of native services
+retain the producer's identity through factories, spreads and captured bindings; mixing authored and
+native implementations in one mutable slot refuses. Native function `call`/receiver-only
 `bind` preserve target and argument evaluation order; dynamic receiver rebinding and partial `bind` refuse.
 
 | Promise operation | Contract |
@@ -115,7 +126,9 @@ function identity and observe replacement through record aliases. Native functio
 | `allSettled` | Ordered literal tuples and stored promise arrays, including void; fresh settlement records and original Error identities |
 | `race` | Homogeneous represented arrays/tuples; empty input stays pending |
 
-Arbitrary rejection values, heterogeneous race results and unrepresented aggregation shapes refuse.
+Optional promise values adopt their present payload or settle to absence through `await`, async returns,
+`resolve`, reactions and literal `all` tuples. Arbitrary rejection values, heterogeneous race results
+and unrepresented aggregation shapes refuse.
 `all` excludes literal spreads, other iterables and stored void/value-only arrays. `allSettled` excludes
 literal spreads and other iterables. Async collection callbacks start synchronously and retain
 suspension; predicate promises are truthy.
@@ -136,7 +149,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring; a number array asserted as a tuple stays that array | Sparse length growth and ambiguous null/undefined defaults refuse; an asserted array of another length refuses at run time |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach`; stored `ReadonlyMap`/`ReadonlySet` views preserve identity | An iterator value of a nullable reference type reads as present |
 | WeakMap | Empty construction with erased object or DOM-target keys, get/set/has/delete, owned values | Each erased key must have represented record or DOM identity; other key views and initialized erased-key constructors refuse |
-| Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
+| Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | General authored `Symbol.iterator` objects refuse |
 | Strings | UTF-16 indexing/length, substring/repeat/concat, padding, trimming of JavaScript white space, replacement strings/callbacks, `+=` on locals, fields and elements; an absent value in concatenation, a template or `String()` spells `undefined` or `null` from its represented tag or type, including scalar reads past an array's end | A concatenated operand is built before it is appended; unrepresented mixed absence states refuse in text |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options; `toLocaleLowerCase`/`toLocaleUpperCase` with default, string or string-array locales | Option getters and non-string locale entries refuse |
@@ -153,8 +166,10 @@ alignment and bounds; set/slice/subarray/fill/copyWithin preserve overlap rules.
 consumers and some iteration paths refuse views. `ArrayBufferView` retains typed arrays and DataView.
 Numeric index-signature writes preserve element conversion and grow ordinary arrays.
 
-Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity. Spreads copy own scalar
-fields and share nested objects.
+Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity, except that
+a plain record passed to a stored callback with an optional, default-initialized parameter can be copied
+into a returned closure, so later caller mutations are not observed. Spreads copy own scalar fields and
+share nested objects.
 Object enumeration places numeric index keys before insertion-ordered names. Fixed record key
 snapshots retain initialized keys; module namespace keys are lexical and values remain live.
 String-literal-union searches accept outside strings as misses. `invertMat4` returns nullable fresh

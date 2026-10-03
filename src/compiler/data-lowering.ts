@@ -51,6 +51,10 @@ import {
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
+import {
+    browserFileDataProperty,
+    browserFileElementRead,
+} from "./browser-file.js";
 import { errorValue, thrownMessage } from "./error-values.js";
 import {
     renderClosure,
@@ -78,6 +82,7 @@ import {
 } from "./statements.js";
 import {
     dataTypesEqual,
+    isUndefinedDataType,
     doubleLiteral,
     isTypedArrayType,
     isOpaqueReference,
@@ -211,6 +216,7 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "moduleNamespaces"
     | "options"
     | "expectArgumentCount"
     | "sourceFile"
@@ -231,6 +237,7 @@ interface DataLoweringContext extends Pick<
     | "bindings"
     | "sharedClosures"
     | "dataTypes"
+    | "deferredCapabilities"
     | "classLowerer"
     | "compileValue"
     | "emitDiscardedValue"
@@ -548,7 +555,11 @@ export class DataLowerer {
                 break;
             }
             const value = values[sourceIndex];
-            if (!value && parameter.kind !== "optional")
+            if (
+                !value &&
+                parameter.kind !== "optional" &&
+                !type.optionalParameters?.includes(runtimeIndex - 1)
+            )
                 this.context.fail(
                     node,
                     "Callback requires more arguments than the operation supplies.",
@@ -556,7 +567,7 @@ export class DataLowerer {
             argumentsCpp.push(
                 value
                     ? this.compileKnownValueForSink(value, parameter, node)
-                    : "std::nullopt",
+                    : this.context.dataTypes.absentValue(parameter),
             );
         }
         const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
@@ -683,7 +694,10 @@ export class DataLowerer {
                 } else argumentsCpp.push(value);
                 continue;
             }
-            if (parameter.kind !== "optional") {
+            if (
+                parameter.kind !== "optional" &&
+                !functionType.optionalParameters?.includes(runtimeIndex - 1)
+            ) {
                 this.context.fail(
                     call,
                     `${label} expects ${sourceParameterCount} arguments.`,
@@ -748,11 +762,7 @@ export class DataLowerer {
 
     /** Captures alias states so a terminating branch can roll back. */
     public snapshotAliasState(): Map<string, string> {
-        const snapshot = new EmissionMap<string, string>();
-        for (const [name, state] of this.ownership) {
-            snapshot.set(name, state);
-        }
-        return snapshot;
+        return new Map(this.ownership);
     }
 
     public restoreAliasState(snapshot: Map<string, string>): void {
@@ -781,7 +791,9 @@ export class DataLowerer {
         if (type.kind === "optional")
             return this.sharesObjectStorage(type.inner);
         return (
-            ["vector", "map", "set", "tuple", "product"].includes(type.kind) ||
+            ["vector", "map", "set", "tuple", "product", "arguments"].includes(
+                type.kind,
+            ) ||
             isTypedArrayType(type) ||
             (type.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(type.name))
@@ -874,7 +886,8 @@ export class DataLowerer {
             root = this.context.unwrap(root.expression);
         }
         const value = ts.isIdentifier(root)
-            ? this.context.bindings.lookupOptional(root)
+            ? (this.context.bindings.lookupOptional(root) ??
+              this.context.moduleNamespaces.fromIdentifier(root))
             : root.kind === ts.SyntaxKind.ThisKeyword && thisField
               ? this.context.resolveThisField(thisField.name.text)
               : undefined;
@@ -889,12 +902,15 @@ export class DataLowerer {
     public compileDataPath(
         expression: ts.Expression,
         mode: "read" | "write",
+        throughReceiver = false,
     ): Value | undefined {
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.bindings.lookupOptional(unwrapped);
+            const bound =
+                this.context.bindings.lookupOptional(unwrapped) ??
+                this.context.moduleNamespaces.fromIdentifier(unwrapped);
             if (bound?.kind !== "data" && bound?.kind !== "promise") {
                 // A module-level `const Record<Union, T> = { ... }` has no
                 // runtime local binding. Materialize its typed literal at
@@ -1024,7 +1040,7 @@ export class DataLowerer {
                     : undefined;
             let owner =
                 guardedOwner ??
-                this.compileDataPath(unwrapped.expression, mode) ??
+                this.compileDataPath(unwrapped.expression, mode, true) ??
                 (ts.isCallExpression(receiver) ||
                 ts.isElementAccessExpression(receiver) ||
                 (mode === "read" &&
@@ -1043,6 +1059,20 @@ export class DataLowerer {
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
                     : owner.dataType;
+            if (mode === "write" && ownerType?.kind === "arguments")
+                this.context.fail(
+                    unwrapped,
+                    "Arguments property mutation is not represented.",
+                );
+            if (
+                mode === "write" &&
+                !throughReceiver &&
+                ownerType?.kind === "module-namespace"
+            )
+                this.context.fail(
+                    unwrapped,
+                    "Module namespace properties are read-only.",
+                );
             if (
                 mode === "write" &&
                 (ownerType?.kind === "gpu-adapter" ||
@@ -1134,7 +1164,7 @@ export class DataLowerer {
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
             const owner =
-                this.compileDataPath(unwrapped.expression, mode) ??
+                this.compileDataPath(unwrapped.expression, mode, true) ??
                 (unwrapped.questionDotToken &&
                 !this.namesHandleCollection(unwrapped.expression)
                     ? this.context.compileValue(unwrapped.expression)
@@ -1153,6 +1183,15 @@ export class DataLowerer {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
             }
+            if (
+                mode === "write" &&
+                !throughReceiver &&
+                owner.dataType?.kind === "module-namespace"
+            )
+                this.context.fail(
+                    unwrapped,
+                    "Module namespace properties are read-only.",
+                );
             return this.elementRead(owner, unwrapped, mode);
         }
         return undefined;
@@ -1743,6 +1782,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         knownValue?: Value,
     ): Value | undefined {
         const known = knownValue ?? this.context.compileValue(expression);
+        if (
+            known.kind === "data" &&
+            (known.dataType?.kind === "vector" ||
+                known.dataType?.kind === "span")
+        )
+            return known;
         if (known.kind !== "tuple") {
             return undefined;
         }
@@ -1901,6 +1946,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         type: DataType,
         node: ts.Node,
     ): DataType {
+        const actual =
+            source.dataType?.kind === "optional"
+                ? source.dataType.inner
+                : source.dataType;
+        const declared = type.kind === "optional" ? type.inner : type;
+        if (
+            declared.kind === "struct" &&
+            (isOpaqueReference(actual) || actual?.kind === "event-target")
+        )
+            return source.dataType!;
         if (
             isJsonValue(source) &&
             (type.kind === "struct" ||
@@ -1925,14 +1980,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : type;
         }
         if (source.kind !== "record" || type.kind !== "struct") return type;
-        const fields = this.context.dataTypes.structFields(type.name, node);
+        const fields = this.context.dataTypes.structFields(
+            type.name,
+            node,
+            "accessors",
+        );
         const represented = fields.map((field) => {
             const value = source.recordProperties?.[field.sourceName];
+            const retained = value
+                ? this.retainedResultType(value, field.type, node)
+                : field.type;
             return {
                 ...field,
-                type: value
-                    ? this.retainedResultType(value, field.type, node)
-                    : field.type,
+                type: retained,
+                ...(retained !== field.type &&
+                retained.kind !== "optional" &&
+                (isOpaqueReference(retained) ||
+                    retained.kind === "event-target")
+                    ? { optionalProperty: false, defaultWhenMissing: false }
+                    : {}),
             };
         });
         return represented.some(
@@ -2456,7 +2522,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression.left,
                     )
                   : computed;
-        if (left.dataType?.kind === "undefined") {
+        if (isUndefinedDataType(left.dataType)) {
             this.context.emitDiscardedValue(left);
             return this.context.compileValue(expression.right);
         }
@@ -2859,10 +2925,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.narrowOptional(ownerValue, access.expression),
             access,
         );
+        const exported = this.context.moduleNamespaces.member(
+            owner,
+            property,
+            access,
+        );
+        if (exported) return exported;
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
+        const deferred = this.context.deferredCapabilities.property(
+            access,
+            owner,
+        );
+        if (deferred) return deferred;
         const dataType =
             owner.dataType ??
             (owner.kind === "string"
@@ -2905,6 +2982,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       cpp: `${owner.cpp}.get(${this.context.cppString(property)})`,
                       dataType: { kind: "json" },
                   };
+        }
+        if (["blob", "file", "file-list"].includes(dataType.kind))
+            return browserFileDataProperty(this.context, owner, access);
+        if (dataType.kind === "arguments") {
+            if (property !== "length")
+                return this.context.fail(
+                    access,
+                    "Arguments objects support indexed reads and length.",
+                );
+            return this.leafValue(`${owner.cpp}.length()`, { kind: "number" });
         }
         if (dataType.kind === "optional") {
             this.context.fail(
@@ -3276,8 +3363,67 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             return undefined;
         }
+        if (dataType.kind === "file-list") {
+            if (mode === "write")
+                return this.context.fail(
+                    access,
+                    "FileList indexed mutation is not represented.",
+                );
+            return browserFileElementRead(
+                this.context,
+                owner,
+                access,
+                preparedIndex,
+            );
+        }
+        if (dataType.kind === "arguments") {
+            if (mode === "write")
+                return this.context.fail(
+                    access,
+                    "Arguments indexed mutation is not represented.",
+                );
+            const retained = this.context.bindings.retainedValue(
+                owner,
+                "arguments_owner",
+            );
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            const result = this.context.dataTypes.nullableType(
+                dataType.element,
+                true,
+            );
+            return {
+                ...this.leafValue(
+                    `${retained.cpp}.get(${this.compileKnownValueForSink(index, { kind: "number" }, access.argumentExpression)})`,
+                    result,
+                ),
+                freshData: true,
+            };
+        }
         if (mode === "write" && dataType.kind === "tuple") {
             this.invalidateStaticElements(owner);
+        }
+        if (dataType.kind === "module-namespace") {
+            owner = this.context.bindings.pinValueToTemporary(
+                owner,
+                "module_namespace",
+            );
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            if (index.staticString === undefined)
+                return this.context.fail(
+                    access,
+                    "Module namespace indexing requires a static exported name.",
+                );
+            return (
+                this.context.moduleNamespaces.member(
+                    owner,
+                    index.staticString,
+                    access,
+                ) ?? { kind: "json-null", cpp: "std::nullopt" }
+            );
         }
         if (
             (dataType.kind === "vector" || dataType.kind === "tuple") &&
@@ -4591,6 +4737,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     public leafValue(cpp: string, dataType: DataType): Value {
+        if (dataType.kind === "module-namespace")
+            return this.context.moduleNamespaces.value(dataType, cpp);
         if (cppIdentifierPattern.test(cpp))
             this.context.registerNativeBindingType(
                 cpp,
@@ -7185,6 +7333,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
         node: ts.Node,
     ): string {
+        if (
+            dataType.kind === "iterator" &&
+            value.dataType?.kind === "iterator"
+        ) {
+            if (dataType.traced && !value.dataType.traced)
+                this.context.fail(
+                    node,
+                    "A generator cannot enter traced collection iterator storage.",
+                );
+            if (
+                dataType.asynchronous === value.dataType.asynchronous &&
+                dataTypesEqual(dataType.element, value.dataType.element)
+            ) {
+                this.context.useNativeValue(value);
+                return value.cpp;
+            }
+        }
         if (value.nativePromiseSettlement && dataType.kind === "function") {
             if (dataType.result)
                 this.context.fail(
@@ -7658,6 +7823,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             });
                             const entries = structOwnEntries(
                                 {
+                                    moduleNamespaces:
+                                        this.context.moduleNamespaces,
                                     dataTypes: this.context.dataTypes,
                                     dataLowerer: this,
                                     fail: (node, message) =>
@@ -8026,7 +8193,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (
                     spread.kind === "data" &&
                     spread.dataType?.kind === "struct" &&
-                    dataTypesEqual(spread.dataType, dataType)
+                    dataTypesEqual(spread.dataType, dataType) &&
+                    (!declared ||
+                        !this.context.dataTypes
+                            .structFields(dataType.name, property)
+                            .some((field) => field.type.kind === "optional"))
                 ) {
                     if (!declared) {
                         this.context.emit(
@@ -8272,16 +8443,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (target.dataType.kind === "struct") {
-            const incoming = this.context.probeEmission(() => {
-                try {
-                    return this.context.compileValue(expression.right);
-                } catch (error) {
-                    if (error instanceof CompileError) return undefined;
-                    throw error;
-                }
-            }, isJsonValue);
+            const incoming = this.context.probeEmission(
+                () => {
+                    try {
+                        return this.context.compileValue(expression.right);
+                    } catch (error) {
+                        if (error instanceof CompileError) return undefined;
+                        throw error;
+                    }
+                },
+                (value) =>
+                    isJsonValue(value) ||
+                    isOpaqueReference(
+                        value?.dataType?.kind === "optional"
+                            ? value.dataType.inner
+                            : value?.dataType,
+                    ),
+            );
             if (isJsonValue(incoming))
                 requireDynamicBindingStorage(this.context.checker, left);
+            const actual =
+                incoming?.dataType?.kind === "optional"
+                    ? incoming.dataType.inner
+                    : incoming?.dataType;
+            if (isOpaqueReference(actual)) {
+                const nativeType = this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(expression.right),
+                );
+                const represented = this.context.dataTypes.fromTsType(
+                    nativeType,
+                    expression.right,
+                );
+                if (
+                    represented &&
+                    actual &&
+                    dataTypesEqual(represented, actual)
+                )
+                    requireDynamicBindingStorage(this.context.checker, left, {
+                        nativeType,
+                        node: expression.right,
+                    });
+            }
         }
         const value = this.compileForSink(expression.right, target.dataType);
         this.context.emit({
@@ -8393,7 +8595,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return;
             }
             const field = this.compileDataPath(target, "write");
-            if (field?.dataType?.kind === "function") {
+            if (
+                field?.dataType?.kind === "function" ||
+                (field?.dataType?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(
+                        field.dataType.name,
+                    ))
+            ) {
                 const property = this.context.checker.getPropertyOfType(
                     this.context.checker.getTypeAtLocation(target.expression),
                     target.name.text,
@@ -8679,7 +8887,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        if (field.presentForTags)
+        if (
+            field.presentForTags &&
+            !(
+                field.optionalProperty &&
+                field.type.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(field.type.name)
+            )
+        )
             return field.type.kind === "optional"
                 ? optionalPresentCpp(slot)
                 : "true";
@@ -9023,6 +9238,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       left,
                       ts.isIdentifier(left) ? "read" : "write",
                   );
+        const root = !ts.isIdentifier(left)
+            ? rootIdentifier(left, (chain) => this.context.unwrap(chain))
+            : undefined;
+        this.emitLogicalSlotAssignment(
+            expression,
+            target,
+            root ? this.context.bindings.lookupOptional(root) : undefined,
+        );
+    }
+
+    /** A host-selected reference uses the same lazy store without evaluating its receiver again. */
+    public emitLogicalSlotAssignment(
+        expression: ts.BinaryExpression,
+        target: Value | undefined,
+        sourceOwner?: Value,
+    ): void {
+        const left = this.context.unwrap(expression.left);
         const scalarKind =
             target &&
             (target.kind === "number" ||
@@ -9053,13 +9285,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.SyntaxKind.QuestionQuestionEqualsToken;
         // An optional is present when engaged; a shared object is its
         // reference, whose null is the binding's absent state.
-        const presence =
-            targetType?.kind === "optional"
-                ? optionalPresentCpp(`(${target.cpp})`)
-                : targetType?.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(targetType.name)
-                  ? this.referencePresence(target.cpp)
-                  : undefined;
+        const presence = isUndefinedDataType(targetType)
+            ? `(static_cast<void>(${target.cpp}), false)`
+            : targetType?.kind === "optional"
+              ? optionalPresentCpp(`(${target.cpp})`)
+              : targetType?.kind === "struct" &&
+                  this.context.dataTypes.isReferenceStruct(targetType.name)
+                ? this.referencePresence(target.cpp)
+                : undefined;
         if (nullish && (scalarKind || presence === undefined)) {
             // A non-nullable target never takes the right side.
             return;
@@ -9067,7 +9300,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (nullish) {
             this.context.reachJsData();
         }
-        const guard = this.logicalAssignmentGuard(expression, `!${presence}`);
+        const truthy = nullish ? undefined : this.truthinessCondition(target);
+        if (!nullish && truthy === undefined)
+            this.context.fail(
+                expression.left,
+                "Logical assignment requires a truth-testable stored value.",
+            );
+        const guard = nullish
+            ? `!${presence}`
+            : expression.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandEqualsToken
+              ? truthy!
+              : `!(${truthy})`;
         this.emitGuardedStore(guard, () => {
             const value =
                 scalarKind === "number"
@@ -9103,15 +9347,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (!rebound) this.invalidateStaticElements(target);
             } else {
                 this.invalidateStaticElements(target);
-                const root = rootIdentifier(left, (chain) =>
-                    this.context.unwrap(chain),
-                );
-                const rootValue = root
-                    ? this.context.bindings.lookupOptional(root)
-                    : undefined;
-                if (rootValue) {
-                    this.invalidateStaticElements(rootValue);
-                    this.context.bindings.invalidateRecordProperties(rootValue);
+                if (sourceOwner) {
+                    this.invalidateStaticElements(sourceOwner);
+                    this.context.bindings.invalidateRecordProperties(
+                        sourceOwner,
+                    );
                 }
             }
         });
@@ -9253,7 +9493,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             left.name.text === "length"
         ) {
             const owner =
-                this.compileDataPath(left.expression, "write") ??
+                this.compileDataPath(left.expression, "write", true) ??
                 (ts.isPropertyAccessExpression(left.expression) &&
                 this.plainDataOwnerChain(left.expression)
                     ? this.context.compileValue(left.expression)
@@ -10612,7 +10852,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * whatever it holds -- is `presenceCpp`'s.
      */
     public truthinessCondition(value: Value): string | undefined {
-        if (value.dataType?.kind === "undefined")
+        if (isUndefinedDataType(value.dataType))
             return `(static_cast<void>(${value.cpp}), false)`;
         if (value.kind === "promise")
             return `(static_cast<void>(${value.cpp}), true)`;
@@ -10688,6 +10928,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "dataview",
                     "bufferview",
                     "numberindex",
+                    "arguments",
                 ].includes(value.dataType.kind))
         ) {
             // JavaScript containers and typed arrays are objects and are
@@ -10787,6 +11028,101 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return undefined;
     }
 
+    private absentComparison(
+        value: Value,
+        node: ts.Expression,
+        literal: "null" | "undefined" | undefined,
+        negated: boolean,
+        loose: boolean,
+    ): string | undefined {
+        if (isJsonValue(value)) {
+            const temporary = this.context.allocateTemporaryCppName(
+                "json_absence_compare",
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: temporary,
+                initializer: value.cpp,
+            });
+            const equal = loose
+                ? `(${temporary}.is_null() || ${temporary}.is_undefined())`
+                : `${temporary}.is_${literal ?? "undefined"}()`;
+            return negated ? `!(${equal})` : equal;
+        }
+        // `==` takes null and undefined as one; `===` asks which absent
+        // state the operand is in (`absenceKind`).
+        const absentTest = (
+            present: string,
+            absent = `!(${present})`,
+        ): string => {
+            if (loose || literal === undefined)
+                return negated ? present : absent;
+            const state = absenceKind(this.context.checker, value, node);
+            if (state === "either")
+                this.context.fail(
+                    node,
+                    `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
+                );
+            // A read that knows whether its slot existed tells a missing
+            // one (`undefined`) from a stored `null` exactly.
+            if (typeof state === "object") {
+                const found = state.slotFoundCpp;
+                if (literal === "undefined")
+                    return negated ? found : `!${found}`;
+                const storedNull = `(${found} && ${absent})`;
+                return negated ? `!${storedNull}` : storedNull;
+            }
+            if (state !== literal && state !== "unconstrained")
+                return negated ? "true" : "false";
+            return negated ? present : absent;
+        };
+        if (value.kind === "json-null") {
+            const equal =
+                loose ||
+                literal === undefined ||
+                (value.cpp === "std::nullopt" ? "undefined" : "null") ===
+                    literal;
+            return equal !== negated ? "true" : "false";
+        }
+        if (isUndefinedDataType(value.dataType)) {
+            this.context.emitDiscardedValue(value);
+            const equal =
+                loose || literal === undefined || literal === "undefined";
+            return equal !== negated ? "true" : "false";
+        }
+        if (value?.kind === "data" && value.dataType?.kind === "optional") {
+            return absentTest(
+                optionalPresentCpp(value.cpp),
+                `!${optionalPresentCpp(value.cpp)}`,
+            );
+        }
+        if (value?.dataType?.kind === "function") {
+            return absentTest(
+                `static_cast<bool>(${value.cpp})`,
+                `!static_cast<bool>(${value.cpp})`,
+            );
+        }
+        const found = presenceFlagCpp(value);
+        if (found !== undefined) {
+            return absentTest(found);
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(value.dataType.name)
+        ) {
+            return absentTest(this.referencePresence(value.cpp));
+        }
+        // A value whose representation is already non-nullable has
+        // either been flow-narrowed by TypeScript or was statically
+        // non-nullish to begin with.
+        if (value.kind !== "browser") {
+            return negated ? "true" : "false";
+        }
+        return undefined;
+    }
+
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
@@ -10830,6 +11166,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (ts.isIdentifier(candidate) &&
                 this.context.bindings.lookupOptional(candidate)?.kind ===
                     "json-null");
+        if (
+            !isNullish(left) &&
+            !isNullish(right) &&
+            [left, right].some(
+                (operand) =>
+                    (this.context.checker.getTypeAtLocation(operand).flags &
+                        (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !==
+                    0,
+            )
+        ) {
+            const undefinedResult = this.context.probeEmission(() => {
+                const a = this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(left),
+                    "comparison_left",
+                );
+                const b = this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(right),
+                    "comparison_right",
+                );
+                const aUndefined = isUndefinedDataType(a.dataType);
+                if (!aUndefined && !isUndefinedDataType(b.dataType))
+                    return undefined;
+                const other = aUndefined ? b : a,
+                    node = aUndefined ? right : left;
+                if (!other.cpp)
+                    this.context.fail(
+                        node,
+                        "Undefined comparison requires a represented operand.",
+                    );
+                return this.absentComparison(
+                    other,
+                    node,
+                    "undefined",
+                    negated,
+                    loose,
+                );
+            });
+            if (undefinedResult !== undefined) return undefinedResult;
+        }
         if (loose && !isNullish(left) && !isNullish(right)) return undefined;
         if (
             !loose &&
@@ -10921,96 +11296,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined) ??
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
-            if (isJsonValue(value)) {
-                const temporary = this.context.allocateTemporaryCppName(
-                    "json_absence_compare",
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: temporary,
-                    initializer: value.cpp,
-                });
-                const equal = loose
-                    ? `(${temporary}.is_null() || ${temporary}.is_undefined())`
-                    : `${temporary}.is_${literal ?? "undefined"}()`;
-                return negated ? `!(${equal})` : equal;
-            }
-            // `==` takes null and undefined as one; `===` asks which absent
-            // state the operand is in (`absenceKind`).
-            const absentTest = (
-                present: string,
-                absent = `!(${present})`,
-            ): string => {
-                if (loose || literal === undefined)
-                    return negated ? present : absent;
-                const state = absenceKind(
-                    this.context.checker,
-                    value,
-                    nullSide,
-                );
-                if (state === "either")
-                    this.context.fail(
-                        nullSide,
-                        `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
-                    );
-                // A read that knows whether its slot existed tells a missing
-                // one (`undefined`) from a stored `null` exactly.
-                if (typeof state === "object") {
-                    const found = state.slotFoundCpp;
-                    if (literal === "undefined")
-                        return negated ? found : `!${found}`;
-                    const storedNull = `(${found} && ${absent})`;
-                    return negated ? `!${storedNull}` : storedNull;
-                }
-                if (state !== literal && state !== "unconstrained")
-                    return negated ? "true" : "false";
-                return negated ? present : absent;
-            };
-            if (value.kind === "json-null") {
-                const equal =
-                    loose ||
-                    literal === undefined ||
-                    (value.cpp === "std::nullopt" ? "undefined" : "null") ===
-                        literal;
-                return equal !== negated ? "true" : "false";
-            }
-            if (value.dataType?.kind === "undefined") {
-                this.context.emitDiscardedValue(value);
-                const equal =
-                    loose || literal === undefined || literal === "undefined";
-                return equal !== negated ? "true" : "false";
-            }
-            if (value?.kind === "data" && value.dataType?.kind === "optional") {
-                return absentTest(
-                    optionalPresentCpp(value.cpp),
-                    `!${optionalPresentCpp(value.cpp)}`,
-                );
-            }
-            if (value?.dataType?.kind === "function") {
-                return absentTest(
-                    `static_cast<bool>(${value.cpp})`,
-                    `!static_cast<bool>(${value.cpp})`,
-                );
-            }
-            const found = presenceFlagCpp(value);
-            if (found !== undefined) {
-                return absentTest(found);
-            }
-            if (
-                value.kind === "data" &&
-                value.dataType?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(value.dataType.name)
-            ) {
-                return absentTest(this.referencePresence(value.cpp));
-            }
-            // A value whose representation is already non-nullable has
-            // either been flow-narrowed by TypeScript or was statically
-            // non-nullish to begin with.
-            if (value.kind !== "browser") {
-                return negated ? "true" : "false";
-            }
-            return undefined;
+            return this.absentComparison(
+                value,
+                nullSide,
+                literal,
+                negated,
+                loose,
+            );
         }
         if (!loose) {
             const union = dataUnionEquality(this, left, right, negated);
@@ -11041,7 +11333,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "bufferview",
                 "numberindex",
             ].includes(dataType.inner.kind) ||
-                isTypedArrayType(dataType.inner));
+                isTypedArrayType(dataType.inner) ||
+                isOpaqueReference(dataType.inner));
         // TypeScript's index signatures describe `Record<K, V>[key]` as V,
         // even though a run-time lookup can miss. Our Map lowering preserves
         // that missing-key state and an optional chain over the lookup
@@ -11050,7 +11343,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // `record[key]?.flag === true` compares the contained flag rather
         // than the nullable's presence bit.
         const loweredOptional = (operand: ts.Expression): Value | undefined => {
-            const unwrapped = this.context.unwrap(operand);
+            const unwrapped = this.context.options.workers
+                ? unwrapExpression(operand)
+                : this.context.unwrap(operand);
             if (ts.isIdentifier(unwrapped)) {
                 const bound = this.context.bindings.lookupOptional(unwrapped);
                 return bound?.kind === "data" &&
@@ -12264,6 +12559,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "optional";
         },
     ): string {
+        if (dataType.inner.kind === "undefined")
+            return this.context.dataTypes.presentValue(
+                dataType,
+                this.compileForSink(expression, dataType.inner),
+            );
         const unwrapped = this.context.unwrap(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return this.context.dataTypes.absentValue(dataType);

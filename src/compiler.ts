@@ -1,3 +1,4 @@
+import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
@@ -41,6 +42,7 @@ import {
     type NativeStatement,
 } from "./compiler/native-statements.js";
 import { sourceProfileScope } from "./compiler/source-profile.js";
+import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
@@ -63,18 +65,17 @@ import {
     type SurveyReport,
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
+import type { DynamicBindingStorage } from "./compiler/dynamic-binding-storage.js";
+import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
+import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
 import {
-    DynamicBindingStorageRequired,
-    type DynamicBindingStorage,
-} from "./compiler/dynamic-binding-storage.js";
-import {
-    NativeRecordStorageRequired,
-    type NativeRecordStorageDemand,
-} from "./compiler/native-record-storage.js";
-import {
-    GenericFunctionStorageRequired,
-    GenericFunctionStorage,
-} from "./compiler/generic-function-storage.js";
+    isStorageDemand,
+    recordStorageCompileAttempt,
+    storageDemandPlanningEnabled,
+    storageRequest,
+    StorageDemandPlanner,
+    type StorageRequest,
+} from "./compiler/storage-demand-planner.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import {
@@ -186,11 +187,13 @@ import {
 } from "./compiler/loop-control.js";
 import {
     isModuleInitializerStatement,
+    moduleContainerSymbol,
     planEntryModuleState,
-    planImportedModuleInitializers,
+    planImportedModuleState,
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
+import { ModuleNamespaces } from "./compiler/module-namespaces.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
@@ -230,7 +233,6 @@ import {
     isDeclaredInside,
     isUpdateExpression,
     objectProperty,
-    rootIdentifier,
     sourceFunctionName,
     stringLiteralText,
     unwrapExpression,
@@ -547,6 +549,9 @@ function compileSourceApplication(
         workers?: ResolvedCompileOptions["workers"],
     ): CompileResult => {
         const resolved: ResolvedCompileOptions = {
+            ...(options.deferredCapabilities
+                ? { deferredCapabilities: options.deferredCapabilities }
+                : {}),
             fileName: workers?.namespace ? input.sourceFile.fileName : fileName,
             title: options.title ?? "Babylon Lite Native",
             width: options.width ?? 1280,
@@ -590,10 +595,9 @@ function compileSourceApplication(
             NativeRecordStorageDemand
         >();
         const genericFunctions = new GenericFunctionStorage();
-        // A replay lowers the realm again from the start, so a survey keeps
-        // only the attempt that ran to the end.
-        const lower = (): CompileResult => {
-            const compiler = new Compiler(
+        const newCompiler = (planning: boolean): Compiler => {
+            recordStorageCompileAttempt(planning);
+            return new Compiler(
                 input.program,
                 input.sourceFile,
                 input.checker,
@@ -602,48 +606,82 @@ function compileSourceApplication(
                 ownedRecords,
                 genericFunctions,
             );
-            const result = traceSourceProgram(input.program, () =>
-                compiler.compile(),
-            );
-            result.manifest.inputs = input.localFiles;
-            return result;
         };
+        // A replay lowers the realm again from the start, so a survey keeps
+        // only the attempt that ran to the end.
+        const lower = (): CompileResult =>
+            coverSourceRealm(input.program, input.sourceFile.fileName, () => {
+                const compiler = newCompiler(false);
+                const result = traceSourceProgram(input.program, () =>
+                    compiler.compile(),
+                );
+                result.manifest.inputs = input.localFiles;
+                return result;
+            });
+        const acceptStorage = (request: StorageRequest): boolean => {
+            if (
+                request.kind === "dynamic" &&
+                (!dynamicBindings.has(request.declaration) ||
+                    (request.storage &&
+                        !dynamicBindings.get(request.declaration)))
+            ) {
+                dynamicBindings.set(request.declaration, request.storage);
+            } else if (
+                request.kind === "record" &&
+                !ownedRecords.has(request.demand.identity)
+            ) {
+                ownedRecords.set(request.demand.identity, request.demand);
+            } else if (
+                request.kind === "generic" &&
+                genericFunctions.add(request.demand)
+            ) {
+                return true;
+            } else return false;
+            return true;
+        };
+        const acceptReplay = (error: unknown): boolean => {
+            if (isStorageDemand(error))
+                return acceptStorage(storageRequest(error));
+            if (
+                error instanceof RuntimeSearchParamsRequired &&
+                (!resolved.runtimeSearchParams ||
+                    (error.location && !resolved.runtimeLocationSearch))
+            ) {
+                resolved.runtimeSearchParams = true;
+                if (error.location) resolved.runtimeLocationSearch = true;
+            } else if (
+                error instanceof PendingActivationsRequired &&
+                !resolved.pendingActivations
+            ) {
+                resolved.pendingActivations = true;
+            } else return false;
+            return true;
+        };
+        let storageReplays = 0;
         for (;;) {
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
                     : lower();
             } catch (error) {
+                if (!acceptReplay(error)) throw error;
                 if (
-                    error instanceof DynamicBindingStorageRequired &&
-                    (!dynamicBindings.has(error.declaration) ||
-                        (error.storage &&
-                            !dynamicBindings.get(error.declaration)))
+                    isStorageDemand(error) &&
+                    ++storageReplays === 2 &&
+                    storageDemandPlanningEnabled()
                 ) {
-                    dynamicBindings.set(error.declaration, error.storage);
-                } else if (
-                    error instanceof NativeRecordStorageRequired &&
-                    !ownedRecords.has(error.demand.identity)
-                ) {
-                    ownedRecords.set(error.demand.identity, error.demand);
-                } else if (
-                    error instanceof GenericFunctionStorageRequired &&
-                    genericFunctions.add(error.demand)
-                ) {
-                    continue;
-                } else if (
-                    error instanceof RuntimeSearchParamsRequired &&
-                    (!resolved.runtimeSearchParams ||
-                        (error.location && !resolved.runtimeLocationSearch))
-                ) {
-                    resolved.runtimeSearchParams = true;
-                    if (error.location) resolved.runtimeLocationSearch = true;
-                } else if (
-                    error instanceof PendingActivationsRequired &&
-                    !resolved.pendingActivations
-                ) {
-                    resolved.pendingActivations = true;
-                } else throw error;
+                    const planner = new StorageDemandPlanner();
+                    // No coverage realm or survey attempt can publish this
+                    // discarded compiler. The next strict attempt owns both.
+                    try {
+                        planner.run(() => {
+                            newCompiler(true).compile();
+                        });
+                    } catch (planningError) {
+                        if (!acceptReplay(planningError)) throw planningError;
+                    }
+                    for (const demand of planner.demands) acceptStorage(demand);
+                }
             }
         }
     };
@@ -699,6 +737,9 @@ class Compiler implements LoweringServices {
     public readonly bindings: BindingScopes = new BindingScopes(this);
     /** The C++ truth test of a source condition. */
     public readonly conditions: ConditionLowerer = new ConditionLowerer(this);
+    public readonly moduleNamespaces: ModuleNamespaces = new ModuleNamespaces(
+        this,
+    );
     /** Variable declarations and binding patterns. */
     public readonly declarations: DeclarationLowerer = new DeclarationLowerer(
         this,
@@ -707,6 +748,8 @@ class Compiler implements LoweringServices {
     public readonly propertyAccess: PropertyAccessLowerer =
         new PropertyAccessLowerer(this);
     /** Per-intrinsic option objects and the shader programs they reach. */
+    public readonly deferredCapabilities = new DeferredCapabilities(this);
+
     public readonly intrinsicOptions: IntrinsicOptions = new IntrinsicOptions(
         this,
     );
@@ -840,6 +883,8 @@ class Compiler implements LoweringServices {
     private readonly nativeConstBindings =
         new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeStoredValues = new EmissionWeakSet<Value>();
+    private readonly iteratorStorageBindings =
+        new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] =
         emissionArray([]);
     private readonly realmEngineCaptures = new EmissionMap<
@@ -1039,6 +1084,8 @@ class Compiler implements LoweringServices {
         this.ui.validateUiStaticProjection();
 
         if (this.dataTypes.usesJsonStorage()) this.reachJson();
+        if (this.dataTypes.usesFileStorage())
+            this.reachFeature("browser:file", this.sourceFile);
 
         const features = featureOrder.filter((feature) =>
             this.features.has(feature),
@@ -1068,6 +1115,9 @@ class Compiler implements LoweringServices {
                 ? { sourceProfileScopes: [...this.sourceProfileScopes] }
                 : {}),
             manifest: {
+                ...(this.deferredCapabilities.sites.length
+                    ? { deferredCapabilities: this.deferredCapabilities.sites }
+                    : {}),
                 source: this.options.fileName,
                 // The compiler's half of the reached-file list is the
                 // program's, filled in by `compileSource`; generation
@@ -1339,12 +1389,13 @@ class Compiler implements LoweringServices {
      * runtime copy of every lookup table merely because it was imported.
      */
     private emitImportedModuleInitializers(): void {
-        const modules = planImportedModuleInitializers(
+        const { modules, mutatedContainers } = planImportedModuleState(
             this.program,
             this.sourceFile,
             this.checker,
             this.symbols,
         );
+        this.mutatedModuleContainers = mutatedContainers;
         if (modules.length === 0) return;
 
         // Once a module is materialized, its declarations name the native
@@ -1383,6 +1434,22 @@ class Compiler implements LoweringServices {
                 this.bindings.popScope();
             }
         });
+    }
+
+    /** @unjournaled Immutable source facts established before module declarations lower. */
+    private mutatedModuleContainers: ReadonlySet<ts.Symbol> = new Set();
+
+    public moduleContainerIsMutated(name: ts.Identifier): boolean {
+        const declaration = name.parent;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            !ts.isVariableStatement(declaration.parent.parent) ||
+            !ts.isSourceFile(declaration.parent.parent.parent)
+        )
+            return false;
+        const symbol = this.symbols.valueSymbol(name);
+        return symbol !== undefined && this.mutatedModuleContainers.has(symbol);
     }
 
     /**
@@ -2269,6 +2336,12 @@ class Compiler implements LoweringServices {
         return this.ui.emitUiPropertyAssignment(expression);
     }
 
+    public emitWindowLogicalAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean {
+        return this.windowProperties.assignLogical(expression);
+    }
+
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
         this.asyncActivations.requirePendingActivationRealm(expression);
@@ -2523,9 +2596,12 @@ class Compiler implements LoweringServices {
     ): boolean {
         const aliases = new Set([symbol]);
         const names = (node: ts.Node): boolean => {
-            const named = ts.isIdentifier(node)
-                ? this.symbols.valueSymbol(node)
-                : undefined;
+            const named =
+                ts.isIdentifier(node) ||
+                ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)
+                    ? moduleContainerSymbol(node, this.checker, this.symbols)
+                    : undefined;
             return named !== undefined && aliases.has(named);
         };
         // A function inside the expression reads the constant without
@@ -2561,8 +2637,7 @@ class Compiler implements LoweringServices {
                         alias(iterated.name);
                 return (
                     writesThroughTrackedRoot(node, (target) => {
-                        const root = rootIdentifier(this.unwrap(target));
-                        return root !== undefined && names(root);
+                        return names(this.unwrap(target));
                     }) ||
                     (ts.isCallExpression(node) &&
                         node.arguments.some(
@@ -4708,6 +4783,7 @@ class Compiler implements LoweringServices {
         const ownerExpression = this.unwrap(expression.expression);
         const owner = ts.isIdentifier(ownerExpression)
             ? (this.bindings.lookupOptional(ownerExpression) ??
+              this.moduleNamespaces.fromIdentifier(ownerExpression) ??
               browserEnvironmentValue(this, ownerExpression))
             : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
               ? this.activeThis()
@@ -4716,6 +4792,12 @@ class Compiler implements LoweringServices {
                   browserEnvironmentValue(this, ownerExpression) ??
                   this.propertyAccess.lookupRecordProperty(ownerExpression))
                 : undefined;
+        if (owner?.dataType?.kind === "module-namespace")
+            return this.moduleNamespaces.member(
+                owner,
+                expression.name.text,
+                expression,
+            );
         if (owner?.kind !== "record") {
             return undefined;
         }
@@ -5693,6 +5775,11 @@ class Compiler implements LoweringServices {
                 value.sharedStorageCpp === undefined,
             ),
         ];
+        if (
+            value.dataType &&
+            this.dataTypes.carriesOpaqueIterator(value.dataType)
+        )
+            this.iteratorStorageBindings.add(value.nativeCaptures![0]!);
         for (const key of nativeCompanionKeys) {
             const companion = value[key];
             if (
@@ -5839,6 +5926,16 @@ class Compiler implements LoweringServices {
         }
         const identifiers = cppIdentifiers(lines.join("\n"));
         capture.retainReferenced(identifiers);
+        if (
+            byReference !== "call" &&
+            capture.nativeCaptures.some((binding) =>
+                this.iteratorStorageBindings.has(binding),
+            )
+        )
+            this.fail(
+                this.loweringStatements.at(-1)?.statement ?? this.sourceFile,
+                "Retained closures cannot capture opaque iterator storage until suspended frame cycles have traced ownership.",
+            );
         const localBindings = [...identifiers].filter(
             (name) =>
                 (this.nativeBindings.get(name)?.sequence ?? 0) >
@@ -5960,6 +6057,23 @@ class Compiler implements LoweringServices {
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {
         const frame = this.returnFrames.at(-1);
+        if (frame?.kind === "native" && frame.generator) {
+            if (statement.expression)
+                this.fail(
+                    statement,
+                    "Generator return values require a typed completion channel.",
+                );
+            this.emit({
+                kind: "control",
+                code:
+                    this.synchronousCleanupFrames.includes(frame) ||
+                    this.statements.needsReturnCompletion(statement)
+                        ? "throw bbl::js::GeneratorClose{};"
+                        : "co_return;",
+                transfer: "suspend",
+            });
+            return;
+        }
         const coroutine = frame?.kind === "native" && frame.coroutine;
         const returnKeyword = coroutine ? "co_return" : "return";
         const returnType = this.activeNativeReturnType();
@@ -5976,7 +6090,9 @@ class Compiler implements LoweringServices {
                       );
             this.emit({
                 kind: "control",
-                code: `co_return ${result};`,
+                code: this.statements.needsReturnCompletion(statement)
+                    ? `throw bbl::js::AsyncReturn<${returnType === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(returnType)}>(${result});`
+                    : `co_return ${result};`,
                 transfer: "suspend",
             });
             return;
@@ -5996,13 +6112,22 @@ class Compiler implements LoweringServices {
                 this.emitExpressionAsStatement(statement.expression);
             }
             this.emit(
-                coroutine ? "co_return bbl::js::PromiseVoid{};" : "return;",
+                coroutine
+                    ? this.statements.needsReturnCompletion(statement)
+                        ? "throw bbl::js::AsyncReturn<bbl::js::PromiseVoid>(bbl::js::PromiseVoid{});"
+                        : "co_return bbl::js::PromiseVoid{};"
+                    : "return;",
             );
             return;
         }
         if (!statement.expression) {
             if (returnType.kind === "optional") {
-                this.emit(`${returnKeyword} std::nullopt;`);
+                this.emit(
+                    coroutine &&
+                        this.statements.needsReturnCompletion(statement)
+                        ? `throw bbl::js::AsyncReturn<${this.dataTypes.cppType(returnType)}>(std::nullopt);`
+                        : `${returnKeyword} std::nullopt;`,
+                );
                 return;
             }
             this.fail(
@@ -6043,6 +6168,51 @@ class Compiler implements LoweringServices {
         this.emit(
             `${returnKeyword} ${this.movesReturnedLocal(statement, returned) ? `std::move(${returned})` : returned};`,
         );
+    }
+
+    public emitNativeYield(expression: ts.YieldExpression): void {
+        const frame = this.returnFrames.at(-1);
+        if (frame?.kind !== "native" || !frame.generator)
+            this.fail(expression, "Yield requires an active generator body.");
+        if (expression.asteriskToken || !expression.expression)
+            this.fail(
+                expression,
+                "Generator delegation and empty yields require a typed protocol channel.",
+            );
+        for (
+            let owner: ts.Node = expression.parent;
+            !ts.isFunctionLike(owner);
+            owner = owner.parent
+        ) {
+            if (
+                ts.isBlock(owner) &&
+                ts.isTryStatement(owner.parent) &&
+                owner.parent.finallyBlock === owner
+            )
+                this.fail(
+                    expression,
+                    "Yield in finally requires a resumable cleanup protocol.",
+                );
+        }
+        const value = frame.generator.asynchronous
+            ? this.asyncActivations.compileAsyncReturn(
+                  expression.expression,
+                  frame.generator.element,
+              )
+            : this.dataLowerer.compileForSink(
+                  expression.expression,
+                  frame.generator.element,
+              );
+        this.emit({
+            kind: "control",
+            code: `co_yield ${frame.generator.asynchronous ? `co_await bbl::js::generator_yield_value<${this.dataTypes.cppType(frame.generator.element)}>(${value})` : value};`,
+            transfer: "suspend",
+        });
+    }
+
+    public activeGeneratorType(): DataType<"iterator"> | undefined {
+        const frame = this.returnFrames.at(-1);
+        return frame?.kind === "native" ? frame.generator : undefined;
     }
 
     /**
@@ -8148,6 +8318,9 @@ class Compiler implements LoweringServices {
                 : {}),
             features,
             jsDataReached: this.jsDataReached,
+            deferredCapabilitiesReached:
+                this.deferredCapabilities.sites.length > 0 ||
+                this.dataTypes.usesDeferredDomStorage(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

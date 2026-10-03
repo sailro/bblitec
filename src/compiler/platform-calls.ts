@@ -22,7 +22,11 @@ import {
     requireWindowHost,
     windowErrorEventValue,
 } from "./window-events.js";
-import { emitDomEventListener } from "./dom-listeners.js";
+import {
+    emitDomEventListener,
+    hasDeferredListenerSignal,
+    compileDeferredListenerOptions,
+} from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
@@ -110,6 +114,7 @@ interface PlatformCallContext
             | "defaultEngine"
             | "dataLowerer"
             | "dataTypes"
+            | "deferredCapabilities"
             | "emit"
             | "engineLifecycle"
             | "browserErasure"
@@ -805,7 +810,8 @@ export class PlatformCalls {
         const callback = argumentAt(call, 1);
         this.context.callbacks.hoistForwardCallbackBindings(callback);
         let once = false;
-        if (!removing && call.arguments[2]) {
+        const deferredSignal = hasDeferredListenerSignal(this.context, call);
+        if (!removing && call.arguments[2] && !deferredSignal) {
             const options = this.context.unwrap(call.arguments[2]);
             if (!ts.isObjectLiteralExpression(options)) {
                 this.context.fail(
@@ -850,9 +856,16 @@ export class PlatformCalls {
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
                 );
+                const deferredOptions = deferredSignal
+                    ? compileDeferredListenerOptions(
+                          this.context,
+                          call,
+                          listener.cpp,
+                      )
+                    : undefined;
                 this.context.emit({
                     kind: "expression",
-                    code: `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`,
+                    code: `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${deferredOptions?.listener ?? listener.cpp}, ${deferredOptions?.once ?? once});`,
                 });
             }
             return true;
@@ -917,12 +930,15 @@ export class PlatformCalls {
             values,
             documentHiddenCpp,
         );
+        const deferredOptions = deferredSignal
+            ? compileDeferredListenerOptions(this.context, call, listener.cpp)
+            : undefined;
         this.context.emit({
             kind: "expression",
             code:
                 `bbl::on_${descriptor.channel}(` +
-                `${engine}, ${listener.identity}, ${listener.cpp}` +
-                `${once ? ", true" : ""});`,
+                `${engine}, ${listener.identity}, ${deferredOptions?.listener ?? listener.cpp}` +
+                `${deferredOptions ? `, ${deferredOptions.once}` : once ? ", true" : ""});`,
         });
         return true;
     }

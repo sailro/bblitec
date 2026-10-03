@@ -57,6 +57,10 @@ int run() {
                                          "] cancel=[" + contents(*cancel) + "]");
         }
         assert(contents(*runtime.document->GetElementById("ordered")) == "ACE");
+        assert(contents(*runtime.document->GetElementById("later-span")) ==
+               "changed after captureafter span");
+        assert(contents(*runtime.document->GetElementById("later-condition")) ==
+               "after spanafter condition");
         const auto empty = ui_create_element(engine, "div");
         const UiSelectorTest span{UiSelectorTestKind::Tag, "span", ""};
         assert(ui_query_markup_all(engine, empty, {{1, "span"}}, span).empty());

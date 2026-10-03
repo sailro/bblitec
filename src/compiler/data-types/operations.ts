@@ -41,6 +41,14 @@ export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
 
+/** An optional undefined field stores key presence, never a different value. */
+export function isUndefinedDataType(type: DataType | undefined): boolean {
+    return (
+        type?.kind === "undefined" ||
+        (type?.kind === "optional" && type.inner.kind === "undefined")
+    );
+}
+
 export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }
@@ -48,18 +56,23 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
 /** Walk stored members, optionally including the types in a function signature. */
 export function containsDataKind(
     type: DataType,
-    target: DataKind,
+    target: DataKind | readonly DataKind[],
     fields: StructFieldTypes,
     signatures: boolean,
     seen: Set<string>,
+    matches?: (type: DataType) => boolean,
 ): boolean {
-    if (type.kind === target) return true;
+    const selected =
+        typeof target === "string"
+            ? type.kind === target
+            : target.includes(type.kind);
+    if (selected && (!matches || matches(type))) return true;
     if (type.kind === "struct") {
         if (seen.has(type.name)) return false;
         seen.add(type.name);
     }
     return children(type, fields, signatures).some((child) =>
-        containsDataKind(child, target, fields, signatures, seen),
+        containsDataKind(child, target, fields, signatures, seen, matches),
     );
 }
 

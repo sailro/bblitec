@@ -138,18 +138,26 @@ function adaptedArguments(
         return undefined;
     const fixed = source.restParameter ?? source.parameters.length;
     if (
-        sink.parameters.length < fixed ||
         !source.parameters
             .slice(0, fixed)
             .every((parameter, index) =>
-                dataTypesEqual(parameter, sink.parameters[index]!),
+                index < sink.parameters.length
+                    ? dataTypesEqual(parameter, sink.parameters[index]!)
+                    : source.optionalParameters?.includes(index),
             )
     ) {
         return undefined;
     }
     const names = sink.parameters.map((_, index) => `argument_${index}`);
     if (source.restParameter === undefined)
-        return { named: fixed, arguments_: names.slice(0, fixed) };
+        return {
+            named: Math.min(fixed, names.length),
+            arguments_: source.parameters.map(
+                (parameter, index) =>
+                    names[index] ??
+                    lowerer.context.dataTypes.absentValue(parameter),
+            ),
+        };
     const rest = source.parameters[source.restParameter];
     if (
         rest?.kind !== "vector" ||

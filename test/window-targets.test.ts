@@ -68,6 +68,40 @@ test("Window targets retain document, extension and listener identity through st
         let hostReads=0;
         function selectHost():Host { hostReads++; return hosts[0]!; }
         if (selectHost().snapshot!()!==5 || hostReads!==1) throw new Error("host receiver evaluated once");
+        type ReportingHost=Window & {report?:(...values:unknown[])=>void};
+        const reporting={host:window as ReportingHost};
+        let reports=0,reportArguments=0;
+        function reportArgument():number {reportArguments++;return 3;}
+        reporting.host.report?.(reportArgument());
+        if(reportArguments!==0)throw new Error("absent host rest callback");
+        reporting.host.report=(...values:unknown[])=>{reports+=values.length;};
+        const report=reporting.host.report;
+        reporting.host.report?.(reportArgument(),"value");
+        if(reports!==2||reportArguments!==1||report!==reporting.host.report)
+            throw new Error("host rest callback and identity");
+        delete reporting.host.report;
+        reporting.host.report?.(reportArgument());
+        if(reportArguments!==1)throw new Error("deleted host rest callback");
+        type QueueHost=Window & {queue?:number[];enabled?:boolean};
+        let queueOwners=0,queueInitializers=0;
+        function queueHost():QueueHost {queueOwners++;return window as QueueHost;}
+        function queueValues():number[] {queueInitializers++;return [3];}
+        queueHost().queue??=queueValues();
+        queueHost().queue??=queueValues();
+        if(queueOwners!==2||queueInitializers!==1||(window as QueueHost).queue?.[0]!==3)
+            throw new Error("host logical assignment evaluation");
+        (window as QueueHost).enabled=false;
+        queueHost().enabled||=true;
+        queueHost().enabled&&=false;
+        if(queueOwners!==4||(window as QueueHost).enabled!==false)
+            throw new Error("host logical truthiness");
+        function appendWindow(options:{host:QueueHost}):void {
+            options.host.queue??=[];
+            options.host.queue.push(7);
+        }
+        appendWindow({host:window as QueueHost});
+        if((window as QueueHost).queue?.[1]!==7)
+            throw new Error("host slot assignment preserves containing record");
         delete hosts[0]!.state;
         if (read(hosts[0]!)!==0) throw new Error("host field deletion");
         const optionalHosts:Array<Host|null>=[null,hosts[0]!];

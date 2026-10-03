@@ -124,7 +124,7 @@ test("the page's loader runs before its entry and must end with the import", () 
         ],
         [
             'const entry = await import("/src/main.ts");',
-            /Unsupported call target 'import'/,
+            /This await needs an asynchronous realm activation\./,
         ],
     ] as const)
         assert.throws(
@@ -144,7 +144,7 @@ test("a page sheet's refusal names the line of its rule", () => {
             sourcePath: fixture,
             styleSheets: [
                 {
-                    text: "\nbody { margin: 0; }\np { float: left; }\n",
+                    text: "\nbody { margin: 0; }\np { float: inline-start; }\n",
                     line: 7,
                 },
             ],

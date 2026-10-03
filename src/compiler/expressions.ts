@@ -32,13 +32,12 @@ import ts from "typescript";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
-import { isHandleKind } from "./data-types.js";
+import { isHandleKind, isUndefinedDataType } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
     accessedPropertySymbol,
-    aliasTarget,
     declaredSymbol,
     enumMemberConstant,
     isAbsentTypeofIdentifier,
@@ -201,9 +200,11 @@ export interface ExpressionContext
             | "evaluationOrder"
             | "hasStableNativeBinding"
             | "options"
+            | "moduleNamespaces"
             | "referenceSearch"
             | "evaluator"
             | "sceneManifest"
+            | "deferredCapabilities"
             | "dataLowerer"
             | "classLowerer"
             | "userFunctions"
@@ -339,7 +340,7 @@ export function stringConcatPart(
         return `(${slotFoundCpp} ? ${text} : std::string("undefined"))`;
     }
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
-    if (value.dataType?.kind === "undefined")
+    if (isUndefinedDataType(value.dataType))
         return `(static_cast<void>(${value.cpp}), "undefined")`;
     if (
         value.nativeError &&
@@ -856,6 +857,9 @@ export class ExpressionLowerer {
             return property;
         }
         if (ts.isNewExpression(unwrapped)) {
+            const deferred =
+                this.context.deferredCapabilities.compileConstructor(unwrapped);
+            if (deferred) return deferred;
             const query = this.context.browserErasure.evaluateBrowserValue(
                 unwrapped,
             )
@@ -1349,7 +1353,7 @@ export class ExpressionLowerer {
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
                 : compiledOperand;
-            if (operand.dataType?.kind === "undefined") {
+            if (isUndefinedDataType(operand.dataType)) {
                 this.context.emitDiscardedValue(operand);
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
@@ -1692,61 +1696,11 @@ export class ExpressionLowerer {
         operands.push(node);
     }
 
-    private readonly namespacesInProgress = new EmissionSet<ts.Symbol>();
-
     /** A local module namespace exposes value exports in lexical key order. */
     private compileModuleNamespace(
         identifier: ts.Identifier,
     ): Value | undefined {
-        const symbol = this.context.symbols.valueSymbol(identifier);
-        const file = symbol?.declarations?.find(ts.isSourceFile);
-        if (!symbol || !file || file.isDeclarationFile) return undefined;
-        if (this.namespacesInProgress.has(symbol))
-            this.context.fail(
-                identifier,
-                "Cyclic module namespace values cannot be materialized as records.",
-            );
-        this.namespacesInProgress.add(symbol);
-        try {
-            const properties = Object.create(null) as Record<string, Value>;
-            const exports = this.context.checker
-                .getExportsOfModule(symbol)
-                .sort((a, b) =>
-                    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-                );
-            for (const exported of exports) {
-                const value = aliasTarget(this.context.checker, exported);
-                if ((value.flags & ts.SymbolFlags.Value) === 0) continue;
-                const declaration =
-                    value.valueDeclaration ?? value.declarations?.[0];
-                if (
-                    declaration &&
-                    (ts.isVariableDeclaration(declaration) ||
-                        ts.isFunctionDeclaration(declaration) ||
-                        ts.isClassDeclaration(declaration) ||
-                        ts.isEnumDeclaration(declaration)) &&
-                    declaration.name &&
-                    ts.isIdentifier(declaration.name)
-                ) {
-                    properties[exported.name] = this.compileValue(
-                        declaration.name,
-                    );
-                } else {
-                    this.context.fail(
-                        identifier,
-                        `Module namespace export '${exported.name}' has no supported value declaration.`,
-                    );
-                }
-            }
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: properties,
-                moduleNamespace: true,
-            };
-        } finally {
-            this.namespacesInProgress.delete(symbol);
-        }
+        return this.context.moduleNamespaces.fromIdentifier(identifier);
     }
 
     /** Project own keys or values, materializing vector results in source order. */
@@ -1757,6 +1711,15 @@ export class ExpressionLowerer {
         this.context.expectArgumentCount(call, 1, 1);
         const object = this.compileValue(argumentAt(call, 0));
         const resultType = this.context.dataLowerer.dataTypeAt(call);
+        if (object.moduleNamespace && projection === "keys") {
+            this.context.emitDiscardedValue(object);
+            return {
+                kind: "data",
+                cpp: `bbl::js::Array<std::string>{${(object.recordOwnKeys ?? []).map((key) => this.context.cppString(key)).join(", ")}}`,
+                dataType: { kind: "vector", element: { kind: "string" } },
+                freshData: true,
+            };
+        }
         if (isJsonValue(object)) {
             return {
                 kind: "data",
@@ -2015,7 +1978,11 @@ export class ExpressionLowerer {
      * `test/compiler.test.ts` pins both halves.
      */
     private laneValue(expression: ts.Expression): Value {
-        const value = this.context.compileValue(expression);
+        const raw = this.context.compileValue(expression);
+        const value =
+            raw.kind === "data" && !raw.preserveUncheckedLookup
+                ? this.context.dataLowerer.narrowOptional(raw, expression)
+                : raw;
         // Array/object members retain the result of a resource-producing call.
         // Reusing the member must never execute its factory again.
         if (
@@ -2511,6 +2478,10 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        if (call.expression.kind === ts.SyntaxKind.ImportKeyword)
+            return this.context.moduleNamespaces.compileImport(call);
+        const deferred = this.context.deferredCapabilities.compile(call);
+        if (deferred) return deferred;
         const target = this.context.unwrap(call.expression);
         if (target.kind === ts.SyntaxKind.SuperKeyword) {
             this.context.fail(
@@ -3000,7 +2971,7 @@ export class ExpressionLowerer {
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
-                value.dataType?.kind === "undefined" ||
+                isUndefinedDataType(value.dataType) ||
                 // An absent value spells "undefined" or "null", as in a
                 // concatenation.
                 value.dataType?.kind === "optional"
@@ -4637,7 +4608,7 @@ export class ExpressionLowerer {
         );
         if (dataType?.kind !== "struct") return false;
         return this.context.dataTypes
-            .structFields(dataType.name, expression)
+            .structFields(dataType.name, expression, "accessors")
             .some(
                 (field) =>
                     this.context.dataTypes.ownPropertyPresence(
@@ -5445,6 +5416,7 @@ export class ExpressionLowerer {
             receiver.kind === ts.SyntaxKind.ThisKeyword ||
             ts.isPropertyAccessExpression(receiver) ||
             ts.isElementAccessExpression(receiver) ||
+            ts.isBinaryExpression(receiver) ||
             ts.isConditionalExpression(receiver) ||
             ts.isCallExpression(receiver) ||
             // `new C().method()`: the temporary instance is the receiver.
@@ -5522,7 +5494,13 @@ export class ExpressionLowerer {
             // wrote to the same resolver.
             const recordMethod = instance?.recordMethods?.[callee.name.text];
             const recordCallback =
-                instance?.recordProperties?.[callee.name.text];
+                instance &&
+                (this.context.moduleNamespaces.member(
+                    instance,
+                    callee.name.text,
+                    callee,
+                ) ??
+                    instance.recordProperties?.[callee.name.text]);
             if (recordCallback?.intrinsicName) {
                 const result = this.context.compileRegisteredIntrinsic(
                     recordCallback.intrinsicName,

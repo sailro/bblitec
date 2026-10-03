@@ -2,6 +2,13 @@
 
 Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume the same draw frame.
 
+With [deferred capabilities](features.md#program-compilation), registered missing CSS properties and
+grid-track forms throw at retained style writes. Nonconstant stylesheet installation and unstructured
+declaration strings throw for the missing browser CSS installation/retained-state bridge; RmlUi already
+provides declaration and stylesheet parsers. Receiver and string expressions still lower
+normally; the manifest lists each deferred feature. This does not add rendering support or change
+strict-mode admission. Host-page sheets and unsupported conditional CSS forms still require admission.
+
 ## RmlUi ownership
 
 | Area | Owner |
@@ -13,6 +20,9 @@ Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume t
 
 The [pin](../upstream/rmlui.json) and maintained patches define the library surface.
 Check them before adding an implementation. Source rejection does not imply missing library support.
+
+Physical `float` (`none/left/right`) and `clear` (`none/left/right/both`) pass through to RmlUi layout.
+Logical keywords remain unsupported; dynamic values are checked during native projection.
 
 ## Integration
 
@@ -29,7 +39,7 @@ Check them before adding an implementation. Source rejection does not imply miss
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
-- Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion.
+- Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion. Statement `??=`, `||=` and `&&=` evaluate the receiver once and the right operand lazily.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
@@ -96,6 +106,7 @@ Window keyboard listeners precede default actions. Element focus/blur preserves 
 removal, non-bubbling dispatch and related targets. Form and successful file-selection input/change events
 use shared DOM listener ordering and removal; form state is updated before callbacks.
 Native canvas `tabIndex` reads as zero; keyboard focus targets the SDL surface rather than HTML tab order.
+Deferred-capability mode throws on retained-element numeric `tabIndex` reads and writes; RmlUi's `tab-index: auto | none` does not implement browser numeric focus order.
 
 Checkbox activation updates checked before input/change. Programmatic control writes are silent.
 Color inputs use an RGB/hex popup: preview emits input, Apply emits change, Cancel restores the value.
@@ -133,7 +144,9 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 
 Window object URLs share the document's lifetime, including before rendering-engine creation and in deferred callbacks.
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
-snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
+snapshot bytes/name before change dispatch; cancellation dispatches `cancel` and preserves the selection.
+File, Blob and FileList aliases retain identity through owned containers, callbacks and promise results.
+FileList values retain immutable snapshots; only index zero is represented, with a missing file yielding undefined. Selections have a 256 MiB
 live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
 assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.

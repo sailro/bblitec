@@ -23,6 +23,45 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 }
 `;
 
+test("nested structural host records and explicit unknown-field views retain Window storage", () => {
+    const source = `
+        setTimeout(()=>globalThis.close(),0);
+        type Host={caption?:string;apply?:(value:number)=>number};
+        function install(options:{nested:{host:Host}}, add:number):void {
+            options.nested.host.caption="ready";
+            options.nested.host.apply=(value:number)=>value+add;
+        }
+        const host=window as Window&Host;
+        const options={nested:{host}};
+        install(options,3);
+        const first=host.apply;
+        install(options,5);
+        if(host.caption!=="ready"||first?.(2)!==5||host.apply?.(2)!==7)throw new Error("host ownership");
+        delete options.nested.host.apply;
+        if(host.apply!==undefined||first?.(3)!==6)throw new Error("host deletion");
+        const unknownHost=window as unknown as Record<string,unknown>;
+        const absent=unknownHost.metadata as {version?:string}|undefined;
+        if(absent!==undefined)throw new Error("unwritten field");
+        (window as Window&{metadata?:{version?:string}}).metadata={version:"current"};
+        const stored=unknownHost.metadata as {version?:string}|undefined;
+        if(stored?.version!=="current")throw new Error("view identity");
+    `;
+    const result = compileSource(source);
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools, "Native fixture compiler required");
+    runGeneratedProgram(
+        tools,
+        "window-properties/nested-host",
+        result.cpp + windowRuntime,
+        {
+            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            expectedOutput: "",
+            timeoutMs: 10000,
+        },
+    );
+});
+
 test("Window admission preserves imported static factories, inherited members and structural host receivers", (t) => {
     const directory = resolve("artifacts/window-static-dispatch");
     mkdirSync(directory, { recursive: true });

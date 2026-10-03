@@ -2,6 +2,7 @@
 
 #include <bblite/byte_hash.hpp>
 #include <bblite/js_binding.hpp>
+#include <bblite/js_module_namespace.hpp>
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
 #include <bblite/js_accessor.hpp>
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <coroutine>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -1581,6 +1583,25 @@ template <typename T> struct MapGetResult<Ref<T>> {
     [[nodiscard]] static Type found(Ref<T>& value) { return value; }
 };
 
+/** An unmapped arguments object owns indexed values independently of the rest array. */
+template <typename T> class Arguments {
+public:
+    using Result = std::remove_cvref_t<typename MapGetResult<T>::Type>;
+    Arguments() = default;
+    explicit Arguments(const Array<T>& values) : values_(values.begin(), values.end()) {}
+    [[nodiscard]] double length() const { return static_cast<double>(values_.size()); }
+    [[nodiscard]] Result get(double index) const;
+    [[nodiscard]] bool operator==(const Arguments& other) const { return values_ == other.values_; }
+    [[nodiscard]] const void* identity() const { return values_.identity(); }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
+
+private:
+    Array<T> values_;
+};
+namespace gc {
+template <typename T> struct Traceable<Arguments<T>> : Traceable<T> {};
+} // namespace gc
+
 /** JavaScript arithmetic converts a missing numeric lookup to NaN. */
 [[nodiscard]] inline double number_from_optional(const Nullable<double>& value) {
     return value.has_value() ? *value : std::numeric_limits<double>::quiet_NaN();
@@ -2477,9 +2498,35 @@ namespace gc {
 template <typename T> struct Traceable<Set<T>> : Traceable<T> {};
 } // namespace gc
 
+template <typename T> struct GeneratorPromise;
+
+inline thread_local bool discarding_generator = false;
+struct GeneratorDisposal {
+    bool previous = std::exchange(discarding_generator, true);
+    ~GeneratorDisposal() { discarding_generator = previous; }
+};
+
+/** Internal completion bypasses source catch handlers while running finally. */
+struct GeneratorClose : AbruptCompletion {};
+
+template <typename Close> void close_iterator(Close&& close, int exceptions) {
+    if (discarding_generator)
+        return;
+    if (std::uncaught_exceptions() > exceptions) {
+        try {
+            close();
+        } catch (...) {
+            // IteratorClose preserves the exception already unwinding.
+            return;
+        }
+    } else
+        close();
+}
+
 /** A stored JavaScript iterator: aliases share one advancing cursor. */
 template <typename T> class Iterator {
 public:
+    using promise_type = GeneratorPromise<T>;
     struct Result {
         bool done;
         Nullable<T> value;
@@ -2489,13 +2536,34 @@ public:
     template <typename Pull>
         requires(!std::is_same_v<std::remove_cvref_t<Pull>, Iterator>)
     explicit Iterator(Pull&& pull) : pull_(std::forward<Pull>(pull)) {}
+    template <typename Pull, typename Close>
+    Iterator(Pull&& pull, Close&& close)
+        : pull_(std::forward<Pull>(pull)), close_(std::forward<Close>(close)) {}
     [[nodiscard]] Result next() const {
         auto value = pull_();
         return {!value.has_value(), std::move(value)};
     }
+    Result return_() const {
+        close();
+        return {true, {}};
+    }
+    void close() const {
+        if (close_)
+            close_();
+    }
     class Cursor {
     public:
-        explicit Cursor(Callback<Nullable<T>()> pull) : pull_(std::move(pull)), value_(pull_()) {}
+        Cursor(Callback<Nullable<T>()> pull, Callback<void()> close)
+            : pull_(std::move(pull)), value_(pull_()), close_(std::move(close)) {}
+        Cursor(const Cursor&) = delete;
+        Cursor& operator=(const Cursor&) = delete;
+        Cursor(Cursor&& other) noexcept
+            : pull_(std::move(other.pull_)), value_(std::move(other.value_)),
+              close_(std::exchange(other.close_, {})), exceptions_(other.exceptions_) {}
+        ~Cursor() noexcept(false) {
+            if (value_ && close_)
+                close_iterator([&] { close_(); }, exceptions_);
+        }
         T& operator*() { return *value_; }
         const T& operator*() const { return *value_; }
         Cursor& operator++() {
@@ -2507,17 +2575,116 @@ public:
     private:
         Callback<Nullable<T>()> pull_;
         Nullable<T> value_;
+        Callback<void()> close_;
+        int exceptions_ = std::uncaught_exceptions();
     };
-    [[nodiscard]] Cursor begin() const { return Cursor(pull_); }
+    [[nodiscard]] Cursor begin() const { return Cursor(pull_, close_); }
     [[nodiscard]] std::default_sentinel_t end() const { return {}; }
     [[nodiscard]] std::size_t identity() const { return pull_.identity(); }
     friend bool operator==(const Iterator& left, const Iterator& right) {
         return left.pull_ == right.pull_;
     }
-    void gc_trace(const TraceVisitor& visitor) const { visitor(pull_); }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(pull_);
+        visitor(close_);
+    }
 
 private:
     Callback<Nullable<T>()> pull_;
+    Callback<void()> close_;
+};
+
+template <typename T> struct GeneratorPromise {
+    Nullable<T> value;
+    std::exception_ptr error;
+    bool closing = false;
+    Iterator<T> get_return_object();
+    std::suspend_always initial_suspend() const noexcept { return {}; }
+    std::suspend_always final_suspend() const noexcept { return {}; }
+    struct Yield {
+        GeneratorPromise* promise;
+        bool await_ready() const noexcept { return false; }
+        void await_suspend(std::coroutine_handle<>) const noexcept {}
+        void await_resume() const {
+            if (promise->closing)
+                throw GeneratorClose{};
+        }
+    };
+    Yield yield_value(T result) {
+        value = std::move(result);
+        return {this};
+    }
+    void return_void() const noexcept {}
+    void unhandled_exception() noexcept {
+        try {
+            throw;
+        } catch (const GeneratorClose&) {
+            // Requested close completes the generator normally.
+            return;
+        } catch (...) {
+            error = std::current_exception();
+        }
+    }
+};
+
+/** A generator call owns suspended source locals; aliases share its position. */
+template <typename T> struct GeneratorFrame {
+    std::coroutine_handle<GeneratorPromise<T>> handle;
+    bool started = false;
+    bool executing = false;
+    explicit GeneratorFrame(std::coroutine_handle<GeneratorPromise<T>> frame) : handle(frame) {}
+    ~GeneratorFrame() {
+        if (handle) {
+            const GeneratorDisposal disposing;
+            handle.destroy();
+        }
+    }
+    Nullable<T> resume(bool close) {
+        if (executing)
+            throw NamedError("TypeError", "Generator is already executing.");
+        if (!handle)
+            return {};
+        if (close && !started) {
+            std::exchange(handle, {}).destroy();
+            return {};
+        }
+        started = true;
+        executing = true;
+        handle.promise().closing = close;
+        handle.promise().value = std::nullopt;
+        handle.resume();
+        executing = false;
+        auto result = std::move(handle.promise().value);
+        const auto error = handle.promise().error;
+        if (handle.done())
+            std::exchange(handle, {}).destroy();
+        if (error)
+            std::rethrow_exception(error);
+        return result;
+    }
+};
+
+template <typename T> Iterator<T> GeneratorPromise<T>::get_return_object() {
+    auto frame = std::make_shared<GeneratorFrame<T>>(
+        std::coroutine_handle<GeneratorPromise<T>>::from_promise(*this));
+    const auto pull = make_closure(frame, [](auto& owner) { return owner->resume(false); });
+    return Iterator<T>(pull,
+                       make_closure(std::move(frame), [](auto& owner) { owner->resume(true); }));
+}
+
+/** IteratorClose preserves an already pending source exception. */
+template <typename T> class IteratorScope {
+public:
+    explicit IteratorScope(Iterator<T> iterator) : iterator_(std::move(iterator)) {}
+    IteratorScope(const IteratorScope&) = delete;
+    IteratorScope& operator=(const IteratorScope&) = delete;
+    ~IteratorScope() noexcept(false) {
+        close_iterator([&] { iterator_.close(); }, exceptions_);
+    }
+
+private:
+    Iterator<T> iterator_;
+    int exceptions_ = std::uncaught_exceptions();
 };
 
 /** Keep the last yielded slot pinned until the next pull. Deleting it or
@@ -4065,6 +4232,12 @@ template <typename T> [[nodiscard]] inline bool array_has_index(const T& values,
  */
 [[nodiscard]] inline std::size_t accepted_index(double index) {
     return static_cast<std::size_t>(static_cast<std::int64_t>(index));
+}
+
+template <typename T> typename Arguments<T>::Result Arguments<T>::get(double index) const {
+    if (!array_has_index(values_, index))
+        return Result{};
+    return Result(values_[accepted_index(index)]);
 }
 
 template <typename T> [[nodiscard]] inline T& missing_array_value() {

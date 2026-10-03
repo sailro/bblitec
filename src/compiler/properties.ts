@@ -1799,8 +1799,10 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
+            | "moduleNamespaces"
             | "classLowerer"
             | "defaultEngine"
+            | "deferredCapabilities"
             | "handleCollections"
             | "platformDocumentHidden"
             | "useNativeValue"
@@ -2791,6 +2793,11 @@ export class PropertyAccessLowerer {
             // Native keyboard input targets the always-focusable SDL surface.
             return numberConstantValue(0);
         }
+        const deferredProperty = this.context.deferredCapabilities.property(
+            expression,
+            owner,
+        );
+        if (deferredProperty) return deferredProperty;
         if (
             owner.kind === "ui-element" &&
             (owner.uiCanvas || sourceIsCanvas) &&
@@ -2821,7 +2828,8 @@ export class PropertyAccessLowerer {
                 this.context.reachFeature("browser:file", expression);
                 const engine = `bbl::dom_event_owner(${owner.cpp})`;
                 return {
-                    kind: "file-list",
+                    kind: "data",
+                    dataType: { kind: "file-list" },
                     cpp: `bbl::js::drag_files(${engine}, ${owner.cpp}.as<bbl::PlatformDragEvent>())`,
                     engineCpp: engine,
                     truthinessCpp: "true",
@@ -3095,6 +3103,12 @@ export class PropertyAccessLowerer {
                 engineCpp: engine,
             };
         }
+        const exported = this.context.moduleNamespaces.member(
+            owner,
+            property,
+            expression,
+        );
+        if (exported) return exported;
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
             const value = accessor
@@ -3360,6 +3374,12 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        const exported = this.context.moduleNamespaces.member(
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (exported) return exported;
         if (
             owner.kind === "ui-element" &&
             UI_TREE_READS.has(expression.name.text)

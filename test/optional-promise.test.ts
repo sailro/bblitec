@@ -6,8 +6,50 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("awaited nullable promises compare their settled scalars in operand order", (t) => {
+    const directory = resolve("artifacts/optional-promise/comparisons");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+        void(async()=>{
+            let number:Promise<number>|undefined=undefined;
+            number=Promise.resolve(8);
+            if(await number!==8||8!==await number||!(await number===8)||!(8===await number))throw new Error("number equality");
+            let text:Promise<string>|null=null;
+            text=Promise.resolve("ready");
+            if(await text!=="ready"||"ready"!==await text)throw new Error("string equality");
+            let flag:Promise<boolean>|undefined=undefined;
+            flag=Promise.resolve(false);
+            if(await flag!==false||false!==await flag)throw new Error("boolean equality");
+            const state:{pending?:Promise<number>}={};
+            state.pending=Promise.resolve(3);
+            if(await state.pending!==3||3!==await state.pending)throw new Error("property equality");
+            let reads=0;
+            function read():Promise<number>|undefined{reads++;return number;}
+            if(8!==await read()||reads!==1)throw new Error("operand evaluation count");
+            state.pending=undefined;
+            if(await state.pending!==undefined)throw new Error("missing property");
+            text=null;
+            if(await text!==null)throw new Error("null local");
+            globalThis.close();
+        })();
+        `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "optional-promise/comparisons", result.cpp, {
+        defines: ["BBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});
 
 test("generic optional promise results retain identity, aliases and reaction order", (t) => {
     const directory = resolve("artifacts/generic-optional-promise");

@@ -56,6 +56,7 @@ interface EngineLifecycleContext extends Pick<
     | "symbols"
     | "unwrap"
     | "asyncActivations"
+    | "activeGeneratorType"
 > {
     readonly body: NativeEmission[];
     readonly indentLevel: number;
@@ -673,6 +674,8 @@ export class EngineLifecycle {
             `[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`,
         );
         this.context.increaseIndent();
+        if (this.context.activeGeneratorType())
+            this.context.emit("if (bbl::js::discarding_generator) return;");
         const workerAbort = this.context.asyncActivations.workerAbortCpp();
         if (workerAbort) this.context.emit(`if (${workerAbort}) return;`);
         else if (this.context.options.pendingActivations)

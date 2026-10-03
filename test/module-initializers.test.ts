@@ -142,6 +142,69 @@ test("initializer planning retains every alias origin across eager calls and rec
     }
 });
 
+test("initializer planning resolves mutable contents through namespace and re-export bindings", () => {
+    const directory = resolve("artifacts/module-namespace-mutation-plan");
+    mkdirSync(directory, { recursive: true });
+    for (const name of [
+        "named",
+        "namespace",
+        "computed",
+        "reexport",
+        "nested",
+        "readonly",
+        "slot",
+    ])
+        writeFileSync(
+            join(directory, `${name}.ts`),
+            "export const item={value:1};",
+        );
+    writeFileSync(
+        join(directory, "list.ts"),
+        "export const values:number[]=[];",
+    );
+    writeFileSync(
+        join(directory, "barrel.ts"),
+        'export {item as renamed} from "./reexport"; export * as nested from "./nested";',
+    );
+    const { program, sourceFile, checker } = createCompilerProgram(
+        `
+        import {item} from "./named";
+        import * as namespace from "./namespace";
+        import * as computed from "./computed";
+        import * as barrel from "./barrel";
+        import * as list from "./list";
+        import * as readonly from "./readonly";
+        import * as slot from "./slot";
+        item.value=2;
+        namespace.item.value++;
+        computed["item"]["value"]=4;
+        barrel.renamed.value=5;
+        barrel.nested.item.value=6;
+        list["values"].push(7);
+        const read=readonly.item.value;
+        slot.item={value:8};
+    `,
+        join(directory, "entry.ts"),
+    );
+    const planned = planImportedModuleInitializers(
+        program,
+        sourceFile,
+        checker,
+        new CompilerSymbols(checker),
+    );
+    assert.deepEqual(
+        planned.map((file) => basename(file.fileName)),
+        [
+            "named.ts",
+            "namespace.ts",
+            "computed.ts",
+            "reexport.ts",
+            "nested.ts",
+            "list.ts",
+        ],
+    );
+});
+
 test("imported readonly array spreads retain their snapshot and element identities", (t) => {
     const directory = resolve("artifacts/module-spread-initializer");
     mkdirSync(directory, { recursive: true });

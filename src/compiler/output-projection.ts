@@ -544,6 +544,7 @@ interface MainCppProjection {
     };
     features: readonly Feature[];
     jsDataReached: boolean;
+    deferredCapabilitiesReached?: boolean;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
     runtimeMeshProfiles?: boolean;
@@ -844,7 +845,7 @@ ${(
     .join("")}\
 ${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}${projection.pendingActivations ? "#include <bblite/js_synchronous_promise.hpp>\n" : ""}#include <bblite/pal.hpp>
 ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""}${workerInclude}${textInclude}${jsDataInclude}${cameraMathInclude}${cameraGeospatialInclude}${cameraProjectionInclude}${clusteredInclude}${normalizeVec3Include}${lookDirectionInclude}${mat4InvertInclude}${spriteInclude}${billboardInclude}${spriteAnimationInclude}${nodeParticleInclude}${physicsInclude}${navigationInclude}${audioInclude}${imageInclude}${bakedMeshInclude}${uiInclude}${shadowInclude}${postProcessInclude}
-#include <bblite/uncaught_error.hpp>
+${projection.deferredCapabilitiesReached ? "#include <bblite/deferred_capability.hpp>\n" : ""}#include <bblite/uncaught_error.hpp>
 #include <cmath>
 #include <exception>
 #include <iostream>${throwReached ? "\n#include <stdexcept>" : ""}

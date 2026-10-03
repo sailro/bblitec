@@ -134,6 +134,168 @@ check(
 );
 
 check(
+    "stored-unknown-rest-signatures",
+    `
+    interface Host { report?:(...values:unknown[])=>void; }
+    const hosts:Host[]=[{}];
+    const host=hosts[0]!;
+    let total=0, evaluations=0;
+    const retained:Array<()=>number>=[];
+    function argument():number { evaluations++;return 3; }
+    host.report?.(argument());
+    if(evaluations!==0)throw new Error('absent rest callback evaluates arguments');
+    host.report=(...values:unknown[])=>{
+        total+=values.length;
+        for(const value of values) {
+            if(typeof value==='number') total+=value;
+            if(typeof value==='string') total+=value.length;
+        }
+        retained.push(()=>values.length);
+    };
+    const original=host.report;
+    host.report?.();
+    host.report?.(argument(),5);
+    host.report?.('word',2,true);
+    const source=[7,8];
+    host.report?.(...source);
+    source.push(9);
+    if(total!==36||evaluations!==1||retained[0]!()!==0||retained[3]!()!==2)
+        throw new Error('rest packing, specialization or fresh array');
+    function replace():number {host.report=(...values:unknown[])=>{total+=100+values.length;};return 1;}
+    host.report?.(replace());
+    if(total!==38||original===host.report)throw new Error('selected callback before arguments');
+    host.report?.(true);
+    if(total!==139)throw new Error('replacement callback');
+    delete host.report;
+    host.report?.(argument());
+    if(evaluations!==1)throw new Error('deleted rest callback');
+    interface Item {value:number;}
+    interface Sink {accept?:(...items:unknown[])=>void;}
+    const sinks:Sink[]=[{}];
+    sinks[0]!.accept=(...items:unknown[])=>{const first=items[0] as Item;first.value++;};
+    const item={value:4};
+    sinks[0]!.accept?.(item);
+    if(item.value!==5)throw new Error('rest object identity');
+`,
+);
+
+check(
+    "owned-unmapped-arguments",
+    `
+    const snapshots:Array<()=>number>=[];
+    function capture(...rest:number[]):void {
+        const object=arguments;
+        if(object!==arguments||Array.isArray(object)||typeof object!=='object')throw new Error('arguments identity and kind');
+        snapshots.push(()=>Number(object[0]??0)+object.length);
+        rest[0]=99;
+        if(arguments!==object)throw new Error('stable arguments');
+    }
+    capture(3,4);
+    const source=[7,8,9];capture(...source);source[0]=20;
+    if(snapshots[0]!()!==5||snapshots[1]!()!==10)throw new Error('owned arguments snapshot');
+    interface Host{report?:(...values:unknown[])=>void;}
+    const hosts:Host[]=[{}];
+    hosts[0]!.report=function(...values:unknown[]):void {
+        const object=arguments;
+        snapshots.push(()=>object.length);
+        values[0]=false;
+    };
+    hosts[0]!.report?.(true,'word');
+    hosts[0]!.report?.(false);
+    if(snapshots[2]!()!==2||snapshots[3]!()!==1)throw new Error('stored arguments lifetime');
+    interface Item{value:number;}
+    function captureItem(...rest:unknown[]):void {
+        const first=arguments[0] as Item;
+        snapshots.push(()=>first.value);
+    }
+    const item={value:4};captureItem(item);item.value=9;
+    if(snapshots[4]!()!==9)throw new Error('argument object alias');
+    function outside(...rest:number[]):void {
+        function inside(...nested:number[]):void {snapshots.push(()=>Number(arguments[0]??0));}
+        inside(8);
+        snapshots.push(()=>Number(arguments[0]??0));
+    }
+    outside(6);
+    if(snapshots[5]!()!==8||snapshots[6]!()!==6)throw new Error('lexical arguments owner');
+    let prefixCalls=0;
+    function nextPrefix():number {prefixCalls++;return prefixCalls;}
+    function prefixed(first:number,...rest:number[]):void {
+        if(first!==arguments[0]||rest[0]!==arguments[1]||arguments.length!==2)
+            throw new Error('prefix and rest argument order');
+        snapshots.push(()=>Number(arguments[0]??0));
+    }
+    prefixed(nextPrefix(),nextPrefix());
+    if(prefixCalls!==2||snapshots[7]!()!==1)throw new Error('prefix evaluation once');
+`,
+);
+
+check(
+    "arguments-enum-record-lanes",
+    `
+    const reads:Array<()=>number>=[];
+    function capture(...items:unknown[]):void {
+        reads.push(()=>arguments.length);
+    }
+    const update=(value:'on'|'off'):void=>capture('policy','update',{value,label:'off'});
+    capture('policy','initial',{value:'off',label:'off'});
+    update('on');
+    if(reads[0]!()!==3||reads[1]!()!==3)throw new Error('typed Arguments record lanes');
+`,
+);
+
+check(
+    "arguments-prefix-object-alias",
+    `
+    interface Item {value:number;}
+    const saved:Array<()=>number>=[];
+    function capture(first:Item,...rest:unknown[]):void {
+        const received=arguments[0] as Item|undefined;
+        if(!received)throw new Error('missing prefix');
+        if(first!==received)throw new Error('prefix object identity');
+        first.value++;
+        if(received.value!==3)throw new Error('prefix mutation visible in arguments');
+        received.value++;
+        if(first.value!==4)throw new Error('arguments mutation visible in prefix');
+        saved.push(()=>first.value+received.value+rest.length);
+    }
+    capture({value:2},'tail');
+    if(saved[0]!()!==9)throw new Error('prefix alias lifetime');
+    function objects(first:Item,...rest:Item[]):void {
+        const firstArgument=arguments[0] as Item;
+        const lastArgument=arguments[1] as Item;
+        if(first!==firstArgument||rest[0]!==lastArgument)throw new Error('required and rest record identity');
+        rest[0]!.value=8;
+        if(lastArgument.value!==8)throw new Error('rest object mutation');
+        rest[0]={value:9};
+        if(lastArgument.value!==8||rest[0]===lastArgument)throw new Error('independent rest array slot');
+    }
+    objects({value:3},{value:4});
+`,
+);
+
+test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
+    for (const mutation of [
+        "arguments[0]=3;",
+        "arguments.length=0;",
+        "arguments.callee;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `function capture(...rest:number[]):void{${mutation}}capture(1);`,
+                ),
+            /arguments/i,
+        );
+    assert.throws(
+        () =>
+            compileSource(
+                `document.createElement("div");type Host=Window & {queue?:unknown[]};const host=window as Host;host.queue??=[];globalThis.close();`,
+            ),
+        /Window logical assignment requires a represented declared property type/,
+    );
+});
+
+check(
     "generic-async-results-and-hook-absence",
     `
     interface Gate { ready():boolean; run<T>(fn:()=>T|Promise<T>):Promise<T>; }
@@ -177,12 +339,18 @@ test("generic storage retains unsupported native boundaries", () => {
             ),
         /Stored generic function conversion requires matching concrete signature families/,
     );
+});
+
+test("stored unknown rest callbacks refuse unresolved element storage", () => {
     assert.throws(
         () =>
-            compileSource(
-                prefix + `state.read(()=>({} as {value?:undefined}));`,
-            ),
-        /Optional undefined-only fields require separate own-property presence storage/,
+            compileSource(`
+            interface Host {report:(...values:unknown[])=>void;}
+            const hosts:Host[]=[{report:(...values:unknown[])=>{}}];
+            const values:unknown[]=[];
+            hosts[0]!.report(...values);
+        `),
+        /Stored generic function instantiation requires a fully represented native signature/,
     );
 });
 

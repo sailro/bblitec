@@ -26,9 +26,13 @@ function typedArray(kind: TypedArrayKind) {
 }
 
 export const scalarKinds: DataKindOperations<
+    | "module-namespace"
     | "undefined"
     | "weak-key"
     | "error"
+    | "file"
+    | "blob"
+    | "file-list"
     | "search-params"
     | "http-response"
     | "gpu-adapter"
@@ -48,14 +52,38 @@ export const scalarKinds: DataKindOperations<
     | "numberindex"
     | "json"
     | "event-target"
+    | "deferred-dom-object"
     | "borrowed-platform-event"
     | "handle"
     | TypedArrayKind
 > = {
+    "module-namespace": {
+        ...leaf("bbl::js::ModuleNamespace", "module-namespace"),
+        key: (type) => `module(${type.module})`,
+        equal: (left, right) => left.module === right.module,
+    },
     undefined: leaf("bbl::js::Undefined", "undefined"),
     "weak-key": leaf("bbl::js::WeakIdentity", "weak-key"),
     error: leaf("bbl::js::Error", "error"),
+    file: {
+        ...leaf("bbl::BrowserFileHandle", "file", true),
+        opaqueReference: true,
+    },
+    blob: { ...leaf("bbl::js::Blob", "blob", true), opaqueReference: true },
+    "file-list": {
+        ...leaf("bbl::js::FileList", "file-list", true),
+        opaqueReference: true,
+    },
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
+    "deferred-dom-object": {
+        cpp: (type) => `std::shared_ptr<bbl::Deferred${type.name}>`,
+        key: (type) => `deferred-dom(${type.name})`,
+        equal: (left, right) => left.name === right.name,
+        children: () => [],
+        byReference: true,
+        tracedEdges: "never",
+        opaqueReference: true,
+    },
     "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),
     "gpu-adapter": opaqueLeaf("bbl::pal::GpuAdapterHandle", "gpu-adapter"),
     "gpu-adapter-info": opaqueLeaf(

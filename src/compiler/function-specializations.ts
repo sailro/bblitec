@@ -129,7 +129,7 @@ export class FunctionSpecializations<T> {
 }
 
 /** Read lexical dependencies of the body and the source helpers it calls. */
-const dependencyCache = new EmissionWeakMap<
+const dependencyCache = new WeakMap<
     ts.TypeChecker,
     WeakMap<ts.FunctionLikeDeclaration, readonly ts.Identifier[]>
 >();
@@ -140,7 +140,7 @@ function dependencyIdentifiers(
 ): readonly ts.Identifier[] {
     let cache = dependencyCache.get(checker);
     if (!cache) {
-        cache = new EmissionWeakMap();
+        cache = new WeakMap();
         dependencyCache.set(checker, cache);
     }
     const cached = cache.get(root);

@@ -202,6 +202,12 @@ lowering reaches (site, message, message class, enclosing function, cascades) an
 `npm run api -- report --run` collected. Group findings by shared capability and run independent
 source-shape probes before implementation batches.
 
+The compiler CLI accepts `--coverage <coverage.json>` with `--out` or `--survey`.
+It records source hashes, exact statement spans, retained lowering, refusals and
+rolled-back work per realm, including failed generation. Storage replays replace
+earlier attempts. Unlisted sites are unobserved; statement coverage does not prove
+complete function specialization, native compilation or runtime implementation.
+
 | File | Required data |
 | --- | --- |
 | `src/scene-registry.ts` | Source, title, pose, gates, attribution |
@@ -267,8 +273,9 @@ generated files.
 
 ## Validation
 
-Use focused checks per unit. Run the full checks below only for final validation or on explicit request;
-do not repeat them after individual fixes. `npm run sweep` builds and measures every registered scene on
+Use focused checks per unit. The full checks below are required before publishing a compiler PR;
+run them only for final validation or on explicit request, not after individual fixes.
+`npm run sweep` builds and measures every registered scene on
 both backends: about 20 minutes on a warm cache, hours from a cold one. A new worktree starts cold (its
 precompiled headers and the units built on them are cached per checkout).
 
@@ -276,10 +283,10 @@ precompiled headers and the units built on them are cached per checkout).
 npm run lint:ts
 npm run lint:tools
 npm run format:check
-npm run lint:cpp -- <representative-native-build-directory>
 npm run simplify:verify
 npm test
 npm run sweep
+npm run lint:cpp -- all --generated --backend both
 node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 

@@ -334,15 +334,6 @@ test("async branches, loops and handlers complete in their owning activation", (
     `,
         { fileName: join(directory, "entry.ts") },
     );
-    assert.throws(
-        () =>
-            compileSource(
-                prefix +
-                    "void(async()=>{try{return;}finally{await Promise.resolve();}})();",
-                { fileName: join(directory, "unsupported.ts") },
-            ),
-        /Await in finally requires asynchronous cleanup completion/,
-    );
     runNative(result, directory, t);
 });
 

@@ -16,6 +16,10 @@ import {
 } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
+import {
+    deferredUiStyleCapability,
+    visitUiStyleSheetDeclarations,
+} from "../deferred-ui-style.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
 import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
@@ -76,6 +80,7 @@ import {
     elementDomHandlerFamily,
     emitDomEventHandler,
     eventHandlerResult,
+    pinDetached,
 } from "./dom-listeners.js";
 import { elementInterfaceTag } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
@@ -193,6 +198,7 @@ interface UiProjectionContext extends Pick<
     | "cppString"
     | "dataLowerer"
     | "defaultEngine"
+    | "deferredCapabilities"
     | "emit"
     | "emitDiscardedValue"
     | "evaluator"
@@ -930,7 +936,18 @@ export class UiProjection {
                 );
             }
         }
-        const value = this.context.compileValue(expression);
+        return this.uiTemplateValueCpp(
+            this.context.compileValue(expression),
+            expression,
+            purpose,
+        );
+    }
+
+    private uiTemplateValueCpp(
+        value: Value,
+        expression: ts.Expression,
+        purpose: string,
+    ): string {
         if (value.staticString !== undefined) {
             return this.context.cppString(value.staticString);
         }
@@ -1361,6 +1378,7 @@ export class UiProjection {
             "bottom",
             "color",
             "clip",
+            "clear",
             "column-gap",
             "cursor",
             "display",
@@ -1380,6 +1398,7 @@ export class UiProjection {
             "flex-shrink",
             "flex-wrap",
             "filter",
+            "float",
             "font",
             "font-family",
             "font-size",
@@ -2348,6 +2367,7 @@ export class UiProjection {
     }
 
     private static cssStylePropertyName(property: string): string {
+        if (property === "cssFloat") return "float";
         const css = property.startsWith("--")
             ? property
             : property.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
@@ -3602,6 +3622,80 @@ export class UiProjection {
         );
     }
 
+    /** Classify missing CSS runtime work without swallowing a compiler refusal. */
+    private deferredUiStyleCapabilities(
+        expression: ts.Expression,
+        sheet: boolean,
+    ): string[] {
+        if (!this.context.options.deferredCapabilities) return [];
+        let source = this.tryUiStaticString(expression);
+        if (source === undefined) {
+            if (sheet) return ["css:runtime-stylesheet-installation-bridge"];
+            const parts = this.collectUiStringParts(expression);
+            if (!parts) {
+                // Conditional/concatenated structures have an existing lowering
+                // path. Leave its branch-specific admission authoritative.
+                const node = this.context.unwrap(expression);
+                return ts.isConditionalExpression(node) ||
+                    ts.isBinaryExpression(node)
+                    ? []
+                    : ["css:runtime-declaration-installation-bridge"];
+            }
+            source = parts
+                .map((part) =>
+                    typeof part === "string" ? part : "__BBLITE_DYNAMIC_CSS__",
+                )
+                .join("");
+        }
+        const capabilities = new Set<string>();
+        const visit = (declarations: string): void => {
+            UiProjection.forEachUiStyleDeclaration(
+                stripUiCssComments(declarations),
+                (declaration) => {
+                    const colon = declaration.indexOf(":");
+                    if (colon < 0) return;
+                    const property = UiProjection.cssPropertyName(
+                        declaration.slice(0, colon).trim(),
+                    );
+                    const capability = deferredUiStyleCapability(
+                        property,
+                        declaration.slice(colon + 1).trim(),
+                    );
+                    if (capability) capabilities.add(capability);
+                },
+            );
+        };
+        if (sheet) visitUiStyleSheetDeclarations(source, visit);
+        else visit(source);
+        return [...capabilities];
+    }
+
+    /** Evaluate the retained receiver and string normally, then fail at installation. */
+    private emitDeferredUiStyle(
+        element: Value,
+        expression: ts.Expression,
+        site: ts.Node,
+        capabilities: readonly string[],
+        signature: string,
+    ): boolean {
+        if (!this.context.options.deferredCapabilities || !capabilities.length)
+            return false;
+        pinDetached(this.context, element, "style_receiver");
+        const cpp = this.uiStringCpp(expression, "Deferred UI style operation");
+        this.context.emitDiscardedValue({ kind: "string", cpp });
+        for (const id of capabilities) {
+            const trap = this.context.deferredCapabilities.emitKnown(site, {
+                id,
+                origin: "css",
+                operation: "write",
+                signature,
+                timing: "throw",
+            });
+            if (trap) this.context.emitDiscardedValue(trap);
+        }
+        return true;
+    }
+
     private lowerUiMarkupLiteral(
         value: string,
         site?: ts.Node,
@@ -4216,18 +4310,16 @@ export class UiProjection {
         if (ownerId !== undefined && hasChoices(sourceParts))
             this.uiMarkupAlternativeOwners.add(ownerId);
         const snapshot = (source: ts.Expression): string => {
-            const cpp = this.uiTemplateSubstitutionCpp(
+            const value = this.context.bindings.pinValueToTemporary(
+                this.context.compileValue(source),
+                "markup_text",
+                source,
+            );
+            return this.uiTemplateValueCpp(
+                value,
                 source,
                 "Native UI innerHTML",
             );
-            const name = this.context.allocateTemporaryCppName("markup_text");
-            this.context.emit({
-                kind: "declaration",
-                type: "const std::string",
-                name,
-                initializer: cpp,
-            });
-            return name;
         };
         const emit = (
             pending: readonly UiMarkupPart[],
@@ -4552,6 +4644,18 @@ export class UiProjection {
             expression.left.expression,
         );
         if (directElement) {
+            const deferredProperty = this.context.deferredCapabilities.property(
+                expression.left,
+                directElement,
+                expression.right,
+            );
+            if (deferredProperty) {
+                this.context.emit({
+                    kind: "expression",
+                    code: `${deferredProperty.cpp};`,
+                });
+                return true;
+            }
             const engine = this.context.requireEngine(
                 directElement,
                 expression.left,
@@ -4749,6 +4853,19 @@ export class UiProjection {
                     this.uiCreatedElementTag(expression.left.expression) ===
                     "style"
                 ) {
+                    if (
+                        this.emitDeferredUiStyle(
+                            directElement,
+                            expression.right,
+                            expression,
+                            this.deferredUiStyleCapabilities(
+                                expression.right,
+                                true,
+                            ),
+                            `HTMLStyleElement.${property}: string`,
+                        )
+                    )
+                        return true;
                     const sheet = this.context.compileStringLiteral(
                         expression.right,
                     );
@@ -4838,6 +4955,16 @@ export class UiProjection {
             expression.left,
         );
         if (property === "cssText") {
+            if (
+                this.emitDeferredUiStyle(
+                    styleElement,
+                    expression.right,
+                    expression,
+                    this.deferredUiStyleCapabilities(expression.right, false),
+                    "CSSStyleDeclaration.cssText: string",
+                )
+            )
+                return true;
             this.context.emit({
                 kind: "expression",
                 code:
@@ -4865,10 +4992,27 @@ export class UiProjection {
         site: ts.Node,
     ): void {
         const nativeProperty = this.nativeUiStyleProperty(property);
+        const capability =
+            this.context.options.deferredCapabilities &&
+            deferredUiStyleCapability(
+                nativeProperty,
+                this.tryUiStaticString(valueExpression),
+            );
+        if (
+            capability &&
+            this.emitDeferredUiStyle(
+                element,
+                valueExpression,
+                site,
+                [capability],
+                `CSSStyleDeclaration.${property}: string`,
+            )
+        )
+            return;
         this.auditUiStylePropertyName(property, site);
-        const { nativeBinding, ...receiver } = element;
-        const styleElement = this.context.bindings.pinValueToTemporary(
-            receiver,
+        const styleElement = pinDetached(
+            this.context,
+            element,
             "style_receiver",
         );
         const engine = this.context.requireEngine(styleElement, site);

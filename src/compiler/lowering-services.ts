@@ -73,6 +73,7 @@ export interface LoweringStatement {
 
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
+    generator?: DataType<"iterator">;
     /** A namespace-scope definition: the entry's bindings, its engine among them, are out of scope. */
     namespaceScope?: boolean;
     runtimeDataLoops?: boolean;
@@ -93,6 +94,9 @@ export interface LoweringServices {
     failAtFile(message: string): never;
     attributeRefusalsTo<T>(site: RefusalSite, materialize: () => T): T;
     readonly sourceFile: ts.SourceFile;
+    readonly program: ts.Program;
+    readonly moduleNamespaces: import("./module-namespaces.js").ModuleNamespaces;
+    moduleContainerIsMutated(name: ts.Identifier): boolean;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
     readonly symbols: CompilerSymbols;
@@ -114,6 +118,7 @@ export interface LoweringServices {
     readonly assetRegistry: AssetRegistry;
     readonly admissions: AdmissionRecorder;
     readonly intrinsicOptions: IntrinsicOptions;
+    readonly deferredCapabilities: import("./deferred-capabilities.js").DeferredCapabilities;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -161,6 +166,7 @@ export interface LoweringServices {
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
+    emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
     withOwnedCallbackBody<T>(body: () => T): T;
@@ -432,6 +438,8 @@ export interface LoweringServices {
     activeNativeReturnType(): DataType | "void" | undefined;
     activeInlineWrapper(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
+    emitNativeYield(expression: ts.YieldExpression): void;
+    activeGeneratorType(): DataType<"iterator"> | undefined;
     emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean;
     assignOptionalResourceValue(
         target: Value,

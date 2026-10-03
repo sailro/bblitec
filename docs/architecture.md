@@ -51,8 +51,13 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Per-intrinsic option objects; asset registration and its recorded facts; capability admissions deferred until the program reaches the capability |
 | `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
-Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
-initializers use the selected representation. Equivalent definitions share code; invocations retain
+Repeated storage demands trigger one bounded, discarded discovery pass before fresh strict emission.
+Discovery continues only past independent generic calls and stops at ordinary refusals, possible writes
+or dependencies on rolled-back declarations. Its limits are checked at statement boundaries; coverage
+and surveys retain only strict attempts. Earlier aliases and initializers use the selected representation.
+Immutable storage-demand and lexical-dependency indexes
+are shared by the checked program. Scoped collection facts use a derived alias graph that observes
+mutations and rollback. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
 use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
 renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over
@@ -101,6 +106,10 @@ A shared body lowers as runtime control flow and records no generation-owned
 construction; a call its separate body cannot represent, or that would lose a static fact of an argument,
 specializes inline. Closure environments are named structs of numbered captures, one per shape. Concrete
 capture types place shared bodies in their owning source unit; unresolved capture types use templates.
+
+Generator calls own initially suspended coroutine frames; iterator aliases share their pull position.
+Asynchronous cleanup carries pending return, exception and loop-exit completions across suspension.
+Explicit iterator close runs source cleanup; abandoning a suspended frame only releases its storage.
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Rebound parameters own their binding while object and container mutations preserve shared identity.

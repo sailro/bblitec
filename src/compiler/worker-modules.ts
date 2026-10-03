@@ -235,6 +235,16 @@ export function compileWorkerApplication(
                 ? { canvasReadyGate: true as const }
                 : {}),
             source: application.manifest.source,
+            ...(results.some(
+                (result) => result.manifest.deferredCapabilities?.length,
+            )
+                ? {
+                      deferredCapabilities: results.flatMap(
+                          (result) =>
+                              result.manifest.deferredCapabilities ?? [],
+                      ),
+                  }
+                : {}),
             assets: [...assets.values()],
             adaptations: results.flatMap(
                 (result) => result.manifest.adaptations,
@@ -266,6 +276,7 @@ function renderingProduct(manifest: CompileManifest): string {
         adaptations,
         assetDecoders,
         canvasReadyGate,
+        deferredCapabilities,
         ...products
     } = manifest;
     void source;
@@ -279,5 +290,6 @@ function renderingProduct(manifest: CompileManifest): string {
     void adaptations;
     void assetDecoders;
     void canvasReadyGate;
+    void deferredCapabilities;
     return JSON.stringify(products);
 }

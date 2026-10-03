@@ -37,6 +37,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import { recordAt } from "./record-access.js";
+import { ScopedValueIndex } from "./scoped-value-index.js";
 import { retainTextValue } from "./text-surface.js";
 import {
     isCompileTimeOnlyValue,
@@ -73,6 +74,7 @@ interface BindingScopesContext extends Pick<
     | "options"
     | "probeEmission"
     | "reachJsData"
+    | "registerNativeBinding"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
@@ -113,6 +115,8 @@ export class BindingScopes {
      * one into them refuses where the store happens.
      */
     private readonly rootScope = this.variableScopes[0]!;
+    /** @unjournaled Derived alias graph observes every source mutation and rollback. */
+    private readonly factIndex = new ScopedValueIndex(this.variableScopes);
     /** @unjournaled Derived from the program alone, on first use. */
     private readonly codeReadsByNode = new WeakMap<ts.Node, CodeReads>();
     /** @unjournaled Derived from the program alone, on first use. */
@@ -1270,7 +1274,13 @@ export class BindingScopes {
                 delete writable(candidate).staticElementsOwner;
             }
         };
-        this.visitScopedValues(invalidate);
+        for (const candidate of this.factIndex.matching([
+            value,
+            owner,
+            cardinality,
+            elements,
+        ]))
+            invalidate(candidate);
         invalidate(value);
         invalidate(owner);
     }
@@ -1284,7 +1294,8 @@ export class BindingScopes {
                 delete writable(candidate).recordProperties;
             }
         };
-        this.visitScopedValues(invalidate);
+        for (const candidate of this.factIndex.matching([properties]))
+            invalidate(candidate);
         invalidate(value);
     }
 
@@ -1454,6 +1465,7 @@ export class BindingScopes {
                     "product",
                     "enummap",
                     "event-target",
+                    "module-namespace",
                 ].includes(value.dataType.kind));
         if (isJsonValue(value) || snapshotsData) {
             const cpp = this.context.allocateTemporaryCppName(label);
@@ -1710,7 +1722,17 @@ export class BindingScopes {
             this.context.classOf(value) === undefined &&
             !propertyIsReadOnly(field)
         ) {
-            const mapped = this.context.dataTypes.fromStoredTsType(type, node);
+            const declared = this.context.dataTypes.fromStoredTsType(
+                type,
+                node,
+            );
+            const mapped =
+                declared &&
+                this.context.dataLowerer.retainedResultType(
+                    value,
+                    declared,
+                    node,
+                );
             if (mapped?.kind === "struct") {
                 return this.materializeRecordFieldCell(
                     value,
@@ -1807,9 +1829,16 @@ export class BindingScopes {
                     this.context.checker.getTypeAtLocation(node),
             );
             if (!sourceType) return undefined;
-            const stored = storedCallbacks
+            const declared = storedCallbacks
                 ? this.context.dataTypes.fromStoredTsType(sourceType, node)
                 : this.context.dataTypes.fromTsType(sourceType, node);
+            const stored =
+                declared &&
+                this.context.dataLowerer.retainedResultType(
+                    value,
+                    declared,
+                    node,
+                );
             // An empty callback list has no element values from which to infer
             // storage. Its declared element type still requires a shared container
             // when a returned record is captured and populated by another closure.
@@ -2007,6 +2036,7 @@ export class BindingScopes {
             return {
                 ...stored,
                 cpp,
+                nativeCaptures: [this.context.registerNativeBinding(cpp)],
                 objectIdentityCpp: `${cpp}.get()`,
             };
         }

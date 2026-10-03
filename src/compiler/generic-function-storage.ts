@@ -3,26 +3,68 @@ import type ts from "typescript";
 /** One reached instantiation of a stored generic function. */
 export interface GenericFunctionDemand {
     family: string;
-    key: string;
     arguments: readonly ts.Type[];
     parameters: readonly (ts.Type | undefined)[];
+    /** Concrete element types supplied to an unknown[] rest parameter. */
+    restArguments?: readonly ts.Type[];
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
     ancestors: readonly string[];
+    /** The call is inside a checked recursive dynamic-value boundary. */
+    dynamicJsonStorage?: true;
+}
+
+/** Signature identity survives several demands collected from one emission attempt. */
+export function sameGenericFunctionSignature(
+    left: GenericFunctionDemand,
+    right: GenericFunctionDemand,
+): boolean {
+    const sameTypes = (
+        a: readonly (ts.Type | undefined)[],
+        b: readonly (ts.Type | undefined)[],
+    ): boolean =>
+        a.length === b.length && a.every((type, index) => type === b[index]);
+    return (
+        left.family === right.family &&
+        sameTypes(left.arguments, right.arguments) &&
+        sameTypes(left.parameters, right.parameters) &&
+        (left.restArguments?.length ?? 0) ===
+            (right.restArguments?.length ?? 0) &&
+        (left.restArguments ?? []).every((type) =>
+            right.restArguments!.includes(type),
+        ) &&
+        left.dynamicJsonStorage === right.dynamicJsonStorage &&
+        sameTypeFrames(left.frames, right.frames)
+    );
 }
 
 export function sameTypeFrames(
     left: GenericFunctionDemand["frames"],
     right: GenericFunctionDemand["frames"],
 ): boolean {
-    return (
+    if (
         left.length === right.length &&
-        left.every((frame, index) => {
-            const other = right[index]!;
-            return (
-                frame.size === other.size &&
-                [...frame].every(([symbol, type]) => other.get(symbol) === type)
-            );
-        })
+        left.every(
+            (frame, index) =>
+                frame.size === right[index]!.size &&
+                [...frame].every(
+                    ([symbol, type]) => right[index]!.get(symbol) === type,
+                ),
+        )
+    )
+        return true;
+    const bindings = (
+        frames: GenericFunctionDemand["frames"],
+    ): Map<ts.Symbol, ts.Type> => {
+        const visible = new Map<ts.Symbol, ts.Type>();
+        for (const frame of frames)
+            for (const [symbol, type] of frame) visible.set(symbol, type);
+        return visible;
+    };
+    const a = bindings(left),
+        b = bindings(right);
+    return (
+        a.size === b.size &&
+        [...a].every(([symbol, type]) => b.get(symbol) === type)
     );
 }
 
@@ -34,10 +76,7 @@ export class GenericFunctionStorage {
         Array<{ key: string; frames: GenericFunctionDemand["frames"] }>
     >();
     /** @unjournaled Reached signatures accumulate between whole-program emission attempts. */
-    private readonly demands = new Map<
-        string,
-        Map<string, GenericFunctionDemand>
-    >();
+    private readonly demands = new Map<string, GenericFunctionDemand[]>();
     /** @unjournaled Allocates identities retained by families across emission replays. */
     private nextFamily = 0;
 
@@ -57,15 +96,14 @@ export class GenericFunctionStorage {
     }
 
     public get(family: string): readonly GenericFunctionDemand[] {
-        return [...(this.demands.get(family)?.values() ?? [])];
+        return [...(this.demands.get(family) ?? [])];
     }
 
     public add(demand: GenericFunctionDemand): boolean {
-        const family =
-            this.demands.get(demand.family) ??
-            new Map<string, GenericFunctionDemand>();
-        if (family.has(demand.key)) return false;
-        family.set(demand.key, demand);
+        const family = this.demands.get(demand.family) ?? [];
+        if (family.some((known) => sameGenericFunctionSignature(known, demand)))
+            return false;
+        family.push(demand);
         this.demands.set(demand.family, family);
         return true;
     }
@@ -73,7 +111,10 @@ export class GenericFunctionStorage {
 
 /** Earlier callback storage must contain every reached concrete signature. */
 export class GenericFunctionStorageRequired extends Error {
-    constructor(readonly demand: GenericFunctionDemand) {
+    constructor(
+        readonly demand: GenericFunctionDemand,
+        readonly call: ts.CallExpression,
+    ) {
         super("A stored generic function requires a concrete signature.");
     }
 }

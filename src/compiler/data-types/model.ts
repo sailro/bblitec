@@ -92,9 +92,17 @@ export type TypedArrayKind =
     | "u32array"
     | "i32array";
 interface DataKinds {
+    "module-namespace": { kind: "module-namespace"; module: string };
     undefined: { kind: "undefined" };
     error: { kind: "error" };
+    file: { kind: "file" };
+    blob: { kind: "blob" };
+    "file-list": { kind: "file-list" };
     "event-target": { kind: "event-target" };
+    "deferred-dom-object": {
+        kind: "deferred-dom-object";
+        name: "AbortController" | "AbortSignal";
+    };
     "http-response": { kind: "http-response" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };
@@ -160,6 +168,8 @@ interface DataKinds {
          * placeholder runtime value is invented.
          */
         erasedParameters?: number[];
+        /** Native parameter positions which accept an omitted source argument. */
+        optionalParameters?: number[];
     };
     struct: {
         kind: "struct";
@@ -186,6 +196,10 @@ interface DataKinds {
         kind: "vector";
         element: DataType;
     };
+    arguments: {
+        kind: "arguments";
+        element: DataType;
+    };
     map: {
         kind: "map";
         /** Erased object identity, with concrete ownership proven at each key sink. */
@@ -202,6 +216,8 @@ interface DataKinds {
     iterator: {
         kind: "iterator";
         element: DataType;
+        asynchronous?: true;
+        traced?: true;
     };
     span: {
         kind: "span";

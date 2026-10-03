@@ -392,6 +392,9 @@ export function compileWorkerValue(
                         : "data",
                 cpp: `${owner.cpp}->data<${cppType}>()`,
                 dataType: type,
+                // Deserialization returns an owning value, including when the
+                // source spells the read as a property access.
+                freshData: true,
             };
         }
         if (
