@@ -67,10 +67,19 @@ export function compileImmediatePromise(
         context.libraryGlobal(call.expression.expression) === "Promise" &&
         call.expression.name.text === "resolve"
     ) {
+        // A void settlement needs an owned promise: there is no immediate
+        // payload to retain, and its reactions still run in a later microtask.
+        if (call.arguments.length === 0) throw new ApplicationRealmRequired();
         if (call.arguments.length !== 1) {
             context.fail(call, "Immediate Promise.resolve requires one value.");
         }
-        return context.compileValue(argumentAt(call, 0));
+        const value = context.compileValue(argumentAt(call, 0));
+        if (
+            value.kind === "void" ||
+            (value.kind === "json-null" && value.cpp === "std::nullopt")
+        )
+            throw new ApplicationRealmRequired();
+        return value;
     }
     if (
         ts.isPropertyAccessExpression(call.expression) &&
