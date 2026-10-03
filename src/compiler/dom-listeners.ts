@@ -60,6 +60,7 @@ const pointerNames = new Set([
     "beforeinput",
     "input",
     "change",
+    "cancel",
 ]);
 
 const serviceNames = new Set([

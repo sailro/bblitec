@@ -51,6 +51,10 @@ import {
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
+import {
+    browserFileDataProperty,
+    browserFileElementRead,
+} from "./browser-file.js";
 import { errorValue, thrownMessage } from "./error-values.js";
 import {
     renderClosure,
@@ -2979,6 +2983,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       dataType: { kind: "json" },
                   };
         }
+        if (["blob", "file", "file-list"].includes(dataType.kind))
+            return browserFileDataProperty(this.context, owner, access);
         if (dataType.kind === "arguments") {
             if (property !== "length")
                 return this.context.fail(
@@ -3356,6 +3362,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const dataType = owner.dataType;
         if (!dataType) {
             return undefined;
+        }
+        if (dataType.kind === "file-list") {
+            if (mode === "write")
+                return this.context.fail(
+                    access,
+                    "FileList indexed mutation is not represented.",
+                );
+            return browserFileElementRead(
+                this.context,
+                owner,
+                access,
+                preparedIndex,
+            );
         }
         if (dataType.kind === "arguments") {
             if (mode === "write")
@@ -11314,7 +11333,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "bufferview",
                 "numberindex",
             ].includes(dataType.inner.kind) ||
-                isTypedArrayType(dataType.inner));
+                isTypedArrayType(dataType.inner) ||
+                isOpaqueReference(dataType.inner));
         // TypeScript's index signatures describe `Record<K, V>[key]` as V,
         // even though a run-time lookup can miss. Our Map lowering preserves
         // that missing-key state and an optional chain over the lookup

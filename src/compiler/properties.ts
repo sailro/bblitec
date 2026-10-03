@@ -2828,7 +2828,8 @@ export class PropertyAccessLowerer {
                 this.context.reachFeature("browser:file", expression);
                 const engine = `bbl::dom_event_owner(${owner.cpp})`;
                 return {
-                    kind: "file-list",
+                    kind: "data",
+                    dataType: { kind: "file-list" },
                     cpp: `bbl::js::drag_files(${engine}, ${owner.cpp}.as<bbl::PlatformDragEvent>())`,
                     engineCpp: engine,
                     truthinessCpp: "true",

@@ -267,6 +267,9 @@ export const scalarsSinks: DataSinkOperations<
     | "weak-key"
     | "undefined"
     | "error"
+    | "file"
+    | "blob"
+    | "file-list"
     | "event-target"
     | "deferred-dom-object"
     | "search-params"
@@ -363,6 +366,9 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
+    file: opaqueSink,
+    blob: opaqueSink,
+    "file-list": opaqueSink,
     "deferred-dom-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
     error: {

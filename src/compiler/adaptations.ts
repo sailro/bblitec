@@ -288,7 +288,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "Blob URLs retain in-memory bytes; an anchor download and a file input invoke asynchronous browser pickers, and the input dispatches change after selection.",
             nativeSemantics:
-                "A generation-checked object-URL registry retains the same bytes. Anchor and file-input clicks synchronously wait on SDL's portable asynchronous dialogs without dispatching application events; an accepted open choice is bounded and snapshotted before native sets the one-file list and invokes change before click returns. Input, FileList, and File values share reclaimable immutable snapshots under a per-engine aggregate cap; cancellation preserves the previous list.",
+                "A generation-checked object-URL registry retains the same bytes. Anchor and file-input clicks synchronously wait on SDL's portable asynchronous dialogs without dispatching application events; an accepted open choice is bounded and snapshotted before native sets the one-file list and invokes change before click returns. Input, FileList, and File values share reclaimable immutable snapshots under a per-engine aggregate cap; cancellation preserves the previous list and dispatches cancel.",
             risk: "medium",
             validation: [
                 "browser file bridge compiler tests",

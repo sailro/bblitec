@@ -575,7 +575,10 @@ export class DeferredCapabilities {
                             ? value.dataType?.kind === "deferred-dom-object" &&
                               value.dataType.name === ownerType
                             : ownerType === "Blob"
-                              ? value.kind === "blob" || value.kind === "file"
+                              ? value.kind === "blob" ||
+                                value.kind === "file" ||
+                                value.dataType?.kind === "blob" ||
+                                value.dataType?.kind === "file"
                               : ownerType === "Event"
                                 ? value.kind === "platform-mouse-event" ||
                                   value.kind === "platform-keyboard-event" ||

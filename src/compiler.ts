@@ -1053,6 +1053,8 @@ class Compiler implements LoweringServices {
         this.ui.validateUiStaticProjection();
 
         if (this.dataTypes.usesJsonStorage()) this.reachJson();
+        if (this.dataTypes.usesFileStorage())
+            this.reachFeature("browser:file", this.sourceFile);
 
         const features = featureOrder.filter((feature) =>
             this.features.has(feature),

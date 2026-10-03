@@ -95,6 +95,9 @@ interface DataKinds {
     "module-namespace": { kind: "module-namespace"; module: string };
     undefined: { kind: "undefined" };
     error: { kind: "error" };
+    file: { kind: "file" };
+    blob: { kind: "blob" };
+    "file-list": { kind: "file-list" };
     "event-target": { kind: "event-target" };
     "deferred-dom-object": {
         kind: "deferred-dom-object";

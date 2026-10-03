@@ -60,6 +60,7 @@ private:
  */
 class Blob {
 public:
+    Blob() : Blob({}, "") {}
     Blob(std::initializer_list<BlobPart> parts, std::string mime_type)
         : mime_type_(normalize_type(std::move(mime_type))) {
         std::size_t size = 0;
@@ -84,6 +85,11 @@ public:
     [[nodiscard]] const std::vector<std::uint8_t>& bytes() const noexcept { return *bytes_; }
     [[nodiscard]] const std::shared_ptr<const std::vector<std::uint8_t>>& payload() const noexcept {
         return bytes_;
+    }
+    [[nodiscard]] const void* get() const noexcept { return bytes_.get(); }
+    explicit operator bool() const noexcept { return true; }
+    [[nodiscard]] bool operator==(const Blob& other) const noexcept {
+        return bytes_ == other.bytes_;
     }
 
 private:
@@ -158,11 +164,22 @@ inline void revoke_object_url(Engine& engine, ObjectUrlHandle handle) {
 
 /** One immutable snapshot of selected or dropped files; a program reads the first. */
 struct FileList {
+    FileList() = default;
+    explicit FileList(BrowserFileHandle selected, std::size_t selected_count = 1)
+        : first(std::move(selected)), count(selected_count) {}
     BrowserFileHandle first{};
     /** How many files a drop carried; a selection holds one. */
     std::size_t count = 1;
 
     [[nodiscard]] std::size_t length() const noexcept { return first ? count : 0u; }
+    [[nodiscard]] const void* get() const noexcept { return identity_.get(); }
+    explicit operator bool() const noexcept { return true; }
+    [[nodiscard]] bool operator==(const FileList& other) const noexcept {
+        return identity_ == other.identity_;
+    }
+
+private:
+    std::shared_ptr<const unsigned char> identity_ = std::make_shared<const unsigned char>(0);
 };
 
 #if BBLITE_HAS_UI
@@ -182,6 +199,34 @@ struct FileList {
 
 [[nodiscard]] inline BrowserFileHandle file_at(const FileList& files, std::size_t index) {
     return index == 0u ? files.first : BrowserFileHandle{};
+}
+
+/** An indexed missing file is undefined; selected handles own their immutable bytes. */
+[[nodiscard]] inline Nullable<BrowserFileHandle> optional_file(BrowserFileHandle file) {
+    return file ? Nullable<BrowserFileHandle>{std::move(file)} : Nullable<BrowserFileHandle>{};
+}
+
+[[nodiscard]] inline const BrowserFileRecord& browser_file_record(const BrowserFileHandle& handle) {
+    if (!handle)
+        throw std::runtime_error("Native File handle is absent.");
+    return *handle.get();
+}
+
+[[nodiscard]] inline std::string file_name(const BrowserFileHandle& handle) {
+    return browser_file_record(handle).display_name;
+}
+
+[[nodiscard]] inline double file_size(const BrowserFileHandle& handle) {
+    return static_cast<double>(browser_file_record(handle).bytes.size());
+}
+
+[[nodiscard]] inline std::string_view file_bytes(const BrowserFileHandle& handle) {
+    const BrowserFileRecord& file = browser_file_record(handle);
+    return {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()};
+}
+
+[[nodiscard]] inline std::string file_text(const BrowserFileHandle& handle) {
+    return decode_utf8_removing_bom(file_bytes(handle));
 }
 
 [[nodiscard]] inline const BrowserFileRecord& browser_file_record(const Engine& engine,
@@ -250,6 +295,9 @@ public:
             bytes.reset();
         }
         settle(bytes);
+    }
+    void read_as_text(const BrowserFileHandle& file) const {
+        settle(file ? std::optional<std::string_view>(file_bytes(file)) : std::nullopt);
     }
     void read_as_text(const Blob& blob) const {
         const auto& bytes = blob.bytes();
@@ -526,9 +574,17 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
         options = detail::open_options(element.file_accept);
     }
     std::optional<pal::SelectedFileSnapshot> selected = pal::choose_open_file(engine, options);
-    // Cancel changes neither the previous FileList nor its event sequence.
-    if (!selected)
+    // Cancellation preserves the previous selection and notifies its listener.
+    if (!selected) {
+        if (engine.dom_input) {
+            PlatformMouseEvent payload;
+            payload.payload_kind = DomInputEventKind::Event;
+            const auto event =
+                dom_event(payload, "cancel", dom_ui_path(engine, handle), true, false);
+            dispatch_dom_pointer(engine, event);
+        }
         return;
+    }
     std::shared_ptr<UiEventListeners> listeners;
     {
         const UiElementRecord& element = browser_file_ui_element(engine, handle);

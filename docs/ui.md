@@ -144,7 +144,9 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 
 Window object URLs share the document's lifetime, including before rendering-engine creation and in deferred callbacks.
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
-snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
+snapshot bytes/name before change dispatch; cancellation dispatches `cancel` and preserves the selection.
+File, Blob and FileList aliases retain identity through owned containers, callbacks and promise results.
+FileList values retain immutable snapshots; only index zero is represented, with a missing file yielding undefined. Selections have a 256 MiB
 live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
 assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.

@@ -440,6 +440,9 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     "dom" | "default",
     (
         | "storage"
+        | "file"
+        | "blob"
+        | "file-list"
         | "http-response"
         | "search-params"
         | "date"
@@ -450,6 +453,9 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ),
 ])[] = [
     ["Storage", "dom", "storage"],
+    ["File", "dom", "file"],
+    ["Blob", "dom", "blob"],
+    ["FileList", "dom", "file-list"],
     ["Response", "dom", "http-response"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
@@ -744,6 +750,7 @@ export class DataTypeRegistry {
     /** Named data types that reached emitted C++ rather than a type probe. */
     private readonly emittedNamedTypes = new EmissionSet<string>();
     @journaled private accessor emittedJsonType = false;
+    @journaled private accessor emittedFileType = false;
     @journaled private accessor emittedDeferredDomType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
@@ -4580,6 +4587,8 @@ export class DataTypeRegistry {
     }
 
     public cppType(dataType: DataType): string {
+        if (["file", "blob", "file-list"].includes(dataType.kind))
+            this.emittedFileType = true;
         if (dataType.kind === "json") this.emittedJsonType = true;
         if (dataType.kind === "deferred-dom-object")
             this.emittedDeferredDomType = true;
@@ -4596,6 +4605,15 @@ export class DataTypeRegistry {
     /** JSON storage can occur in a defaulted field with no JSON expression. */
     public usesJsonStorage(): boolean {
         return this.emittedJsonType || this.usesNamedKind("json");
+    }
+
+    public usesFileStorage(): boolean {
+        return (
+            this.emittedFileType ||
+            this.usesNamedKind("file") ||
+            this.usesNamedKind("blob") ||
+            this.usesNamedKind("file-list")
+        );
     }
 
     private usesNamedKind(kind: DataType["kind"]): boolean {

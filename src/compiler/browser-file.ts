@@ -35,8 +35,16 @@ export interface BrowserFileContext extends Pick<
     | "reachFeature"
     | "reachJsData"
     | "reachFileReader"
+    | "dataLowerer"
     | "fail"
 > {}
+
+function isFileValue(
+    value: Value,
+    kind: "file" | "blob" | "file-list",
+): boolean {
+    return value.kind === kind || value.dataType?.kind === kind;
+}
 
 type DefaultGlobalContext = Pick<
     BrowserFileContext,
@@ -192,7 +200,8 @@ export function compileBrowserFileConstructor(
     context.reachFeature("browser:file", expression);
     context.reachJsData();
     return {
-        kind: "blob",
+        kind: "data",
+        dataType: { kind: "blob" },
         cpp:
             `bbl::js::Blob({${parts.join(", ")}}, ` +
             `${context.cppString(type)})`,
@@ -226,7 +235,11 @@ export function compileBrowserFileCall(
         }
         context.reachFeature("browser:file", call);
         if (callee.name.text === "createObjectURL") {
-            context.expectKind(argument, "blob", argumentAt(call, 0));
+            if (!isFileValue(argument, "blob"))
+                context.fail(
+                    argumentAt(call, 0),
+                    "Object URLs require a represented Blob.",
+                );
             // Window downloads and their URLs share the document's lifetime,
             // including calls before a rendering engine or in a retained helper.
             // A synchronous scene or rendering worker keeps its engine registry.
@@ -262,20 +275,18 @@ export function compileBrowserFileCall(
             "A FileReader is read through the local binding its constructor initializes.",
         );
     const receiverMayBeFile =
-        boundReceiver?.kind === "file" ||
+        (boundReceiver && isFileValue(boundReceiver, "file")) ||
         receiverType.getSymbol()?.getName() === "File" ||
         ((receiverType.flags & ts.TypeFlags.Union) !== 0 &&
             (receiverType as ts.UnionType).types.some(
                 (member) => member.getSymbol()?.getName() === "File",
             ));
     if (!receiverMayBeFile) return undefined;
-    const owner =
-        ts.isIdentifier(receiver) ||
-        ts.isPropertyAccessExpression(receiver) ||
-        ts.isElementAccessExpression(receiver)
-            ? context.compileValue(receiver)
-            : undefined;
-    if (owner?.kind !== "file") return undefined;
+    const owner = context.dataLowerer.narrowOptional(
+        context.compileValue(receiver),
+        receiver,
+    );
+    if (!isFileValue(owner, "file")) return undefined;
     if (callee.name.text !== "text") {
         context.fail(
             callee.name,
@@ -283,15 +294,13 @@ export function compileBrowserFileCall(
         );
     }
     context.expectArgumentCount(call, 0, 0);
-    const engine = context.requireEngine(owner, call);
     context.reachFeature("browser:file", call);
     return {
         // The AOT promise layer consumes this string immediately when it
         // lowers `.then(text => ...)`.
         kind: "data",
-        cpp: `bbl::js::file_text(${engine}, ${owner.cpp})`,
+        cpp: `bbl::js::file_text(${owner.cpp})`,
         dataType: { kind: "string" },
-        engineCpp: engine,
         impure: true,
         freshData: true,
     };
@@ -316,14 +325,13 @@ function compileFileReaderCall(
     context.expectArgumentCount(call, 1, 1);
     const source = context.compileValue(argumentAt(call, 0));
     writable(reader).fileReaderStarted = true;
-    if (source.kind === "file") {
-        const engine = context.requireEngine(source, call);
+    if (isFileValue(source, "file")) {
         return {
             kind: "void",
-            cpp: `${reader.cpp}.read_as_text(${engine}, ${source.cpp})`,
+            cpp: `${reader.cpp}.read_as_text(${source.cpp})`,
         };
     }
-    if (source.kind === "blob")
+    if (isFileValue(source, "blob"))
         return {
             kind: "void",
             cpp: `${reader.cpp}.read_as_text(${source.cpp})`,
@@ -400,31 +408,45 @@ export function compileBrowserFileElementAccess(
         ? context.unwrap(ownerExpression.expression)
         : undefined;
     const mayBeFileList =
-        (ts.isIdentifier(ownerExpression) &&
-            context.bindings.lookupOptional(ownerExpression)?.kind ===
-                "file-list") ||
+        ownerType.getSymbol()?.getName() === "FileList" ||
         (propertyFiles &&
-            ((propertyBase &&
-                ts.isIdentifier(propertyBase) &&
-                context.bindings.lookupOptional(propertyBase)?.kind ===
-                    "ui-element") ||
-                ownerType.getSymbol()?.getName() === "FileList"));
+            propertyBase &&
+            ts.isIdentifier(propertyBase) &&
+            context.bindings.lookupOptional(propertyBase)?.kind ===
+                "ui-element");
     if (!mayBeFileList) return undefined;
     const owner = context.compileValue(expression.expression);
-    if (owner.kind !== "file-list") return undefined;
-    const index = context.compileValue(expression.argumentExpression);
+    if (!isFileValue(owner, "file-list")) return undefined;
+    return browserFileElementRead(context, owner, expression);
+}
+
+export function browserFileElementRead(
+    context: Pick<
+        BrowserFileContext,
+        "compileValue" | "fail" | "reachFeature" | "bindings"
+    >,
+    owner: Value,
+    expression: ts.ElementAccessExpression,
+    preparedIndex?: Value,
+): Value {
+    const retained = context.bindings.retainedValue(owner, "file_list_owner");
+    const index =
+        preparedIndex ?? context.compileValue(expression.argumentExpression);
     if (index.kind !== "number" || index.staticNumber !== 0) {
         context.fail(
             expression.argumentExpression,
             "Native FileList supports only the first file at index 0.",
         );
     }
-    const engine = context.requireEngine(owner, expression);
     context.reachFeature("browser:file", expression);
     return {
-        kind: "file",
-        cpp: `bbl::js::file_at(${owner.cpp}, 0u)`,
-        engineCpp: engine,
+        kind: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "file" },
+            undefinedOnly: true,
+        },
+        cpp: `bbl::js::optional_file(bbl::js::file_at(${retained.cpp}, 0u))`,
         impure: true,
     };
 }
@@ -466,27 +488,36 @@ export function compileBrowserFileProperty(
         const engine = context.requireEngine(owner, expression);
         context.reachFeature("browser:file", expression);
         return {
-            kind: "file-list",
+            kind: "data",
+            dataType: { kind: "file-list" },
             cpp: `bbl::js::input_files(${engine}, ${owner.cpp})`,
             engineCpp: engine,
             truthinessCpp: "true",
         };
     }
-    if (owner.kind === "file") {
+    return browserFileDataProperty(context, owner, expression);
+}
+
+export function browserFileDataProperty(
+    context: Pick<BrowserFileContext, "fail" | "reachFeature">,
+    owner: Value,
+    expression: ts.PropertyAccessExpression,
+): Value | undefined {
+    const property = expression.name.text;
+    if (isFileValue(owner, "file")) {
         if (property !== "name" && property !== "size")
             context.fail(
                 expression.name,
                 `Native File exposes name and size, not '${property}'.`,
             );
-        const engine = context.requireEngine(owner, expression);
         context.reachFeature("browser:file", expression);
         return {
             kind: property === "name" ? "string" : "number",
-            cpp: `bbl::js::file_${property}(${engine}, ${owner.cpp})`,
+            cpp: `bbl::js::file_${property}(${owner.cpp})`,
             dataType: { kind: property === "name" ? "string" : "number" },
         };
     }
-    if (owner.kind === "blob") {
+    if (isFileValue(owner, "blob")) {
         if (property === "type") {
             return {
                 kind: "data",
@@ -507,7 +538,7 @@ export function compileBrowserFileProperty(
             `Blob property '${property}' is not lowered; supported properties are type and size.`,
         );
     }
-    if (owner.kind === "file-list") {
+    if (isFileValue(owner, "file-list")) {
         if (property === "length") {
             return {
                 kind: "number",
