@@ -95,6 +95,13 @@ test("Window targets retain document, extension and listener identity through st
         queueHost().enabled&&=false;
         if(queueOwners!==4||(window as QueueHost).enabled!==false)
             throw new Error("host logical truthiness");
+        function appendWindow(options:{host:QueueHost}):void {
+            options.host.queue??=[];
+            options.host.queue.push(7);
+        }
+        appendWindow({host:window as QueueHost});
+        if((window as QueueHost).queue?.[1]!==7)
+            throw new Error("host slot assignment preserves containing record");
         delete hosts[0]!.state;
         if (read(hosts[0]!)!==0) throw new Error("host field deletion");
         const optionalHosts:Array<Host|null>=[null,hosts[0]!];

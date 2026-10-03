@@ -9219,13 +9219,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       left,
                       ts.isIdentifier(left) ? "read" : "write",
                   );
-        this.emitLogicalSlotAssignment(expression, target);
+        const root = !ts.isIdentifier(left)
+            ? rootIdentifier(left, (chain) => this.context.unwrap(chain))
+            : undefined;
+        this.emitLogicalSlotAssignment(
+            expression,
+            target,
+            root ? this.context.bindings.lookupOptional(root) : undefined,
+        );
     }
 
     /** A host-selected reference uses the same lazy store without evaluating its receiver again. */
     public emitLogicalSlotAssignment(
         expression: ts.BinaryExpression,
         target: Value | undefined,
+        sourceOwner?: Value,
     ): void {
         const left = this.context.unwrap(expression.left);
         const scalarKind =
@@ -9320,15 +9328,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (!rebound) this.invalidateStaticElements(target);
             } else {
                 this.invalidateStaticElements(target);
-                const root = rootIdentifier(left, (chain) =>
-                    this.context.unwrap(chain),
-                );
-                const rootValue = root
-                    ? this.context.bindings.lookupOptional(root)
-                    : undefined;
-                if (rootValue) {
-                    this.invalidateStaticElements(rootValue);
-                    this.context.bindings.invalidateRecordProperties(rootValue);
+                if (sourceOwner) {
+                    this.invalidateStaticElements(sourceOwner);
+                    this.context.bindings.invalidateRecordProperties(
+                        sourceOwner,
+                    );
                 }
             }
         });
