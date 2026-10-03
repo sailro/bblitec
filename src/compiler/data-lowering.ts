@@ -1081,7 +1081,10 @@ export class DataLowerer {
             unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
             const instance = this.context.compileValue(unwrapped.expression);
-            if (instance.dataType?.kind === "struct")
+            if (
+                instance.dataType?.kind === "struct" &&
+                !this.context.dataTypes.isClassStruct(instance.dataType.name)
+            )
                 return this.propertyRead(instance, unwrapped);
             // A class field resolves to the local it was bound to, so
             // container methods and alias tracking see the same
