@@ -82,6 +82,10 @@ import {
     sameTypeFrames,
     type GenericFunctionDemand,
 } from "./generic-function-storage.js";
+import {
+    finiteArraySources,
+    type FiniteArraySources,
+} from "./finite-array-sources.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -858,6 +862,9 @@ export class DataTypeRegistry {
         private readonly genericFunctionDemands = new GenericFunctionStorage(),
     ) {}
 
+    /** @unjournaled Immutable checked source inventory shared across emission replays. */
+    private arraySources?: FiniteArraySources;
+
     /**
      * One walk over the repository's sources for the record facts that
      * decide struct layouts before anything is emitted:
@@ -872,6 +879,7 @@ export class DataTypeRegistry {
      *   (`Object.fromEntries(...) as Record<Union, V>`) is a view of it.
      */
     public registerRecordFacts(files: readonly ts.SourceFile[]): void {
+        this.arraySources = finiteArraySources(this.checker, files);
         for (const file of files) {
             if (file.isDeclarationFile) continue;
             forEachAnalysisNode(file, (node) => {
@@ -1691,6 +1699,10 @@ export class DataTypeRegistry {
                 if (!elementType) {
                     return undefined;
                 }
+                if ((elementType.flags & ts.TypeFlags.Unknown) !== 0) {
+                    const finite = this.finiteArrayType(node);
+                    if (finite) return finite;
+                }
                 const element = this.fromStoredTsType(elementType, node);
                 if (!element) {
                     return undefined;
@@ -1791,6 +1803,68 @@ export class DataTypeRegistry {
             return undefined;
         }
         return this.fromStructType(type, node);
+    }
+
+    /** @unjournaled Scoped recursion guard, emptied by finally after each query. */
+    private readonly finiteArraysInProgress = new Set<ts.Node>();
+
+    /** Unknown arrays acquire only layouts proven by their source writes. */
+    private finiteArrayType(node: ts.Node): DataType<"vector"> | undefined {
+        const sources = this.arraySources;
+        const writes = sources?.elements(node);
+        if (
+            !sources ||
+            !writes?.length ||
+            this.finiteArraysInProgress.has(node)
+        )
+            return undefined;
+        this.finiteArraysInProgress.add(node);
+        try {
+            const elements: DataType[] = [];
+            const mapped = (
+                expression: ts.Expression,
+            ): DataType | undefined => {
+                const spread = ts.isSpreadElement(expression);
+                const value = spread ? expression.expression : expression;
+                const source = this.checker.getTypeAtLocation(value);
+                const type = spread
+                    ? this.checker.getIndexTypeOfType(
+                          source,
+                          ts.IndexKind.Number,
+                      )
+                    : source;
+                return type
+                    ? this.fromStoredTsType(
+                          this.checker.getBaseTypeOfLiteralType(type),
+                          value,
+                      )
+                    : undefined;
+            };
+            for (const write of writes) {
+                const calls = sources.argumentsCalls(write);
+                if (calls !== undefined) {
+                    if (!calls.length) return undefined;
+                    for (const call of calls) {
+                        const lanes = call.arguments.map(mapped);
+                        if (lanes.some((lane) => !lane)) return undefined;
+                        const concrete = lanes.filter(
+                            (lane): lane is DataType => lane !== undefined,
+                        );
+                        elements.push({
+                            kind: "arguments",
+                            element: this.ownedArrayType(concrete).element,
+                        });
+                    }
+                } else {
+                    const element = mapped(write);
+                    if (!element) return undefined;
+                    elements.push(element);
+                }
+            }
+            return this.ownedArrayType(elements);
+        } finally {
+            this.finiteArraysInProgress.delete(node);
+        }
     }
 
     /** A stored JavaScript function with a fully native data signature. */
