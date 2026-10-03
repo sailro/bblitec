@@ -60,7 +60,7 @@ public:
     }
     [[nodiscard]] T get() const { return get(receiver_); }
     [[nodiscard]] T get(Receiver receiver) const {
-        return getter_ ? getter_(std::move(receiver)) : value_.get();
+        return getter_ ? getter_(std::move(receiver)) : value_;
     }
     void set(T value) { set(receiver_, std::move(value)); }
     void set(Receiver receiver, T value) {
@@ -73,7 +73,7 @@ public:
             return setter_(std::move(receiver), std::move(value));
         if (getter_)
             return false;
-        value_.set(std::move(value));
+        value_ = std::move(value);
         return true;
     }
     [[nodiscard]] bool has_own() const {
@@ -82,9 +82,9 @@ public:
         if (getter_ || setter_)
             return true;
         if constexpr (requires(T value) { value.is_undefined(); })
-            return !value_.get().is_undefined();
+            return !value_.is_undefined();
         else if constexpr (requires(T value) { static_cast<bool>(value); })
-            return static_cast<bool>(value_.get());
+            return static_cast<bool>(value_);
         else
             return true;
     }
@@ -104,7 +104,8 @@ public:
         return true;
     }
     void gc_trace(const TraceVisitor& visitor) const {
-        visitor(value_);
+        if constexpr (gc_traceable<T>)
+            visitor(value_);
         visitor(receiver_);
         visitor(getter_);
         visitor(setter_);
@@ -114,7 +115,7 @@ public:
     }
 
 private:
-    Accessor<T> value_;
+    T value_{};
     Receiver receiver_;
     Callback<T(Receiver)> getter_;
     Callback<bool(Receiver, T)> setter_;
@@ -122,7 +123,7 @@ private:
     Callback<bool()> remove_;
     Callback<bool(T)> define_;
     void replace(T value) {
-        value_ = Accessor<T>(std::move(value));
+        value_ = std::move(value);
         receiver_ = {};
         getter_ = {};
         setter_ = {};
