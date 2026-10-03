@@ -2516,6 +2516,8 @@ template <typename Close> void close_iterator(Close&& close, int exceptions) {
         try {
             close();
         } catch (...) {
+            // IteratorClose preserves the exception already unwinding.
+            return;
         }
     } else
         close();
@@ -2617,6 +2619,8 @@ template <typename T> struct GeneratorPromise {
         try {
             throw;
         } catch (const GeneratorClose&) {
+            // Requested close completes the generator normally.
+            return;
         } catch (...) {
             error = std::current_exception();
         }

@@ -68,6 +68,8 @@ template <typename T> struct AsyncGeneratorPromise {
         try {
             throw;
         } catch (const GeneratorClose&) {
+            // Requested close completes the generator normally.
+            return;
         } catch (...) {
             error = std::current_exception();
         }
