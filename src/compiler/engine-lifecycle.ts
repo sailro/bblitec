@@ -35,9 +35,12 @@ interface EngineLifecycleContext extends Pick<
     | "bindings"
     | "browserErasure"
     | "captureEmittedLines"
+    | "captureManagedClosureLines"
+    | "nativeEmission"
     | "checker"
     | "compileCallbackWithValues"
     | "compileValue"
+    | "deferredCapabilities"
     | "conditions"
     | "decreaseIndent"
     | "emit"
@@ -507,16 +510,22 @@ export class EngineLifecycle {
         );
         const engine = this.context.compileValue(argumentAt(call, 0));
         this.context.expectKind(engine, "engine", argumentAt(call, 0));
-        this.context.reachFeature(
-            name === "disposeEngine"
-                ? "engine:dispose"
-                : "engine:device-recovery",
-            call,
-        );
+        const deferredRealm =
+            !!this.context.options.deferredCapabilities &&
+            !!this.context.options.workers &&
+            name !== "disposeEngine";
+        if (!deferredRealm)
+            this.context.reachFeature(
+                name === "disposeEngine"
+                    ? "engine:dispose"
+                    : "engine:device-recovery",
+                call,
+            );
         if (name === "enableDeviceLostSceneRecovery") {
             if (
-                this.engineHasStarted() ||
-                this.context.isRuntimeResourceConstruction()
+                !deferredRealm &&
+                (this.engineHasStarted() ||
+                    this.context.isRuntimeResourceConstruction())
             )
                 this.context.fail(
                     call,
@@ -524,12 +533,9 @@ export class EngineLifecycle {
                 );
             const cpp =
                 this.context.allocateTemporaryCppName("device_recovery");
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cpp,
-                initializer: `bbl::enable_device_lost_scene_recovery(${engine.cpp})`,
-            });
+            if (deferredRealm) this.context.emitDiscardedValue(engine);
+            let registration:
+                (typeof this.deviceRecoveryCallbacks)[number] | undefined;
             if (call.arguments[1]) {
                 const node = call.arguments[1];
                 const options = this.context.compileValue(node);
@@ -549,14 +555,51 @@ export class EngineLifecycle {
                             `Unrepresented device recovery option '${key}'.`,
                         );
                 }
-                this.deviceRecoveryCallbacks.push({ cpp, options, node });
+                registration = { cpp, options, node };
             }
+            if (deferredRealm && registration)
+                this.emitDeviceRecoveryCallbacks([registration], true);
+            const deferred = deferredRealm
+                ? this.context.deferredCapabilities.emitKnown(
+                      call,
+                      {
+                          id: "babylon:enableDeviceLostSceneRecovery.application",
+                          origin: "babylon",
+                          operation: "call",
+                          timing: "throw",
+                          signature:
+                              "enableDeviceLostSceneRecovery(EngineContext, DeviceLostRecoveryCallbacks?): DeviceLostRecoveryHandle",
+                      },
+                      { kind: "handle", handle: "device-recovery" },
+                  )
+                : undefined;
+            this.context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: cpp,
+                initializer:
+                    deferred?.cpp ??
+                    `bbl::enable_device_lost_scene_recovery(${engine.cpp})`,
+            });
+            if (registration && !deferredRealm)
+                this.deviceRecoveryCallbacks.push(registration);
             return {
                 kind: "device-recovery",
                 cpp,
                 engineCpp: engine.cpp,
                 dataType: { kind: "handle", handle: "device-recovery" },
             };
+        }
+        if (deferredRealm) {
+            this.context.emitDiscardedValue(engine);
+            return this.context.deferredCapabilities.emitKnown(call, {
+                id: "babylon:forceWebGpuDeviceLossForTesting.application",
+                origin: "babylon",
+                operation: "call",
+                timing: "throw",
+                signature:
+                    "forceWebGpuDeviceLossForTesting(EngineContext): void",
+            });
         }
         return {
             kind: "void",
@@ -567,8 +610,11 @@ export class EngineLifecycle {
         };
     }
 
-    private emitDeviceRecoveryCallbacks(): void {
-        for (const registration of this.deviceRecoveryCallbacks.splice(0)) {
+    private emitDeviceRecoveryCallbacks(
+        registrations = this.deviceRecoveryCallbacks.splice(0),
+        discard = false,
+    ): void {
+        for (const registration of registrations) {
             const options = registration.options;
             for (const [source, target] of [
                 ["onLost", "on_lost"],
@@ -623,7 +669,7 @@ export class EngineLifecycle {
                               },
                           } satisfies Value)
                         : undefined;
-                const lines = this.context.captureEmittedLines(() => {
+                const emitBody = () => {
                     if (error)
                         this.context.registerNativeConstBinding(error, true);
                     const result = this.context.compileCallbackWithValues(
@@ -632,7 +678,27 @@ export class EngineLifecycle {
                         registration.node,
                     );
                     this.context.emitDiscardedValue(result);
-                });
+                };
+                if (discard) {
+                    const closure = this.context.captureManagedClosureLines(
+                        emitBody,
+                        false,
+                    );
+                    this.context.emitDiscardedValue({
+                        kind: "callback",
+                        cpp: this.context.nativeEmission.renderSharedClosure(
+                            closure,
+                            "void",
+                            callback,
+                            error
+                                ? `[[maybe_unused]] const std::string& ${error}`
+                                : "",
+                            error ? [error] : [],
+                        ),
+                    });
+                    continue;
+                }
+                const lines = this.context.captureEmittedLines(emitBody);
                 this.context.emit(
                     `${registration.cpp}->${target} = [&](${error ? `[[maybe_unused]] const std::string& ${error}` : ""}) {`,
                 );

@@ -525,6 +525,9 @@ export class ExpressionLowerer {
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;
+        const deferredFunction =
+            this.context.deferredCapabilities.functionValue(unwrapped);
+        if (deferredFunction) return deferredFunction;
         const ratio = devicePixelRatioValue(this.context, unwrapped);
         if (ratio) {
             if (ratio.staticNumber === undefined)
@@ -2818,6 +2821,17 @@ export class ExpressionLowerer {
                 `Indexed call target resolved to ${callable.kind}` +
                     `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
             );
+        }
+        if (this.context.libraryGlobal(callee) === "encodeURIComponent") {
+            this.context.expectArgumentCount(call, 1, 1);
+            const argument = argumentAt(call, 0);
+            const value = this.compileValue(argument);
+            this.context.reachJsData();
+            return {
+                kind: "string",
+                dataType: { kind: "string" },
+                cpp: `bbl::js::encode_uri_component(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
+            };
         }
         // `parseFloat(<query text>)`: the same value browser-erasure already
         // settles for a guard beside it. It travels through the one path

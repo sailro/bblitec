@@ -367,6 +367,9 @@ export class DataLowerer {
     public compileAssignmentValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
+        const deferred =
+            this.context.deferredCapabilities.assignment(expression);
+        if (deferred) return deferred;
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             return undefined;
         }
@@ -9504,6 +9507,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     public emitAssignment(expression: ts.BinaryExpression): boolean {
+        const deferred =
+            this.context.deferredCapabilities.assignment(expression);
+        if (deferred) {
+            this.context.emit({ kind: "expression", code: `${deferred.cpp};` });
+            return true;
+        }
         const operator = ASSIGNMENT_OPERATORS.get(
             expression.operatorToken.kind,
         );

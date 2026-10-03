@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/js_error.hpp>
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -95,11 +97,10 @@ namespace bbl::js {
 }
 
 /**
- * The UTF-8 of a WTF-8 string's USVString (Web IDL): a lone surrogate
- * (ED A0..BF xx) becomes U+FFFD, and a high and low surrogate stored apart
- * join into their code point. A string without surrogates is copied as is.
+ * Normalize WTF-8 into scalar UTF-8. Surrogate pairs join into their code point;
+ * unpaired surrogates either become U+FFFD (Web IDL) or throw (URI encoding).
  */
-[[nodiscard]] inline std::string usv_string(std::string_view text) {
+[[nodiscard]] inline std::string scalar_string(std::string_view text, bool reject_surrogates) {
     const auto unit_at = [&](std::size_t index) -> unsigned {
         if (index + 3 > text.size() || static_cast<unsigned char>(text[index]) != 0xedu ||
             static_cast<unsigned char>(text[index + 1]) < 0xa0u)
@@ -127,6 +128,8 @@ namespace bbl::js {
             result.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
             index += 6;
         } else {
+            if (reject_surrogates)
+                throw NamedError("URIError", "URI contains an unpaired surrogate");
             result += "\xef\xbf\xbd";
             index += 3;
         }
@@ -137,6 +140,10 @@ namespace bbl::js {
         return std::string(text);
     result.append(text.substr(copied));
     return result;
+}
+
+[[nodiscard]] inline std::string usv_string(std::string_view text) {
+    return scalar_string(text, false);
 }
 
 /** UTF-16 code units to UTF-8, a lone surrogate or odd trailing byte as U+FFFD. */

@@ -1,6 +1,7 @@
 import {
     deferredCapabilityDescriptor,
     deferredPropertyDescriptor,
+    deferredWindowFunctionSymbol,
 } from "./deferred-capabilities.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import {
@@ -1057,7 +1058,11 @@ export class BrowserErasure {
      */
     private isWebStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
-        if (this.context.libraryGlobal(unwrapped) === "localStorage") {
+        if (
+            this.context.libraryGlobal(unwrapped) === "localStorage" ||
+            (this.context.options.deferredCapabilities &&
+                this.context.libraryGlobal(unwrapped) === "sessionStorage")
+        ) {
             return true;
         }
         if (
@@ -1143,8 +1148,12 @@ export class BrowserErasure {
         const unwrapped = this.context.unwrap(expression);
         if (
             this.context.options.deferredCapabilities &&
-            ts.isPropertyAccessExpression(unwrapped) &&
-            deferredPropertyDescriptor(this.context.checker, unwrapped)
+            (deferredWindowFunctionSymbol(this.context.checker, unwrapped) ||
+                (ts.isPropertyAccessExpression(unwrapped) &&
+                    deferredPropertyDescriptor(
+                        this.context.checker,
+                        unwrapped,
+                    )))
         )
             return false;
         if (devicePixelRatioValue(this.context, unwrapped)) return false;

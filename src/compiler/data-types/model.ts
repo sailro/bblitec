@@ -96,6 +96,7 @@ export const DEFERRED_DOM_OBJECTS = [
     "AbortSignal",
     "MediaRecorder",
     "BlobEvent",
+    "IdleDeadline",
 ] as const;
 
 interface DataKinds {

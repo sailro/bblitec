@@ -33,28 +33,30 @@ type Context = Pick<
     | "reachFeature"
 >;
 
+/** Resolve native members even through an authored structural view of Window. */
+export function nativeWindowMember(
+    checker: ts.TypeChecker,
+    node: ts.PropertyAccessExpression,
+): ts.Symbol | undefined {
+    const direct = resolvedSymbol(checker, node);
+    if (declaredInDefaultLibrary(direct)) return direct;
+    const windowSymbol = checker.resolveName(
+        "Window",
+        undefined,
+        ts.SymbolFlags.Type,
+        false,
+    );
+    const member =
+        windowSymbol &&
+        checker.getPropertyOfType(
+            checker.getDeclaredTypeOfSymbol(windowSymbol),
+            node.name.text,
+        );
+    return declaredInDefaultLibrary(member) ? member : undefined;
+}
+
 /** Statically named Window extensions retain ordinary typed values for one realm. */
 export class WindowProperties {
-    private isNativeMember(node: ts.PropertyAccessExpression): boolean {
-        const checker = this.context.checker;
-        if (declaredInDefaultLibrary(resolvedSymbol(checker, node)))
-            return true;
-        const windowSymbol = checker.resolveName(
-            "Window",
-            undefined,
-            ts.SymbolFlags.Type,
-            false,
-        );
-        return (
-            windowSymbol !== undefined &&
-            declaredInDefaultLibrary(
-                checker.getPropertyOfType(
-                    checker.getDeclaredTypeOfSymbol(windowSymbol),
-                    node.name.text,
-                ),
-            )
-        );
-    }
     private readonly fields = new EmissionMap<
         string,
         { type: DataType; functionCpp: string }
@@ -101,7 +103,7 @@ export class WindowProperties {
         const node = context.unwrap(expression);
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         if (isAbsentWindowMember(node.name.text)) return undefined;
-        if (this.isNativeMember(node)) return undefined;
+        if (nativeWindowMember(context.checker, node)) return undefined;
         if (!this.mayBeTarget(node.expression)) return undefined;
         const owner = context.probeEmission(() => {
             const value = context.compileValue(node.expression);
@@ -128,7 +130,7 @@ export class WindowProperties {
             !this.context.options.workers ||
             this.context.options.workers.namespace ||
             isAbsentWindowMember(node.name.text) ||
-            this.isNativeMember(node) ||
+            nativeWindowMember(this.context.checker, node) ||
             !(
                 owner.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
                 owner.dataType?.kind === "event-target"

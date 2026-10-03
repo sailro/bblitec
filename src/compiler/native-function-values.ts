@@ -20,9 +20,11 @@ export function nativeFunctionValue(
     access: ts.Expression,
     type: DataType<"function">,
     body: string,
+    identityDeclaration?: ts.Declaration,
 ): Value {
     const symbol = resolvedSymbol(context.checker, access);
     const declaration =
+        identityDeclaration ??
         symbol?.declarations?.find(ts.isFunctionDeclaration) ??
         symbol?.valueDeclaration;
     if (!declaration)
