@@ -5,7 +5,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // Unreached sound, bus, and spatial behavior remains an explicit refusal.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type { Value } from "../types.js";
+import { presenceCpp, type Value } from "../types.js";
 import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { refuseAudioName } from "../audio-surface.js";
@@ -15,6 +15,7 @@ import {
     type NativeStatement,
 } from "../native-statements.js";
 import { lowerAudioSourceDisposal } from "../../lowering/audio-source-lowerer.js";
+import { isNullable } from "../type-facts.js";
 
 export interface AudioIntrinsicContext
     extends
@@ -32,6 +33,7 @@ export interface AudioIntrinsicContext
             | "options"
             | "bindings"
             | "deferredCapabilities"
+            | "checker"
         > {}
 
 const sourceDisposers = new EmissionWeakMap<object, string>();
@@ -141,9 +143,10 @@ function requireAbsentOptions(
         ? context.compileValue(argument)
         : undefined;
     if (value?.kind === "json-null") return;
-    if (value?.dataType?.kind === "optional") {
+    const present = value && presenceCpp(value);
+    if (present && isNullable(context.checker.getTypeAtLocation(argument))) {
         context.emit(
-            `if ((${value.cpp}).has_value()) throw std::runtime_error("${name} options are not lowered");`,
+            `if (${present}) throw std::runtime_error("${name} options are not lowered");`,
         );
         return;
     }

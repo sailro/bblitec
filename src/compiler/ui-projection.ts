@@ -744,10 +744,11 @@ export class UiProjection {
         call: ts.CallExpression,
         callee: ts.PropertyAccessExpression,
     ): boolean {
+        if (isDocumentReceiver(this.context, callee.expression))
+            return this.isNativeHostUiLookup(call);
         return (
             callee.name.text === "querySelector" ||
-            callee.name.text === "closest" ||
-            this.isNativeHostUiLookup(call)
+            callee.name.text === "closest"
         );
     }
 
@@ -5283,6 +5284,19 @@ export class UiProjection {
             call.arguments.length !== 1
         ) {
             return false;
+        }
+        // The primary presentation canvas already belongs to its scene or
+        // standalone Canvas2D host. A lookup cannot activate another owner
+        // before that host is constructed. Explicit companion elements and
+        // application realms still use the retained document representation.
+        if (!this.context.options.workers) {
+            const id = this.lookupElementId(call);
+            if (
+                id !== undefined &&
+                primaryCanvasIds(this.context).has(id) &&
+                !this.nativeHostUiTags().has(id)
+            )
+                return false;
         }
         return true;
     }

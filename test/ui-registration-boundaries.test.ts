@@ -5,6 +5,34 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
+test("primary canvas lookup preserves scene ownership and ordinary queries stay retained", () => {
+    for (const lookup of [
+        'document.getElementById("presentation")',
+        'document.querySelector("#presentation")',
+    ]) {
+        const result = compileSource(`
+            import {createEngine, createSceneContext, registerScene, startEngine} from "@babylonjs/lite";
+            const canvas = ${lookup} as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            canvas.addEventListener("touchstart", event => event.preventDefault(), {passive: false});
+            await registerScene(scene);
+            await startEngine(engine);
+            (window as unknown as {probe: unknown}).probe = {scene};
+        `);
+        assert.ok(!result.manifest.features.includes("platform:window"));
+        assert.doesNotMatch(
+            result.cpp,
+            /run_window_application|dom_window_property/,
+        );
+    }
+    const retained = compileSource(`
+        const element = document.querySelector("#ordinary-element");
+        if (element !== null) element.textContent = "retained";
+    `);
+    assert.ok(retained.manifest.features.includes("platform:window"));
+});
+
 test("document lookup activates retained ownership before construction and preserves style receivers", (t) => {
     const directory = resolve("artifacts/ui-registration-boundaries");
     mkdirSync(directory, { recursive: true });
