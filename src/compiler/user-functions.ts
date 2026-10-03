@@ -4853,6 +4853,26 @@ export class UserFunctionLowerer {
         if (runtimeRest?.dataType?.kind === "vector")
             concrete.push(runtimeRest.dataType.element);
         const arrayType = context.dataTypes.ownedArrayType(concrete);
+        const ownedLanes = lanes.map((value, index) => {
+            if (value.dataType || value.kind !== "record") return value;
+            const type = context.dataTypes.markStoredObjectReferences(
+                concrete[index]!,
+            );
+            const source = ts.isCallExpression(callNode)
+                ? (callNode.arguments[index] ?? reference)
+                : reference;
+            return withNativeMetadata(
+                context.dataLowerer.leafValue(
+                    context.dataLowerer.compileKnownValueForSink(
+                        value,
+                        type,
+                        source,
+                    ),
+                    type,
+                ),
+                value,
+            );
+        });
         const array =
             runtimeRest && !lanes.length
                 ? runtimeRest.cpp
@@ -4863,7 +4883,7 @@ export class UserFunctionLowerer {
                 type: context.dataTypes.cppType(arrayType),
                 name: array,
                 initializer: context.dataLowerer.compileKnownValueForSink(
-                    { kind: "tuple", cpp: "", tupleElements: lanes },
+                    { kind: "tuple", cpp: "", tupleElements: ownedLanes },
                     arrayType,
                     reference,
                 ),

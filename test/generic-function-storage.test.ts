@@ -229,6 +229,20 @@ check(
 `,
 );
 
+check(
+    "arguments-enum-record-lanes",
+    `
+    const reads:Array<()=>number>=[];
+    function capture(...items:unknown[]):void {
+        reads.push(()=>arguments.length);
+    }
+    const update=(value:'on'|'off'):void=>capture('policy','update',{value,label:'off'});
+    capture('policy','initial',{value:'off',label:'off'});
+    update('on');
+    if(reads[0]!()!==3||reads[1]!()!==3)throw new Error('typed Arguments record lanes');
+`,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",
