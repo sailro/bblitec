@@ -243,6 +243,36 @@ check(
 `,
 );
 
+check(
+    "arguments-prefix-object-alias",
+    `
+    interface Item {value:number;}
+    const saved:Array<()=>number>=[];
+    function capture(first:Item,...rest:unknown[]):void {
+        const received=arguments[0] as Item|undefined;
+        if(!received)throw new Error('missing prefix');
+        if(first!==received)throw new Error('prefix object identity');
+        first.value++;
+        if(received.value!==3)throw new Error('prefix mutation visible in arguments');
+        received.value++;
+        if(first.value!==4)throw new Error('arguments mutation visible in prefix');
+        saved.push(()=>first.value+received.value+rest.length);
+    }
+    capture({value:2},'tail');
+    if(saved[0]!()!==9)throw new Error('prefix alias lifetime');
+    function objects(first:Item,...rest:Item[]):void {
+        const firstArgument=arguments[0] as Item;
+        const lastArgument=arguments[1] as Item;
+        if(first!==firstArgument||rest[0]!==lastArgument)throw new Error('required and rest record identity');
+        rest[0]!.value=8;
+        if(lastArgument.value!==8)throw new Error('rest object mutation');
+        rest[0]={value:9};
+        if(lastArgument.value!==8||rest[0]===lastArgument)throw new Error('independent rest array slot');
+    }
+    objects({value:3},{value:4});
+`,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

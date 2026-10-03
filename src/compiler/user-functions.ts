@@ -4861,16 +4861,20 @@ export class UserFunctionLowerer {
             const source = ts.isCallExpression(callNode)
                 ? (callNode.arguments[index] ?? reference)
                 : reference;
-            return withNativeMetadata(
-                context.dataLowerer.leafValue(
-                    context.dataLowerer.compileKnownValueForSink(
-                        value,
+            return context.bindings.pinValueToTemporary(
+                withNativeMetadata(
+                    context.dataLowerer.leafValue(
+                        context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            type,
+                            source,
+                        ),
                         type,
-                        source,
                     ),
-                    type,
+                    value,
                 ),
-                value,
+                "argument_lane",
+                source,
             );
         });
         const array =
@@ -4919,9 +4923,28 @@ export class UserFunctionLowerer {
             cpp: name,
             dataType: type,
         });
-        if (trailing?.kind === "tuple" && rest === 0)
+        const prefix = ownedLanes.slice(0, rest);
+        if (runtimeRest) return [...prefix, runtimeRest];
+        if (rest === 0)
             return [context.dataLowerer.leafValue(array, arrayType)];
-        return undefined;
+        const restType = context.dataTypes.ownedArrayType(concrete.slice(rest));
+        const restArray = context.allocateTemporaryCppName("arguments_rest");
+        context.emit({
+            kind: "declaration",
+            type: context.dataTypes.cppType(restType),
+            name: restArray,
+            initializer: context.dataLowerer.compileKnownValueForSink(
+                {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: ownedLanes.slice(rest),
+                },
+                restType,
+                reference,
+            ),
+        });
+        context.registerNativeTemporary(restArray, restType);
+        return [...prefix, context.dataLowerer.leafValue(restArray, restType)];
     }
 
     private lower(
