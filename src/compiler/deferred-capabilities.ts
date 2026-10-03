@@ -17,6 +17,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import { nativeWindowMember } from "./window-properties.js";
+import { isDomReceiver } from "./dom-targets.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -487,20 +488,11 @@ export class DeferredCapabilities {
         const context = this.context;
         const receiver = context.unwrap(node);
         const global = context.libraryGlobal(receiver);
-        const isWindowType = (type: ts.Type): boolean => {
-            if (type.isUnion()) return type.types.every(isWindowType);
-            if (type.isIntersection()) return type.types.some(isWindowType);
-            return (
-                (type.symbol?.name === "Window" &&
-                    declaredInDomLibrary(type.symbol)) ||
-                (type.getBaseTypes() ?? []).some(isWindowType)
-            );
-        };
         return (
             value.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
             global === "window" ||
             global === "globalThis" ||
-            isWindowType(context.checker.getTypeAtLocation(receiver))
+            isDomReceiver(context, receiver, "Window")
         );
     }
 
