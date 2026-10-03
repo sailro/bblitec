@@ -30,6 +30,8 @@ export interface AudioIntrinsicContext
             | "expectObjectLiteral"
             | "nativeEmission"
             | "options"
+            | "bindings"
+            | "deferredCapabilities"
         > {}
 
 const sourceDisposers = new EmissionWeakMap<object, string>();
@@ -174,44 +176,53 @@ export function compileAudioIntrinsic(
             // listeners plus polling. Application `setInterval` calls are
             // separate platform input and run on the frame conductor.
             context.expectArgumentCount(call, 0, 1);
-            requireAbsentOptions(context, call.arguments[0], importedName);
-            context.reachFeature("audio:engine", call);
+            const supported = (): Value => {
+                context.reachFeature("audio:engine", call);
 
-            const engine = context.allocateTemporaryCppName("audio_engine");
-            const graph = mainOutputGraph(engine, `${engine}_ctx`);
-            if (context.options.workers) {
-                // A realm's context opens its device in a native job, and
-                // the engine promise settles after that device transition
-                // (the audio contract); the graph is built on the realm.
+                const engine = context.allocateTemporaryCppName("audio_engine");
+                const graph = mainOutputGraph(engine, `${engine}_ctx`);
+                if (context.options.workers) {
+                    // A realm's context opens its device in a native job, and
+                    // the engine promise settles after that device transition
+                    // (the audio contract); the graph is built on the realm.
+                    return {
+                        kind: "promise",
+                        cpp:
+                            `bbl::pal::audio_create_context_async(${context.audioSessionCpp()})` +
+                            `.then([](const bbl::pal::AudioContextHandle& ${engine}_ctx) { ` +
+                            `${graph.map(nativeStatementCode).join(" ")} ` +
+                            `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}; })`,
+                        promiseType: "bbl::AudioEngineHandle",
+                        promiseResult: {
+                            kind: "audio-engine",
+                            cpp: "",
+                            dataType: audioEngineType,
+                        },
+                    };
+                }
+                context.emit({
+                    kind: "declaration",
+                    type: "bbl::pal::AudioContextHandle",
+                    name: `${engine}_ctx`,
+                    initializer: `bbl::pal::audio_create_context(${context.audioSessionCpp()})`,
+                });
+                for (const statement of graph) context.emit(statement);
+                context.registerNativeTemporary(`${engine}_ctx`);
+                context.registerNativeTemporary(`${engine}_main_bus`);
                 return {
-                    kind: "promise",
-                    cpp:
-                        `bbl::pal::audio_create_context_async(${context.audioSessionCpp()})` +
-                        `.then([](const bbl::pal::AudioContextHandle& ${engine}_ctx) { ` +
-                        `${graph.map(nativeStatementCode).join(" ")} ` +
-                        `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}; })`,
-                    promiseType: "bbl::AudioEngineHandle",
-                    promiseResult: {
-                        kind: "audio-engine",
-                        cpp: "",
-                        dataType: audioEngineType,
-                    },
+                    kind: "audio-engine",
+                    cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
+                    dataType: audioEngineType,
                 };
-            }
-            context.emit({
-                kind: "declaration",
-                type: "bbl::pal::AudioContextHandle",
-                name: `${engine}_ctx`,
-                initializer: `bbl::pal::audio_create_context(${context.audioSessionCpp()})`,
-            });
-            for (const statement of graph) context.emit(statement);
-            context.registerNativeTemporary(`${engine}_ctx`);
-            context.registerNativeTemporary(`${engine}_main_bus`);
-            return {
-                kind: "audio-engine",
-                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
-                dataType: audioEngineType,
             };
+            const deferred = context.deferredCapabilities.compileOptions(
+                call,
+                0,
+                supported,
+            );
+            if (deferred) return deferred;
+            requireAbsentOptions(context, call.arguments[0], importedName);
+            return supported();
         }
 
         case "unlockAudioEngineAsync": {
@@ -259,42 +270,65 @@ export function compileAudioIntrinsic(
             // with no spatial, stereo or analyzer sub-node the graph's
             // head and tail are that one gain, which is what this emits.
             context.expectArgumentCount(call, 2, 3);
-            const engine = context.compileValue(argumentAt(call, 0));
+            let engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "audio-engine", argumentAt(call, 0));
-            const node = context.compileValue(argumentAt(call, 1));
+            const deferredOptions =
+                context.options.deferredCapabilities && call.arguments[2];
+            if (deferredOptions)
+                engine = context.bindings.pinValueToTemporary(
+                    engine,
+                    "audio_engine_argument",
+                    argumentAt(call, 0),
+                );
+            let node = context.compileValue(argumentAt(call, 1));
             context.expectKind(node, "audio-node", argumentAt(call, 1));
-            requireAbsentOptions(context, call.arguments[2], importedName);
-            const mainBus = `(${engine.cpp}).main_bus`;
-            const source = context.allocateTemporaryCppName("audio_source");
-            context.emit({
-                kind: "declaration",
-                type: "const bbl::pal::AudioNodeHandle",
-                name: source,
-                initializer: `bbl::pal::audio_create_gain((${engine.cpp}).context)`,
-            });
-            context.emit({
-                kind: "expression",
-                code: `bbl::pal::audio_connect(${source}, ${mainBus});`,
-            });
-            context.emit({
-                kind: "expression",
-                code: `bbl::pal::audio_connect(${node.cpp}, ${source});`,
-            });
-            const stored =
-                context.allocateTemporaryCppName("audio_source_state");
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: stored,
-                initializer: `bbl::js::make_gc_shared<bbl::AudioSourceState>(bbl::AudioSourceState{${node.cpp}, ${source}, ${engine.cpp}})`,
-            });
-            context.emit(`(${engine.cpp}).sources.add(${stored});`);
-            return {
-                kind: "audio-source",
-                cpp: stored,
-                dataType: { kind: "handle", handle: "audio-source" },
-                requiresExplicitDiscard: true,
+            if (deferredOptions)
+                node = context.bindings.pinValueToTemporary(
+                    node,
+                    "audio_node_argument",
+                    argumentAt(call, 1),
+                );
+            const supported = (): Value => {
+                const mainBus = `(${engine.cpp}).main_bus`;
+                const source = context.allocateTemporaryCppName("audio_source");
+                context.emit({
+                    kind: "declaration",
+                    type: "const bbl::pal::AudioNodeHandle",
+                    name: source,
+                    initializer: `bbl::pal::audio_create_gain((${engine.cpp}).context)`,
+                });
+                context.emit({
+                    kind: "expression",
+                    code: `bbl::pal::audio_connect(${source}, ${mainBus});`,
+                });
+                context.emit({
+                    kind: "expression",
+                    code: `bbl::pal::audio_connect(${node.cpp}, ${source});`,
+                });
+                const stored =
+                    context.allocateTemporaryCppName("audio_source_state");
+                context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: stored,
+                    initializer: `bbl::js::make_gc_shared<bbl::AudioSourceState>(bbl::AudioSourceState{${node.cpp}, ${source}, ${engine.cpp}})`,
+                });
+                context.emit(`(${engine.cpp}).sources.add(${stored});`);
+                return {
+                    kind: "audio-source",
+                    cpp: stored,
+                    dataType: { kind: "handle", handle: "audio-source" },
+                    requiresExplicitDiscard: true,
+                };
             };
+            const deferred = context.deferredCapabilities.compileOptions(
+                call,
+                2,
+                supported,
+            );
+            if (deferred) return deferred;
+            requireAbsentOptions(context, call.arguments[2], importedName);
+            return supported();
         }
 
         default:
