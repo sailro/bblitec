@@ -524,6 +524,18 @@ export class DataLowerer {
                 "Stored generic callbacks require a source call with concrete type arguments.",
             );
         this.context.useNativeValue(callback);
+        const argumentsCpp = this.functionValueArguments(type, values, node);
+        const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
+        return type.result
+            ? { ...this.leafValue(cpp, type.result), impure: true }
+            : { kind: "void", cpp };
+    }
+
+    private functionValueArguments(
+        type: DataType<"function">,
+        values: readonly Value[],
+        node: ts.Node,
+    ): string[] {
         const erased = new Set(type.erasedParameters ?? []);
         const argumentsCpp: string[] = [];
         let runtimeIndex = 0;
@@ -571,10 +583,106 @@ export class DataLowerer {
                     : this.context.dataTypes.absentValue(parameter),
             );
         }
-        const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
-        return type.result
-            ? { ...this.leafValue(cpp, type.result), impure: true }
-            : { kind: "void", cpp };
+        return argumentsCpp;
+    }
+
+    /** Apply snapshots its array after the callee and thisArg have been evaluated. */
+    private appliedFunctionArguments(
+        call: ts.CallExpression,
+        type: DataType<"function">,
+    ): string[] {
+        this.context.expectArgumentCount(call, 0, 2);
+        if (call.arguments[0])
+            this.context.emitDiscardedValue(
+                this.context.compileValue(call.arguments[0]),
+            );
+        const argument = call.arguments[1];
+        if (!argument) return this.functionValueArguments(type, [], call);
+        const value = this.context.compileValue(argument);
+        if (value.kind === "json-null") {
+            this.context.emitDiscardedValue(value);
+            return this.functionValueArguments(type, [], call);
+        }
+        if (value.kind === "tuple")
+            return this.functionValueArguments(
+                type,
+                (value.tupleElements ?? []).map((lane) =>
+                    pinOperand(this.context, lane, argument, "apply_argument"),
+                ),
+                call,
+            );
+        const storage = value.dataType ?? this.dataTypeAt(argument);
+        if (
+            storage?.kind !== "tuple" &&
+            storage?.kind !== "product" &&
+            storage?.kind !== "vector"
+        )
+            this.context.fail(
+                argument,
+                "Function.apply requires an owned tuple or array argument list.",
+            );
+        const source = this.context.allocateTemporaryCppName("apply_arguments");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: source,
+            initializer: this.compileKnownValueForSink(
+                value,
+                storage,
+                argument,
+            ),
+        });
+        const owner = this.leafValue(source, storage);
+        if (storage.kind === "vector") {
+            if (type.erasedParameters?.length)
+                this.context.fail(
+                    argument,
+                    "Function.apply with an array requires represented parameter lanes.",
+                );
+            return type.parameters.map((parameter, index) => {
+                if (index === type.restParameter)
+                    return this.compileKnownValueForSink(
+                        this.arrayRestValue(owner, index, argument),
+                        parameter,
+                        argument,
+                    );
+                const optional =
+                    parameter.kind === "optional" ||
+                    type.optionalParameters?.includes(index);
+                if (!optional)
+                    this.context.emit(
+                        `if (${source}.size() <= ${index}) throw std::runtime_error("Function.apply is missing a required represented argument.");`,
+                    );
+                const selected = optional
+                    ? this.guardableElementRead(
+                          owner,
+                          ts.factory.createElementAccessExpression(
+                              argument,
+                              ts.factory.createNumericLiteral(index),
+                          ),
+                      )
+                    : this.leafValue(`${source}[${index}]`, storage.element);
+                if (!selected)
+                    this.context.fail(
+                        argument,
+                        "Function.apply requires a represented optional array lane.",
+                    );
+                return this.compileKnownValueForSink(
+                    selected,
+                    parameter,
+                    argument,
+                );
+            });
+        }
+        const count =
+            storage.kind === "tuple" ? storage.arity : storage.elements.length;
+        return this.functionValueArguments(
+            type,
+            Array.from({ length: count }, (_, index) =>
+                this.fixedTupleElement(owner, index, argument)!,
+            ),
+            call,
+        );
     }
 
     /** Arguments for a stored std::function, including omitted TS optionals. */
@@ -582,8 +690,10 @@ export class DataLowerer {
         call: ts.CallExpression,
         functionType: DataType & { kind: "function" },
         label = "Stored function",
-        argumentOffset = 0,
+        argumentOffset: number | "apply" = 0,
     ): string[] {
+        if (argumentOffset === "apply")
+            return this.appliedFunctionArguments(call, functionType);
         for (const argument of call.arguments.slice(0, argumentOffset))
             this.context.emitDiscardedValue(
                 this.context.compileValue(argument),
@@ -6185,13 +6295,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callable: string,
         functionType: DataType<"function">,
         receiver?: string,
-        argumentOffset = 0,
+        argumentOffset: number | "apply" = 0,
     ): Value {
         if (functionType.generic) {
             if (argumentOffset !== 0)
                 this.context.fail(
                     call,
-                    "Stored generic Function.call requires a concrete signature.",
+                    "Stored generic Function.call/apply requires a concrete signature.",
                 );
             const field = this.context.dataTypes.genericFunctionCall(
                 functionType.generic,
@@ -6244,7 +6354,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callable: string,
         functionType: DataType<"function">,
         receiver?: string,
-        argumentOffset = 0,
+        argumentOffset: number | "apply" = 0,
     ): Value {
         // A called helper can clear the slot without invalidating TypeScript's
         // property narrowing. Optional invocation still observes that absence.
@@ -6266,7 +6376,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 name: callback,
                 initializer: `bbl::js::snapshot_callback(${callable})`,
             });
-            if (call.questionDotToken)
+            if (
+                call.questionDotToken ||
+                (argumentOffset !== 0 &&
+                    ts.isPropertyAccessExpression(call.expression) &&
+                    call.expression.questionDotToken)
+            )
                 this.context.emit(`if (!${callback}) ${missing}`);
             this.context.enterRuntimeControlFlow();
             try {

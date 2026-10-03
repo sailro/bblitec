@@ -279,7 +279,9 @@ render and post-process tasks of builds with temporal anti-aliasing.
 Same-engine canvases have independent targets, cameras, rectangles and input ownership.
 
 Compute tasks retain identity, writable names/execution gates and replaceable disposers.
-Stored functions admit `bind(thisArg)` without partial arguments or dynamic `this` rebinding.
+Stored functions admit `call` and `apply` over owned argument arrays and tuples, and
+`bind(thisArg)` without dynamic `this` rebinding. Map/Set lookup and mutation methods
+admit receiver binding with represented partial arguments; other partial binding refuses.
 Compute uniform layouts require generation-known field names/types and retain source packing,
 validation and distinct object identity. Uniform buffers and task-owned arenas retain padded staging,
 aligned slots and disposal. Typed writers admit f32/u32/i32 scalars and numeric vector/matrix arrays;

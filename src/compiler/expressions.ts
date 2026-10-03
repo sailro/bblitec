@@ -3,6 +3,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
+import { compileBoundCollectionMethod } from "./collection-functions.js";
 import { EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -4280,15 +4281,18 @@ export class ExpressionLowerer {
                 : undefined);
         if (
             !inferred &&
-            (this.context.symbols.isNullishLiteral(
-                this.context.unwrap(unwrapped.whenTrue),
-            ) ||
+            (this.context.checker
+                .getTypeAtLocation(unwrapped)
+                .getCallSignatures().length > 0 ||
+                this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(unwrapped.whenTrue),
+                ) ||
                 this.context.symbols.isNullishLiteral(
                     this.context.unwrap(unwrapped.whenFalse),
                 ))
         ) {
-            // Selecting an anonymous callback record or absence needs owned
-            // storage even when ordinary inference keeps the record static.
+            // Selected callbacks and nullable callback records need owned
+            // storage even when ordinary inference keeps them static.
             const stored = this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(unwrapped),
                 unwrapped,
@@ -4859,7 +4863,7 @@ export class ExpressionLowerer {
             : record;
     }
 
-    /** Function.call/bind consume a function object before their arguments run. */
+    /** Function call adapters consume the function object before their arguments run. */
     private compileFunctionObject(expression: ts.Expression): Value {
         if (
             this.context.checker
@@ -4921,6 +4925,12 @@ export class ExpressionLowerer {
                 .getTypeAtLocation(callee.expression)
                 .getCallSignatures().length > 0
         ) {
+            const collection = compileBoundCollectionMethod(
+                this.context.dataLowerer,
+                call,
+                callee.expression,
+            );
+            if (collection) return collection;
             this.context.expectArgumentCount(call, 1, 1);
             const callable = this.compileFunctionObject(callee.expression);
             if (
@@ -5003,7 +5013,7 @@ export class ExpressionLowerer {
                 engineCpp,
             };
         }
-        if (callee.name.text === "call") {
+        if (callee.name.text === "call" || callee.name.text === "apply") {
             const functionCall = this.context.probeEmission(() => {
                 const objectCall = compileObjectPrototypeCall(
                     this.context,
@@ -5024,7 +5034,7 @@ export class ExpressionLowerer {
                         callable.cpp,
                         callable.dataType,
                         undefined,
-                        1,
+                        callee.name.text === "apply" ? "apply" : 1,
                     );
                 }
                 return undefined;

@@ -38,7 +38,7 @@ function nativeCheck(
 }
 
 test("call and bind refuse unrepresented dynamic receivers and partial binding", () => {
-    for (const method of ["call", "bind"])
+    for (const method of ["call", "bind", "apply"])
         assert.throws(
             () =>
                 compileSource(`
@@ -64,6 +64,105 @@ test("call and bind refuse unrepresented dynamic receivers and partial binding",
         /arguments/,
     );
 });
+
+test("apply retains ordered callee selection, optional lanes and fresh rest arrays", (t) =>
+    nativeCheck(
+        t,
+        "apply-arguments",
+        `
+    let trace="";
+    const callbacks:((a:number,b?:number)=>number)[]=[(a,b=2)=>a+b];
+    function target():number{trace+="T";return 0;}
+    function receiver():undefined{trace+="R";callbacks[0]=()=>-1;return undefined;}
+    function argumentsList():[number,number?]{trace+="A";return [3];}
+    if(callbacks[target()]!.apply(receiver(),argumentsList())!==5||trace!=="TRA")throw new Error("apply order");
+    function throwing():undefined{trace+="E";throw new Error("receiver");}
+    try{callbacks[0]!.apply(throwing(),argumentsList());}catch(error){if(error.message!=="receiver")throw error;}
+    if(trace!=="TRAE")throw new Error("apply throw suppression");
+    const optional:((a?:number)=>number)[]=[(a=7)=>a];
+    if(optional[0]!.apply(undefined)!==7||optional[0]!.apply(undefined,undefined)!==7)throw new Error("absent apply list");
+    const mixed=(label:string,count:number):string=>label+count;
+    const tuple:[string,number]=["value",4];
+    if(mixed.apply(undefined,tuple)!=="value4")throw new Error("heterogeneous tuple");
+    type Item={value:number};const items:Item[]=[{value:2}];
+    const rest=(...values:Item[]):number=>{values[0]!.value++;values.push({value:9});return values.length;};
+    if(rest.apply(undefined,items)!==2||items.length!==1||items[0]!.value!==3)throw new Error("rest owns array and shares elements");
+    const prefix=(first:number,...tail:number[]):number=>first+tail.reduce((a,b)=>a+b,0);
+    const numbers:[number,...number[]]=[1,2,3];
+    if(prefix.apply(undefined,numbers)!==6)throw new Error("rest prefix");
+    class Holder{run:((value:number)=>number)|null=null;}
+    const holders:Holder[]=[new Holder()];let effects=0;
+    function absentArgs():[number]{effects++;return [4];}
+    if(holders[0]!.run?.apply(undefined,absentArgs())!==undefined||effects!==0)throw new Error("optional apply suppression");
+    if(holders[0]!.run?.call(undefined,++effects)!==undefined||effects!==0)throw new Error("optional call suppression");
+`,
+    ));
+
+test("bound collection operations retain supplied receiver identity and partial arguments", (t) =>
+    nativeCheck(
+        t,
+        "collection-bind",
+        `
+    let trace="";
+    const lookup=new Map<string,number>([["lookup",1]]);
+    let receiver=new Map<string,number>([["chosen",2]]);
+    const original=receiver;
+    function target():Map<string,number>{trace+="T";return lookup;}
+    function owner():Map<string,number>{trace+="R";return receiver;}
+    function key():string{trace+="K";receiver=new Map();return "chosen";}
+    const has=target().has.bind(owner(),key());
+    if(trace!=="TRK"||!has()||receiver.size!==0)throw new Error("bound selection");
+    const read=lookup.get.bind(original);const write=lookup.set.bind(original,"other");
+    if(write(7)!==original||read("other")!==7||read("missing")!==undefined)throw new Error("bound map operations");
+    const remove=lookup.delete.bind(original);if(!remove("chosen")||has())throw new Error("live receiver");
+    const clear=lookup.clear.bind(original);clear();if(original.size!==0)throw new Error("bound clear");
+    function membership(){const set=new Set<number>([1]);return {has:set.has.bind(set),add:set.add.bind(set),drop:set.delete.bind(set)};}
+    const first=membership(),second=membership();first.add(2);
+    if(!first.has(2)||second.has(2)||!first.drop(1)||first.has===second.has)throw new Error("retained set identity");
+    const callbacks:((key:string)=>boolean)[]=[lookup.has.bind(lookup)];
+    if(!callbacks[0]!("lookup"))throw new Error("stored bound callback");
+    type Entry={value:number};const entry:Entry={value:3};
+    const records=new Map<string,Entry>([["entry",entry]]);
+    const getRecord=records.get.bind(records),setRecord=records.set.bind(records,"other",entry);
+    setRecord();const selected=getRecord("other");
+    if(selected!==entry||getRecord("missing")!==undefined)throw new Error("bound record identity");
+    selected!.value=9;if(entry.value!==9)throw new Error("bound record mutation");
+`,
+    ));
+
+test("stored optional async callbacks retain the source null-return contract", (t) =>
+    nativeCheck(
+        t,
+        "stored-async-call",
+        `
+    type Source={remove?:(key:string)=>Promise<void>};let count=0;
+    async function prepare(source:Source):Promise<(()=>Promise<boolean>)|null>{
+        const remove=source.remove;if(!remove)return null;
+        return async()=>{await remove.call(source,"entry");return true;};
+    }
+    const source:Source={remove:async(key)=>{if(key!=="entry")throw new Error("key");count++;}};
+    void(async()=>{if(await prepare({})!==null)throw new Error("absent");const remove=await prepare(source);source.remove=undefined;
+        if(!remove||!await remove()||count!==1)throw new Error("stored async call");globalThis.close();})();
+`,
+        true,
+    ));
+
+test("conditional generic callbacks retain concrete signature demands in either branch", (t) =>
+    nativeCheck(
+        t,
+        "conditional-generics",
+        `
+    type Track=<T>(label:string,work:()=>T)=>T;
+    let calls=0;
+    const tracks:Track[]=[(_label,work)=>{calls++;return work();}];
+    for(let i=0;i<2;i++){
+        const track=tracks[i];
+        const selected=track?<T>(label:string,work:()=>T):T=>track(label,work):<T>(_label:string,work:()=>T):T=>work();
+        if(selected("tag",()=>7)!==7||selected("tag",()=>"kept")!=="kept")throw new Error("generic callback choice");
+    }
+    if(calls!==2)throw new Error("unselected callback branch");
+`,
+    ));
 
 test("stored callable selection, receiver effects and arguments run in source order", (t) =>
     nativeCheck(
