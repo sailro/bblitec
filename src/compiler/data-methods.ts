@@ -20,6 +20,7 @@ import {
     regularExpressionParts,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { isObjectIdentityFunction } from "./static-evaluator.js";
 import {
     captureArrayReceiver,
     compileArrayValueMethod,
@@ -2138,9 +2139,22 @@ function compileArrayMap(
 ): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
+    const callback = call.arguments[0]
+        ? lowerer.context.unwrap(call.arguments[0])
+        : undefined;
+    const identity =
+        method === "map" &&
+        callback &&
+        isObjectIdentityFunction(callback, (expression) =>
+            lowerer.context.libraryGlobal(expression),
+        );
     const requested: DataType<"vector"> | undefined = state.typedResult
         ? { kind: "vector", element: { kind: "number" } }
-        : (state.expectedResult ?? arrayResultType(lowerer, call));
+        : (state.expectedResult ??
+          arrayResultType(lowerer, call) ??
+          (identity
+              ? { kind: "vector", element: dataType.element }
+              : undefined));
     if (requested?.kind !== "vector") {
         lowerer.context.fail(
             call,
@@ -2148,9 +2162,6 @@ function compileArrayMap(
         );
     }
     let mappedType = requested;
-    const callback = call.arguments[0]
-        ? lowerer.context.unwrap(call.arguments[0])
-        : undefined;
     if (
         method === "map" &&
         call.arguments.length === 1 &&

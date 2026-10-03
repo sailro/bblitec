@@ -3448,6 +3448,24 @@ export class DataTypeRegistry {
         return { kind: "undefined" };
     }
 
+    /** Intersection constraints keep their refinements without hiding concrete generic fields. */
+    private structProperties(type: ts.Type): readonly ts.Symbol[] {
+        const properties = this.checker.getPropertiesOfType(type);
+        if (!type.isIntersection()) return properties;
+        const byName = new Map(
+            properties.map((property) => [property.name, property]),
+        );
+        for (const member of type.types) {
+            const concrete = this.resolveTypeParameter(member);
+            for (const property of concrete.isIntersection()
+                ? this.structProperties(concrete)
+                : this.checker.getPropertiesOfType(concrete))
+                if (!byName.has(property.name))
+                    byName.set(property.name, property);
+        }
+        return [...byName.values()];
+    }
+
     private fromStructTypeInner(
         type: ts.Type,
         node: ts.Node,
@@ -3455,7 +3473,7 @@ export class DataTypeRegistry {
         allowStoredFunctions: boolean,
     ): DataType | undefined {
         if (isDomEventType(this.checker, type)) return undefined;
-        const properties = this.checker.getPropertiesOfType(type);
+        const properties = this.structProperties(type);
         if (properties.length === 0) {
             return undefined;
         }

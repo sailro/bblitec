@@ -2213,10 +2213,10 @@ export class ExpressionLowerer {
                           : present.kind === "string"
                             ? { kind: "string" as const }
                             : undefined);
-                if (!inner || inner.kind === "optional") {
+                if (!inner) {
                     this.context.fail(
                         node,
-                        `Conditional record property '${name}' must have one non-optional native data type.`,
+                        `Conditional record property '${name}' must have one native data type.`,
                     );
                 }
                 // The registry's nullable rule keeps a reference struct bare,
@@ -2228,10 +2228,13 @@ export class ExpressionLowerer {
                         inner,
                         node,
                     );
-                const populated = this.context.dataTypes.presentValue(
-                    optional,
-                    valueCpp,
-                );
+                const populated =
+                    inner.kind === "optional"
+                        ? valueCpp
+                        : this.context.dataTypes.presentValue(
+                              optional,
+                              valueCpp,
+                          );
                 const absent = this.context.dataTypes.absentValue(optional);
                 selected[name] = {
                     kind: "data",

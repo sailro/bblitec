@@ -69,6 +69,7 @@ import { cppIdentifierPattern } from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { isObjectIdentityFunction } from "./static-evaluator.js";
 import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
@@ -5416,7 +5417,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ];
                 const value = storedMapper
                     ? this.compileFunctionValueCall(storedMapper, args, call)
-                    : context.compileCallbackWithValues(mapper, args, call);
+                    : context.compileCallbackWithValues(
+                          mapper,
+                          args,
+                          call,
+                          false,
+                          { resultType: type.element },
+                      );
                 context.emit({
                     kind: "expression",
                     code: `${result}.push_back(${this.compileKnownValueForSink(value, type.element, call)});`,
@@ -6085,6 +6092,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
+        const identity = isObjectIdentityFunction(callback, (expression) =>
+            this.context.libraryGlobal(expression),
+        );
         const local =
             ts.isIdentifier(callback) ||
             ts.isArrowFunction(callback) ||
@@ -6115,8 +6125,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             sourceType &&
                 `${!receiverPolicy.snapshotIdentity && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
-        const storedCallback = this.prepareCallbackValue(callback, label);
-        if (!local && !storedCallback)
+        const storedCallback = identity
+            ? undefined
+            : this.prepareCallbackValue(callback, label);
+        if (!local && !storedCallback && !identity)
             this.context.fail(
                 callback,
                 `Array.${method} requires a represented callback.`,
@@ -6198,48 +6210,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ].includes(method);
                 const predicate =
                     predicateMethod && !this.callbackReturnsBoolean(callback);
-                let result = storedCallback
-                    ? this.compileFunctionValueCall(
-                          storedCallback,
-                          callbackArguments,
-                          call,
-                      )
-                    : booleanConstructor
-                      ? dataType.element.kind === "boolean"
-                          ? {
-                                kind: "boolean" as const,
-                                cpp: elementValue.cpp,
-                                dataType: { kind: "boolean" as const },
-                            }
-                          : dataType.element.kind === "number"
-                            ? (this.context.reachJsData(),
-                              {
+                let result = identity
+                    ? callbackValue
+                    : storedCallback
+                      ? this.compileFunctionValueCall(
+                            storedCallback,
+                            callbackArguments,
+                            call,
+                        )
+                      : booleanConstructor
+                        ? dataType.element.kind === "boolean"
+                            ? {
                                   kind: "boolean" as const,
-                                  cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
+                                  cpp: elementValue.cpp,
                                   dataType: { kind: "boolean" as const },
-                              })
-                            : dataType.element.kind === "string"
-                              ? {
+                              }
+                            : dataType.element.kind === "number"
+                              ? (this.context.reachJsData(),
+                                {
                                     kind: "boolean" as const,
-                                    cpp: `!(${elementValue.cpp}).empty()`,
+                                    cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
                                     dataType: { kind: "boolean" as const },
-                                }
-                              : this.context.fail(
-                                    callback,
-                                    `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
-                                )
-                      : predicate
-                        ? this.context.compilePredicateWithValues(
-                              local!,
-                              callbackArguments,
-                              call,
-                          )
-                        : this.context.compileCallbackWithValues(
-                              local!,
-                              callbackArguments,
-                              call,
-                              method === "forEach",
-                          );
+                                })
+                              : dataType.element.kind === "string"
+                                ? {
+                                      kind: "boolean" as const,
+                                      cpp: `!(${elementValue.cpp}).empty()`,
+                                      dataType: { kind: "boolean" as const },
+                                  }
+                                : this.context.fail(
+                                      callback,
+                                      `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
+                                  )
+                        : predicate
+                          ? this.context.compilePredicateWithValues(
+                                local!,
+                                callbackArguments,
+                                call,
+                            )
+                          : this.context.compileCallbackWithValues(
+                                local!,
+                                callbackArguments,
+                                call,
+                                method === "forEach",
+                            );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
                         kind: "boolean",

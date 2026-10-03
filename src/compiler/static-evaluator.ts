@@ -13,6 +13,19 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
     "preventExtensions",
 ]);
 
+/** The checked Object identity functions also retain their input as callbacks. */
+export function isObjectIdentityFunction(
+    expression: ts.Expression,
+    libraryGlobal: LibraryGlobal,
+): boolean {
+    const node = unwrapExpression(expression);
+    return (
+        ts.isPropertyAccessExpression(node) &&
+        OBJECT_IDENTITY_CALLS.has(node.name.text) &&
+        libraryGlobal(node.expression) === "Object"
+    );
+}
+
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
 function objectIdentityCallArgument(
     expression: ts.Expression,
@@ -21,9 +34,7 @@ function objectIdentityCallArgument(
     if (
         !ts.isCallExpression(expression) ||
         expression.arguments.length !== 1 ||
-        !ts.isPropertyAccessExpression(expression.expression) ||
-        !OBJECT_IDENTITY_CALLS.has(expression.expression.name.text) ||
-        libraryGlobal(expression.expression.expression) !== "Object"
+        !isObjectIdentityFunction(expression.expression, libraryGlobal)
     ) {
         return undefined;
     }

@@ -93,6 +93,8 @@ export interface CallbackInvocationOptions {
     coroutine?: true;
     frameDriven?: true;
     generator?: DataType<"iterator">;
+    /** A concrete collection sink can retain its mapper's declared result model. */
+    resultType?: DataType;
 }
 
 const directCallBindingCache = new EmissionWeakMap<
@@ -1242,6 +1244,7 @@ export interface UserFunctionContext
             | "dataLowerer"
             | "useNativeValue"
             | "compileValue"
+            | "unwrap"
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
             | "sharedClosures"
@@ -5072,7 +5075,12 @@ export class UserFunctionLowerer {
                 if (specialized) return specialized;
                 const returnType = discardReturn
                     ? undefined
-                    : this.valueLambdaReturnType(context, ir, callNode);
+                    : this.valueLambdaReturnType(
+                          context,
+                          ir,
+                          callNode,
+                          body?.resultType,
+                      );
                 if (this.documentReturnStorage(returnType)) {
                     try {
                         return context.probeEmission(() =>
@@ -5359,15 +5367,34 @@ export class UserFunctionLowerer {
         ir: UserFunctionIr,
         expression: ts.Expression,
     ): Value {
-        let returned = context.compileValue(expression);
         // Mutable arrays in returned records retain their declared storage,
         // including empty arrays and tuple fields written through aliases.
         const signature = context.checker.getSignatureFromDeclaration(
             ir.declaration,
         );
-        if (signature) {
-            const resultType =
-                context.checker.getReturnTypeOfSignature(signature);
+        const resultType =
+            signature && context.checker.getReturnTypeOfSignature(signature);
+        const declaredResult =
+            resultType &&
+            ir.declaration.type &&
+            context.checker.isArrayType(resultType)
+                ? context.dataTypes.fromTsType(resultType, ir.declaration)
+                : undefined;
+        const ownedResult =
+            declaredResult &&
+            context.dataTypes.ownReturnedArray(declaredResult);
+        const source =
+            ownedResult?.kind === "vector"
+                ? context.unwrap(expression)
+                : undefined;
+        const mappedArray =
+            ownedResult?.kind === "vector" &&
+            source &&
+            ts.isCallExpression(source)
+                ? context.dataLowerer.compileArrayFrom(source, ownedResult)
+                : undefined;
+        let returned = mappedArray ?? context.compileValue(expression);
+        if (resultType) {
             returned = context.bindings.materializeDeclaredRecordContainers(
                 returned,
                 context.checker.getAwaitedType(resultType) ?? resultType,
@@ -5730,6 +5757,7 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         ir: UserFunctionIr,
         callNode: ts.Node,
+        expectedResult?: DataType,
     ): DataType {
         const signature = this.checker.getSignatureFromDeclaration(
             ir.declaration,
@@ -5795,6 +5823,7 @@ export class UserFunctionLowerer {
             );
             if (!incompatible) type = inferred;
         }
+        type ??= expectedResult;
         if (!type) {
             context.fail(
                 callNode,
