@@ -66,7 +66,11 @@ import {
     staticStringValue,
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
-import { enclosingLoopControl, firstReturn } from "./loop-control.js";
+import {
+    emitReachableStatements,
+    enclosingLoopControl,
+    firstReturn,
+} from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -1997,25 +2001,47 @@ export class StatementLowerer {
                             .map((line) => line.slice(0, -1))
                             .join(", ");
                     }
+                    let terminates = false;
+                    const body = context.captureEmittedStatements(() => {
+                        context.bindings.pushScope(
+                            context.allocateBlockPrefix(),
+                        );
+                        try {
+                            this.inRuntimeControlFlow(context, () => {
+                                terminates = emitReachableStatements(
+                                    {
+                                        emitStatement: (nested) =>
+                                            this.emit(context, nested),
+                                        statementTerminatesAfterLowering: (
+                                            nested,
+                                        ) =>
+                                            this.terminatesAfterLowering(
+                                                nested,
+                                            ),
+                                    },
+                                    bodyStatements(statement),
+                                );
+                            });
+                        } finally {
+                            context.bindings.popScope();
+                        }
+                    });
+                    // A specialized body may always leave the loop. A continue
+                    // still reaches the incrementor, including inside a switch.
+                    if (
+                        terminates &&
+                        !enclosingLoopControl(statement.statement, {
+                            breaks: false,
+                        })
+                    )
+                        header = "";
                     context.emit({
                         kind: "open",
                         code: `for (; ${condition}; ${header}) {`,
                         iteration: true,
                     });
                     context.increaseIndent();
-                    context.bindings.pushScope(context.allocateBlockPrefix());
-                    try {
-                        const statements = ts.isBlock(statement.statement)
-                            ? statement.statement.statements
-                            : [statement.statement];
-                        this.inRuntimeControlFlow(context, () => {
-                            for (const nested of statements) {
-                                this.emit(context, nested);
-                            }
-                        });
-                    } finally {
-                        context.bindings.popScope();
-                    }
+                    context.emitCapturedStatements(body);
                     context.decreaseIndent();
                     context.emit({ kind: "close", code: "}" });
                 },

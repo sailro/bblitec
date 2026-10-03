@@ -32,6 +32,23 @@ const source = `
     function stop(): never { throw new Error("stop"); }
     try { (stop(), touched++); } catch (_error) {}
     if (touched !== 0) throw new Error("comma must stop at an abrupt left operand");
+    function visit(count: number, accept: () => boolean): number {
+        for (let i = 0; i < count; i++) {
+            if (!accept()) return i;
+        }
+        return -1;
+    }
+    if (visit(4, () => false) !== 0 || visit(0, () => false) !== -1)
+        throw new Error("specialized return or empty loop");
+    let increments = 0;
+    function choose(count: number): number {
+        for (let i = 0; i < count; i++, increments++) {
+            switch (i) { case 0: continue; default: return i; }
+        }
+        return -1;
+    }
+    if (choose(3) !== 1 || increments !== 1)
+        throw new Error("continue inside switch reaches incrementor");
 `;
 
 test("for increment sequences remain in the header and preserve ordinary iteration", () => {
