@@ -54,6 +54,8 @@ import type { DeploymentOptions } from "./deployment.js";
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
     tag: string;
+    /** Inline classic script to execute at this parser position. */
+    startupScript?: string;
     /** Text before the children. */
     text?: string;
     attributes?: Record<string, string>;
@@ -111,12 +113,18 @@ export interface PageLoaderProgram {
     specifier: string;
 }
 
+export interface PageStartupScript {
+    fileName: string;
+    source: string;
+}
+
 /** The HTML page that hosts the entry. */
 export interface HostPageProgram {
     path: string;
     /** The site root "/" names; the page's own directory by default. */
     root?: string;
     loader?: PageLoaderModule;
+    startup?: PageStartupScript[];
 }
 
 /** A host file line a refusal points at when no source node does. */
@@ -3056,6 +3064,7 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     fileName: string;
     /** The page's inline module script in the program, and the import of the entry it ends with. */
     pageLoader?: PageLoaderProgram;
+    pageStartup?: readonly ts.SourceFile[];
     title: string;
     width: number;
     height: number;

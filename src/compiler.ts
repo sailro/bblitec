@@ -580,6 +580,9 @@ function compileSourceApplication(
                       },
                   }
                 : {}),
+            ...(input.startupFiles?.length && !workers?.namespace
+                ? { pageStartup: input.startupFiles }
+                : {}),
             ...(options.sourceProfile?.length
                 ? { sourceProfile: options.sourceProfile }
                 : {}),
@@ -1035,6 +1038,10 @@ class Compiler implements LoweringServices {
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
+        if (this.options.pageStartup?.length) {
+            if (!this.options.workers) throw new ApplicationRealmRequired();
+            this.emitNativeHostUi();
+        }
         // The page's script runs up to its import of the entry, which then
         // evaluates the entry's imports and the entry itself.
         this.pageLoader?.emit((statement) => this.emitStatement(statement));
@@ -1042,7 +1049,7 @@ class Compiler implements LoweringServices {
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
         this.emitEntryBody(entry);
-        this.emitNativeHostUi();
+        if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         if (this.features.has("engine:device-recovery")) {
             if (
@@ -1160,12 +1167,28 @@ class Compiler implements LoweringServices {
     public readonly pendingHostUiLookups: Value[] = emissionArray([]);
 
     private emitNativeHostUi(): void {
+        const startup = this.options.pageStartup;
+        const script = startup
+            ? (fileName: string): string[] => {
+                  const source = startup.find(
+                      (file) => resolve(file.fileName) === resolve(fileName),
+                  );
+                  if (!source)
+                      this.failAtFile(
+                          `Missing page startup script '${fileName}'.`,
+                      );
+                  return this.captureEmittedLines(() => {
+                      for (const statement of source.statements)
+                          this.emitStatement(statement);
+                  });
+              }
+            : undefined;
         const host = this.options.nativeHostUi;
         const emitted = host
             ? this.attributeRefusalsTo({ file: host.sourcePath, line: 1 }, () =>
-                  this.ui.compileHostUi(),
+                  this.ui.compileHostUi(script),
               )
-            : this.ui.compileHostUi();
+            : this.ui.compileHostUi(script);
         const insertion = this.options.workers
             ? 0
             : (this.engineCreationInsertion ?? this.body.length);

@@ -29,6 +29,12 @@ test("dynamic DOM query deferral preserves receivers, arguments and optional sho
         if ((documents[0]?.querySelector(selector()) ?? null) !== null) throw new Error("absent document");
         if (elements[0]?.querySelectorAll(selector()) !== undefined) throw new Error("absent element");
         if (caught !== 4 || order !== "DQDQEQEQ") throw new Error("query effects " + order);
+        try { doc().querySelector(":disabled"); } catch (error) { caught++; }
+        try { doc().querySelectorAll(":not(:disabled)"); } catch (error) { caught++; }
+        try { element().matches(":focus"); } catch (error) { caught++; }
+        try { element().closest(":hover"); } catch (error) { caught++; }
+        if (elements[0]?.matches(":disabled") !== undefined) throw new Error("absent state query");
+        if (caught !== 8 || order !== "DQDQEQEQDDEE") throw new Error("state query effects " + order);
         if (document.querySelector("#target") !== root) throw new Error("static query changed");
         globalThis.close();
     `;
@@ -41,7 +47,11 @@ test("dynamic DOM query deferral preserves receivers, arguments and optional sho
         deferredCapabilities: "runtime-throw",
     });
     const sites = result.manifest.deferredCapabilities ?? [];
-    assert.equal(sites.length, 6);
+    assert.equal(sites.length, 11);
+    assert.equal(
+        sites.filter((site) => site.id.endsWith("interaction-selector")).length,
+        5,
+    );
     assert.ok(
         sites.every(
             (site) => site.operation === "call" && site.timing === "throw",

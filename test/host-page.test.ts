@@ -160,7 +160,53 @@ test("a page sheet's refusal names the line of its rule", () => {
 test("markup the host model cannot represent refuses, naming the page", () => {
     const refusals: [() => unknown, RegExp][] = [
         [() => page([], [entryScript], "BackCompat"), /quirks mode/],
-        [() => page([], [element("script"), entryScript]), /classic <script>/],
+        [
+            () =>
+                page(
+                    [],
+                    [element("script", { src: "external.js" }), entryScript],
+                ),
+            /classic <script>/,
+        ],
+        [() => page([element("script")], [entryScript]), /in the head/],
+        [
+            () =>
+                page(
+                    [],
+                    [
+                        element("script", undefined, [
+                            { text: "var shared = 1;" },
+                        ]),
+                        entryScript,
+                    ],
+                ),
+            /global declarations/,
+        ],
+        [
+            () =>
+                page(
+                    [],
+                    [
+                        element("script"),
+                        element("style", undefined, [
+                            { text: "body { color: red; }" },
+                        ]),
+                        entryScript,
+                    ],
+                ),
+            /ordered stylesheet/,
+        ],
+        [
+            () =>
+                page(
+                    [],
+                    [
+                        element("script", { type: "application/json" }),
+                        entryScript,
+                    ],
+                ),
+            /not compiled/,
+        ],
         [
             () =>
                 page([], [element("button", { onclick: "go()" }), entryScript]),

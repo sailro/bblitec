@@ -5,7 +5,7 @@
  * also describe. `host-page-parser.ts` parses the page with Chromium.
  *
  * What the host model cannot represent refuses here, naming the page:
- * classic and data scripts, inline event handlers, external style sheets,
+ * external and head classic scripts, data scripts, inline event handlers, external style sheets,
  * foreign (SVG/MathML) markup and head content with an effect.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -20,6 +20,7 @@ import type {
     NativeHostUiNode,
     NativeHostUiStyleSheet,
     PageLoaderModule,
+    PageStartupScript,
 } from "./compiler/types.js";
 import {
     parseHostPageMarkup,
@@ -259,6 +260,7 @@ export function hostPageFromDocument(
     const styleSheets: NativeHostUiStyleSheet[] = [];
     const scripts: HostPageElement[] = [];
     let title: string | undefined;
+    const startup: PageStartupScript[] = [];
 
     const readStyle = (element: HostPageElement): void => {
         for (const [name, value] of Object.entries(element.attributes ?? {}))
@@ -276,8 +278,13 @@ export function hostPageFromDocument(
         const attributes = child.attributes ?? {};
         const attributeCount = Object.keys(attributes).length;
         if (child.tag === "style") readStyle(child);
-        else if (child.tag === "script") scripts.push(child);
-        else if (child.tag === "title") title = textContent(child).trim();
+        else if (child.tag === "script") {
+            scripts.push(child);
+            if (child.attributes?.type?.trim().toLowerCase() !== "module")
+                refuse(
+                    "classic <script> in the head requires parser-owned document construction.",
+                );
+        } else if (child.tag === "title") title = textContent(child).trim();
         else if (child.tag === "meta") {
             const { charset, name, content = "" } = attributes;
             if (attributeCount === 1 && charset?.toLowerCase() === "utf-8")
@@ -336,9 +343,57 @@ export function hostPageFromDocument(
             if (node.tag === undefined) return [node];
             if (node.tag === "script") {
                 scripts.push(node);
-                return [];
+                const type = node.attributes?.type?.trim().toLowerCase();
+                if (type === "module") return [];
+                if (
+                    type &&
+                    !/^(?:text|application)\/(?:java|ecma)script$/.test(type)
+                ) {
+                    refuse(`<script type="${type}"> is not compiled.`);
+                    return [];
+                }
+                for (const attribute of Object.keys(node.attributes ?? {}))
+                    if (attribute !== "type")
+                        refuse(
+                            `classic <script> attribute '${attribute}' is not represented.`,
+                        );
+                const inline = textContent(node);
+                const fileName = `${resolve(page.path)}.inline-classic-${startup.length + 1}.js`;
+                const source = "\n".repeat(lines.line(inline) - 1) + inline;
+                const parsed = ts.createSourceFile(
+                    fileName,
+                    source,
+                    ts.ScriptTarget.ES2022,
+                    true,
+                    ts.ScriptKind.JS,
+                );
+                if (
+                    parsed.statements.some(
+                        (statement) =>
+                            !ts.isExpressionStatement(statement) &&
+                            !ts.isEmptyStatement(statement),
+                    )
+                )
+                    refuse(
+                        "classic <script> requires expression statements; global declarations and control statements need shared script binding ownership.",
+                    );
+                startup.push({ fileName, source });
+                return [
+                    {
+                        tag: "script",
+                        text: inline,
+                        ...(node.attributes
+                            ? { attributes: node.attributes }
+                            : {}),
+                        startupScript: fileName,
+                    },
+                ];
             }
             if (node.tag === "style") {
+                if (startup.length)
+                    refuse(
+                        "a style sheet after a classic <script> requires ordered stylesheet activation.",
+                    );
                 readStyle(node);
                 return [];
             }
@@ -367,18 +422,9 @@ export function hostPageFromDocument(
     while (blank(elements[0])) elements.shift();
     while (blank(elements.at(-1))) elements.pop();
 
-    const modules = scripts.filter((script) => {
-        const type = script.attributes?.type?.trim().toLowerCase();
-        if (type === "module") return true;
-        refuse(
-            type === undefined ||
-                type === "" ||
-                /^(?:text|application)\/(?:java|ecma)script$/.test(type)
-                ? "has a classic <script>; the page's entry is its module script and other scripts are not compiled."
-                : `has a <script type="${type}">, which is not compiled.`,
-        );
-        return false;
-    });
+    const modules = scripts.filter(
+        (script) => script.attributes?.type?.trim().toLowerCase() === "module",
+    );
     if (modules.length > 1)
         refuse("has several module scripts; a native program has one entry.");
     if (refusals.length > 0)
@@ -405,6 +451,7 @@ export function hostPageFromDocument(
         ...(title ? { title } : {}),
         entry,
         ...(loader ? { loader } : {}),
+        ...(startup.length ? { startup } : {}),
         ...(hasDocument
             ? {
                   hostUi: {

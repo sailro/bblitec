@@ -4604,6 +4604,18 @@ export class UiProjection {
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
         if (
+            this.context.options.workers &&
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(globalLeft) &&
+            ts.isPropertyAccessExpression(globalLeft.expression) &&
+            globalLeft.expression.name.text === "dataset" &&
+            this.compileUiElementReceiver(globalLeft.expression.expression)
+        )
+            this.context.fail(
+                expression,
+                "Compound retained dataset assignments require a represented attribute update.",
+            );
+        if (
             expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
             ts.isPropertyAccessExpression(globalLeft) &&
             (globalLeft.name.text === "textContent" ||
@@ -5321,7 +5333,7 @@ export class UiProjection {
         return reached;
     }
 
-    public compileHostUi(): string[] {
+    public compileHostUi(startup?: (fileName: string) => string[]): string[] {
         const hostUi = this.context.options.nativeHostUi;
         const primaryIds =
             this.context.options.workers &&
@@ -5589,14 +5601,27 @@ export class UiProjection {
                         `${indent}bbl::ui_canvas_set_${name}(${engine}, ${handle}, ${doubleLiteral(Number(size))});`,
                     );
             }
+            const attach = parent
+                ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
+                : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`;
+            if (startup) emitted.push(attach);
             for (const child of element.children ?? []) {
                 appendElement(child, handle);
             }
-            emitted.push(
-                parent
-                    ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
-                    : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`,
-            );
+            if (!startup) emitted.push(attach);
+            if (element.startupScript) {
+                if (!startup)
+                    this.context.failAtFile(
+                        "A host script requires a checked page startup program.",
+                    );
+                emitted.push(
+                    `${indent}bbl::pal::EventLoop::current().dispatch_callback([&] {`,
+                    ...startup(element.startupScript).map(
+                        (line) => indent + "    " + line,
+                    ),
+                    `${indent}});`,
+                );
+            }
         };
         for (const element of hostUi?.elements ?? []) {
             appendElement(element);
