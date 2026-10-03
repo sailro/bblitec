@@ -429,7 +429,7 @@ test("evaluates erased void callback defaults before the callback body", () => {
     );
 });
 
-test("distinguishes callback expressions in static and runtime loops", () => {
+test("distinguishes callback expressions in static and runtime loops", (t) => {
     const result = compileSource(`
         const callbacks = new Set<() => void>();
         const seen = new Set<number>();
@@ -453,7 +453,7 @@ test("distinguishes callback expressions in static and runtime loops", () => {
     );
     assert.match(
         result.cpp,
-        /for \(auto&& (\w+) : v_callbacks\) \{\s*const auto (\w+) = bbl::js::snapshot_callback\(\1\);\s*\2\(\);/,
+        /for \(auto&& (\w+) : v_callbacks\) \{\s*static_cast<void>\(\1\);\s*const auto (\w+) = bbl::js::snapshot_callback\(\1\);\s*\2\(\);/,
     );
 
     const runtime = compileSource(`
@@ -485,6 +485,8 @@ test("distinguishes callback expressions in static and runtime loops", () => {
             .length,
         1,
     );
+    if (!nativeTools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(nativeTools, "callback-loop-identities", result.cpp);
 });
 
 test("borrows keyboard and base Event views from their active callbacks", () => {
