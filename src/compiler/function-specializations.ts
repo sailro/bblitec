@@ -34,6 +34,11 @@ export class FunctionSpecializations<T> {
     private readonly symbols = new EmissionMap<symbol, number>();
     @journaled private accessor nextObject = 0;
     private readonly entries = new EmissionMap<ts.Node, Map<string, T>>();
+    /** @unjournaled Ordered string-property schemas depend only on immutable name sequences. */
+    private readonly propertySchemas = new Map<
+        string,
+        readonly { name: string | symbol; key: string }[]
+    >();
 
     private identity(value: object): number {
         let id = this.objects.get(value);
@@ -46,34 +51,110 @@ export class FunctionSpecializations<T> {
 
     key(scope: FunctionEmissionScope, values: readonly unknown[]): string {
         const seen = new Map<object, number>();
-        const encode = (value: unknown): string => {
-            if (value === null) return "null";
-            if (typeof value === "number" && Object.is(value, -0))
-                return "number:-0";
-            if (typeof value === "symbol") {
-                if (!this.symbols.has(value))
-                    this.symbols.set(value, this.symbols.size);
-                return `symbol:${this.symbols.get(value)}`;
+        const tokens = [
+            `${this.identity(scope.lexical)}:${scope.emission}:${scope.block}:${scope.continuation}:`,
+        ];
+        const symbolKey = (value: symbol): string => {
+            if (!this.symbols.has(value))
+                this.symbols.set(value, this.symbols.size);
+            return `symbol:${this.symbols.get(value)}`;
+        };
+        const propertySchema = (value: object) => {
+            const names = Reflect.ownKeys(value);
+            const schema = names.every((name) => typeof name === "string")
+                ? JSON.stringify(names)
+                : undefined;
+            const cached =
+                schema === undefined
+                    ? undefined
+                    : this.propertySchemas.get(schema);
+            if (cached) return cached;
+            const properties = names
+                .map((name) => ({
+                    name,
+                    key:
+                        typeof name === "symbol"
+                            ? symbolKey(name)
+                            : `string:${JSON.stringify(name)}`,
+                }))
+                .sort((left, right) =>
+                    left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
+                );
+            if (schema !== undefined)
+                this.propertySchemas.set(schema, properties);
+            return properties;
+        };
+        const encode = (value: unknown): void => {
+            if (value === null) {
+                tokens.push("null");
+                return;
             }
-            if (typeof value === "function")
-                return `function:${this.identity(value)}`;
+            if (typeof value === "number" && Object.is(value, -0)) {
+                tokens.push("number:-0");
+                return;
+            }
+            if (typeof value === "symbol") {
+                tokens.push(symbolKey(value));
+                return;
+            }
+            if (typeof value === "function") {
+                tokens.push(`function:${this.identity(value)}`);
+                return;
+            }
             if (
                 value === undefined ||
                 typeof value === "string" ||
                 typeof value === "number" ||
                 typeof value === "bigint" ||
                 typeof value === "boolean"
-            )
-                return `${typeof value}:${JSON.stringify(String(value))}`;
-            if (isCompilerInput(value)) return `input:${this.identity(value)}`;
+            ) {
+                tokens.push(`${typeof value}:${JSON.stringify(String(value))}`);
+                return;
+            }
+            if (isCompilerInput(value)) {
+                tokens.push(`input:${this.identity(value)}`);
+                return;
+            }
             const previous = seen.get(value);
-            if (previous !== undefined) return `ref:${previous}`;
+            if (previous !== undefined) {
+                tokens.push(`ref:${previous}`);
+                return;
+            }
             seen.set(value, seen.size);
-            if (Array.isArray(value)) return `[${value.map(encode).join(",")}]`;
-            if (value instanceof Map)
-                return `map:[${[...value].map(([key, item]) => `${encode(key)}=${encode(item)}`).join(",")}]`;
-            if (value instanceof Set)
-                return `set:[${[...value].map(encode).join(",")}]`;
+            if (Array.isArray(value)) {
+                tokens.push("[");
+                const length = value.length;
+                for (let index = 0; index < length; index++) {
+                    if (index) tokens.push(",");
+                    if (index in value) encode(value[index]);
+                }
+                tokens.push("]");
+                return;
+            }
+            if (value instanceof Map) {
+                tokens.push("map:[");
+                let first = true;
+                for (const [key, item] of value) {
+                    if (!first) tokens.push(",");
+                    first = false;
+                    encode(key);
+                    tokens.push("=");
+                    encode(item);
+                }
+                tokens.push("]");
+                return;
+            }
+            if (value instanceof Set) {
+                tokens.push("set:[");
+                let first = true;
+                for (const item of value) {
+                    if (!first) tokens.push(",");
+                    first = false;
+                    encode(item);
+                }
+                tokens.push("]");
+                return;
+            }
             const prototype: unknown = Object.getPrototypeOf(value);
             if (
                 ArrayBuffer.isView(value) ||
@@ -93,26 +174,39 @@ export class FunctionSpecializations<T> {
                           value.byteLength,
                       )
                     : new Uint8Array(value);
-                return `${view ? "view" : "buffer"}:${this.identity(prototype)}:${Array.from(bytes).join(",")}`;
+                tokens.push(
+                    `${view ? "view" : "buffer"}:${this.identity(prototype)}:${Array.from(bytes).join(",")}`,
+                );
+                return;
             }
-            if (prototype !== Object.prototype && prototype !== null)
-                return `object:${this.identity(value)}`;
-            return `{${Reflect.ownKeys(value)
-                .map((name) => ({ name, key: encode(name) }))
-                .sort((left, right) =>
-                    left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
-                )
-                .map(({ name, key }) => {
-                    const descriptor = Object.getOwnPropertyDescriptor(
-                        value,
-                        name,
-                    )!;
+            if (prototype !== Object.prototype && prototype !== null) {
+                tokens.push(`object:${this.identity(value)}`);
+                return;
+            }
+            const properties = propertySchema(value);
+            tokens.push("{");
+            for (let index = 0; index < properties.length; index++) {
+                const { name, key } = properties[index]!;
+                if (index) tokens.push(",");
+                tokens.push(key, ":");
+                const descriptor = Object.getOwnPropertyDescriptor(
+                    value,
+                    name,
+                )!;
+                if ("value" in descriptor) encode(descriptor.value);
+                else {
+                    tokens.push("accessor:");
                     // eslint-disable-next-line @typescript-eslint/unbound-method -- Snapshot accessor identities without invoking them.
-                    return `${key}:${"value" in descriptor ? encode(descriptor.value) : `accessor:${encode(descriptor.get)}:${encode(descriptor.set)}`}`;
-                })
-                .join(",")}}`;
+                    encode(descriptor.get);
+                    tokens.push(":");
+                    // eslint-disable-next-line @typescript-eslint/unbound-method -- Snapshot accessor identities without invoking them.
+                    encode(descriptor.set);
+                }
+            }
+            tokens.push("}");
         };
-        return `${this.identity(scope.lexical)}:${scope.emission}:${scope.block}:${scope.continuation}:${encode(values)}`;
+        encode(values);
+        return tokens.join("");
     }
 
     get(declaration: ts.Node, key: string): T | undefined {

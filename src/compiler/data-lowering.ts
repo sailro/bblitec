@@ -12,6 +12,7 @@ import {
     withNativeMetadata,
 } from "./types.js";
 import { emitStringAppend } from "./expressions.js";
+import { BranchState } from "./branch-state.js";
 import {
     compileDataExpressionSink,
     compileDataValueSink,
@@ -359,7 +360,7 @@ export class DataLowerer {
         ts.ObjectLiteralExpression,
         string[]
     >();
-    private readonly ownership = new EmissionMap<string, LocalOwnership>();
+    private readonly ownership = new BranchState<LocalOwnership>();
 
     public constructor(public readonly context: DataLoweringContext) {}
 
@@ -760,15 +761,9 @@ export class DataLowerer {
         }
     }
 
-    /** Captures alias states so a terminating branch can roll back. */
-    public snapshotAliasState(): Map<string, string> {
-        return new Map(this.ownership);
-    }
-
-    public restoreAliasState(snapshot: Map<string, string>): void {
-        for (const [name, state] of snapshot) {
-            this.ownership.set(name, state as LocalOwnership);
-        }
+    /** Restore only the alias states changed by a terminating branch. */
+    public withPreservedAliasState(work: () => void): void {
+        this.ownership.withRestoredChanges(work);
     }
 
     private rootName(cpp: string): string {

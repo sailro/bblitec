@@ -33,7 +33,7 @@ import {
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
 import { classMemberTable, classMethod } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
-import { storedSourceTypes } from "./storage-demand-index.js";
+import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
     borrowsReferenceParameter,
@@ -2199,35 +2199,13 @@ export class NativeFunctionLowerer {
         sourceType: ts.Type,
         structName: string,
     ): boolean {
-        const target = this.context.checker.getNonNullableType(sourceType);
         const cached = this.referenceStorageCache.get(structName);
         if (cached !== undefined) return cached;
-        const sameType = (candidate: ts.Type): boolean => {
-            const normalized =
-                this.context.checker.getNonNullableType(candidate);
-            return (
-                normalized === target ||
-                (normalized.aliasSymbol !== undefined &&
-                    normalized.aliasSymbol === target.aliasSymbol) ||
-                (normalized.symbol !== undefined &&
-                    normalized.symbol === target.symbol) ||
-                // The data registry coalesces structurally equal records.
-                // A differently named equivalent type can therefore impose
-                // the same storage requirement on this native parameter.
-                (this.context.checker.isTypeAssignableTo(normalized, target) &&
-                    this.context.checker.isTypeAssignableTo(target, normalized))
-            );
-        };
-        let stored = false;
-        for (const candidate of storedSourceTypes(
+        const stored = sourceTypeRequiresReferenceStorage(
             this.context.checker,
             this.context.sourceFiles(),
-        )) {
-            if (sameType(candidate)) {
-                stored = true;
-                break;
-            }
-        }
+            sourceType,
+        );
         this.referenceStorageCache.set(structName, stored);
         return stored;
     }
