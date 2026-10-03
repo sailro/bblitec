@@ -1202,6 +1202,7 @@ export class ClassLowerer {
         if (classErrorBase(this.table(declaration)))
             for (const field of ERROR_CLASS_FIELDS)
                 layout.push({ ...field, source: field.sourceName });
+        const sources = new Set(layout.map((field) => field.source));
         for (const member of classChainInstanceProperties(
             this.table(declaration),
         )) {
@@ -1211,8 +1212,10 @@ export class ClassLowerer {
                 source,
             );
             if (field) {
-                if (!layout.some((entry) => entry.source === source))
+                if (!sources.has(source)) {
                     layout.push({ ...field, source });
+                    sources.add(source);
+                }
             }
         }
         return layout;

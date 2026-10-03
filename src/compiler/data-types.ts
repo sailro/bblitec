@@ -3848,9 +3848,13 @@ export class DataTypeRegistry {
         type: ts.Type,
     ): DataStructField[] {
         const table = this.classHierarchy.table(declaration);
+        const errorBase = classErrorBase(table);
         const fields: DataStructField[] = table.errorBase
             ? ERROR_CLASS_FIELDS.map((field) => ({ ...field }))
             : [];
+        const fieldsByName = new Map(
+            fields.map((field) => [field.sourceName, field]),
+        );
         for (const member of classInstanceProperties(declaration)) {
             if (!ts.isMemberName(member.name)) {
                 this.fail(
@@ -3859,7 +3863,7 @@ export class DataTypeRegistry {
                 );
             }
             const nativeName = sanitizeIdentifier(structFieldName(member.name));
-            if (classErrorBase(table) && nativeName === "bbl_error")
+            if (errorBase && nativeName === "bbl_error")
                 this.fail(
                     member,
                     "A class field collides with the internal Error payload slot.",
@@ -3890,9 +3894,7 @@ export class DataTypeRegistry {
                 continue;
             }
             const sourceName = member.name.text;
-            const inheritedErrorField = fields.find(
-                (field) => field.sourceName === sourceName,
-            );
+            const inheritedErrorField = fieldsByName.get(sourceName);
             if (inheritedErrorField) {
                 if (
                     this.typeKey(inheritedErrorField.type) !==
@@ -3904,7 +3906,7 @@ export class DataTypeRegistry {
                     );
                 continue;
             }
-            fields.push({
+            const field: DataStructField = {
                 sourceName: member.name.text,
                 name: nativeName,
                 type: this.markStoredObjectReferences(
@@ -3916,7 +3918,9 @@ export class DataTypeRegistry {
                 )
                     ? { readOnly: true }
                     : {}),
-            });
+            };
+            fields.push(field);
+            fieldsByName.set(sourceName, field);
         }
         return fields;
     }

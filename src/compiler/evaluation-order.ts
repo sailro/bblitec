@@ -187,6 +187,8 @@ export class EvaluationOrder {
     private readonly deterministic = new Map<Unit, boolean>();
     /** @unjournaled Module effects depend only on checked source bodies. */
     private readonly moduleEffects = new WeakMap<ts.Node, boolean>();
+    /** @unjournaled Different initializers share the effects of their checked callees. */
+    private readonly moduleUnitEffects = new WeakMap<Unit, boolean>();
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -262,8 +264,21 @@ export class EvaluationOrder {
         const known = this.moduleEffects.get(node);
         if (known !== undefined) return known;
         const active = new Set<Unit>();
-        const complete = new Set<Unit>();
-        const visit = (roots: readonly ts.Node[]): boolean => {
+        const visitUnit = (unit: Unit): boolean => {
+            const known = this.moduleUnitEffects.get(unit);
+            if (known !== undefined) return known;
+            // A reachable cycle remains conservative even without host effects.
+            if (active.has(unit)) return true;
+            active.add(unit);
+            try {
+                const result = visit(unitRoots(unit), unit);
+                this.moduleUnitEffects.set(unit, result);
+                return result;
+            } finally {
+                active.delete(unit);
+            }
+        };
+        const visit = (roots: readonly ts.Node[], unit?: Unit): boolean => {
             let effects = false;
             for (const root of roots) {
                 forEachAnalysisNode(
@@ -325,16 +340,14 @@ export class EvaluationOrder {
                 );
                 if (effects) return true;
             }
-            const access = this.walk(roots, undefined);
+            // Fresh-local heap facts differ, but module admission reads only
+            // unknown accesses and callees, which are independent of that frame.
+            const access = unit
+                ? this.directAccess(unit)
+                : this.walk(roots, undefined);
             if (access.reads.any || access.writes.any) return true;
-            for (const callee of access.callees) {
-                if (active.has(callee)) return true;
-                if (complete.has(callee)) continue;
-                active.add(callee);
-                if (visit(unitRoots(callee))) return true;
-                active.delete(callee);
-                complete.add(callee);
-            }
+            for (const callee of access.callees)
+                if (visitUnit(callee)) return true;
             return false;
         };
         const result = visit([node]);
