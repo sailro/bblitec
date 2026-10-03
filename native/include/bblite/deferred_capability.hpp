@@ -14,6 +14,12 @@ class DeferredAbortController final {
 class DeferredAbortSignal final {
     DeferredAbortSignal() = delete;
 };
+class DeferredMediaRecorder final {
+    DeferredMediaRecorder() = delete;
+};
+class DeferredBlobEvent final {
+    DeferredBlobEvent() = delete;
+};
 
 class DeferredCapabilityError final : public std::runtime_error {
 public:

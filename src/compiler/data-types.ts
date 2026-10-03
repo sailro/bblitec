@@ -1,4 +1,5 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
+import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
     BUFFER_VIEW_KINDS,
@@ -1486,12 +1487,11 @@ export class DataTypeRegistry {
                     : declaredInDefaultLibrary(type.symbol)),
         );
         if (libraryObject) return { kind: libraryObject[2] };
-        if (
+        const deferredObject =
             declaredInDomLibrary(type.symbol) &&
-            (type.symbol.name === "AbortController" ||
-                type.symbol.name === "AbortSignal")
-        )
-            return { kind: "deferred-dom-object", name: type.symbol.name };
+            DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
+        if (deferredObject)
+            return { kind: "deferred-dom-object", name: deferredObject };
         if (declaredIn(type.symbol, "dom", "webgpu")) {
             if (type.symbol?.name === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };

@@ -91,6 +91,13 @@ export type TypedArrayKind =
     | "i16array"
     | "u32array"
     | "i32array";
+export const DEFERRED_DOM_OBJECTS = [
+    "AbortController",
+    "AbortSignal",
+    "MediaRecorder",
+    "BlobEvent",
+] as const;
+
 interface DataKinds {
     "module-namespace": { kind: "module-namespace"; module: string };
     undefined: { kind: "undefined" };
@@ -101,7 +108,7 @@ interface DataKinds {
     "event-target": { kind: "event-target" };
     "deferred-dom-object": {
         kind: "deferred-dom-object";
-        name: "AbortController" | "AbortSignal";
+        name: (typeof DEFERRED_DOM_OBJECTS)[number];
     };
     "http-response": { kind: "http-response" };
     "gpu-adapter": { kind: "gpu-adapter" };

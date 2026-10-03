@@ -1,4 +1,5 @@
 import { journaled } from "./emission-transaction.js";
+import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
 import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";

@@ -366,6 +366,9 @@ function compileAudioReceiverMethod(
     receiver: Value,
 ): Value | undefined {
     const method = callee.name.text;
+    // Stored and deferred-produced handles can reach operations without
+    // a context constructor in this translation unit.
+    context.reachFeature("audio:engine", call);
     if (
         receiver.kind === "audio-context" &&
         method === "decodeAudioData" &&
@@ -779,6 +782,7 @@ export function emitAudioPropertyAssignment(
             "Compound assignment is not supported for a Web Audio property.",
         );
     }
+    context.reachFeature("audio:engine", expression);
 
     if (owner.kind === "audio-param" && property === "value") {
         context.emit({

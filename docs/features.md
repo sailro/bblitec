@@ -52,6 +52,7 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 owned argument/result representations. Their reached sites appear in `manifest.deferredCapabilities`;
 runtime calls throw or reject according to each descriptor. Later source still compiles normally.
 Registered audio graph operations retain typed failures; engine/source option variants reject only for present options, preserving the existing absent-options adapters.
+Registered media stream, recording, streamed-audio and script-element operations throw or reject at their typed boundary. Recorder and BlobEvent values have owned nominal storage; no unavailable producer returns a dummy object.
 Unregistered APIs, unsupported type/ownership forms and dynamic argument spreads still refuse.
 The default mode retains strict admission and existing capability-absence guards.
 AbortController/AbortSignal use distinct opaque storage with no successful native producer. Their registered constructor, state reads, abort operations and signal-backed listener lifetimes throw when reached; an undefined listener signal uses ordinary native dispatch.
