@@ -29,7 +29,6 @@ import {
     compileDeferredListenerOptions,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import { isDocumentReceiver } from "./dom-targets.js";
 import type { DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
