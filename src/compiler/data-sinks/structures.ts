@@ -131,6 +131,7 @@ function expressionStruct(
         if (
             known.kind === "data" &&
             (known.dataType?.kind === "struct" ||
+                known.dataType?.kind === "error" ||
                 known.dataType?.kind === "map")
         ) {
             lowerer.markEscaped(known);
@@ -210,6 +211,7 @@ function valueStruct(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    value = lowerer.context.classLowerer.errorView(value, node) ?? value;
     if (
         value.dataType?.kind === "optional" &&
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)

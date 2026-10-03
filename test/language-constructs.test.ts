@@ -4298,9 +4298,9 @@ test("class inheritance and static state refuse what one record or struct cannot
             /Field 'tag' has a different native type in class 'C'/,
         ],
         [
-            `class Failure extends Error { constructor() { super("x"); } }
-            const failure = new Failure(); const unused = failure.message;`,
-            /extends 'Error', which is not a local class with a body/,
+            `class Clock extends Date { constructor() { super(0); } }
+            const clock = new Clock(); const unused = clock.getTime();`,
+            /extends 'Date', which is not a local class with a body/,
         ],
         [
             `class A { #x = 1; readA(): number { return this.#x; } }

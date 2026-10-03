@@ -6,6 +6,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { refuseErrorReflection } from "./error-values.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -71,6 +72,7 @@ export function structOwnEntries(
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
 ): StructOwnEntry[] {
+    refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.isReferenceStruct(dataType.name)
         ? "->"
         : ".";
@@ -208,6 +210,7 @@ export function ownObjectEntries(
     owner: Value,
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
+    refuseErrorReflection(context, owner, node);
     const namespace = context.moduleNamespaces.entries(owner, node);
     if (namespace) return namespace;
     if (owner.kind === "record")

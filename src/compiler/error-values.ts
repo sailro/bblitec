@@ -3,6 +3,56 @@ import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
 import { expressionMayRunCode } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
+import type { DataStructField } from "./data-types.js";
+
+export const ERROR_CLASS_FIELDS: readonly DataStructField[] = [
+    { sourceName: "message", name: "message", type: { kind: "string" } },
+    { sourceName: "name", name: "name", type: { kind: "string" } },
+    { sourceName: "[[ErrorData]]", name: "bbl_error", type: { kind: "error" } },
+];
+
+/** Convert an authored Error's owned class record without copying its fields. */
+export function authoredErrorValue(
+    context: Pick<LoweringServices, "dataTypes" | "cppString">,
+    value: Value,
+): Value | undefined {
+    const base = authoredErrorBase(context, value);
+    if (!base) return undefined;
+    return errorValue(
+        { kind: "string", cpp: `${value.cpp}->message` },
+        base,
+        context.cppString,
+        {
+            kind: "data",
+            dataType: { kind: "error" },
+            cpp: `bbl::js::make_object_error(${value.cpp}, ${context.cppString(base)})`,
+        },
+    );
+}
+
+export function authoredErrorBase(
+    context: Pick<LoweringServices, "dataTypes">,
+    value: Value,
+): string | undefined {
+    if (value.dataType?.kind !== "struct") return undefined;
+    const stored = context.dataTypes.classStruct(value.dataType.name);
+    if (!stored) return undefined;
+    const hierarchy = context.dataTypes.classHierarchy;
+    return hierarchy.table(hierarchy.root(stored.declaration)).errorBase;
+}
+
+/** Error's inherited and non-enumerable properties are not plain record keys. */
+export function refuseErrorReflection(
+    context: Pick<LoweringServices, "dataTypes" | "fail">,
+    value: Value,
+    node: ts.Node,
+): void {
+    if (authoredErrorBase(context, value))
+        context.fail(
+            node,
+            "Error reflection requires represented property descriptors.",
+        );
+}
 
 /**
  * The default-library Error constructors a scene throws, holds and
@@ -22,7 +72,7 @@ export const ERROR_CONSTRUCTORS: ReadonlySet<string> = new Set([
 
 /** The library Error constructor `expression` calls, when it calls one. */
 export function errorConstructor(
-    expression: ts.NewExpression,
+    expression: ts.NewExpression | ts.CallExpression,
     libraryGlobal: LibraryGlobal,
 ): string | undefined {
     const name = libraryGlobal(expression.expression);
@@ -124,7 +174,7 @@ export function compileErrorConstruction(
         | "fail"
         | "reachJsData"
     >,
-    expression: ts.NewExpression,
+    expression: ts.NewExpression | ts.CallExpression,
     name: string,
     consumer: "held" | "thrown" = "held",
 ): Value {
@@ -195,7 +245,7 @@ export function compileErrorConstruction(
 
 function compileAggregateError(
     context: Parameters<typeof compileErrorConstruction>[0],
-    expression: ts.NewExpression,
+    expression: ts.NewExpression | ts.CallExpression,
 ): Value {
     const args = expression.arguments ?? [];
     if (!args.length || args.length > 3)

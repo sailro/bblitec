@@ -54,6 +54,7 @@ import {
 } from "./syntax.js";
 import {
     caughtErrorValue,
+    authoredErrorValue,
     compileErrorConstruction,
     errorConstructor,
     errorValue,
@@ -1800,10 +1801,11 @@ export class StatementLowerer {
                   context.libraryGlobal(callee),
               )
             : undefined;
-        const error =
+        const sourceError =
             ts.isNewExpression(thrown) && errorName !== undefined
                 ? compileErrorConstruction(context, thrown, errorName, "thrown")
                 : context.compileValue(thrown);
+        const error = authoredErrorValue(context, sourceError) ?? sourceError;
         if (error.dataType?.kind === "error") {
             context.reachThrow();
             context.emitNativeThrow(error.cpp, statement, true);

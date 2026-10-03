@@ -56,7 +56,11 @@ import {
     browserFileDataProperty,
     browserFileElementRead,
 } from "./browser-file.js";
-import { errorValue, thrownMessage } from "./error-values.js";
+import {
+    errorValue,
+    thrownMessage,
+    refuseErrorReflection,
+} from "./error-values.js";
 import {
     renderClosure,
     type NativeCaptureBinding,
@@ -1170,6 +1174,12 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            if (owner.dataType?.kind === "error")
+                owner =
+                    this.context.classLowerer.errorView(
+                        owner,
+                        unwrapped.expression,
+                    ) ?? owner;
             const ownerType =
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
@@ -8850,6 +8860,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         keyNode: ts.Expression,
         operator: "in" | "Object.hasOwn",
     ): string {
+        refuseErrorReflection(this.context, owner, ownerNode);
         const narrowed =
             owner.kind === "data"
                 ? this.narrowOptional(owner, ownerNode)

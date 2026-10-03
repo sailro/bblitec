@@ -77,7 +77,11 @@ import {
     regularExpressionParts,
     unwrapExpression,
 } from "./syntax.js";
-import { compileErrorConstruction, errorConstructor } from "./error-values.js";
+import {
+    compileErrorConstruction,
+    errorConstructor,
+    refuseErrorReflection,
+} from "./error-values.js";
 import {
     OBJECT_STATIC_HANDLERS,
     compileObjectPrototypeCall,
@@ -4718,6 +4722,7 @@ export class ExpressionLowerer {
         for (const [index, property] of unwrapped.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
+                refuseErrorReflection(this.context, spread, property);
                 // A struct whose fields are always own spreads its current
                 // field values; a `?` field's key is decided at run time.
                 if (

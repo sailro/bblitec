@@ -1,6 +1,6 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
 import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
-import { ERROR_CONSTRUCTORS } from "./error-values.js";
+import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
@@ -69,6 +69,7 @@ import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
     type ClassHierarchy,
     classChain,
+    classErrorBase,
     classInstanceProperties,
     isStaticMember,
 } from "./class-members.js";
@@ -3794,7 +3795,10 @@ export class DataTypeRegistry {
         declaration: ts.ClassDeclaration,
         type: ts.Type,
     ): DataStructField[] {
-        const fields: DataStructField[] = [];
+        const table = this.classHierarchy.table(declaration);
+        const fields: DataStructField[] = table.errorBase
+            ? ERROR_CLASS_FIELDS.map((field) => ({ ...field }))
+            : [];
         for (const member of classInstanceProperties(declaration)) {
             if (!ts.isMemberName(member.name)) {
                 this.fail(
@@ -3802,6 +3806,12 @@ export class DataTypeRegistry {
                     "Computed class field names are outside the supported subset.",
                 );
             }
+            const nativeName = sanitizeIdentifier(structFieldName(member.name));
+            if (classErrorBase(table) && nativeName === "bbl_error")
+                this.fail(
+                    member,
+                    "A class field collides with the internal Error payload slot.",
+                );
             const property = this.classPropertySymbol(type, member.name);
             const propertyType = property
                 ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
@@ -3827,9 +3837,24 @@ export class DataTypeRegistry {
             if (!mapped) {
                 continue;
             }
+            const sourceName = member.name.text;
+            const inheritedErrorField = fields.find(
+                (field) => field.sourceName === sourceName,
+            );
+            if (inheritedErrorField) {
+                if (
+                    this.typeKey(inheritedErrorField.type) !==
+                    this.typeKey(mapped)
+                )
+                    this.fail(
+                        member,
+                        `Error field '${sourceName}' requires its inherited native type.`,
+                    );
+                continue;
+            }
             fields.push({
                 sourceName: member.name.text,
-                name: sanitizeIdentifier(structFieldName(member.name)),
+                name: nativeName,
                 type: this.markStoredObjectReferences(
                     markIdentityFunctions(mapped),
                 ),

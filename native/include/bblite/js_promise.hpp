@@ -53,7 +53,7 @@ template <typename T> struct State {
     };
     pal::EventLoop* loop = &pal::EventLoop::current();
     std::thread::id owner = std::this_thread::get_id();
-    std::variant<std::monostate, T, std::exception_ptr> outcome;
+    std::variant<std::monostate, T, Error> outcome;
     std::vector<Reaction> reactions;
     bool resolving = false;
     bool handled = false;
@@ -62,8 +62,10 @@ template <typename T> struct State {
             throw std::logic_error("A Promise crossed realm ownership.");
     }
     void gc_trace(const TraceVisitor& visitor) const {
-        if (const auto* value = std::get_if<T>(&outcome))
+        if (const auto* value = std::get_if<1>(&outcome))
             visitor(*value);
+        if (const auto* error = std::get_if<2>(&outcome))
+            visitor(*error);
         for (const auto& reaction : reactions)
             visitor(reaction);
     }
@@ -380,22 +382,24 @@ private:
     T result_value() const {
         if (view_)
             return view_->result();
-        if (const auto* error = std::get_if<std::exception_ptr>(&state_->outcome))
+        if (const auto* error = std::get_if<2>(&state_->outcome))
             std::rethrow_exception(*error);
-        return std::get<T>(state_->outcome);
+        return std::get<1>(state_->outcome);
     }
     template <typename Outcome> void settle(Outcome value) const {
         if (!std::holds_alternative<std::monostate>(state_->outcome))
             return;
-        state_->outcome = std::move(value);
-        if (std::holds_alternative<std::exception_ptr>(state_->outcome) && !state_->handled) {
+        if constexpr (std::is_same_v<Outcome, std::exception_ptr>)
+            state_->outcome.template emplace<2>(std::move(value));
+        else
+            state_->outcome.template emplace<1>(std::move(value));
+        if (state_->outcome.index() == 2 && !state_->handled) {
             state_->loop->after_microtasks([state = state_] {
                 if (state->handled)
                     return;
                 state->loop->post([state] {
                     if (!state->handled)
-                        state->loop->report_unhandled_rejection(
-                            std::get<std::exception_ptr>(state->outcome));
+                        state->loop->report_unhandled_rejection(std::get<2>(state->outcome));
                 });
             });
         }
@@ -405,10 +409,10 @@ private:
     }
     void enqueue(Reaction reaction) const {
         state_->loop->queue_microtask([state = state_, reaction = std::move(reaction)] {
-            if (const auto* value = std::get_if<T>(&state->outcome))
+            if (const auto* value = std::get_if<1>(&state->outcome))
                 reaction.fulfilled(*value);
             else
-                reaction.rejected(std::get<std::exception_ptr>(state->outcome));
+                reaction.rejected(std::get<2>(state->outcome));
         });
     }
     std::shared_ptr<State> state_;

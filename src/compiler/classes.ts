@@ -31,6 +31,10 @@ import { sourceFunctionName } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
+    ERROR_CLASS_FIELDS,
+    compileErrorConstruction,
+} from "./error-values.js";
+import {
     FunctionSpecializations,
     functionDependencies,
 } from "./function-specializations.js";
@@ -40,6 +44,7 @@ import {
     classChain,
     classChainInstanceProperties,
     classExtends,
+    classErrorBase,
     classHasStaticState,
     classMemberTable,
     classMethod,
@@ -117,6 +122,7 @@ interface ClassLoweringContext extends Pick<
     | "sharedClosures"
     | "compileValue"
     | "emitStatement"
+    | "emitDiscardedValue"
     | "bindings"
     | "platformDocumentHidden"
     | "bindClassParameterValue"
@@ -760,9 +766,11 @@ export class ClassLowerer {
     ): Value {
         this.rejectUnsupportedMembers(declaration);
         const members = this.table(declaration);
+        const errorBase = classErrorBase(members);
         const constructorDeclaration = effectiveConstructor(members);
         if (
             !constructorDeclaration &&
+            !errorBase &&
             (expression.arguments?.length ?? 0) > 0
         ) {
             this.context.fail(
@@ -783,6 +791,8 @@ export class ClassLowerer {
             : [];
         const fields: Record<string, Value> = {};
         const instanceType = this.context.checker.getTypeAtLocation(expression);
+        if (errorBase)
+            this.context.dataTypes.fromStoredTsType(instanceType, expression);
         const instanceTypeArguments = this.context.dataTypes.typeArgumentsOf(
             declaration,
             instanceType,
@@ -873,6 +883,7 @@ export class ClassLowerer {
                 evaluatedArguments,
                 instance,
                 instanceType,
+                expression,
             );
             if (structName) {
                 this.proveHoistedFields(
@@ -904,6 +915,7 @@ export class ClassLowerer {
         evaluatedArguments: readonly Value[],
         instance: Value,
         instanceType: ts.Type,
+        construction: ts.NewExpression | ts.CallExpression,
     ): void {
         const fields = writable(instance.recordProperties!);
         const constructorDeclaration = table.constructorDeclaration;
@@ -914,13 +926,20 @@ export class ClassLowerer {
                 evaluatedArguments,
                 instance,
                 instanceType,
+                construction,
             );
         }
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
         try {
-            if (!table.base || !constructorDeclaration) {
+            if ((!table.base && !table.errorBase) || !constructorDeclaration) {
+                if (table.errorBase)
+                    this.initializeError(
+                        table.errorBase,
+                        construction,
+                        instance,
+                    );
                 // Field declarations with initializers bind first, so the
                 // constructor body can already read them.
                 this.initializeFields(table, instance, instanceType);
@@ -961,27 +980,36 @@ export class ClassLowerer {
                     );
                 }
                 constructed = true;
-                const baseConstructor = effectiveConstructor(table.base);
-                if (!baseConstructor && superCall.arguments.length > 0) {
-                    this.context.fail(
+                if (table.errorBase) {
+                    this.initializeError(table.errorBase, superCall, instance);
+                } else {
+                    const baseConstructor = effectiveConstructor(table.base!);
+                    if (
+                        !baseConstructor &&
+                        !classErrorBase(table.base!) &&
+                        superCall.arguments.length > 0
+                    ) {
+                        this.context.fail(
+                            superCall,
+                            `Class '${table.base!.declaration.name?.text ?? "?"}' has no constructor accepting arguments.`,
+                        );
+                    }
+                    const baseArguments = baseConstructor
+                        ? this.compileClassArguments(
+                              baseConstructor,
+                              superCall.arguments,
+                              "constructor",
+                          )
+                        : [];
+                    this.initialize(
+                        table.base!,
+                        superCall.arguments,
+                        baseArguments,
+                        instance,
+                        instanceType,
                         superCall,
-                        `Class '${table.base.declaration.name?.text ?? "?"}' has no constructor accepting arguments.`,
                     );
                 }
-                const baseArguments = baseConstructor
-                    ? this.compileClassArguments(
-                          baseConstructor,
-                          superCall.arguments,
-                          "constructor",
-                      )
-                    : [];
-                this.initialize(
-                    table.base,
-                    superCall.arguments,
-                    baseArguments,
-                    instance,
-                    instanceType,
-                );
                 this.initializeFields(table, instance, instanceType);
                 for (const parameter of constructorDeclaration.parameters) {
                     if (
@@ -1008,6 +1036,24 @@ export class ClassLowerer {
         } finally {
             this.context.bindings.popScope();
         }
+    }
+
+    private initializeError(
+        name: string,
+        source: ts.CallExpression | ts.NewExpression,
+        instance: Value,
+    ): void {
+        const base = compileErrorConstruction(this.context, source, name);
+        const fields = instance.recordProperties!;
+        for (const property of ["message", "name"])
+            this.context.emit({
+                kind: "expression",
+                code: `${fields[property]!.cpp} = ${base.recordProperties![property]!.cpp};`,
+            });
+        this.context.emit({
+            kind: "expression",
+            code: `${fields["[[ErrorData]]"]!.cpp} = ${base.cpp};`,
+        });
     }
 
     /** Binds one class body's own field declarations on the instance under construction. */
@@ -1153,6 +1199,9 @@ export class ClassLowerer {
         structName: string,
     ): readonly StoredClassField[] {
         const layout: StoredClassField[] = [];
+        if (classErrorBase(this.table(declaration)))
+            for (const field of ERROR_CLASS_FIELDS)
+                layout.push({ ...field, source: field.sourceName });
         for (const member of classChainInstanceProperties(
             this.table(declaration),
         )) {
@@ -1162,7 +1211,8 @@ export class ClassLowerer {
                 source,
             );
             if (field) {
-                layout.push({ ...field, source });
+                if (!layout.some((entry) => entry.source === source))
+                    layout.push({ ...field, source });
             }
         }
         return layout;
@@ -1333,6 +1383,7 @@ export class ClassLowerer {
      * on the stored tag.
      */
     public hydrate(value: Value, node?: ts.Node): Value | undefined {
+        if (node) value = this.errorView(value, node) ?? value;
         if (
             value.kind !== "data" ||
             value.dataType?.kind !== "struct" ||
@@ -2993,6 +3044,13 @@ export class ClassLowerer {
         declaration: ts.ClassDeclaration,
         node: ts.Expression,
     ): string | undefined {
+        if (value.dataType?.kind === "error") {
+            if (!classErrorBase(this.table(declaration))) {
+                this.context.emitDiscardedValue(value);
+                return "false";
+            }
+            value = this.errorRecord(value, declaration, node);
+        }
         const structName =
             value.kind === "data" && value.dataType?.kind === "struct"
                 ? value.dataType.name
@@ -3031,6 +3089,37 @@ export class ClassLowerer {
         if (!stored) return tested ?? "true";
         const present = `static_cast<bool>(${record.cpp})`;
         return tested ? `(${present} && ${tested})` : present;
+    }
+
+    private errorRecord(
+        value: Value,
+        declaration: ts.ClassDeclaration,
+        node: ts.Node,
+    ): Value {
+        const type = this.context.dataTypes.fromStoredTsType(
+            this.context.checker.getTypeAtLocation(declaration.name!),
+            node,
+        );
+        if (type?.kind !== "struct")
+            return this.context.fail(
+                node,
+                "An authored Error requires owned class storage.",
+            );
+        return this.context.dataValue(
+            `bbl::js::error_object<${this.context.dataTypes.cppType(type)}>(${value.cpp})`,
+            type,
+        );
+    }
+
+    public errorView(value: Value, node: ts.Node): Value | undefined {
+        if (value.dataType?.kind !== "error") return undefined;
+        const type = this.context.checker.getTypeAtLocation(node);
+        const declaration = type.symbol?.declarations?.find(
+            ts.isClassDeclaration,
+        );
+        return declaration && classErrorBase(this.table(declaration))
+            ? this.errorRecord(value, declaration, node)
+            : undefined;
     }
 
     /**

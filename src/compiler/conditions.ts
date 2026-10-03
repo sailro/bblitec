@@ -14,7 +14,11 @@ import {
 } from "./comparisons.js";
 import { BUFFER_VIEW_KINDS, TYPED_ARRAY_KINDS } from "./data-types.js";
 import { compileDomInstanceOf } from "./dom-targets.js";
-import { ERROR_CONSTRUCTORS } from "./error-values.js";
+import {
+    authoredErrorBase,
+    authoredErrorValue,
+    ERROR_CONSTRUCTORS,
+} from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
 import { retainTextValue } from "./text-surface.js";
@@ -264,8 +268,17 @@ export class ConditionLowerer {
                     this.context.libraryGlobal(unwrapped.right) ?? "";
                 if (ERROR_CONSTRUCTORS.has(global)) {
                     const value = this.context.compileValue(unwrapped.left);
+                    const base = authoredErrorBase(this.context, value);
+                    if (base) {
+                        if (global === "Error" || global === base)
+                            return `static_cast<bool>(${value.cpp})`;
+                        this.context.emitDiscardedValue(value);
+                        return "false";
+                    }
                     if (value.nativeError) {
                         if (global === "Error") return "true";
+                        if (value.dataType?.kind === "error")
+                            return `bbl::js::error_is(${value.cpp}, ${this.context.cppString(global)})`;
                         const name = value.recordProperties?.name;
                         if (name)
                             return `(${name.cpp} == ${this.context.cppString(global)})`;
@@ -412,6 +425,16 @@ export class ConditionLowerer {
             const equality =
                 comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
                 comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+            if (
+                equality &&
+                (leftValue.dataType?.kind === "error" ||
+                    rightValue.dataType?.kind === "error")
+            ) {
+                const leftError = authoredErrorValue(this.context, leftValue);
+                const rightError = authoredErrorValue(this.context, rightValue);
+                if (leftError || rightError)
+                    return `${leftError?.cpp ?? leftValue.cpp} ${operator} ${rightError?.cpp ?? rightValue.cpp}`;
+            }
             if (leftValue.kind === "texture" && rightValue.kind === "texture") {
                 if (!equality)
                     this.context.fail(
