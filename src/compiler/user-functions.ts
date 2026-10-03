@@ -6120,7 +6120,9 @@ export class UserFunctionLowerer {
         const selected = storage.kind === "optional" ? `*${input}` : input;
         context.emit({
             kind: "declaration",
-            type: `const ${cppType}`,
+            // The selected binding is stable, but object and collection
+            // parameters still expose writable JavaScript storage.
+            type: cppType,
             name: result,
             initializer: `[&]() -> ${cppType} {
     if (${present}) return ${selected};

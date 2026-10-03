@@ -139,6 +139,112 @@ if(present.signal!==date||!Object.hasOwn(present,'signal')||Object.hasOwn(missin
 );
 
 check(
+    "default-parameters-preserve-reference-record-owners",
+    `
+interface Item { score: number; }
+interface Saved { value?: Item; }
+let defaults = 0;
+function fallback(): Item { defaults++; return { score: 3 }; }
+const original: Item = { score: 9 };
+const records: Saved[] = [{}, { value: original }];
+function choose(value: Item = fallback()): Item { return value; }
+const fresh = choose(records[0]!.value);
+const selected = choose(records[1]!.value);
+if (fresh.score !== 3 || selected !== original || defaults !== 1)
+    throw new Error('returned default owner');
+function increment(value: Item): void { value.score++; }
+increment(fresh); selected.score++;
+if (fresh.score !== 4 || original.score !== 10)
+    throw new Error('returned owner mutation');
+function retain(value: Item = fallback()): () => Item {
+    increment(value);
+    return () => value;
+}
+const retained = retain(records[1]!.value);
+const retainedFresh = retain(records[0]!.value);
+original.score = 20;
+if (retained() !== original || retained().score !== 20 || retainedFresh().score !== 4)
+    throw new Error('default owner capture');
+function replace(value: Item = fallback()): () => Item {
+    const read = () => value;
+    value = { score: value.score + 1 };
+    return read;
+}
+const replacement = replace(records[1]!.value);
+if (replacement() === original || replacement().score !== 21 || original.score !== 20)
+    throw new Error('default parameter rebinding');
+`,
+);
+
+check(
+    "default-parameters-preserve-mutable-collection-owners",
+    `
+interface Saved { values?: number[]; entries?: Map<string, number>; flags?: Set<string>; }
+const values = [1];
+const entries = new Map<string, number>([['first', 1]]);
+const flags = new Set<string>(['first']);
+const records: Saved[] = [{}, { values, entries, flags }];
+function grow(value: number[] = []): number[] { value.push(2); return value; }
+const fresh = grow(records[0]!.values);
+const selected = grow(records[1]!.values);
+fresh.push(3); selected[0] = 4;
+if (fresh.join(',') !== '2,3' || values.join(',') !== '4,2' || selected !== values)
+    throw new Error('array default owner');
+function map(value: Map<string, number> = new Map<string, number>()): Map<string, number> {
+    value.set('second', 2); return value;
+}
+function set(value: Set<string> = new Set<string>()): Set<string> {
+    value.add('second'); return value;
+}
+const freshMap = map(records[0]!.entries), selectedMap = map(records[1]!.entries);
+const freshSet = set(records[0]!.flags), selectedSet = set(records[1]!.flags);
+freshMap.set('third', 3); selectedMap.set('first', 4);
+freshSet.add('third'); selectedSet.delete('first');
+if (freshMap.size !== 2 || entries.get('first') !== 4 || selectedMap !== entries ||
+    freshSet.size !== 2 || flags.has('first') || selectedSet !== flags)
+    throw new Error('map or set default owner');
+const readers: Array<(value?: number[]) => () => number[]> = [
+    (value = []) => () => value,
+];
+const retained = readers[0]!(values), retainedFresh = readers[0]!();
+values.push(5); retainedFresh().push(6);
+if (retained() !== values || retained().join(',') !== '4,2,5' || retainedFresh()[0] !== 6)
+    throw new Error('collection default capture');
+`,
+);
+
+check(
+    "default-parameters-preserve-callable-and-view-owners",
+    `
+interface Saved { callback?: () => number; bytes?: Uint8Array; pair?: [number, number]; }
+let current = 4;
+const callback = () => current;
+const bytes = new Uint8Array([1, 2]);
+const pair: [number, number] = [1, 2];
+const records: Saved[] = [{}, { callback, bytes, pair }];
+function choose(value: () => number = () => 3): () => number { return value; }
+const fresh = choose(records[0]!.callback), selected = choose(records[1]!.callback);
+current = 7;
+if (fresh() !== 3 || selected() !== 7 || selected !== callback)
+    throw new Error('callable default owner');
+function view(value: Uint8Array = new Uint8Array([3, 4])): Uint8Array {
+    value[0]++; return value;
+}
+const freshView = view(records[0]!.bytes), selectedView = view(records[1]!.bytes);
+freshView[1] = 5; selectedView[1] = 6;
+if (freshView[0] !== 4 || freshView[1] !== 5 || bytes[0] !== 2 || bytes[1] !== 6 || selectedView !== bytes)
+    throw new Error('view default owner');
+function tuple(value: [number, number] = [3, 4]): [number, number] {
+    value[0]++; return value;
+}
+const freshPair = tuple(records[0]!.pair), selectedPair = tuple(records[1]!.pair);
+freshPair[1] = 5; selectedPair[1] = 6;
+if (freshPair[0] !== 4 || freshPair[1] !== 5 || pair[0] !== 2 || pair[1] !== 6 || selectedPair !== pair)
+    throw new Error('tuple default owner');
+`,
+);
+
+check(
     "default-parameters-preserve-snapshots-mutation-and-captures",
     `
 let defaults = 0;
