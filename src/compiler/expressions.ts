@@ -4656,6 +4656,12 @@ export class ExpressionLowerer {
                     dictionary,
                 );
             }
+            if (type?.kind === "struct") {
+                return this.context.dataLowerer.leafValue(
+                    this.context.dataLowerer.compileForSink(unwrapped, type),
+                    type,
+                );
+            }
         }
         return this.compileStaticObjectValue(unwrapped);
     }

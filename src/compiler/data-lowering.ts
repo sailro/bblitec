@@ -6797,16 +6797,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const iterable = this.context.unwrap(arguments_[0]!);
         if (ts.isArrayLiteralExpression(iterable)) {
-            const values = iterable.elements.map((element) =>
-                this.compileForRetainedSink(
-                    element,
-                    dataType.element,
-                    "Set constructor",
-                ),
-            );
+            const values = this.compileVectorSink(iterable, {
+                kind: "vector",
+                element: dataType.element,
+            });
             return {
                 kind: "data",
-                cpp: `${cppType}{${values.join(", ")}}`,
+                cpp: `${cppType}(${values})`,
                 dataType,
             };
         }
@@ -11873,7 +11870,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const leftObject = this.objectIdentity(left);
         const rightObject = this.objectIdentity(right);
         if (leftObject && rightObject) {
-            return `${leftObject} ${negated ? "!=" : "=="} ${rightObject}`;
+            return `static_cast<const void*>(${leftObject}) ${negated ? "!=" : "=="} static_cast<const void*>(${rightObject})`;
         }
         return undefined;
     }

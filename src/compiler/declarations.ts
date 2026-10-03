@@ -3921,10 +3921,19 @@ export class DeclarationLowerer {
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
             let propertyValue =
-                (!present || present.kind === "json-null") &&
+                (!present ||
+                    (present.kind === "json-null" &&
+                        present.cpp === "std::nullopt")) &&
                 element.initializer
                     ? this.context.compileValue(element.initializer)
                     : present;
+            if (
+                !propertyValue &&
+                !value.moduleNamespace &&
+                nullability(this.context.checker.getTypeAtLocation(name))
+                    .undefined
+            )
+                propertyValue = { kind: "json-null", cpp: "std::nullopt" };
             if (!propertyValue) {
                 this.context.fail(
                     element,
