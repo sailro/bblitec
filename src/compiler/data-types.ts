@@ -4610,13 +4610,13 @@ export class DataTypeRegistry {
     public usesFileStorage(): boolean {
         return (
             this.emittedFileType ||
-            this.usesNamedKind("file") ||
-            this.usesNamedKind("blob") ||
-            this.usesNamedKind("file-list")
+            this.usesNamedKind(["file", "blob", "file-list"])
         );
     }
 
-    private usesNamedKind(kind: DataType["kind"]): boolean {
+    private usesNamedKind(
+        kind: DataType["kind"] | readonly DataType["kind"][],
+    ): boolean {
         const seen = new Set<string>();
         return [...this.emittedNamedTypes].some(
             (name) =>

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { isLogicalAssignmentOperator, unwrapExpression } from "./syntax.js";
 
 type Slot = ts.Declaration;
 interface Write {
@@ -88,22 +88,15 @@ export class FiniteArraySources {
                         });
                     } else if (
                         ts.isBinaryExpression(node) &&
-                        [
-                            ts.SyntaxKind.EqualsToken,
-                            ts.SyntaxKind.QuestionQuestionEqualsToken,
-                            ts.SyntaxKind.BarBarEqualsToken,
-                            ts.SyntaxKind.AmpersandAmpersandEqualsToken,
-                        ].includes(node.operatorToken.kind)
+                        (node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken ||
+                            isLogicalAssignmentOperator(
+                                node.operatorToken.kind,
+                            ))
                     ) {
                         const target = unwrapExpression(node.left);
                         const source = unwrapExpression(node.right);
-                        add(this.bindings, nameOf(source), { target, source });
-                        add(this.sources, nameOf(target), { target, source });
-                        if (ts.isArrayLiteralExpression(source))
-                            add(this.writes, nameOf(target), {
-                                target,
-                                values: source.elements,
-                            });
+                        this.recordBinding(target, source);
                         if (ts.isElementAccessExpression(target)) {
                             const array = unwrapExpression(target.expression);
                             add(this.writes, nameOf(array), {
@@ -115,25 +108,29 @@ export class FiniteArraySources {
                         ts.isVariableDeclaration(node) &&
                         node.initializer
                     ) {
-                        const source = unwrapExpression(node.initializer);
-                        add(this.bindings, nameOf(source), {
-                            target: node,
-                            source,
-                        });
-                        add(this.sources, nameOf(node), {
-                            target: node,
-                            source,
-                        });
-                        if (ts.isArrayLiteralExpression(source))
-                            add(this.writes, nameOf(node), {
-                                target: node,
-                                values: source.elements,
-                            });
+                        this.recordBinding(
+                            node,
+                            unwrapExpression(node.initializer),
+                        );
                     }
                 },
                 { types: "skip" },
             );
         }
+    }
+
+    private recordBinding(
+        target: Binding["target"],
+        source: ts.Expression,
+    ): void {
+        const binding = { target, source };
+        add(this.bindings, nameOf(source), binding);
+        add(this.sources, nameOf(target), binding);
+        if (ts.isArrayLiteralExpression(source))
+            add(this.writes, nameOf(target), {
+                target,
+                values: source.elements,
+            });
     }
 
     private slot(node: ts.Node): Slot | undefined {

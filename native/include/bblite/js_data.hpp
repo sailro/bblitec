@@ -1590,11 +1590,7 @@ public:
     Arguments() = default;
     explicit Arguments(const Array<T>& values) : values_(values.begin(), values.end()) {}
     [[nodiscard]] double length() const { return static_cast<double>(values_.size()); }
-    [[nodiscard]] Result get(double index) const {
-        if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= length())
-            return Result{};
-        return Result(values_[static_cast<std::size_t>(index)]);
-    }
+    [[nodiscard]] Result get(double index) const;
     [[nodiscard]] bool operator==(const Arguments& other) const { return values_ == other.values_; }
     [[nodiscard]] const void* identity() const { return values_.identity(); }
     void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
@@ -4232,6 +4228,12 @@ template <typename T> [[nodiscard]] inline bool array_has_index(const T& values,
  */
 [[nodiscard]] inline std::size_t accepted_index(double index) {
     return static_cast<std::size_t>(static_cast<std::int64_t>(index));
+}
+
+template <typename T> typename Arguments<T>::Result Arguments<T>::get(double index) const {
+    if (!array_has_index(values_, index))
+        return Result{};
+    return Result(values_[accepted_index(index)]);
 }
 
 template <typename T> [[nodiscard]] inline T& missing_array_value() {

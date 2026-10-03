@@ -574,15 +574,17 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
         options = detail::open_options(element.file_accept);
     }
     std::optional<pal::SelectedFileSnapshot> selected = pal::choose_open_file(engine, options);
+    const auto dispatchEvent = [&engine, handle](const char* type) {
+        PlatformMouseEvent payload;
+        payload.payload_kind = DomInputEventKind::Event;
+        const auto event = dom_event(payload, type, dom_ui_path(engine, handle), true, false);
+        event.dom->composed = std::string_view(type) == "input";
+        dispatch_dom_pointer(engine, event);
+    };
     // Cancellation preserves the previous selection and notifies its listener.
     if (!selected) {
-        if (engine.dom_input) {
-            PlatformMouseEvent payload;
-            payload.payload_kind = DomInputEventKind::Event;
-            const auto event =
-                dom_event(payload, "cancel", dom_ui_path(engine, handle), true, false);
-            dispatch_dom_pointer(engine, event);
-        }
+        if (engine.dom_input)
+            dispatchEvent("cancel");
         return;
     }
     std::shared_ptr<UiEventListeners> listeners;
@@ -596,13 +598,8 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
     replace_browser_file(engine, browser_file_ui_element(engine, handle).selected_file,
                          std::move(*selected));
     if (engine.dom_input) {
-        for (const char* type : {"input", "change"}) {
-            PlatformMouseEvent payload;
-            payload.payload_kind = DomInputEventKind::Event;
-            const auto event = dom_event(payload, type, dom_ui_path(engine, handle), true, false);
-            event.dom->composed = std::string_view(type) == "input";
-            dispatch_dom_pointer(engine, event);
-        }
+        for (const char* type : {"input", "change"})
+            dispatchEvent(type);
     }
     if (listeners)
         listeners->dispatch(PlatformMouseEvent{});

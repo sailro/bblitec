@@ -56,13 +56,17 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
 /** Walk stored members, optionally including the types in a function signature. */
 export function containsDataKind(
     type: DataType,
-    target: DataKind,
+    target: DataKind | readonly DataKind[],
     fields: StructFieldTypes,
     signatures: boolean,
     seen: Set<string>,
     matches?: (type: DataType) => boolean,
 ): boolean {
-    if (type.kind === target && (!matches || matches(type))) return true;
+    const selected =
+        typeof target === "string"
+            ? type.kind === target
+            : target.includes(type.kind);
+    if (selected && (!matches || matches(type))) return true;
     if (type.kind === "struct") {
         if (seen.has(type.name)) return false;
         seen.add(type.name);
