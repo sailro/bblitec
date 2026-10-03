@@ -8911,9 +8911,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ];
             if (key.staticString !== undefined) {
                 if (keys.includes(key.staticString)) return "true";
-                if (operator === "Object.hasOwn") return "false";
-                this.context.reachJsData();
-                return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
+                return String(
+                    operator === "in" &&
+                        Object.hasOwn(Object.prototype, key.staticString),
+                );
             }
             const name = this.membershipStringKeyCpp(key, keyNode);
             const tests = keys.map(
@@ -8975,11 +8976,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 .structFields(dataType.name, ownerNode, "accessors")
                 .find((candidate) => candidate.sourceName === key.staticString);
             if (!field) {
-                if (operator === "in") {
-                    this.context.reachJsData();
-                    return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
-                }
-                return "false";
+                return String(
+                    operator === "in" &&
+                        Object.hasOwn(Object.prototype, key.staticString),
+                );
             }
             return this.structFieldMembershipCpp(
                 narrowed.cpp,

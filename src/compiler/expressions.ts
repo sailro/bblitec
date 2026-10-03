@@ -3040,6 +3040,14 @@ export class ExpressionLowerer {
         if (fetched) return fetched;
 
         const bound = this.context.bindings.lookupOptional(callee);
+        if (
+            call.questionDotToken &&
+            bound &&
+            (bound.kind === "json-null" || isUndefinedDataType(bound.dataType))
+        ) {
+            this.context.emitDiscardedValue(bound);
+            return { kind: "json-null", cpp: "std::nullopt" };
+        }
         if (bound?.kind === "callback") {
             const recursive =
                 this.context.userFunctions.compileNativeCallbackCall(
