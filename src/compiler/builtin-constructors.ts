@@ -1,6 +1,7 @@
-import ts from "typescript";
+import type ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { boundRecordValue } from "./bound-record-value.js";
 
 type Context = Pick<LoweringServices, "unwrap" | "libraryGlobal" | "bindings">;
 
@@ -12,19 +13,5 @@ export function resolvedBuiltinConstructor(
     const global = context.libraryGlobal(expression);
     if (global === "ResizeObserver" || global === "MutationObserver")
         return global;
-    const boundValue = (expression: ts.Expression): Value | undefined => {
-        const node = context.unwrap(expression);
-        if (ts.isIdentifier(node)) return context.bindings.lookupOptional(node);
-        if (ts.isPropertyAccessExpression(node)) {
-            const owner = boundValue(node.expression);
-            if (
-                owner?.recordGetters?.[node.name.text] ||
-                owner?.recordSetters?.[node.name.text]
-            )
-                return undefined;
-            return owner?.recordProperties?.[node.name.text];
-        }
-        return undefined;
-    };
-    return boundValue(expression)?.builtinConstructor;
+    return boundRecordValue(context, expression)?.builtinConstructor;
 }

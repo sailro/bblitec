@@ -5,9 +5,14 @@ import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declarationOrigin } from "./symbols.js";
+import {
+    declarationOrigin,
+    resolvedSymbol,
+    declaredInDomLibrary,
+} from "./symbols.js";
 import type { Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { pinDetached } from "./dom-listeners.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -61,6 +66,13 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Event.composedPath",
         "Node.insertBefore",
         "ChildNode.replaceWith",
+        "AbortController.abort",
+        "AbortSignal.throwIfAborted",
+        "AbortController.constructor",
+        "AbortController.signal",
+        "AbortSignal.aborted",
+        "HTMLOrSVGElement.tabIndex",
+        "EventTarget.addEventListener.signal",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "throw" })),
     ...[
         "Document.exitFullscreen",
@@ -137,6 +149,20 @@ export function deferredCapabilityDescriptor(
     return descriptors.get(`${origin}:${declarationApi(declaration)}`);
 }
 
+export function deferredPropertyDescriptor(
+    checker: ts.TypeChecker,
+    node: ts.PropertyAccessExpression,
+): Descriptor | undefined {
+    const symbol = resolvedSymbol(checker, node);
+    if (!declaredInDomLibrary(symbol)) return undefined;
+    const declaration = symbol?.declarations?.find(ts.isPropertySignature);
+    if (!declaration || !ts.isInterfaceDeclaration(declaration.parent))
+        return undefined;
+    return descriptors.get(
+        `dom:${declaration.parent.name.text}.${symbol!.name}`,
+    );
+}
+
 type Context = Pick<
     LoweringServices,
     | "checker"
@@ -166,6 +192,133 @@ export class DeferredCapabilities {
     constructor(private readonly context: Context) {}
     get sites(): readonly DeferredCapabilitySite[] {
         return [...this.reached.values()];
+    }
+
+    compileConstructor(node: ts.NewExpression): Value | undefined {
+        const context = this.context;
+        if (
+            !context.options.deferredCapabilities ||
+            context.libraryGlobal(node.expression) !== "AbortController"
+        )
+            return undefined;
+        const signature = context.checker.getResolvedSignature(node);
+        if (
+            !signature?.declaration ||
+            declarationOrigin(signature.declaration) !== "dom"
+        )
+            return undefined;
+        this.arguments(node, signature, "AbortController.constructor");
+        return this.emitKnown(
+            node,
+            {
+                id: "dom:AbortController.constructor",
+                origin: "dom",
+                operation: "construct",
+                timing: "throw",
+                signature: context.checker.signatureToString(
+                    signature,
+                    node,
+                    ts.TypeFormatFlags.NoTruncation,
+                ),
+            },
+            { kind: "deferred-dom-object", name: "AbortController" },
+        );
+    }
+
+    property(
+        node: ts.PropertyAccessExpression,
+        owner: Value,
+        rhs?: ts.Expression,
+    ): Value | undefined {
+        const context = this.context;
+        if (
+            !context.options.deferredCapabilities ||
+            !deferredPropertyDescriptor(context.checker, node)
+        )
+            return undefined;
+        const type = owner.dataType;
+        const api =
+            type?.kind === "deferred-dom-object"
+                ? type.name === "AbortController" && node.name.text === "signal"
+                    ? "AbortController.signal"
+                    : type.name === "AbortSignal" &&
+                        node.name.text === "aborted"
+                      ? "AbortSignal.aborted"
+                      : undefined
+                : owner.kind === "ui-element" && node.name.text === "tabIndex"
+                  ? "HTMLOrSVGElement.tabIndex"
+                  : undefined;
+        if (!api || (rhs && api !== "HTMLOrSVGElement.tabIndex"))
+            return undefined;
+        const result: DataType =
+            api === "AbortController.signal"
+                ? { kind: "deferred-dom-object", name: "AbortSignal" }
+                : {
+                      kind:
+                          api === "AbortSignal.aborted" ? "boolean" : "number",
+                  };
+        context.emitDiscardedValue(
+            pinDetached(context, owner, "deferred_receiver", node.expression),
+        );
+        if (rhs)
+            context.emit({
+                kind: "expression",
+                code: `static_cast<void>(${context.dataLowerer.compileForRetainedSink(rhs, result, "a deferred DOM property")});`,
+            });
+        return this.emitKnown(
+            rhs ? node.parent : node,
+            {
+                id: `dom:${api}`,
+                origin: "dom",
+                operation: rhs ? "write" : "read",
+                timing: "throw",
+                signature: `${api}: ${context.checker.typeToString(context.checker.getTypeAtLocation(node), node, ts.TypeFormatFlags.NoTruncation)}`,
+            },
+            rhs ? undefined : result,
+        );
+    }
+
+    private arguments(
+        node: ts.CallExpression | ts.NewExpression,
+        signature: ts.Signature,
+        api: string,
+    ): void {
+        const context = this.context;
+        for (const [index, argument] of (node.arguments ?? []).entries()) {
+            if (ts.isSpreadElement(argument))
+                context.fail(
+                    argument,
+                    "Deferred capability argument spreads require an explicit expanded signature.",
+                );
+            const parameter = signature.parameters[index];
+            const parameterType =
+                parameter &&
+                context.checker.getTypeOfSymbolAtLocation(parameter, node);
+            const expected =
+                parameterType &&
+                context.dataTypes.fromTsType(parameterType, argument);
+            const value = context.compileValue(argument);
+            const owned =
+                expected ??
+                context.dataTypes.fromTsType(
+                    context.checker.getTypeAtLocation(argument),
+                    argument,
+                );
+            if (!owned)
+                return context.fail(
+                    argument,
+                    `Deferred capability '${api}' argument has no owned native representation.`,
+                );
+            const cpp = context.dataLowerer.compileKnownValueForSink(
+                value,
+                owned,
+                argument,
+            );
+            context.emit({
+                kind: "expression",
+                code: `static_cast<void>(${cpp});`,
+            });
+        }
     }
 
     compile(call: ts.CallExpression): Value | undefined {
@@ -246,42 +399,7 @@ export class DeferredCapabilities {
                         "Deferred rejection requires a declared Promise result.",
                     );
             }
-            for (const [index, argument] of call.arguments.entries()) {
-                if (ts.isSpreadElement(argument))
-                    return context.fail(
-                        argument,
-                        "Deferred capability argument spreads require an explicit expanded signature.",
-                    );
-                const parameter = signature.parameters[index];
-                const parameterType =
-                    parameter &&
-                    context.checker.getTypeOfSymbolAtLocation(parameter, call);
-                const expected =
-                    parameterType &&
-                    context.dataTypes.fromTsType(parameterType, argument);
-                const value = context.compileValue(argument);
-                // An unrepresented parameter cannot hide its authored value.
-                const owned =
-                    expected ??
-                    context.dataTypes.fromTsType(
-                        context.checker.getTypeAtLocation(argument),
-                        argument,
-                    );
-                if (!owned)
-                    return context.fail(
-                        argument,
-                        `Deferred capability '${descriptor.api}' argument has no owned native representation.`,
-                    );
-                const cpp = context.dataLowerer.compileKnownValueForSink(
-                    value,
-                    owned,
-                    argument,
-                );
-                context.emit({
-                    kind: "expression",
-                    code: `static_cast<void>(${cpp});`,
-                });
-            }
+            this.arguments(call, signature, descriptor.api);
             return this.emitKnown(
                 call,
                 {
@@ -308,19 +426,23 @@ export class DeferredCapabilities {
                 const run = (value: Value): Value | undefined => {
                     const ownerType = descriptor.api.split(".")[0];
                     const valid =
-                        ownerType === "Blob"
-                            ? value.kind === "blob" || value.kind === "file"
-                            : ownerType === "Event"
-                              ? value.kind === "platform-mouse-event" ||
-                                value.kind === "platform-keyboard-event" ||
-                                value.dataType?.kind ===
-                                    "borrowed-platform-event" ||
-                                (value.dataType?.kind === "handle" &&
-                                    ["dom-event", "custom-event"].includes(
-                                        value.dataType.handle,
-                                    ))
-                              : value.kind === "ui-element" ||
-                                value.dataType?.kind === "event-target";
+                        ownerType === "AbortController" ||
+                        ownerType === "AbortSignal"
+                            ? value.dataType?.kind === "deferred-dom-object" &&
+                              value.dataType.name === ownerType
+                            : ownerType === "Blob"
+                              ? value.kind === "blob" || value.kind === "file"
+                              : ownerType === "Event"
+                                ? value.kind === "platform-mouse-event" ||
+                                  value.kind === "platform-keyboard-event" ||
+                                  value.dataType?.kind ===
+                                      "borrowed-platform-event" ||
+                                  (value.dataType?.kind === "handle" &&
+                                      ["dom-event", "custom-event"].includes(
+                                          value.dataType.handle,
+                                      ))
+                                : value.kind === "ui-element" ||
+                                  value.dataType?.kind === "event-target";
                     if (!valid) return undefined;
                     context.emitDiscardedValue(
                         context.bindings.pinValueToTemporary(

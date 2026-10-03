@@ -14,6 +14,7 @@ import {
 type ObjectStaticContext = Pick<
     LoweringServices,
     | "compileValue"
+    | "moduleNamespaces"
     | "captureEmittedLines"
     | "probeEmission"
     | "dataLowerer"
@@ -36,7 +37,7 @@ type ObjectStaticContext = Pick<
 
 type OwnObjectContext = Pick<
     ObjectStaticContext,
-    "dataTypes" | "dataLowerer" | "fail"
+    "dataTypes" | "dataLowerer" | "fail" | "moduleNamespaces"
 >;
 
 /** A string-typed value's native text, static or data. */
@@ -98,13 +99,15 @@ export function structOwnEntries(
                 original.dataType?.kind !== "optional");
         return {
             key,
-            value:
-                definitelyPresent && field.type.kind === "optional"
+            value: {
+                ...(definitelyPresent && field.type.kind === "optional"
                     ? context.dataLowerer.leafValue(
                           `(*${value.cpp})`,
                           field.type.inner,
                       )
-                    : value,
+                    : value),
+                nativeCaptures: owner.nativeCaptures ?? [],
+            },
             ...(presentCpp ? { presentCpp } : {}),
         };
     });
@@ -193,6 +196,8 @@ export function ownObjectEntries(
     owner: Value,
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
+    const namespace = context.moduleNamespaces.entries(owner, node);
+    if (namespace) return namespace;
     if (owner.kind === "record")
         return Object.entries(owner.recordProperties ?? {});
     if (owner.kind === "data" && owner.dataType?.kind === "struct")

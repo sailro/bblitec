@@ -6,6 +6,8 @@ export interface GenericFunctionDemand {
     key: string;
     arguments: readonly ts.Type[];
     parameters: readonly (ts.Type | undefined)[];
+    /** Concrete element types supplied to an unknown[] rest parameter. */
+    restArguments?: readonly ts.Type[];
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
     ancestors: readonly string[];
     /** The call is inside a checked recursive dynamic-value boundary. */

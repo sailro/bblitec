@@ -1175,20 +1175,24 @@ export class StatementLowerer {
         // Alias invalidation is path-sensitive: a branch that always
         // leaves the iteration cannot invalidate anything for the code
         // that follows the `if`, so its effects are rolled back.
-        const beforeThen = context.dataLowerer.snapshotAliasState();
+        const beforeThen = terminatesFlow(statement.thenStatement)
+            ? context.dataLowerer.snapshotAliasState()
+            : undefined;
         this.inRuntimeControlFlow(context, () =>
             this.emitScopedBody(context, statement.thenStatement),
         );
-        if (terminatesFlow(statement.thenStatement)) {
+        if (beforeThen) {
             context.dataLowerer.restoreAliasState(beforeThen);
         }
         if (statement.elseStatement) {
             context.emit({ kind: "branch", code: "} else {" });
-            const beforeElse = context.dataLowerer.snapshotAliasState();
+            const beforeElse = terminatesFlow(statement.elseStatement)
+                ? context.dataLowerer.snapshotAliasState()
+                : undefined;
             this.inRuntimeControlFlow(context, () =>
                 this.emitScopedBody(context, statement.elseStatement!),
             );
-            if (terminatesFlow(statement.elseStatement)) {
+            if (beforeElse) {
                 context.dataLowerer.restoreAliasState(beforeElse);
             }
         }

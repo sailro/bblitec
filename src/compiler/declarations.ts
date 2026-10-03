@@ -31,6 +31,7 @@ import {
     type NativeFunctionContext,
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { nullability } from "./type-facts.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -107,6 +108,8 @@ interface DeclarationContext
             | "moduleRelativeAssetUrl"
             | "nativeBindingCheckpoint"
             | "options"
+            | "moduleNamespaces"
+            | "moduleContainerIsMutated"
             | "reachJson"
             | "nativeEmission"
             | "requireDefaultEngine"
@@ -1206,7 +1209,8 @@ export class DeclarationLowerer {
                 declaration.name,
                 valueForKind(optionalHandle?.kind ?? "data", {
                     ...(optionalHandle ??
-                        (narrowed.dataType.kind === "error"
+                        (narrowed.dataType.kind === "error" ||
+                        narrowed.dataType.kind === "module-namespace"
                             ? this.context.dataLowerer.leafValue(
                                   boundCpp,
                                   narrowed.dataType,
@@ -2216,14 +2220,26 @@ export class DeclarationLowerer {
             if (storage) {
                 const source = this.context.checker.getTypeAtLocation(name);
                 const mapped =
-                    storage === "error-array"
-                        ? undefined
-                        : this.context.dataTypes.fromStoredTsType(
-                              source,
-                              declaration,
-                          );
+                    typeof storage === "object"
+                        ? this.context.dataTypes.fromStoredTsType(
+                              storage.nativeType,
+                              storage.node,
+                          )
+                        : storage === "error-array"
+                          ? undefined
+                          : this.context.dataTypes.fromStoredTsType(
+                                source,
+                                declaration,
+                            );
                 let type: DataType | undefined = mapped;
-                if (storage === "error-array") {
+                if (typeof storage === "object" && type) {
+                    const absent = nullability(source);
+                    if (absent.null || absent.undefined)
+                        type = this.context.dataTypes.nullableType(
+                            type,
+                            !absent.null,
+                        );
+                } else if (storage === "error-array") {
                     type = { kind: "vector", element: { kind: "error" } };
                 } else if (storage === "array") {
                     const indexed = this.context.checker.getIndexTypeOfType(
@@ -2252,14 +2268,23 @@ export class DeclarationLowerer {
                 );
                 this.context.emit({
                     kind: "declaration",
-                    type: this.context.dataTypes.cppType(type),
+                    type: sharedClosureStorage
+                        ? "auto"
+                        : this.context.dataTypes.cppType(type),
                     name: cppName,
-                    initializer,
+                    initializer: sharedClosureStorage
+                        ? `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(type)}>(${initializer})`
+                        : initializer,
                 });
-                this.context.bindings.defineVariable(
-                    name,
-                    this.context.dataLowerer.leafValue(cppName, type),
-                );
+                this.context.bindings.defineVariable(name, {
+                    ...this.context.dataLowerer.leafValue(
+                        sharedClosureStorage ? `(*${cppName})` : cppName,
+                        type,
+                    ),
+                    ...(sharedClosureStorage
+                        ? { sharedStorageCpp: cppName }
+                        : {}),
+                });
                 return true;
             }
             return this.emitDynamicDataBinding(
@@ -2292,6 +2317,31 @@ export class DeclarationLowerer {
         let annotated = this.context.sharedClosures.identifierIsRebound(name)
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
+        const declaredRecord =
+            annotated?.kind === "optional" ? annotated.inner : annotated;
+        if (declaredRecord?.kind === "struct") {
+            const sourceType = this.context.checker.getTypeAtLocation(
+                declaration.initializer,
+            );
+            const actual = this.context.dataTypes.fromTsType(
+                sourceType,
+                declaration.initializer,
+            );
+            const native = actual?.kind === "optional" ? actual.inner : actual;
+            if (
+                native &&
+                (isOpaqueReference(native) || native.kind === "event-target")
+            ) {
+                const absent = nullability(declaredType);
+                annotated =
+                    absent.null || absent.undefined
+                        ? this.context.dataTypes.nullableType(
+                              native,
+                              !absent.null,
+                          )
+                        : actual;
+            }
+        }
         if (
             annotated?.kind === "optional" &&
             annotated.inner.kind === "struct"
@@ -2335,7 +2385,8 @@ export class DeclarationLowerer {
             ts.isArrayLiteralExpression(
                 this.context.unwrap(declaration.initializer),
             ) &&
-            this.inferredArrayIsMutated(name);
+            (this.inferredArrayIsMutated(name) ||
+                this.context.moduleContainerIsMutated(name));
         const initializer = this.context.unwrap(declaration.initializer);
         if (
             !annotated &&
@@ -2358,6 +2409,7 @@ export class DeclarationLowerer {
         if (
             annotatedOpenRecordLiteral &&
             !this.openRecordContainerIsMutated(name) &&
+            !this.context.moduleContainerIsMutated(name) &&
             !this.context.sharedClosures.identifierIsRebound(name)
         ) {
             // An immutable Record literal stays a compile-time record. A
@@ -2386,7 +2438,8 @@ export class DeclarationLowerer {
             inferredPlainObject &&
             (ts.isObjectLiteralExpression(initializer) ||
             ts.isConditionalExpression(initializer)
-                ? this.inferredObjectIsMutated(name)
+                ? this.inferredObjectIsMutated(name) ||
+                  this.context.moduleContainerIsMutated(name)
                 : this.context.sharedClosures.identifierIsRebound(name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;
         const explicitlyTypedMutableEntryObject =
@@ -2814,7 +2867,8 @@ export class DeclarationLowerer {
                       boundValue,
                       this.context.dataLowerer.leafValue(boundCpp, annotated),
                   )
-                : annotated.kind === "promise"
+                : annotated.kind === "promise" ||
+                    annotated.kind === "module-namespace"
                   ? withNativeMetadata(
                         this.context.dataValue(boundCpp, annotated),
                         boundValue,
@@ -3553,6 +3607,14 @@ export class DeclarationLowerer {
         value: Value,
         source: ts.Node = pattern,
     ): void {
+        if (value.dataType?.kind === "module-namespace") {
+            value = this.context.bindings.pinValueToTemporary(
+                value,
+                "module_destructure",
+            );
+            this.emitRecordBindingDeclaration(pattern, value);
+            return;
+        }
         if (value.kind === "record") {
             this.emitRecordBindingDeclaration(pattern, value);
             return;
@@ -3794,9 +3856,20 @@ export class DeclarationLowerer {
                     );
                 }
                 const remaining = Object.fromEntries(
-                    Object.entries(value.recordProperties ?? {}).filter(
-                        ([key]) => !consumed.has(key),
-                    ),
+                    (
+                        this.context.moduleNamespaces.entries(value, element) ??
+                        Object.entries(value.recordProperties ?? {})
+                    )
+                        .filter(([key]) => !consumed.has(key))
+                        .map(([key, field]) => [
+                            key,
+                            value.moduleNamespace && field.kind !== "callback"
+                                ? this.context.bindings.pinValueToTemporary(
+                                      field,
+                                      "module_export_snapshot",
+                                  )
+                                : field,
+                        ]),
                 );
                 this.context.bindings.defineVariable(element.name, {
                     kind: "record",
@@ -3807,10 +3880,15 @@ export class DeclarationLowerer {
             }
             const { name, property } = this.bindingProperty(element);
             consumed.add(property);
-            const present = value.recordProperties?.[property];
+            const present =
+                this.context.moduleNamespaces.member(
+                    value,
+                    property,
+                    element,
+                ) ?? value.recordProperties?.[property];
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
-            const propertyValue =
+            let propertyValue =
                 (!present || present.kind === "json-null") &&
                 element.initializer
                     ? this.context.compileValue(element.initializer)
@@ -3821,6 +3899,11 @@ export class DeclarationLowerer {
                     `Record has no property '${property}'.`,
                 );
             }
+            if (value.moduleNamespace && propertyValue.kind !== "callback")
+                propertyValue = this.context.bindings.pinValueToTemporary(
+                    propertyValue,
+                    "module_export_snapshot",
+                );
             if (this.context.mutableCapturedParameter(name, propertyValue)) {
                 this.context.bindings.bindParameterValue(name, propertyValue);
                 continue;

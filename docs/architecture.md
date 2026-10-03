@@ -52,7 +52,9 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
-initializers use the selected representation. Equivalent definitions share code; invocations retain
+initializers use the selected representation. Immutable storage-demand and lexical-dependency indexes
+are shared by the checked program. Scoped collection facts use a derived alias graph that observes
+mutations and rollback. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
 use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
 renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over

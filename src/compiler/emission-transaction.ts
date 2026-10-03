@@ -20,6 +20,47 @@
 /** Revisions are allocated only for state observed by a derived cache. */
 const mutationVersions = new WeakMap<object, number>();
 const proxyTargets = new WeakMap<object, object>();
+const mutationObservers = new WeakMap<
+    object,
+    Set<WeakRef<EmissionMutationObserver>>
+>();
+const observedWrites = new WeakMap<object, object>();
+
+/** Derived graphs observe writes and rollback without retaining their compiler through source values. */
+export class EmissionMutationObserver {
+    private readonly reference = new WeakRef(this);
+    private readonly observed = new WeakSet<object>();
+    private readonly pending = new Set<object>();
+
+    public watch(value: object): object {
+        const target = proxyTargets.get(value) ?? value;
+        if (!this.observed.has(target)) {
+            this.observed.add(target);
+            let observers = mutationObservers.get(target);
+            if (!observers)
+                mutationObservers.set(target, (observers = new Set()));
+            observers.add(this.reference);
+        }
+        return target;
+    }
+
+    public changed(target: object): void {
+        this.pending.add(target);
+    }
+
+    public unwatch(value: object): void {
+        const target = proxyTargets.get(value) ?? value;
+        mutationObservers.get(target)?.delete(this.reference);
+        this.observed.delete(target);
+        this.pending.delete(target);
+    }
+
+    public takeChanges(): ReadonlySet<object> {
+        const result = new Set(this.pending);
+        this.pending.clear();
+        return result;
+    }
+}
 
 export function emissionMutationVersion(value: object): number {
     const target = proxyTargets.get(value) ?? value;
@@ -31,6 +72,12 @@ export function emissionMutationVersion(value: object): number {
 function changed(value: object): void {
     const version = mutationVersions.get(value);
     if (version !== undefined) mutationVersions.set(value, version + 1);
+    const observers = mutationObservers.get(value);
+    for (const reference of observers ?? []) {
+        const observer = reference.deref();
+        if (observer) observer.changed(value);
+        else observers!.delete(reference);
+    }
 }
 
 /** Transactions opened and declined, originals saved, containers restored. */
@@ -319,6 +366,7 @@ export class EmissionSet<T> extends Set<T> {
                 entries: undefined,
             }),
             (record) => {
+                changed(this);
                 if (record.entries === undefined) {
                     for (const value of record.added) super.delete(value);
                     return;
@@ -338,6 +386,7 @@ export class EmissionSet<T> extends Set<T> {
 
     public override add(value: T): this {
         if (super.has(value)) return this;
+        changed(this);
         const record = this.#record();
         if (record && record.entries === undefined) {
             record.added.add(value);
@@ -348,12 +397,14 @@ export class EmissionSet<T> extends Set<T> {
 
     public override delete(value: T): boolean {
         if (!super.has(value)) return false;
+        changed(this);
         this.#snapshot();
         return super.delete(value);
     }
 
     public override clear(): void {
         if (this.size === 0) return;
+        changed(this);
         this.#snapshot();
         super.clear();
     }
@@ -669,8 +720,34 @@ export function writable<T extends object>(target: T): Mutable<T> {
                 "writable() names a journaled container; write it directly.",
             );
     }
+    target = (proxyTargets.get(target) ?? target) as T;
     snapshotBeforeWrite(target, 0);
-    return target as Mutable<T>;
+    if (!mutationObservers.get(target)?.size) return target as Mutable<T>;
+    // A right-hand side can query a derived graph after writable() but before
+    // assigning. Notify again when the actual write completes.
+    let proxy = observedWrites.get(target);
+    if (!proxy) {
+        proxy = new Proxy(target, {
+            set(owner, key, value: unknown) {
+                const result = Reflect.set(owner, key, value, owner);
+                changed(owner);
+                return result;
+            },
+            deleteProperty(owner, key) {
+                const result = Reflect.deleteProperty(owner, key);
+                changed(owner);
+                return result;
+            },
+            defineProperty(owner, key, descriptor) {
+                const result = Reflect.defineProperty(owner, key, descriptor);
+                changed(owner);
+                return result;
+            },
+        });
+        observedWrites.set(target, proxy);
+        proxyTargets.set(proxy, target);
+    }
+    return proxy as Mutable<T>;
 }
 
 /** The writable view `writable()` returns. */

@@ -4635,6 +4635,18 @@ export class UiProjection {
             expression.left.expression,
         );
         if (directElement) {
+            const deferredProperty = this.context.deferredCapabilities.property(
+                expression.left,
+                directElement,
+                expression.right,
+            );
+            if (deferredProperty) {
+                this.context.emit({
+                    kind: "expression",
+                    code: `${deferredProperty.cpp};`,
+                });
+                return true;
+            }
             const engine = this.context.requireEngine(
                 directElement,
                 expression.left,

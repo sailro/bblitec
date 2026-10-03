@@ -17,7 +17,12 @@ import {
 } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
 import { declaredSymbol } from "./symbols.js";
-import { presenceFlagCpp, valueForKind, type Value } from "./types.js";
+import {
+    optionalPresentCpp,
+    presenceFlagCpp,
+    valueForKind,
+    type Value,
+} from "./types.js";
 import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
     propertyIsReadOnly,
@@ -113,7 +118,8 @@ export class AsyncLowerer {
                     target,
                     node,
                 ));
-        const value = context.compileValue(expression);
+        const raw = context.compileValue(expression);
+        const value = this.adoptOptionalPromise(raw, expression) ?? raw;
         if (value.kind === "promise") {
             const expected = type
                 ? context.dataTypes.cppType(type)
@@ -1429,6 +1435,17 @@ export class AsyncLowerer {
                     engineCpp: [binding],
                 },
             };
+        if (value.kind === "data" && value.dataType) {
+            const leaf = this.context.dataLowerer.leafValue(
+                cpp,
+                value.dataType,
+            );
+            return valueForKind(leaf.kind, {
+                ...this.withoutProducerStorage(value),
+                ...leaf,
+                nativeCaptures: [binding],
+            });
+        }
         if (
             value.kind === "number" ||
             value.kind === "boolean" ||
@@ -1543,12 +1560,60 @@ export class AsyncLowerer {
             expected,
         );
     }
+    /** An absent promise settles to absence; a present promise adopts its payload. */
+    private adoptOptionalPromise(
+        value: Value,
+        node: ts.Node,
+        source = this.context.checker.getTypeAtLocation(node),
+    ): Value | undefined {
+        const type = value.dataType;
+        if (type?.kind !== "optional" || type.inner.kind !== "promise")
+            return undefined;
+        const context = this.context;
+        const awaited = context.checker.getAwaitedType(source);
+        const mapped = awaited && context.dataTypes.fromTsType(awaited, node);
+        const result = mapped
+            ? context.dataTypes.markStoredObjectReferences(mapped)
+            : type.inner.result
+              ? context.dataTypes.nullableType(
+                    type.inner.result,
+                    type.undefinedOnly,
+                )
+              : undefined;
+        const cppType = result
+            ? context.dataTypes.cppType(result)
+            : "bbl::js::PromiseVoid";
+        const owner = this.pinArgument(value, "optional_promise", node);
+        const promise = context.dataLowerer.leafValue(
+            `(*${owner.cpp})`,
+            type.inner,
+        );
+        const present = context.dataLowerer.compileKnownValueForSink(
+            promise,
+            { kind: "promise", ...(result ? { result } : {}) },
+            node,
+        );
+        const absent = result
+            ? context.dataTypes.absentValue(result)
+            : "bbl::js::PromiseVoid{}";
+        return {
+            kind: "promise",
+            cpp: `(${optionalPresentCpp(owner.cpp)} ? ${present} : bbl::js::Promise<${cppType}>::resolved(${absent}))`,
+            promiseType: cppType,
+            promiseResult: result
+                ? context.dataLowerer.leafValue("", result)
+                : { kind: "void", cpp: "" },
+        };
+    }
+
     private asPromise(
         value: Value,
         node: ts.Node,
         source = this.context.checker.getTypeAtLocation(node),
     ): Value {
         if (value.kind === "promise") return value;
+        const adopted = this.adoptOptionalPromise(value, node, source);
+        if (adopted) return adopted;
         value = this.normalizeUndefined(
             value,
             this.context.checker.getTypeAtLocation(node),
@@ -1627,6 +1692,8 @@ export class AsyncLowerer {
         node: ts.Node,
         source: ts.Type | undefined,
     ): Value {
+        const adopted = this.adoptOptionalPromise(value, node, source);
+        if (adopted) return adopted;
         const awaited =
             source && (this.context.checker.getAwaitedType(source) ?? source);
         if (value.kind === "tuple")

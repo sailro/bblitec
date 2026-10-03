@@ -11,6 +11,7 @@ import {
 import { nullability } from "./type-facts.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { isAbsentWindowMember } from "./browser-erasure.js";
+import { boundRecordValue } from "./bound-record-value.js";
 
 type Context = Pick<
     LoweringServices,
@@ -79,9 +80,7 @@ export class WindowProperties {
         const node = context.unwrap(expression);
         const global = context.libraryGlobal(node);
         if (global === "window" || global === "globalThis") return true;
-        const bound = ts.isIdentifier(node)
-            ? context.bindings.lookupOptional(node)
-            : undefined;
+        const bound = boundRecordValue(context, node);
         const type =
             bound?.dataType?.kind === "optional"
                 ? bound.dataType.inner
@@ -172,9 +171,24 @@ export class WindowProperties {
     }
 
     private declaredField(target: ts.PropertyAccessExpression) {
-        const sourceType = this.context.checker.getTypeAtLocation(target);
+        let sourceType = this.context.checker.getTypeAtLocation(target);
+        if ((sourceType.flags & ts.TypeFlags.Unknown) !== 0) {
+            let view: ts.Node = target;
+            while (ts.isParenthesizedExpression(view.parent))
+                view = view.parent;
+            if (
+                ts.isAsExpression(view.parent) ||
+                ts.isTypeAssertionExpression(view.parent)
+            )
+                sourceType = this.context.checker.getTypeAtLocation(
+                    view.parent,
+                );
+        }
         if (!nullability(sourceType).undefined) return undefined;
-        const type = this.context.dataTypes.fromTsType(sourceType, target);
+        const type = this.context.dataTypes.fromStoredTsType(
+            sourceType,
+            target,
+        );
         if (!type) return undefined;
         return this.createField(target.name.text, type);
     }
@@ -247,7 +261,7 @@ export class WindowProperties {
             this.fields.get(target.node.name.text) ??
             this.declaredField(target.node);
         if (!field) {
-            const valueType = context.dataTypes.fromTsType(
+            const valueType = context.dataTypes.fromStoredTsType(
                 context.checker.getTypeAtLocation(expression.right),
                 expression.right,
             );

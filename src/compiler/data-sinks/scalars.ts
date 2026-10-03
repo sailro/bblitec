@@ -263,10 +263,12 @@ const opaqueSink = {
 };
 
 export const scalarsSinks: DataSinkOperations<
+    | "module-namespace"
     | "weak-key"
     | "undefined"
     | "error"
     | "event-target"
+    | "deferred-dom-object"
     | "search-params"
     | "http-response"
     | "gpu-adapter"
@@ -285,6 +287,18 @@ export const scalarsSinks: DataSinkOperations<
     | "json"
     | "borrowed-platform-event"
 > = {
+    "module-namespace": {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (type, _lowerer, value) =>
+            value.dataType && dataTypesEqual(type, value.dataType)
+                ? value.cpp
+                : undefined,
+    },
     "weak-key": {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(
@@ -349,6 +363,7 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
+    "deferred-dom-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>

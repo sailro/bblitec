@@ -1,4 +1,7 @@
-import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
+import {
+    deferredCapabilityDescriptor,
+    deferredPropertyDescriptor,
+} from "./deferred-capabilities.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import {
     emissionArray,
@@ -1138,6 +1141,12 @@ export class BrowserErasure {
     private isBrowserOnlyNodeUncached(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
+        if (
+            this.context.options.deferredCapabilities &&
+            ts.isPropertyAccessExpression(unwrapped) &&
+            deferredPropertyDescriptor(this.context.checker, unwrapped)
+        )
+            return false;
         if (devicePixelRatioValue(this.context, unwrapped)) return false;
         if (
             ts.isCallExpression(unwrapped) &&
@@ -1750,6 +1759,8 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "tabIndex" &&
+            (!this.context.options.deferredCapabilities ||
+                this.context.isCanvasElement(unwrapped.expression)) &&
             this.isBrowserDomValue(unwrapped.expression)
         ) {
             // Native keyboard events target the SDL surface directly. Treat

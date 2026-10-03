@@ -134,6 +134,52 @@ check(
 );
 
 check(
+    "stored-unknown-rest-signatures",
+    `
+    interface Host { report?:(...values:unknown[])=>void; }
+    const hosts:Host[]=[{}];
+    const host=hosts[0]!;
+    let total=0, evaluations=0;
+    const retained:Array<()=>number>=[];
+    function argument():number { evaluations++;return 3; }
+    host.report?.(argument());
+    if(evaluations!==0)throw new Error('absent rest callback evaluates arguments');
+    host.report=(...values:unknown[])=>{
+        total+=values.length;
+        for(const value of values) {
+            if(typeof value==='number') total+=value;
+            if(typeof value==='string') total+=value.length;
+        }
+        retained.push(()=>values.length);
+    };
+    const original=host.report;
+    host.report?.();
+    host.report?.(argument(),5);
+    host.report?.('word',2,true);
+    const source=[7,8];
+    host.report?.(...source);
+    source.push(9);
+    if(total!==36||evaluations!==1||retained[0]!()!==0||retained[3]!()!==2)
+        throw new Error('rest packing, specialization or fresh array');
+    function replace():number {host.report=(...values:unknown[])=>{total+=100+values.length;};return 1;}
+    host.report?.(replace());
+    if(total!==38||original===host.report)throw new Error('selected callback before arguments');
+    host.report?.(true);
+    if(total!==139)throw new Error('replacement callback');
+    delete host.report;
+    host.report?.(argument());
+    if(evaluations!==1)throw new Error('deleted rest callback');
+    interface Item {value:number;}
+    interface Sink {accept?:(...items:unknown[])=>void;}
+    const sinks:Sink[]=[{}];
+    sinks[0]!.accept=(...items:unknown[])=>{const first=items[0] as Item;first.value++;};
+    const item={value:4};
+    sinks[0]!.accept?.(item);
+    if(item.value!==5)throw new Error('rest object identity');
+`,
+);
+
+check(
     "generic-async-results-and-hook-absence",
     `
     interface Gate { ready():boolean; run<T>(fn:()=>T|Promise<T>):Promise<T>; }
@@ -176,6 +222,19 @@ test("generic storage retains unsupported native boundaries", () => {
                     `const fixed:(fn:()=>number)=>number=state.read;fixed(()=>1);`,
             ),
         /Stored generic function conversion requires matching concrete signature families/,
+    );
+});
+
+test("stored unknown rest callbacks refuse unresolved element storage", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Host {report:(...values:unknown[])=>void;}
+            const hosts:Host[]=[{report:(...values:unknown[])=>{}}];
+            const values:unknown[]=[];
+            hosts[0]!.report(...values);
+        `),
+        /Stored generic function instantiation requires a fully represented native signature/,
     );
 });
 

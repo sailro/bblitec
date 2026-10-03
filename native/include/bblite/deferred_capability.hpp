@@ -1,10 +1,19 @@
 #pragma once
 
 #include <stdexcept>
+#include <memory>
 #include <string>
 #include <string_view>
 
 namespace bbl {
+
+// Nominal storage for deferred DOM APIs. There is no successful producer.
+class DeferredAbortController final {
+    DeferredAbortController() = delete;
+};
+class DeferredAbortSignal final {
+    DeferredAbortSignal() = delete;
+};
 
 class DeferredCapabilityError final : public std::runtime_error {
 public:

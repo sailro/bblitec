@@ -68,6 +68,20 @@ test("Window targets retain document, extension and listener identity through st
         let hostReads=0;
         function selectHost():Host { hostReads++; return hosts[0]!; }
         if (selectHost().snapshot!()!==5 || hostReads!==1) throw new Error("host receiver evaluated once");
+        type ReportingHost=Window & {report?:(...values:unknown[])=>void};
+        const reporting={host:window as ReportingHost};
+        let reports=0,reportArguments=0;
+        function reportArgument():number {reportArguments++;return 3;}
+        reporting.host.report?.(reportArgument());
+        if(reportArguments!==0)throw new Error("absent host rest callback");
+        reporting.host.report=(...values:unknown[])=>{reports+=values.length;};
+        const report=reporting.host.report;
+        reporting.host.report?.(reportArgument(),"value");
+        if(reports!==2||reportArguments!==1||report!==reporting.host.report)
+            throw new Error("host rest callback and identity");
+        delete reporting.host.report;
+        reporting.host.report?.(reportArgument());
+        if(reportArguments!==1)throw new Error("deleted host rest callback");
         delete hosts[0]!.state;
         if (read(hosts[0]!)!==0) throw new Error("host field deletion");
         const optionalHosts:Array<Host|null>=[null,hosts[0]!];

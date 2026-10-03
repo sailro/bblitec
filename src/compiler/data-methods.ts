@@ -788,6 +788,7 @@ export function compileDataMethodCall(
             : lowerer.compileDataPath(
                   callee.expression,
                   receiverWritingMethods.has(method) ? "write" : "read",
+                  true,
               )) ??
         (dynamicOwner?.kind === "data" || dynamicOwner?.kind === "string"
             ? dynamicOwner
@@ -914,7 +915,7 @@ function compileKnownDataMethod(
     if (recordType?.kind === "struct") {
         const field = lowerer.context.dataTypes
             .structFields(recordType.name, callee.name, "accessors")
-            .find((candidate) => candidate.name === method);
+            .find((candidate) => candidate.sourceName === method);
         const functionType = field?.accessor ? undefined : field?.type;
         if (functionType?.kind === "function") {
             const referenceReceiver =

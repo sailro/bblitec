@@ -94,6 +94,9 @@ export interface LoweringServices {
     failAtFile(message: string): never;
     attributeRefusalsTo<T>(site: RefusalSite, materialize: () => T): T;
     readonly sourceFile: ts.SourceFile;
+    readonly program: ts.Program;
+    readonly moduleNamespaces: import("./module-namespaces.js").ModuleNamespaces;
+    moduleContainerIsMutated(name: ts.Identifier): boolean;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
     readonly symbols: CompilerSymbols;

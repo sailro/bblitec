@@ -3583,6 +3583,17 @@ export class UserFunctionLowerer {
                           ) {
                               throw new SharedCallRequiresInline();
                           }
+                          if (
+                              !dataTypesEqual(
+                                  context.dataLowerer.retainedResultType(
+                                      value,
+                                      type,
+                                      expression,
+                                  ),
+                                  type,
+                              )
+                          )
+                              throw new SharedCallRequiresInline();
                           returnedValues.push(value);
                           return context.dataLowerer.compileKnownValueForSink(
                               value,

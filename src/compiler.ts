@@ -188,11 +188,13 @@ import {
 } from "./compiler/loop-control.js";
 import {
     isModuleInitializerStatement,
+    moduleContainerSymbol,
     planEntryModuleState,
-    planImportedModuleInitializers,
+    planImportedModuleState,
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
+import { ModuleNamespaces } from "./compiler/module-namespaces.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
@@ -232,7 +234,6 @@ import {
     isDeclaredInside,
     isUpdateExpression,
     objectProperty,
-    rootIdentifier,
     sourceFunctionName,
     stringLiteralText,
     unwrapExpression,
@@ -705,6 +706,9 @@ class Compiler implements LoweringServices {
     public readonly bindings: BindingScopes = new BindingScopes(this);
     /** The C++ truth test of a source condition. */
     public readonly conditions: ConditionLowerer = new ConditionLowerer(this);
+    public readonly moduleNamespaces: ModuleNamespaces = new ModuleNamespaces(
+        this,
+    );
     /** Variable declarations and binding patterns. */
     public readonly declarations: DeclarationLowerer = new DeclarationLowerer(
         this,
@@ -1352,12 +1356,13 @@ class Compiler implements LoweringServices {
      * runtime copy of every lookup table merely because it was imported.
      */
     private emitImportedModuleInitializers(): void {
-        const modules = planImportedModuleInitializers(
+        const { modules, mutatedContainers } = planImportedModuleState(
             this.program,
             this.sourceFile,
             this.checker,
             this.symbols,
         );
+        this.mutatedModuleContainers = mutatedContainers;
         if (modules.length === 0) return;
 
         // Once a module is materialized, its declarations name the native
@@ -1396,6 +1401,22 @@ class Compiler implements LoweringServices {
                 this.bindings.popScope();
             }
         });
+    }
+
+    /** @unjournaled Immutable source facts established before module declarations lower. */
+    private mutatedModuleContainers: ReadonlySet<ts.Symbol> = new Set();
+
+    public moduleContainerIsMutated(name: ts.Identifier): boolean {
+        const declaration = name.parent;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            !ts.isVariableStatement(declaration.parent.parent) ||
+            !ts.isSourceFile(declaration.parent.parent.parent)
+        )
+            return false;
+        const symbol = this.symbols.valueSymbol(name);
+        return symbol !== undefined && this.mutatedModuleContainers.has(symbol);
     }
 
     /**
@@ -2536,9 +2557,12 @@ class Compiler implements LoweringServices {
     ): boolean {
         const aliases = new Set([symbol]);
         const names = (node: ts.Node): boolean => {
-            const named = ts.isIdentifier(node)
-                ? this.symbols.valueSymbol(node)
-                : undefined;
+            const named =
+                ts.isIdentifier(node) ||
+                ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)
+                    ? moduleContainerSymbol(node, this.checker, this.symbols)
+                    : undefined;
             return named !== undefined && aliases.has(named);
         };
         // A function inside the expression reads the constant without
@@ -2574,8 +2598,7 @@ class Compiler implements LoweringServices {
                         alias(iterated.name);
                 return (
                     writesThroughTrackedRoot(node, (target) => {
-                        const root = rootIdentifier(this.unwrap(target));
-                        return root !== undefined && names(root);
+                        return names(this.unwrap(target));
                     }) ||
                     (ts.isCallExpression(node) &&
                         node.arguments.some(
@@ -4721,6 +4744,7 @@ class Compiler implements LoweringServices {
         const ownerExpression = this.unwrap(expression.expression);
         const owner = ts.isIdentifier(ownerExpression)
             ? (this.bindings.lookupOptional(ownerExpression) ??
+              this.moduleNamespaces.fromIdentifier(ownerExpression) ??
               browserEnvironmentValue(this, ownerExpression))
             : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
               ? this.activeThis()
@@ -4729,6 +4753,12 @@ class Compiler implements LoweringServices {
                   browserEnvironmentValue(this, ownerExpression) ??
                   this.propertyAccess.lookupRecordProperty(ownerExpression))
                 : undefined;
+        if (owner?.dataType?.kind === "module-namespace")
+            return this.moduleNamespaces.member(
+                owner,
+                expression.name.text,
+                expression,
+            );
         if (owner?.kind !== "record") {
             return undefined;
         }
@@ -8250,7 +8280,8 @@ class Compiler implements LoweringServices {
             features,
             jsDataReached: this.jsDataReached,
             deferredCapabilitiesReached:
-                this.deferredCapabilities.sites.length > 0,
+                this.deferredCapabilities.sites.length > 0 ||
+                this.dataTypes.usesDeferredDomStorage(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

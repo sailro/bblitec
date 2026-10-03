@@ -92,9 +92,14 @@ export type TypedArrayKind =
     | "u32array"
     | "i32array";
 interface DataKinds {
+    "module-namespace": { kind: "module-namespace"; module: string };
     undefined: { kind: "undefined" };
     error: { kind: "error" };
     "event-target": { kind: "event-target" };
+    "deferred-dom-object": {
+        kind: "deferred-dom-object";
+        name: "AbortController" | "AbortSignal";
+    };
     "http-response": { kind: "http-response" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };

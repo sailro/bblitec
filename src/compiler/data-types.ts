@@ -740,6 +740,7 @@ export class DataTypeRegistry {
     /** Named data types that reached emitted C++ rather than a type probe. */
     private readonly emittedNamedTypes = new EmissionSet<string>();
     @journaled private accessor emittedJsonType = false;
+    @journaled private accessor emittedDeferredDomType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
     /**
@@ -1267,6 +1268,9 @@ export class DataTypeRegistry {
     }
 
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+        const module = type.getSymbol()?.declarations?.find(ts.isSourceFile);
+        if (module)
+            return { kind: "module-namespace", module: module.fileName };
         if (!type.isUnion() || !isNullable(type)) {
             return this.fromNonNullableType(type, node);
         }
@@ -1465,6 +1469,12 @@ export class DataTypeRegistry {
                     : declaredInDefaultLibrary(type.symbol)),
         );
         if (libraryObject) return { kind: libraryObject[2] };
+        if (
+            declaredInDomLibrary(type.symbol) &&
+            (type.symbol.name === "AbortController" ||
+                type.symbol.name === "AbortSignal")
+        )
+            return { kind: "deferred-dom-object", name: type.symbol.name };
         if (declaredIn(type.symbol, "dom", "webgpu")) {
             if (type.symbol?.name === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };
@@ -1789,6 +1799,7 @@ export class DataTypeRegistry {
         storedClassField = false,
         parameterOverrides?: readonly (ts.Type | undefined)[],
         resultOverride?: ts.Signature,
+        restArguments?: readonly ts.Type[],
     ): DataType | undefined {
         const signatures = type.getCallSignatures();
         if (signatures.length !== 1) return undefined;
@@ -1821,7 +1832,7 @@ export class DataTypeRegistry {
                         (parameter) =>
                             (this.checker.getTypeOfSymbol(parameter).flags &
                                 ts.TypeFlags.Unknown) !==
-                            0,
+                                0 || this.isUnknownRestParameter(parameter),
                     ))
         ) {
             return this.classDemanded
@@ -1866,34 +1877,39 @@ export class DataTypeRegistry {
                 if (nullability(declaredType).undefined)
                     optionalParameters.push(index - erasedParameters.length);
                 const mapped =
-                    actualSignature &&
-                    declaredCallable.getCallSignatures().length === 1
-                        ? this.fromFunctionType(
-                              declaredCallable,
+                    restArguments && this.isUnknownRestParameter(parameter)
+                        ? this.storedRestArray(
+                              restArguments,
                               declaration ?? node,
-                              false,
-                              undefined,
-                              (this.checker.getReturnTypeOfSignature(
-                                  actualSignature,
-                              ).flags &
-                                  ts.TypeFlags.Never) !==
-                                  0 &&
-                                  declaredSignature &&
-                                  (this.checker.getReturnTypeOfSignature(
-                                      declaredSignature,
-                                  ).flags &
-                                      ts.TypeFlags.Void) !==
-                                      0
-                                  ? undefined
-                                  : actualSignature,
                           )
-                        : ((this.dynamicJsonStorage
-                              ? this.dynamicJsonType(parameterType)
-                              : undefined) ??
-                          this.fromStoredTsType(
-                              parameterType,
-                              declaration ?? node,
-                          ));
+                        : actualSignature &&
+                            declaredCallable.getCallSignatures().length === 1
+                          ? this.fromFunctionType(
+                                declaredCallable,
+                                declaration ?? node,
+                                false,
+                                undefined,
+                                (this.checker.getReturnTypeOfSignature(
+                                    actualSignature,
+                                ).flags &
+                                    ts.TypeFlags.Never) !==
+                                    0 &&
+                                    declaredSignature &&
+                                    (this.checker.getReturnTypeOfSignature(
+                                        declaredSignature,
+                                    ).flags &
+                                        ts.TypeFlags.Void) !==
+                                        0
+                                    ? undefined
+                                    : actualSignature,
+                            )
+                          : ((this.dynamicJsonStorage
+                                ? this.dynamicJsonType(parameterType)
+                                : undefined) ??
+                            this.fromStoredTsType(
+                                parameterType,
+                                declaration ?? node,
+                            ));
                 if (
                     declaration &&
                     ts.isParameter(declaration) &&
@@ -1989,6 +2005,8 @@ export class DataTypeRegistry {
                         node,
                         false,
                         demand.parameters,
+                        undefined,
+                        demand.restArguments,
                     ),
             );
             if (type?.kind !== "function" || type.generic)
@@ -2017,6 +2035,44 @@ export class DataTypeRegistry {
         name: string,
     ): readonly GenericFunctionField[] {
         return this.genericFunctions.get(name)!.fields;
+    }
+
+    private isUnknownRestParameter(parameter: ts.Symbol): boolean {
+        const declaration =
+            parameter.valueDeclaration ?? parameter.declarations?.[0];
+        if (
+            !declaration ||
+            !ts.isParameter(declaration) ||
+            !declaration.dotDotDotToken
+        )
+            return false;
+        const element = this.checker.getIndexTypeOfType(
+            this.checker.getTypeOfSymbol(parameter),
+            ts.IndexKind.Number,
+        );
+        return (
+            element !== undefined &&
+            (element.flags & ts.TypeFlags.Unknown) !== 0
+        );
+    }
+
+    /** Pack reached rest arguments with ordinary owned array storage. */
+    private storedRestArray(
+        arguments_: readonly ts.Type[],
+        node: ts.Node,
+    ): DataType | undefined {
+        const elements: DataType[] = [];
+        for (const argument of arguments_) {
+            const element = this.fromStoredTsType(argument, node);
+            if (!element) return undefined;
+            elements.push(markIdentityFunctions(element));
+        }
+        if (!elements.length)
+            return { kind: "vector", element: { kind: "undefined" } };
+        const storage = this.tupleStorage(elements);
+        return storage.kind === "tuple"
+            ? { kind: "vector", element: { kind: "number" } }
+            : storage;
     }
 
     /** Bind an implementation's parameters by position, independent of its interface's symbols. */
@@ -2097,6 +2153,37 @@ export class DataTypeRegistry {
                 }
                 return this.checker.getTypeAtLocation(argument);
             });
+        const restIndex = generic.signature
+            .getParameters()
+            .findIndex((parameter) => this.isUnknownRestParameter(parameter));
+        const restArguments =
+            restIndex < 0
+                ? undefined
+                : [
+                      ...new Set(
+                          call.arguments.slice(restIndex).map((argument) => {
+                              const type = this.checker.getTypeAtLocation(
+                                  ts.isSpreadElement(argument)
+                                      ? argument.expression
+                                      : argument,
+                              );
+                              const element = ts.isSpreadElement(argument)
+                                  ? this.checker.getIndexTypeOfType(
+                                        type,
+                                        ts.IndexKind.Number,
+                                    )
+                                  : type;
+                              if (!element)
+                                  this.fail(
+                                      argument,
+                                      "Stored rest spread requires an array with represented elements.",
+                                  );
+                              return this.checker.getBaseTypeOfLiteralType(
+                                  element,
+                              );
+                          }),
+                      ),
+                  ];
         const dynamicJsonStorage =
             this.dynamicJsonStorage ||
             parameters.some(
@@ -2126,6 +2213,11 @@ export class DataTypeRegistry {
             ({ demand }) =>
                 sameTypes(demand.arguments, arguments_) &&
                 sameTypes(demand.parameters, parameters) &&
+                (demand.restArguments?.length ?? 0) ===
+                    (restArguments?.length ?? 0) &&
+                (restArguments ?? []).every((type) =>
+                    demand.restArguments!.includes(type),
+                ) &&
                 demand.dynamicJsonStorage ===
                     (dynamicJsonStorage || undefined) &&
                 sameTypeFrames(demand.frames, frames),
@@ -2142,6 +2234,7 @@ export class DataTypeRegistry {
             key: String(generic.fields.length),
             arguments: arguments_,
             parameters,
+            ...(restArguments ? { restArguments } : {}),
             frames,
             ancestors: this.genericFunctionAncestors,
         });
@@ -4408,19 +4501,31 @@ export class DataTypeRegistry {
 
     public cppType(dataType: DataType): string {
         if (dataType.kind === "json") this.emittedJsonType = true;
+        if (dataType.kind === "deferred-dom-object")
+            this.emittedDeferredDomType = true;
         return dataTypeCppType(dataType, this.cppContext);
+    }
+
+    public usesDeferredDomStorage(): boolean {
+        return (
+            this.emittedDeferredDomType ||
+            this.usesNamedKind("deferred-dom-object")
+        );
     }
 
     /** JSON storage can occur in a defaulted field with no JSON expression. */
     public usesJsonStorage(): boolean {
-        if (this.emittedJsonType) return true;
+        return this.emittedJsonType || this.usesNamedKind("json");
+    }
+
+    private usesNamedKind(kind: DataType["kind"]): boolean {
         const seen = new Set<string>();
         return [...this.emittedNamedTypes].some(
             (name) =>
                 this.structsByName.has(name) &&
                 containsDataKind(
                     { kind: "struct", name },
-                    "json",
+                    kind,
                     (record) => this.structFieldTypes(record),
                     true,
                     seen,

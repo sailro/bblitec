@@ -106,6 +106,7 @@ Window keyboard listeners precede default actions. Element focus/blur preserves 
 removal, non-bubbling dispatch and related targets. Form and successful file-selection input/change events
 use shared DOM listener ordering and removal; form state is updated before callbacks.
 Native canvas `tabIndex` reads as zero; keyboard focus targets the SDL surface rather than HTML tab order.
+Deferred-capability mode throws on retained-element numeric `tabIndex` reads and writes; RmlUi's `tab-index: auto | none` does not implement browser numeric focus order.
 
 Checkbox activation updates checked before input/change. Programmatic control writes are silent.
 Color inputs use an RGB/hex popup: preview emits input, Apply emits change, Cancel restores the value.

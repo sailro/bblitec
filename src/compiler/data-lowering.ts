@@ -212,6 +212,7 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "moduleNamespaces"
     | "options"
     | "expectArgumentCount"
     | "sourceFile"
@@ -232,6 +233,7 @@ interface DataLoweringContext extends Pick<
     | "bindings"
     | "sharedClosures"
     | "dataTypes"
+    | "deferredCapabilities"
     | "classLowerer"
     | "compileValue"
     | "emitDiscardedValue"
@@ -756,11 +758,7 @@ export class DataLowerer {
 
     /** Captures alias states so a terminating branch can roll back. */
     public snapshotAliasState(): Map<string, string> {
-        const snapshot = new EmissionMap<string, string>();
-        for (const [name, state] of this.ownership) {
-            snapshot.set(name, state);
-        }
-        return snapshot;
+        return new Map(this.ownership);
     }
 
     public restoreAliasState(snapshot: Map<string, string>): void {
@@ -882,7 +880,8 @@ export class DataLowerer {
             root = this.context.unwrap(root.expression);
         }
         const value = ts.isIdentifier(root)
-            ? this.context.bindings.lookupOptional(root)
+            ? (this.context.bindings.lookupOptional(root) ??
+              this.context.moduleNamespaces.fromIdentifier(root))
             : root.kind === ts.SyntaxKind.ThisKeyword && thisField
               ? this.context.resolveThisField(thisField.name.text)
               : undefined;
@@ -897,12 +896,15 @@ export class DataLowerer {
     public compileDataPath(
         expression: ts.Expression,
         mode: "read" | "write",
+        throughReceiver = false,
     ): Value | undefined {
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.bindings.lookupOptional(unwrapped);
+            const bound =
+                this.context.bindings.lookupOptional(unwrapped) ??
+                this.context.moduleNamespaces.fromIdentifier(unwrapped);
             if (bound?.kind !== "data" && bound?.kind !== "promise") {
                 // A module-level `const Record<Union, T> = { ... }` has no
                 // runtime local binding. Materialize its typed literal at
@@ -1032,7 +1034,7 @@ export class DataLowerer {
                     : undefined;
             let owner =
                 guardedOwner ??
-                this.compileDataPath(unwrapped.expression, mode) ??
+                this.compileDataPath(unwrapped.expression, mode, true) ??
                 (ts.isCallExpression(receiver) ||
                 ts.isElementAccessExpression(receiver) ||
                 (mode === "read" &&
@@ -1051,6 +1053,15 @@ export class DataLowerer {
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
                     : owner.dataType;
+            if (
+                mode === "write" &&
+                !throughReceiver &&
+                ownerType?.kind === "module-namespace"
+            )
+                this.context.fail(
+                    unwrapped,
+                    "Module namespace properties are read-only.",
+                );
             if (
                 mode === "write" &&
                 (ownerType?.kind === "gpu-adapter" ||
@@ -1142,7 +1153,7 @@ export class DataLowerer {
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
             const owner =
-                this.compileDataPath(unwrapped.expression, mode) ??
+                this.compileDataPath(unwrapped.expression, mode, true) ??
                 (unwrapped.questionDotToken &&
                 !this.namesHandleCollection(unwrapped.expression)
                     ? this.context.compileValue(unwrapped.expression)
@@ -1161,6 +1172,15 @@ export class DataLowerer {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
             }
+            if (
+                mode === "write" &&
+                !throughReceiver &&
+                owner.dataType?.kind === "module-namespace"
+            )
+                this.context.fail(
+                    unwrapped,
+                    "Module namespace properties are read-only.",
+                );
             return this.elementRead(owner, unwrapped, mode);
         }
         return undefined;
@@ -1915,6 +1935,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         type: DataType,
         node: ts.Node,
     ): DataType {
+        const actual =
+            source.dataType?.kind === "optional"
+                ? source.dataType.inner
+                : source.dataType;
+        const declared = type.kind === "optional" ? type.inner : type;
+        if (
+            declared.kind === "struct" &&
+            (isOpaqueReference(actual) || actual?.kind === "event-target")
+        )
+            return source.dataType!;
         if (
             isJsonValue(source) &&
             (type.kind === "struct" ||
@@ -1942,11 +1972,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const fields = this.context.dataTypes.structFields(type.name, node);
         const represented = fields.map((field) => {
             const value = source.recordProperties?.[field.sourceName];
+            const retained = value
+                ? this.retainedResultType(value, field.type, node)
+                : field.type;
             return {
                 ...field,
-                type: value
-                    ? this.retainedResultType(value, field.type, node)
-                    : field.type,
+                type: retained,
+                ...(retained !== field.type &&
+                retained.kind !== "optional" &&
+                (isOpaqueReference(retained) ||
+                    retained.kind === "event-target")
+                    ? { optionalProperty: false, defaultWhenMissing: false }
+                    : {}),
             };
         });
         return represented.some(
@@ -2873,10 +2910,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.narrowOptional(ownerValue, access.expression),
             access,
         );
+        const exported = this.context.moduleNamespaces.member(
+            owner,
+            property,
+            access,
+        );
+        if (exported) return exported;
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
+        const deferred = this.context.deferredCapabilities.property(
+            access,
+            owner,
+        );
+        if (deferred) return deferred;
         const dataType =
             owner.dataType ??
             (owner.kind === "string"
@@ -3292,6 +3340,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (mode === "write" && dataType.kind === "tuple") {
             this.invalidateStaticElements(owner);
+        }
+        if (dataType.kind === "module-namespace") {
+            owner = this.context.bindings.pinValueToTemporary(
+                owner,
+                "module_namespace",
+            );
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            if (index.staticString === undefined)
+                return this.context.fail(
+                    access,
+                    "Module namespace indexing requires a static exported name.",
+                );
+            return (
+                this.context.moduleNamespaces.member(
+                    owner,
+                    index.staticString,
+                    access,
+                ) ?? { kind: "json-null", cpp: "std::nullopt" }
+            );
         }
         if (
             (dataType.kind === "vector" || dataType.kind === "tuple") &&
@@ -4605,6 +4674,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     public leafValue(cpp: string, dataType: DataType): Value {
+        if (dataType.kind === "module-namespace")
+            return this.context.moduleNamespaces.value(dataType, cpp);
         if (cppIdentifierPattern.test(cpp))
             this.context.registerNativeBindingType(
                 cpp,
@@ -7689,6 +7760,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             });
                             const entries = structOwnEntries(
                                 {
+                                    moduleNamespaces:
+                                        this.context.moduleNamespaces,
                                     dataTypes: this.context.dataTypes,
                                     dataLowerer: this,
                                     fail: (node, message) =>
@@ -8307,16 +8380,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (target.dataType.kind === "struct") {
-            const incoming = this.context.probeEmission(() => {
-                try {
-                    return this.context.compileValue(expression.right);
-                } catch (error) {
-                    if (error instanceof CompileError) return undefined;
-                    throw error;
-                }
-            }, isJsonValue);
+            const incoming = this.context.probeEmission(
+                () => {
+                    try {
+                        return this.context.compileValue(expression.right);
+                    } catch (error) {
+                        if (error instanceof CompileError) return undefined;
+                        throw error;
+                    }
+                },
+                (value) =>
+                    isJsonValue(value) ||
+                    isOpaqueReference(
+                        value?.dataType?.kind === "optional"
+                            ? value.dataType.inner
+                            : value?.dataType,
+                    ),
+            );
             if (isJsonValue(incoming))
                 requireDynamicBindingStorage(this.context.checker, left);
+            const actual =
+                incoming?.dataType?.kind === "optional"
+                    ? incoming.dataType.inner
+                    : incoming?.dataType;
+            if (isOpaqueReference(actual)) {
+                const nativeType = this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(expression.right),
+                );
+                const represented = this.context.dataTypes.fromTsType(
+                    nativeType,
+                    expression.right,
+                );
+                if (
+                    represented &&
+                    actual &&
+                    dataTypesEqual(represented, actual)
+                )
+                    requireDynamicBindingStorage(this.context.checker, left, {
+                        nativeType,
+                        node: expression.right,
+                    });
+            }
         }
         const value = this.compileForSink(expression.right, target.dataType);
         this.context.emit({
@@ -9302,7 +9406,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             left.name.text === "length"
         ) {
             const owner =
-                this.compileDataPath(left.expression, "write") ??
+                this.compileDataPath(left.expression, "write", true) ??
                 (ts.isPropertyAccessExpression(left.expression) &&
                 this.plainDataOwnerChain(left.expression)
                     ? this.context.compileValue(left.expression)
