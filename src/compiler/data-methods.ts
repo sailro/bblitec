@@ -444,6 +444,13 @@ export function compileDataMethodCall(
                     ts.isTemplateExpression(ownerExpression)
                   ? lowerer.context.compileValue(ownerExpression)
                   : undefined;
+    if (dynamicOwner && !ts.isOptionalChain(callee)) {
+        dynamicOwner = lowerer.narrowOptional(
+            dynamicOwner,
+            callee.expression,
+            true,
+        );
+    }
     // A query bag the fold answered stays a browser value until a read it
     // cannot answer arrives here; that read parses the deployment query.
     if (
