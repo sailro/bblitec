@@ -64,6 +64,19 @@ check(
 );
 
 check(
+    "record storage demands preserve identity without capturing the parameter",
+    `
+    interface Item { value:number; visit():number; }
+    const items:Item[]=[];
+    function add(item:Item):void {items.push(item);}
+    const item:Item={value:1,visit(){return 7;}};
+    add(item);add(item);
+    items[0]!.value=9;
+    if(items[0]!==item || items[1]!==item || item.value!==9 || items[1]!.visit()!==7)throw new Error('stored record owner');
+`,
+);
+
+check(
     "nullable map callbacks snapshot before argument side effects",
     `
     interface Deps { readonly values:Readonly<Record<string,(value:number)=>readonly number[]>>; }

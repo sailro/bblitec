@@ -145,3 +145,33 @@ test("an unused catch binding stays erased when a nested function shadows its na
     `),
     );
 });
+
+test("opaque calls do not prove parameter field writes or scalar rebinding", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        interface Options { enabled: boolean; }
+        declare function opaque(options: Options): void;
+        declare function scalar(value: number): void;
+        function possible(value: Options) { opaque(value); }
+        function written(value: Options) { const alias = value; alias.enabled = true; }
+        function copied(value: number) { scalar(value); }
+        `,
+        "test/analysis-parameter-writes.ts",
+    );
+    const facts = sourceFile.statements
+        .filter(ts.isFunctionDeclaration)
+        .filter((fn) => fn.body)
+        .map((fn) => {
+            const parameter = fn.parameters[0]?.name;
+            assert.ok(parameter && ts.isIdentifier(parameter));
+            return [
+                parameterIsReadOnly(checker, fn, parameter),
+                parameterIsMutated(checker, fn, parameter),
+            ];
+        });
+    assert.deepEqual(facts, [
+        [false, false],
+        [false, true],
+        [true, false],
+    ]);
+});

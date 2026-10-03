@@ -52,6 +52,7 @@ import {
 import {
     functionOfDeclaration,
     isSupportedFunction,
+    parameterIsMutated,
     parameterIsReadOnly,
 } from "./user-functions.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
@@ -1020,7 +1021,16 @@ export class BindingScopes {
                       identifier,
                   )
                 : value;
-        if (narrowed.kind === "record" && !this.context.classOf(narrowed)) {
+        if (
+            narrowed.kind === "record" &&
+            !this.context.classOf(narrowed) &&
+            !this.containsPlatformEvent(narrowed) &&
+            ts.isParameter(identifier.parent) &&
+            this.context.sharedClosures.needsSharedClosureStorage(
+                identifier.parent,
+                identifier,
+            )
+        ) {
             const represented = this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(identifier),
                 identifier,
@@ -1089,7 +1099,20 @@ export class BindingScopes {
                 identifier.parent.parent,
                 identifier,
             );
-        if (parameter && !readOnlyParameter && value.kind === "record")
+        if (
+            parameter &&
+            !readOnlyParameter &&
+            value.kind === "record" &&
+            !this.containsPlatformEvent(value) &&
+            ts.isIdentifier(identifier) &&
+            ts.isParameter(identifier.parent) &&
+            isSupportedFunction(identifier.parent.parent) &&
+            parameterIsMutated(
+                this.context.checker,
+                identifier.parent.parent,
+                identifier,
+            )
+        )
             value = this.materializeRecordScalars(
                 value,
                 `${identifier.text}_parameter`,
@@ -1276,7 +1299,7 @@ export class BindingScopes {
                   }
                 : {}),
         };
-        if (stored.parameterBinding) {
+        if (parameter && !readOnlyParameter) {
             delete writable(stored).staticNumber;
             delete writable(stored).staticString;
             delete writable(stored).staticBoolean;

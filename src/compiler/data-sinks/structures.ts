@@ -13,6 +13,7 @@ import {
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
+import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -280,6 +281,18 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        if (
+            lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
+            !lowerer.context.bindings.containsPlatformEvent(value) &&
+            ts.isExpression(node)
+        ) {
+            const declaration = lowerer.context.bindings.recordDeclaration(
+                value,
+                node,
+            );
+            if (declaration)
+                throw new DynamicBindingStorageRequired(declaration, "source");
+        }
         lowerer.context.dataTypes.cppType(dataType);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
