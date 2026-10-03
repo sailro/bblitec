@@ -153,6 +153,74 @@ check(
     true,
 );
 
+check(
+    "property-discriminated-recursive-owners",
+    `
+    type Operand={literal:number}|{input:string};
+    type Expr={flag:string}|{not:Expr}|{all:Expr[]}|{compare:[Operand,Operand]}|{always:true};
+    function operand(value:Operand):number {
+        return 'literal' in value ? value.literal : value.input.length;
+    }
+    function evaluate(value:Expr):number {
+        if('flag' in value)return value.flag.length;
+        if('not' in value)return -evaluate(value.not);
+        if('all' in value){let sum=0;for(const child of value.all)sum+=evaluate(child);return sum;}
+        if('compare' in value)return operand(value.compare[0])+operand(value.compare[1]);
+        return value.always ? 1 : 0;
+    }
+    function wrap(value:Expr):Expr{return {not:value};}
+    const values:Expr[]=[{flag:'a'}];
+    const leaf=values[0]!;
+    values.push(wrap(leaf));values.push({all:[leaf,values[1]!]});
+    values.push({compare:[{literal:3},{input:'xy'}]});values.push({always:true});
+    const readers:Array<(value:Expr)=>number>=[evaluate];
+    if(readers[0]!(values[1]!)!==-1||readers[0]!(values[2]!)!==0||readers[0]!(values[3]!)!==5||readers[0]!(values[4]!)!==1)throw new Error('recursive evaluation');
+    const keys=['flag','not','all','compare','always'];
+    for(let i=0;i<values.length;i++){
+        const value=values[i]!;
+        if(Object.keys(value).join(',')!==keys[i]||!Object.hasOwn(value,keys[i]!))throw new Error('exact key presence');
+    }
+    if('flag' in leaf)leaf.flag='updated';
+    const wrapped=values[1]!;
+    if(!('not' in wrapped)||wrapped.not!==leaf||evaluate(wrapped)!==-7)throw new Error('live recursive identity');
+    const operands:Operand[]=[{literal:0},{input:''}];
+    if(JSON.stringify(operands)!=='[{"literal":0},{"input":""}]'||operand(operands[0]!)!==0||operand(operands[1]!)!==0)throw new Error('empty payload presence');
+    if('not' in wrapped)wrapped.not=wrapped;
+`,
+);
+
+test("property union admission does not conflate absent keys with empty payloads", () => {
+    const frontend = createCompilerProgram(
+        `type Nullable={value:null}|{next:Nullable};
+         type Undefined={value:undefined}|{next:Undefined};
+         type Optional={value?:number}|{next:Optional};`,
+        resolve("property-union-presence.ts"),
+    );
+    const registry = new DataTypeRegistry(
+        frontend.checker,
+        (_node, message) => {
+            throw new Error(message);
+        },
+        new ClassHierarchy(frontend.checker, frontend.program),
+        true,
+    );
+    for (const node of frontend.sourceFile.statements) {
+        if (!ts.isTypeAliasDeclaration(node)) continue;
+        assert.equal(
+            registry.fromTsType(
+                frontend.checker.getTypeAtLocation(node.name),
+                node,
+            ),
+            undefined,
+        );
+    }
+    assert.deepEqual(registry.renderPreamble(), {
+        standalone: "",
+        shared: "",
+        definitions: [],
+    });
+});
+
 test("declined recursive layouts roll back provisional identities and nested definitions", () => {
     const frontend = createCompilerProgram(
         `

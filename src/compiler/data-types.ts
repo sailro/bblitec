@@ -2430,7 +2430,8 @@ export class DataTypeRegistry {
                   );
                   return discriminated !== undefined
                       ? discriminated
-                      : this.fromCommonObjectUnion(type, node, name);
+                      : (this.fromCommonObjectUnion(type, node, name) ??
+                            this.fromPropertyObjectUnion(type, node, name));
               })
             : undefined;
         if (object === null) return undefined;
@@ -2632,6 +2633,89 @@ export class DataTypeRegistry {
             presences.push(unionPresence(memberProperties, memberTypes, first));
         }
 
+        return this.internMappedStruct(name, fields, presences);
+    }
+
+    /** Required, non-null payloads use their existing empty storage for an absent union key. */
+    private fromPropertyObjectUnion(
+        type: ts.UnionType,
+        node: ts.Node,
+        name: string,
+    ): DataType | undefined {
+        if (
+            type.types.some(
+                (member) =>
+                    member.getCallSignatures().length > 0 ||
+                    member.getConstructSignatures().length > 0 ||
+                    this.checker.getIndexInfosOfType(member).length > 0,
+            )
+        )
+            return undefined;
+        const properties = type.types.map((member) =>
+            this.checker.getPropertiesOfType(member),
+        );
+        if (properties.some((members) => members.length === 0))
+            return undefined;
+        const byName = new Map<string, ts.Symbol[]>();
+        for (const members of properties) {
+            for (const member of members) {
+                const group = byName.get(member.name);
+                if (group) group.push(member);
+                else byName.set(member.name, [member]);
+            }
+        }
+        const fields: DataStructField[] = [];
+        const presences: OwnPropertyPresence[] = [];
+        for (const [propertyName, members] of byName) {
+            const memberTypes = members.map((member) =>
+                this.checker.getTypeOfSymbolAtLocation(
+                    member,
+                    member.valueDeclaration ?? member.declarations?.[0] ?? node,
+                ),
+            );
+            const absent = members.length < properties.length;
+            // An empty payload cannot also stand for a present null/undefined key.
+            if (
+                absent &&
+                (members.some(
+                    (member) => (member.flags & ts.SymbolFlags.Optional) !== 0,
+                ) ||
+                    memberTypes.some((member) => {
+                        const absence = nullability(member);
+                        return (
+                            absence.null || absence.undefined || absence.void
+                        );
+                    }))
+            )
+                return undefined;
+            const mapped = memberTypes.map((member, index) =>
+                this.fromRecordFieldType(member, node, members[index]),
+            );
+            const first = mapped[0];
+            if (
+                !first ||
+                mapped.some(
+                    (member) => !member || !dataTypesEqual(member, first),
+                )
+            )
+                return undefined;
+            const stored = this.markStoredObjectReferences(first);
+            const fieldType = absent ? this.nullableType(stored, true) : stored;
+            fields.push({
+                sourceName: propertyName,
+                name: sanitizeIdentifier(propertyName),
+                type: fieldType,
+                ...(absent
+                    ? { optionalProperty: true, defaultWhenMissing: true }
+                    : {}),
+                ...(!absent && members.every(propertyIsReadOnly)
+                    ? { readOnly: true }
+                    : {}),
+            });
+            presences.push(
+                absent ? "stored" : unionPresence(members, memberTypes, first),
+            );
+        }
         return this.internMappedStruct(name, fields, presences);
     }
 
