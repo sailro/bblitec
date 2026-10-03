@@ -1405,6 +1405,7 @@ class Compiler implements LoweringServices {
             this.checker,
             this.symbols,
             this.evaluationOrder,
+            this.dynamicBindings.keys(),
         );
         this.mutatedModuleContainers = mutatedContainers;
         if (modules.length === 0) return;
@@ -1426,6 +1427,7 @@ class Compiler implements LoweringServices {
                             ts.NodeFlags.Const) !==
                             0 &&
                         declaration.initializer &&
+                        !this.dynamicBindings.has(declaration) &&
                         this.evaluationOrder.isPureExpression(
                             declaration.initializer,
                         ) &&

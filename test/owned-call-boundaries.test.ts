@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
@@ -57,6 +59,63 @@ namespace bbl::pal {
         });
     });
 }
+
+check(
+    "dynamic-record-lookups-retain-the-declaration-owner",
+    `
+interface Entry { value:number }
+const entries:Record<string,Entry>={one:{value:1}};
+const alias=entries;
+function mutate(key:string):Entry|undefined {
+ const entry=alias[key];if(entry)entry.value++;return entry;
+}
+let key='one';
+const first=mutate(key),second=mutate(key);
+if(!first||first!==second||first!==entries.one||entries.one!.value!==3)throw new Error('shared entry');
+if(mutate('absent')!==undefined)throw new Error('missing entry');
+function make(seed:number):(key:string)=>Entry|undefined {
+ const table:Record<string,Entry>={one:{value:seed}};
+ return key=>{const entry=table[key];if(entry)entry.value++;return entry;};
+}
+const left=make(10),right=make(20);
+const leftFirst=left(key),leftAgain=left(key),rightFirst=right(key);
+if(!leftFirst||leftFirst!==leftAgain||leftFirst.value!==12||!rightFirst||rightFirst===leftFirst||rightFirst.value!==21)throw new Error('retained factory owner');
+`,
+);
+
+test("dynamic imported record lookups retain one module owner and static siblings", (t) => {
+    const directory = resolve("artifacts/dynamic-record-module-owner");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        export interface Entry {value:number}
+        export const entries:Record<string,Entry>={one:{value:1}};
+        export const alias=entries;
+        export const immutable={answer:7};
+    `,
+    );
+    const result = compileSource(
+        `
+        import {entries,alias,immutable} from './dependency.js';
+        function read(key:string){return alias[key];}
+        let key='one';const a=read(key),b=read(key);
+        if(!a||a!==b||a!==entries.one)throw new Error('imported identity');
+        a.value++;
+        if(entries.one!.value!==2||read(key)!.value!==2||immutable.answer!==7)throw new Error('imported mutation');
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /\b\w+_immutable\s*=/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "dynamic-record-module-owner", result.cpp, {
+        timeoutMs: 10000,
+    });
+});
 
 check(
     "selected-optional-records-retain-caller-identity",

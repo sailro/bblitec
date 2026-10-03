@@ -12,7 +12,7 @@ import { CPP_SCALAR } from "../lowering/cpp-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { syntaxKindName } from "../source-location.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { isDeclaredInside } from "./syntax.js";
+import { isDeclaredInside, unwrapExpression } from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     isHandleKind,
@@ -279,6 +279,53 @@ export class BindingScopes {
             }
         }
         return undefined;
+    }
+
+    /** The earliest live declaration sharing this record, before any lexical aliases. */
+    public recordDeclaration(
+        value: Value,
+        expression: ts.Expression,
+    ): ts.VariableDeclaration | undefined {
+        if (!value.recordProperties) return undefined;
+        let origin: ts.Declaration | undefined;
+        for (const scope of this.variableScopes) {
+            for (const [symbol, binding] of scope) {
+                if (binding.value.recordProperties !== value.recordProperties)
+                    continue;
+                const declaration = symbol.valueDeclaration;
+                if (
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer
+                )
+                    origin = declaration;
+                if (origin) break;
+            }
+            if (origin) break;
+        }
+        const source = unwrapExpression(expression);
+        origin ??= ts.isIdentifier(source)
+            ? this.context.symbols.valueSymbol(source)?.valueDeclaration
+            : undefined;
+        if (!origin || !ts.isVariableDeclaration(origin)) return undefined;
+        // An imported constant may have no live binding yet. Follow its const
+        // aliases to request storage where the original container is created.
+        const visited = new Set<ts.VariableDeclaration>();
+        let declaration = origin;
+        while (declaration.initializer && !visited.has(declaration)) {
+            visited.add(declaration);
+            const initializer = unwrapExpression(declaration.initializer);
+            if (
+                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                !ts.isIdentifier(initializer)
+            )
+                break;
+            const target =
+                this.context.symbols.valueSymbol(initializer)?.valueDeclaration;
+            if (!target || !ts.isVariableDeclaration(target)) break;
+            declaration = target;
+        }
+        return declaration.initializer ? declaration : undefined;
     }
 
     /**

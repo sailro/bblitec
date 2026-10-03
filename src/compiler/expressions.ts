@@ -34,6 +34,7 @@ import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { isHandleKind, isUndefinedDataType } from "./data-types.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
@@ -3964,6 +3965,25 @@ export class ExpressionLowerer {
                     this.context.dataTypes.markStoredObjectReferences(
                         declaredValueType,
                     );
+                if (
+                    (ownerDataType?.kind === "map" ||
+                        ownerDataType?.kind === "enummap") &&
+                    Object.values(owner.recordProperties ?? {}).some(
+                        (entry) => entry.kind === "record",
+                    )
+                ) {
+                    // A lookup's local table would recreate scalarized entries on
+                    // every call. Retain the dictionary at its source declaration.
+                    const declaration = this.context.bindings.recordDeclaration(
+                        owner,
+                        unwrapped.expression,
+                    );
+                    if (declaration)
+                        throw new DynamicBindingStorageRequired(
+                            declaration,
+                            "source",
+                        );
+                }
                 const keyType = this.context.checker.getTypeAtLocation(
                     unwrapped.argumentExpression,
                 );

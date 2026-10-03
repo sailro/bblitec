@@ -3194,8 +3194,10 @@ test("preserves object identity through a dynamic Record lookup", () => {
     assert.match(result.cpp, /using Entry = bbl::js::Ref<EntryData>;/);
     assert.match(
         result.cpp,
-        /static thread_local bbl::js::Map<std::string, bblscene::Entry> values/,
+        /bbl::js::Map<std::string, bblscene::Entry> v_entries = bbl::js::Map/,
     );
+    assert.match(result.cpp, /auto& v_entries = [^;]+\.capture0;/);
+    assert.doesNotMatch(result.cpp, /record_table_|static thread_local/);
     assert.match(result.cpp, /\.get_owned\(v_\w*code\)/);
     assert.match(result.cpp, /static_cast<bool>\(v_\w*entry\)/);
     assert.match(result.cpp, /v_\w*entry->value\+\+;/);

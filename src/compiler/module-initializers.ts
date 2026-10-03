@@ -347,6 +347,7 @@ export function planImportedModuleState(
         checker,
         new ClassHierarchy(checker, program),
     ),
+    retainedDeclarations: Iterable<ts.VariableDeclaration> = [],
 ): {
     modules: ts.SourceFile[];
     mutatedContainers: ReadonlySet<ts.Symbol>;
@@ -358,7 +359,7 @@ export function planImportedModuleState(
         symbols,
         evaluationOrder,
     );
-    const modules = planner.plan();
+    const modules = planner.plan(retainedDeclarations);
     return {
         modules,
         mutatedContainers: planner.mutatedContainerSymbols(),
@@ -399,7 +400,18 @@ class ModuleInitializerPlanner {
         ),
     ) {}
 
-    public plan(): ts.SourceFile[] {
+    public plan(
+        retainedDeclarations: Iterable<ts.VariableDeclaration> = [],
+    ): ts.SourceFile[] {
+        const retainedModules = new Set(
+            [...retainedDeclarations]
+                .filter(
+                    (declaration) =>
+                        ts.isVariableStatement(declaration.parent.parent) &&
+                        ts.isSourceFile(declaration.parent.parent.parent),
+                )
+                .map((declaration) => declaration.getSourceFile()),
+        );
         const projectModules = this.runtimeModules().filter(
             (file) => file !== this.sourceFile,
         );
@@ -426,7 +438,11 @@ class ModuleInitializerPlanner {
                 this.moduleHasObservedMutableState(file, observedState),
             ),
         );
-        if (mutatingModules.size === 0 && mutableStateModules.size === 0) {
+        if (
+            mutatingModules.size === 0 &&
+            mutableStateModules.size === 0 &&
+            retainedModules.size === 0
+        ) {
             return [];
         }
 
@@ -443,6 +459,7 @@ class ModuleInitializerPlanner {
             (file) =>
                 mutatingModules.has(file) ||
                 mutableStateModules.has(file) ||
+                retainedModules.has(file) ||
                 [...(stateByModule.get(file) ?? [])].some((symbol) =>
                     mutatedState.has(symbol),
                 ),
