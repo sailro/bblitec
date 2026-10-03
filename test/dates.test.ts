@@ -98,6 +98,11 @@ test(
         if (original.getTime() !== 23 || target.getTime() !== 0) throw new Error("Date receiver before arguments");
         const dates: Date[] = [original];
         if (!dates[0] || dates[1] || !original) throw new Error("Date object truthiness");
+        let arrayReads = 0, indexReads = 0;
+        function dateValues(): Date[] { arrayReads++; return dates; }
+        function nextDateIndex(): number { return indexReads++; }
+        if (!dateValues()[nextDateIndex()] || dateValues()[nextDateIndex()] || arrayReads !== 2 || indexReads !== 2)
+            throw new Error("Date array truthiness evaluates owner and index once");
         let factoryCalls = 0;
         function dateFactory(): Date { factoryCalls++; return original; }
         if (!dateFactory() || factoryCalls !== 1) throw new Error("Date truthiness preserves factory effects");

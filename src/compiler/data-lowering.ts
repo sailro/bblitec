@@ -4644,13 +4644,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
     ): Value | undefined {
-        const owner = this.compileDataPath(access.expression, "read");
-        return owner
-            ? this.guardableElementRead(
-                  this.narrowOptional(owner, access.expression),
-                  access,
-              )
-            : undefined;
+        if (ts.isOptionalChain(access)) return undefined;
+        // Resolving a computed owner can emit code. A declined guard must
+        // discard that work before the ordinary element reader evaluates it.
+        return this.context.probeEmission(() => {
+            const owner =
+                this.compileDataPath(access.expression, "read") ??
+                this.context.compileValue(access.expression);
+            return this.guardableElementRead(
+                this.narrowOptional(owner, access.expression),
+                access,
+            );
+        });
     }
 
     /**
@@ -10957,43 +10962,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public conditionOperand(expression: ts.Expression): string | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isElementAccessExpression(unwrapped)) {
-            const owner = this.compileDataPath(unwrapped.expression, "read");
-            if (
-                owner?.kind === "data" &&
-                (owner.dataType?.kind === "vector" ||
-                    owner.dataType?.kind === "span")
-            ) {
-                const element = owner.dataType.element;
-                // Objects are truthy whenever the indexed element exists.
-                // With noUncheckedIndexedAccess the source commonly writes
-                // exactly this guard before dereferencing a dynamic index.
-                if (
-                    element.kind === "struct" ||
-                    element.kind === "date" ||
-                    element.kind === "date-time-format" ||
-                    element.kind === "storage" ||
-                    element.kind === "vector" ||
-                    element.kind === "map" ||
-                    element.kind === "set" ||
-                    element.kind === "arraybuffer" ||
-                    element.kind === "dataview" ||
-                    element.kind === "bufferview" ||
-                    element.kind === "numberindex" ||
-                    isTypedArrayType(element) ||
-                    element.kind === "handle" ||
-                    element.kind === "number" ||
-                    element.kind === "boolean" ||
-                    element.kind === "string" ||
-                    element.kind === "enum"
-                ) {
-                    // The owner has already been resolved above. Reuse it:
-                    // resolving it again would duplicate a call expression
-                    // merely to derive the guard predicate.
-                    const guarded = this.guardableElementRead(owner, unwrapped);
-                    const truthiness = guarded && statedTruthinessCpp(guarded);
-                    if (truthiness) return truthiness;
-                }
-            }
+            const guarded = this.compileGuardableElementAccess(unwrapped);
+            const truthiness = guarded && this.truthinessCondition(guarded);
+            if (truthiness !== undefined) return truthiness;
         }
         const value =
             this.compileDataPath(unwrapped, "read") ??
@@ -11448,9 +11419,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             const value =
                 (ts.isElementAccessExpression(nullSide)
-                    ? this.context.probeEmission(() =>
-                          this.compileGuardableElementAccess(nullSide),
-                      )
+                    ? this.compileGuardableElementAccess(nullSide)
                     : undefined) ??
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);

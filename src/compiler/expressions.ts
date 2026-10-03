@@ -3798,17 +3798,10 @@ export class ExpressionLowerer {
             !assertedNonNull &&
             this.context.dataLowerer.mayCompileGuardableElementAccess(unwrapped)
         ) {
-            // Determining whether an unchecked element read can carry an
-            // existence predicate resolves its owner. A call-shaped owner
-            // emits while it resolves, so a declined probe must discard
-            // those lines before the ordinary element path compiles the
-            // owner for real. Otherwise `makeRow().values[i]` evaluates
-            // `makeRow()` twice even though JavaScript evaluates it once.
-            const guardable = this.context.probeEmission(() =>
+            const guardable =
                 this.context.dataLowerer.compileGuardableElementAccess(
                     unwrapped,
-                ),
-            );
+                );
             if (guardable) return guardable;
         }
         const ownerExpression = this.context.unwrap(unwrapped.expression);
