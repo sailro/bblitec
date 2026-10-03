@@ -4,12 +4,14 @@ import type { Value } from "./types.js";
 import { documentEngine } from "./window-events.js";
 import { declaredInDomLibrary } from "./symbols.js";
 
-/** Identify the declared Document receiver without evaluating it. */
-export function isDocumentReceiver(
+/** Identify a declared DOM receiver without evaluating it. */
+export function isDomReceiver(
     context: Pick<LoweringServices, "checker" | "libraryGlobal">,
     expression: ts.Expression,
+    interfaceName: "Document" | "Window",
 ): boolean {
-    if (context.libraryGlobal(expression) === "document") return true;
+    const global = interfaceName === "Document" ? "document" : "window";
+    if (context.libraryGlobal(expression) === global) return true;
     const seen = new Map<ts.Type, boolean>();
     const visit = (type: ts.Type): boolean => {
         const cached = seen.get(type);
@@ -19,7 +21,7 @@ export function isDocumentReceiver(
             ? type.types.some(visit)
             : type.isUnion()
               ? type.types.every(visit)
-              : (type.symbol?.name === "Document" &&
+              : (type.symbol?.name === interfaceName &&
                     declaredInDomLibrary(type.symbol)) ||
                 (type.getBaseTypes() ?? []).some(visit);
         seen.set(type, result);
@@ -30,6 +32,13 @@ export function isDocumentReceiver(
             context.checker.getTypeAtLocation(expression),
         ),
     );
+}
+
+export function isDocumentReceiver(
+    context: Pick<LoweringServices, "checker" | "libraryGlobal">,
+    expression: ts.Expression,
+): boolean {
+    return isDomReceiver(context, expression, "Document");
 }
 
 type Context = Pick<
