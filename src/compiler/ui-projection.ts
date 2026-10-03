@@ -936,7 +936,18 @@ export class UiProjection {
                 );
             }
         }
-        const value = this.context.compileValue(expression);
+        return this.uiTemplateValueCpp(
+            this.context.compileValue(expression),
+            expression,
+            purpose,
+        );
+    }
+
+    private uiTemplateValueCpp(
+        value: Value,
+        expression: ts.Expression,
+        purpose: string,
+    ): string {
         if (value.staticString !== undefined) {
             return this.context.cppString(value.staticString);
         }
@@ -4299,18 +4310,16 @@ export class UiProjection {
         if (ownerId !== undefined && hasChoices(sourceParts))
             this.uiMarkupAlternativeOwners.add(ownerId);
         const snapshot = (source: ts.Expression): string => {
-            const cpp = this.uiTemplateSubstitutionCpp(
+            const value = this.context.bindings.pinValueToTemporary(
+                this.context.compileValue(source),
+                "markup_text",
+                source,
+            );
+            return this.uiTemplateValueCpp(
+                value,
                 source,
                 "Native UI innerHTML",
             );
-            const name = this.context.allocateTemporaryCppName("markup_text");
-            this.context.emit({
-                kind: "declaration",
-                type: "const std::string",
-                name,
-                initializer: cpp,
-            });
-            return name;
         };
         const emit = (
             pending: readonly UiMarkupPart[],
