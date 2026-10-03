@@ -30,6 +30,7 @@ function measured<T>(enabled: boolean, run: () => T) {
         planning: after.planning - before.planning,
         refused: after.refused - before.refused,
         dependent: after.dependent - before.dependent,
+        writes: after.writes - before.writes,
         collected: after.collected - before.collected,
     };
 }
@@ -38,13 +39,13 @@ test("discarded storage planning batches generic signatures and preserves strict
     const source =
         state +
         `
-        if(state.read(()=>3)!==3)throw new Error("number");
-        if(state.read(()=>"text")!=="text")throw new Error("string");
-        if(state.read(()=>true)!==true)throw new Error("boolean");
-        if(state.read(()=>[4,5])[1]!==5)throw new Error("array");
-        if(state.read(()=>({value:6})).value!==6)throw new Error("record");
-        if(state.read(()=>({text:"word"})).text!=="word")throw new Error("other record");
-        if(state.read(()=>[false,true])[0]!==false)throw new Error("boolean array");
+        state.read(()=>3);
+        state.read(()=>"text");
+        state.read(()=>true);
+        state.read(()=>[4,5]);
+        state.read(()=>({value:6}));
+        state.read(()=>({text:"word"}));
+        state.read(()=>[false,true]);
     `;
     const baseline = measured(false, () => compileSource(source));
     const coverage = new SourceCoverage();
@@ -74,6 +75,30 @@ test("discarded storage planning batches generic signatures and preserves strict
         "storage-demand-planner/signatures",
         planned.result.cpp,
     );
+});
+
+test("discarded writes and accessor arguments stop before dependent signatures", () => {
+    const sources = [
+        `let chosen=false; chosen=state.read(()=>true); if(chosen)state.read(()=>[4,5]); if(!chosen)throw new Error("write lost");`,
+        `const holder={chosen:false}; holder.chosen=state.read(()=>true); if(holder.chosen)state.read(()=>[4,5]); if(!holder.chosen)throw new Error("receiver write lost");`,
+        `let reads=0; const owner={get callback():()=>boolean {++reads;return ()=>true;}}; state.read(owner.callback); if(reads!==1)throw new Error("getter count"); state.read(()=>[4,5]);`,
+    ];
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    for (const [index, tail] of sources.entries()) {
+        const source =
+            state + `state.read(()=>3);state.read(()=>"text");` + tail;
+        const baseline = measured(false, () => compileSource(source));
+        const planned = measured(true, () => compileSource(source));
+        assert.deepEqual(planned.result, baseline.result);
+        assert.equal(planned.writes, 1);
+        assert.equal(planned.collected, 1);
+        runGeneratedProgram(
+            tools,
+            `storage-demand-planner/writes-${index}`,
+            planned.result.cpp,
+        );
+    }
 });
 
 test("a rolled-back declaration stops planning at its dependent read", () => {

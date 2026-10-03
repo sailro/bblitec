@@ -111,7 +111,10 @@ export class GenericFunctionStorage {
 
 /** Earlier callback storage must contain every reached concrete signature. */
 export class GenericFunctionStorageRequired extends Error {
-    constructor(readonly demand: GenericFunctionDemand) {
+    constructor(
+        readonly demand: GenericFunctionDemand,
+        readonly call: ts.CallExpression,
+    ) {
         super("A stored generic function requires a concrete signature.");
     }
 }

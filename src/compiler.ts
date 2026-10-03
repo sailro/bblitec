@@ -65,23 +65,16 @@ import {
     type SurveyReport,
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
-import {
-    DynamicBindingStorageRequired,
-    type DynamicBindingStorage,
-} from "./compiler/dynamic-binding-storage.js";
-import {
-    NativeRecordStorageRequired,
-    type NativeRecordStorageDemand,
-} from "./compiler/native-record-storage.js";
-import {
-    GenericFunctionStorageRequired,
-    GenericFunctionStorage,
-} from "./compiler/generic-function-storage.js";
+import type { DynamicBindingStorage } from "./compiler/dynamic-binding-storage.js";
+import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
+import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
     storageDemandPlanningEnabled,
+    storageRequest,
     StorageDemandPlanner,
+    type StorageRequest,
 } from "./compiler/storage-demand-planner.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
@@ -625,24 +618,31 @@ function compileSourceApplication(
                 result.manifest.inputs = input.localFiles;
                 return result;
             });
-        const acceptReplay = (error: unknown): boolean => {
+        const acceptStorage = (request: StorageRequest): boolean => {
             if (
-                error instanceof DynamicBindingStorageRequired &&
-                (!dynamicBindings.has(error.declaration) ||
-                    (error.storage && !dynamicBindings.get(error.declaration)))
+                request.kind === "dynamic" &&
+                (!dynamicBindings.has(request.declaration) ||
+                    (request.storage &&
+                        !dynamicBindings.get(request.declaration)))
             ) {
-                dynamicBindings.set(error.declaration, error.storage);
+                dynamicBindings.set(request.declaration, request.storage);
             } else if (
-                error instanceof NativeRecordStorageRequired &&
-                !ownedRecords.has(error.demand.identity)
+                request.kind === "record" &&
+                !ownedRecords.has(request.demand.identity)
             ) {
-                ownedRecords.set(error.demand.identity, error.demand);
+                ownedRecords.set(request.demand.identity, request.demand);
             } else if (
-                error instanceof GenericFunctionStorageRequired &&
-                genericFunctions.add(error.demand)
+                request.kind === "generic" &&
+                genericFunctions.add(request.demand)
             ) {
                 return true;
-            } else if (
+            } else return false;
+            return true;
+        };
+        const acceptReplay = (error: unknown): boolean => {
+            if (isStorageDemand(error))
+                return acceptStorage(storageRequest(error));
+            if (
                 error instanceof RuntimeSearchParamsRequired &&
                 (!resolved.runtimeSearchParams ||
                     (error.location && !resolved.runtimeLocationSearch))
@@ -680,7 +680,7 @@ function compileSourceApplication(
                     } catch (planningError) {
                         if (!acceptReplay(planningError)) throw planningError;
                     }
-                    for (const demand of planner.demands) acceptReplay(demand);
+                    for (const demand of planner.demands) acceptStorage(demand);
                 }
             }
         }

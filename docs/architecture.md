@@ -52,8 +52,9 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
 Repeated storage demands trigger one bounded, discarded discovery pass before fresh strict emission.
-Discovery stops at ordinary refusals or dependencies on rolled-back declarations; coverage and surveys
-retain only strict attempts. Earlier aliases and initializers use the selected representation.
+Discovery continues only past independent generic calls and stops at ordinary refusals, possible writes
+or dependencies on rolled-back declarations. Its limits are checked at statement boundaries; coverage
+and surveys retain only strict attempts. Earlier aliases and initializers use the selected representation.
 Immutable storage-demand and lexical-dependency indexes
 are shared by the checked program. Scoped collection facts use a derived alias graph that observes
 mutations and rollback. Equivalent definitions share code; invocations retain

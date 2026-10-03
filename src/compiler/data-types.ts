@@ -2308,7 +2308,7 @@ export class DataTypeRegistry {
                 call,
                 "Recursive stored generic functions require an already represented signature.",
             );
-        throw new GenericFunctionStorageRequired(demand);
+        throw new GenericFunctionStorageRequired(demand, call);
     }
 
     private fromUnionType(
