@@ -11343,7 +11343,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // `record[key]?.flag === true` compares the contained flag rather
         // than the nullable's presence bit.
         const loweredOptional = (operand: ts.Expression): Value | undefined => {
-            const unwrapped = this.context.unwrap(operand);
+            const unwrapped = this.context.options.workers
+                ? unwrapExpression(operand)
+                : this.context.unwrap(operand);
             if (ts.isIdentifier(unwrapped)) {
                 const bound = this.context.bindings.lookupOptional(unwrapped);
                 return bound?.kind === "data" &&
