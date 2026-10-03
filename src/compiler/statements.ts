@@ -77,6 +77,7 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
+import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -1969,21 +1970,32 @@ export class StatementLowerer {
                             ? integerLoopStepCpp(counter, counterCpp)
                             : "";
                     if (statement.incrementor && !counter) {
-                        const lines = this.inRuntimeControlFlow(context, () =>
-                            context.captureEmittedLines(() => {
+                        const emitted = this.inRuntimeControlFlow(context, () =>
+                            context.captureEmittedStatements(() => {
                                 this.emitExpression(
                                     context,
                                     statement.incrementor!,
                                 );
                             }),
                         );
-                        if (lines.length !== 1 || !lines[0]!.endsWith(";")) {
+                        const lines = emitted.map(renderNativeEmission);
+                        if (
+                            lines.length === 0 ||
+                            lines.some((line) => !line.endsWith(";")) ||
+                            (lines.length > 1 &&
+                                emitted.some(
+                                    (item) =>
+                                        item.statement.kind !== "expression",
+                                ))
+                        ) {
                             context.fail(
                                 statement.incrementor,
-                                "Loop incrementors must lower to one native statement.",
+                                "Loop incrementors must lower to native expressions.",
                             );
                         }
-                        header = lines[0]!.slice(0, -1);
+                        header = lines
+                            .map((line) => line.slice(0, -1))
+                            .join(", ");
                     }
                     context.emit({
                         kind: "open",
@@ -3706,6 +3718,13 @@ export class StatementLowerer {
         }
         if (context.asyncActivations.emitAwaitExpression(expression)) return;
         const unwrapped = context.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+            if (this.emitExpression(context, unwrapped.left)) return true;
+            return this.emitExpression(context, unwrapped.right);
+        }
         if (ts.isVoidExpression(unwrapped)) {
             const operand = context.unwrap(unwrapped.expression);
             if (
@@ -3908,11 +3927,12 @@ export class StatementLowerer {
                     unwrapped.operator === ts.SyntaxKind.PlusPlusToken
                         ? "++"
                         : "--";
-                context.emit(
-                    ts.isPrefixUnaryExpression(unwrapped)
+                context.emit({
+                    kind: "expression",
+                    code: ts.isPrefixUnaryExpression(unwrapped)
                         ? `${operator}${target.cpp};`
                         : `${target.cpp}${operator};`,
-                );
+                });
                 return;
             }
             if (
