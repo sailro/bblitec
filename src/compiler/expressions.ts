@@ -4608,7 +4608,7 @@ export class ExpressionLowerer {
         );
         if (dataType?.kind !== "struct") return false;
         return this.context.dataTypes
-            .structFields(dataType.name, expression)
+            .structFields(dataType.name, expression, "accessors")
             .some(
                 (field) =>
                     this.context.dataTypes.ownPropertyPresence(

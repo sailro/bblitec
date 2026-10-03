@@ -1814,7 +1814,7 @@ export class AsyncLowerer {
         const field =
             value.dataType?.kind === "struct"
                 ? this.context.dataTypes
-                      .structFields(value.dataType.name, node)
+                      .structFields(value.dataType.name, node, "accessors")
                       .find((field) => field.sourceName === "then")
                 : undefined;
         if (
@@ -1822,7 +1822,8 @@ export class AsyncLowerer {
             value.recordGetters?.then ||
             property?.kind === "callback" ||
             property?.dataType?.kind === "function" ||
-            field?.type.kind === "function"
+            field?.type.kind === "function" ||
+            field?.accessor
         )
             this.context.fail(
                 node,

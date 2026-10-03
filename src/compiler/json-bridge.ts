@@ -318,7 +318,7 @@ export function isJsonRootedExpression(
                   : undefined;
             return parent?.kind === "struct" && key !== undefined
                 ? context.dataTypes
-                      .structFields(parent.name, source)
+                      .structFields(parent.name, source, "accessors")
                       .find((field) => field.sourceName === key)?.type
                 : parent?.kind === "json"
                   ? parent

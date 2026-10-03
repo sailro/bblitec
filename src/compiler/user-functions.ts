@@ -3350,6 +3350,7 @@ export class UserFunctionLowerer {
             const fields = context.dataTypes.structFields(
                 result.dataType.name,
                 call,
+                "accessors",
             );
             const member = context.dataTypes.isReferenceStruct(
                 result.dataType.name,
@@ -3361,7 +3362,8 @@ export class UserFunctionLowerer {
                     const field = fields.find(
                         (field) => field.sourceName === key,
                     );
-                    if (!field) throw new SharedCallRequiresInline();
+                    if (!field || field.accessor)
+                        throw new SharedCallRequiresInline();
                     return [
                         key,
                         context.dataValue(
@@ -4896,7 +4898,6 @@ export class UserFunctionLowerer {
             kind: "data",
             cpp: name,
             dataType: type,
-            argumentsProducer: declaration,
         });
         if (trailing?.kind === "tuple" && rest === 0)
             return [context.dataLowerer.leafValue(array, arrayType)];

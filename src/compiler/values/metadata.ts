@@ -213,7 +213,6 @@ export const valueMetadataFields = {
     data: [
         ...new Set(Object.values(resourceMetadataFields).flat()),
         "fetchedBytes",
-        "argumentsProducer",
     ],
 } as const satisfies Partial<Record<ValueKind, readonly (keyof ValueFields)[]>>;
 

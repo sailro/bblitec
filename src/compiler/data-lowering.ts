@@ -1976,7 +1976,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : type;
         }
         if (source.kind !== "record" || type.kind !== "struct") return type;
-        const fields = this.context.dataTypes.structFields(type.name, node);
+        const fields = this.context.dataTypes.structFields(
+            type.name,
+            node,
+            "accessors",
+        );
         const represented = fields.map((field) => {
             const value = source.recordProperties?.[field.sourceName];
             const retained = value
