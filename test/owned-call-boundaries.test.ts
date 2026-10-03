@@ -59,6 +59,51 @@ namespace bbl::pal {
 }
 
 check(
+    "selected-optional-records-retain-caller-identity",
+    `
+interface Bounds { low:number; high:number }
+let created=0;
+function fresh():Bounds { created++; return {low:0,high:0}; }
+function update(low:number, out?:Bounds):Bounds {
+ const result=out??fresh(); result.low=low; result.high=low+3; return result;
+}
+const first=update(2);
+const reusable:Bounds={low:0,high:0};
+const second=update(7,reusable);
+if(second!==reusable||reusable.low!==7||reusable.high!==10||first.low!==2||created!==1)throw new Error('optional record alias');
+second.high++;if(reusable.high!==11)throw new Error('returned record alias');
+`,
+);
+
+check(
+    "guarded-tuple-entries-retain-presence-and-aliases",
+    `
+function merge(input:readonly [number,number][]):[number,number][] {
+ const merged:[number,number][]=[];
+ for(const item of input){
+  const last=merged[merged.length-1];
+  if(last&&item[0]<=last[1])last[1]=Math.max(last[1],item[1]);
+  else merged.push([item[0],item[1]]);
+ }
+ return merged;
+}
+const merged=merge([[1,3],[2,5],[8,9]]);
+if(merged.length!==2||merged[0]![1]!==5||merged[1]![0]!==8)throw new Error('tuple entry merge');
+const pairs:[number,number][]=[];
+let reads=0;function index():number {reads++;return 0;}
+const missing=pairs[index()];pairs.push([4,6]);
+if(missing||reads!==1)throw new Error('missing tuple snapshot');
+const retained=pairs[0];pairs.length=0;
+if(!retained||retained[1]!==6)throw new Error('retained tuple snapshot');
+const mixed:[number,string][]=[];
+const absent=mixed[0];mixed.push([1,'before']);
+if(absent)throw new Error('missing mixed tuple');
+const present=mixed[0];if(present)present[1]='after';
+if(mixed[0]![1]!=='after')throw new Error('mixed tuple alias');
+`,
+);
+
+check(
     "optional-promise-adoption-and-required-formals",
     `
 setTimeout(()=>{},0);

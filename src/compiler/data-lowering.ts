@@ -4741,6 +4741,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "date-time-format",
                 "storage",
                 "vector",
+                "tuple",
+                "product",
                 "map",
                 "set",
                 "arraybuffer",
@@ -4807,11 +4809,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             nativeCaptures: captures,
             nativeCompanionCaptures: {
                 optionalFoundCpp: captures,
-                truthinessCpp: captures,
+                ...(truthiness !== present ? { truthinessCpp: captures } : {}),
                 ...(mayMiss ? { slotFoundCpp: captures } : {}),
             },
             optionalFoundCpp: present,
-            truthinessCpp: truthiness,
+            // Object truthiness is its presence. Keep only the presence
+            // metadata so a declaration's pinned bit remains authoritative.
+            ...(truthiness !== present ? { truthinessCpp: truthiness } : {}),
             ...(mayMiss ? { slotFoundCpp: found } : {}),
         };
     }

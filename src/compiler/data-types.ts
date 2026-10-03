@@ -1377,12 +1377,15 @@ export class DataTypeRegistry {
         return inner ? this.nullableType(inner, !absent.null) : undefined;
     }
 
-    /** Callbacks and shared objects already carry their own absent state. */
+    /** Nullable objects retain identity; callbacks also carry their own absent state. */
     public nullableType(inner: DataType, undefinedOnly = false): DataType {
+        // A nullable object selects an existing identity. Inline optional
+        // storage would copy its fields across parameters and coalescing.
+        if (inner.kind === "struct")
+            return this.markStoredObjectReferences(inner);
         return inner.kind === "optional" ||
             inner.kind === "json" ||
-            inner.kind === "function" ||
-            (inner.kind === "struct" && this.isReferenceStruct(inner.name))
+            inner.kind === "function"
             ? inner
             : {
                   kind: "optional",
