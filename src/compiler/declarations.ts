@@ -790,8 +790,11 @@ export class DeclarationLowerer {
             this.context.isNativeHostUiLookup(hostLookup)
                 ? this.context.ui.lookupElementId(hostLookup)
                 : undefined;
-        if (id !== undefined) {
-            const tag = this.context.ui.nativeHostUiTags().get(id)!;
+        const tag =
+            id !== undefined
+                ? this.context.ui.nativeHostUiTags().get(id)
+                : undefined;
+        if (id !== undefined && tag !== undefined) {
             const value: Value = {
                 kind: "ui-element",
                 cpp: cppName,

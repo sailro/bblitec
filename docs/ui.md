@@ -41,6 +41,7 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
 - Stored Document queries and element construction use their selected owner; optional receivers skip argument evaluation when absent.
+- Document queries activate the Window owner before element construction; missing lookups retain runtime null checks. Stored style-element writes use the same stylesheet admission as constructed styles.
 - Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion. Statement `??=`, `||=` and `&&=` evaluate the receiver once and the right operand lazily.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
@@ -163,6 +164,8 @@ iOS uses UIKit Files with local storage and security-scoped imports; other platf
 Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path/rect attributes. Finite
 conditional fragments select parsed alternatives; immutable aliases and helpers retain one runtime text span
 inside fixed authored fragments. Runtime text is escaped and stored text is read from its captured value.
+HTML markup retains role, aria-* and data-* metadata, bare hidden and button disabled attributes, and strong emphasis.
+ARIA has no native accessibility bridge. Image fetchpriority is an inert scheduling hint; draggable admits only false.
 Queries on the markup owner preserve selected order, absence and live attributes; mixed retained/markup subtree queries
 and removing or reparenting queried markup nodes refuse. Queried nodes accept text or closed markup replacement while
 their descendants have no retained handles; later queries exclude replaced content.

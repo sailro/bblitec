@@ -86,6 +86,7 @@ import {
     elementInterfaceTag,
     eventTargetCpp,
     isDocumentReceiver,
+    isDomReceiver,
 } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
 import {
@@ -653,7 +654,10 @@ export class UiProjection {
         expression: ts.Expression,
     ): Value | undefined {
         const known = this.uiElementValue(expression);
-        if (known) return known;
+        if (known)
+            return known.engineCpp
+                ? known
+                : { ...known, engineCpp: this.documentEngine(expression) };
         if (!ts.isCallExpression(this.context.unwrap(expression)))
             return undefined;
         const type = this.context.dataLowerer.dataTypeAt(expression);
@@ -791,6 +795,8 @@ export class UiProjection {
     public uiCreatedElementTag(expression: ts.Expression): string | undefined {
         const direct = this.uiElementMetadata(expression)?.tag;
         if (direct) return direct;
+        if (isDomReceiver(this.context, expression, "HTMLStyleElement"))
+            return "style";
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return undefined;
         const declaration =
@@ -3860,7 +3866,7 @@ export class UiProjection {
             }
             if (token.startsWith("/")) {
                 const tag = token.slice(1).trim().toLowerCase();
-                if (!/^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag)) {
+                if (!/^(?:div|span|h1|h2|p|button|b|strong|a|svg)$/.test(tag)) {
                     fail(`does not support closing tag '</${tag}>'.`);
                 }
                 const current = stack.pop();
@@ -3903,7 +3909,9 @@ export class UiProjection {
                       : undefined;
             if (
                 (!insideSvg &&
-                    !/^(?:div|span|h1|h2|p|button|b|a|img|svg)$/.test(tag)) ||
+                    !/^(?:div|span|h1|h2|p|button|b|strong|a|img|svg)$/.test(
+                        tag,
+                    )) ||
                 (insideSvg && !/^(?:path|rect)$/.test(tag))
             ) {
                 fail(`tag '<${tag}>' is outside the bounded HTML/SVG subset.`);
@@ -3915,7 +3923,7 @@ export class UiProjection {
                 fail(`<${tag}> must use the self-closing form.`);
             }
             if (
-                /^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag) &&
+                /^(?:div|span|h1|h2|p|button|b|strong|a|svg)$/.test(tag) &&
                 selfClosing
             ) {
                 fail(`<${tag}> must have an explicit closing tag.`);
@@ -3927,14 +3935,21 @@ export class UiProjection {
                 attributeText = attributeText.trimStart();
                 const attribute =
                     attributeText.match(
-                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(["'])([\s\S]*?)\2/,
+                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)(?:\s*=\s*(["'])([\s\S]*?)\2|(?=\s|$))/,
                     ) ??
+                    fail(
+                        `tag '<${tag}>' has an invalid or unquoted attribute.`,
+                    );
+                if (
+                    attribute[3] === undefined &&
+                    !/^(?:hidden|disabled)$/i.test(attribute[1]!)
+                )
                     fail(
                         `tag '<${tag}>' has an invalid or unquoted attribute.`,
                     );
                 attributes.push({
                     name: attribute[1]!,
-                    value: attribute[3]!,
+                    value: attribute[3] ?? "",
                 });
                 attributeText = attributeText.slice(attribute[0].length);
             }
@@ -3990,13 +4005,19 @@ export class UiProjection {
                         "class",
                         "style",
                         "id",
-                        ...(tag === "button" ? ["type", "data-action"] : []),
+                        "role",
+                        "hidden",
+                        "draggable",
+                        ...(tag === "button" ? ["type", "disabled"] : []),
                         ...(tag === "a" ? ["href", "target", "rel"] : []),
                         ...(tag === "img"
-                            ? ["src", "alt", "width", "height"]
+                            ? ["src", "alt", "width", "height", "fetchpriority"]
                             : []),
                     ]);
-                    if (!allowed.has(lowerName)) {
+                    const metadata =
+                        /^(?:aria|data)-[a-z][a-z0-9_.-]*$/.test(lowerName) &&
+                        !lowerName.startsWith("data-bbl-");
+                    if (!allowed.has(lowerName) && !metadata) {
                         fail(
                             `attribute '${name}' is not supported on <${tag}>.`,
                         );
@@ -4020,6 +4041,24 @@ export class UiProjection {
                             }
                             classes.add(className);
                         }
+                    } else if (lowerName === "hidden") {
+                        attributeValue = this.lowerUiAttributeLiteral(
+                            lowerName,
+                            attributeValue,
+                            site,
+                        );
+                    } else if (
+                        lowerName === "draggable" &&
+                        attributeValue.toLowerCase() !== "false"
+                    ) {
+                        fail(
+                            "draggable supports only 'false'; authored drags are unavailable.",
+                        );
+                    } else if (
+                        lowerName === "fetchpriority" &&
+                        !/^(?:auto|high|low)$/i.test(attributeValue)
+                    ) {
+                        fail("<img> fetchpriority requires auto, high or low.");
                     } else if (lowerName === "style") {
                         attributeValue = this.lowerUiAttributeLiteral(
                             "style",
@@ -4107,7 +4146,7 @@ export class UiProjection {
                     svgPaint[lowerName] = attribute.value.trim().toLowerCase();
                 }
                 loweredAttributes.push({
-                    name: lowerName === "viewbox" ? "viewBox" : name,
+                    name: lowerName === "viewbox" ? "viewBox" : lowerName,
                     value: attributeValue,
                 });
             }
@@ -5230,33 +5269,22 @@ export class UiProjection {
         return tags;
     }
 
-    /**
-     * A Window realm owns the whole retained document. Other entries require
-     * an id declared by their host companion, including represented canvases.
-     */
+    /** Checked Document queries reach their retained owner, activating a Window realm when needed. */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
             !(
                 callee.name.text === "getElementById" ||
-                ((this.context.options.workers ||
-                    this.context.options.nativeHostUi) &&
-                    (callee.name.text === "querySelector" ||
-                        callee.name.text === "querySelectorAll"))
+                callee.name.text === "querySelector" ||
+                callee.name.text === "querySelectorAll"
             ) ||
             !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
         ) {
             return false;
         }
-        if (this.context.options.workers) return true;
-        // A lookup by id, in either spelling, finds a companion element;
-        // any other selector is a retained-DOM query.
-        const id = this.lookupElementId(call);
-        return id === undefined
-            ? callee.name.text !== "getElementById"
-            : this.nativeHostUiTags().has(id);
+        return true;
     }
 
     /**

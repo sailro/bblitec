@@ -8,10 +8,15 @@ import { declaredInDomLibrary } from "./symbols.js";
 export function isDomReceiver(
     context: Pick<LoweringServices, "checker" | "libraryGlobal">,
     expression: ts.Expression,
-    interfaceName: "Document" | "Window",
+    interfaceName: "Document" | "Window" | "HTMLStyleElement",
 ): boolean {
-    const global = interfaceName === "Document" ? "document" : "window";
-    if (context.libraryGlobal(expression) === global) return true;
+    const global =
+        interfaceName === "Document"
+            ? "document"
+            : interfaceName === "Window"
+              ? "window"
+              : undefined;
+    if (global && context.libraryGlobal(expression) === global) return true;
     const seen = new Map<ts.Type, boolean>();
     const visit = (type: ts.Type): boolean => {
         const cached = seen.get(type);
