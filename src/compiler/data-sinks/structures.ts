@@ -9,6 +9,7 @@ import {
     isStringValue,
     optionalPresentCpp,
     optionalValueCpp,
+    presenceCpp,
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
@@ -213,18 +214,32 @@ function valueStruct(
     node: ts.Node,
 ): string | undefined {
     value = lowerer.context.classLowerer.errorView(value, node) ?? value;
+    const wrapped = value.dataType?.kind === "optional";
+    const sourceType =
+        value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : value.dataType;
+    const flattened =
+        sourceType?.kind === "struct" &&
+        sourceType.name !== dataType.name &&
+        lowerer.context.dataTypes.isReferenceStruct(sourceType.name) &&
+        presenceCpp(value) !== "true";
     if (
-        value.dataType?.kind === "optional" &&
+        sourceType &&
+        (wrapped || flattened) &&
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)
     ) {
         const source = lowerer.context.allocateTemporaryCppName(
             "optional_record_source",
         );
         const target = lowerer.context.dataTypes.cppType(dataType);
-        const present = lowerer.leafValue(
-            optionalValueCpp(source),
-            value.dataType.inner,
-        );
+        const present = {
+            ...lowerer.leafValue(
+                wrapped ? optionalValueCpp(source) : source,
+                sourceType,
+            ),
+            ...(!wrapped ? { optionalFoundCpp: "true" } : {}),
+        };
         let converted = "";
         const lines = lowerer.context.captureEmittedLines(() => {
             converted = lowerer.compileKnownValueForSink(
@@ -236,7 +251,7 @@ function valueStruct(
         return (
             `([&]() -> ${target} {\n` +
             `    const auto& ${source} = ${value.cpp};\n` +
-            `    if (!${optionalPresentCpp(source)}) return {};\n` +
+            `    if (!${wrapped ? optionalPresentCpp(source) : source}) return {};\n` +
             lines.map((line) => `    ${line}\n`).join("") +
             `    return ${converted};\n}())`
         );

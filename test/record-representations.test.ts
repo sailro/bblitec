@@ -60,13 +60,24 @@ export function collections(): number[] {
     const callbacks = new Map<number, () => number>();
     callbacks.set(1, () => 19);
     const callback = callbacks.get(1);
+    const missingCallback = callbacks.get(2);
     callbacks.clear();
+    const weakCallbacks = new WeakMap<FixtureCell, () => number>();
+    weakCallbacks.set(cell, callback!);
+    const weakCallback = weakCallbacks.get(cell);
+    weakCallbacks.delete(cell);
+    const missingWeakCallback = weakCallbacks.get(cell);
+    const callbackArray: Array<() => number> = [callback!];
+    const poppedCallback = callbackArray.pop();
+    const emptyCallback = callbackArray.pop();
     const bytes = new Uint8Array([1, 2, 3, 4]);
     bytes.set(bytes.subarray(0, 3), 1);
     const out = [kept ?? -1, numbers.get(2) ?? -2, saved!.value,
         weakValue ?? -3, weak.has(cell) ? 1 : 0, popped ?? -4,
         empty ?? -5, poppedCell!.value, callback!(),
-        bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!];
+        bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!,
+        missingCallback ? 1 : 0, weakCallback!(), missingWeakCallback ? 1 : 0,
+        poppedCallback!(), emptyCallback ? 1 : 0];
     return out;
 }
 `;
