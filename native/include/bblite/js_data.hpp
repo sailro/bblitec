@@ -4034,6 +4034,11 @@ template <typename T> inline Array<T>& array_reverse(Array<T>& values) {
     return values;
 }
 
+template <typename T> inline Array<T> array_reverse(Array<T>&& values) {
+    array_reverse(values);
+    return std::move(values);
+}
+
 /**
  * `fill(value, start, end)` — the ranged form, over any container the
  * lowerer serves. Both endpoints are relative indices, so a negative one
@@ -4300,6 +4305,11 @@ template <typename Values>
         throw_index_error(site, "read", index, values.size());
     }
     return values[accepted_index(index)];
+}
+
+[[nodiscard]] inline U8Array::value_type array_index_checked(U8Array&& values, double index,
+                                                             const char* site) {
+    return array_index_checked(values, index, site);
 }
 template <typename T>
 [[nodiscard]] inline T array_index_checked(const TypedArray<T>& values, double index,
