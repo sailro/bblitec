@@ -139,6 +139,48 @@ if(present.signal!==date||!Object.hasOwn(present,'signal')||Object.hasOwn(missin
 );
 
 check(
+    "default-parameters-preserve-snapshots-mutation-and-captures",
+    `
+let defaults = 0;
+let order = '';
+function fallback(value: string): string { defaults++; order += value; return value; }
+const readers: Array<(text?: string) => () => string> = [
+    (text = fallback('D')) => () => text,
+];
+let input = 'original';
+const present = readers[0]!(input);
+input = 'changed';
+const missing = readers[0]!();
+if (present() !== 'original' || missing() !== 'D' || defaults !== 1)
+    throw new Error('defaulted string snapshot or lazy fallback');
+const mutations: Array<(text?: string) => () => string> = [
+    (text = fallback('M')) => {
+        const read = () => text;
+        text += '!';
+        return read;
+    },
+];
+const mutated = mutations[0]!(input);
+const mutatedDefault = mutations[0]!();
+if (mutated() !== 'changed!' || mutatedDefault() !== 'M!' || input !== 'changed')
+    throw new Error('defaulted parameter mutation or retained capture');
+const ordered: Array<(first?: string, second?: string) => string> = [
+    (first = fallback('A'), second = fallback(first + 'B')) => first + ':' + second,
+];
+if (ordered[0]!() !== 'A:AB' || ordered[0]!('X') !== 'X:XB')
+    throw new Error('default initialization order');
+if (ordered[0]!('Y', 'Z') !== 'Y:Z' || defaults !== 5 || order !== 'DMAABXB')
+    throw new Error('provided arguments evaluated a fallback');
+const writes: Array<(text?: string) => string> = [
+    (text = fallback('W')) => { text += '?'; return text; },
+];
+if (writes[0]!(input) !== 'changed?' || writes[0]!() !== 'W?' || input !== 'changed')
+    throw new Error('defaulted writable parameter changed its caller');
+if (defaults !== 6 || order !== 'DMAABXBW') throw new Error('writable default count');
+`,
+);
+
+check(
     "unchecked-dictionary-lanes-retain-nullable-snapshots",
     `
 interface Snapshot { present: string | undefined; missing: string | undefined; }

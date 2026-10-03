@@ -6127,6 +6127,7 @@ export class UserFunctionLowerer {
 ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
 }()`,
         });
+        context.registerNativeConstBinding(result);
         return context.dataValue(result, type);
     }
 
