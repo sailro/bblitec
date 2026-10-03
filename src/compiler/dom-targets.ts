@@ -2,6 +2,35 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { documentEngine } from "./window-events.js";
+import { declaredInDomLibrary } from "./symbols.js";
+
+/** Identify the declared Document receiver without evaluating it. */
+export function isDocumentReceiver(
+    context: Pick<LoweringServices, "checker" | "libraryGlobal">,
+    expression: ts.Expression,
+): boolean {
+    if (context.libraryGlobal(expression) === "document") return true;
+    const seen = new Map<ts.Type, boolean>();
+    const visit = (type: ts.Type): boolean => {
+        const cached = seen.get(type);
+        if (cached !== undefined) return cached;
+        seen.set(type, false);
+        const result = type.isIntersection()
+            ? type.types.some(visit)
+            : type.isUnion()
+              ? type.types.every(visit)
+              : (type.symbol?.name === "Document" &&
+                    declaredInDomLibrary(type.symbol)) ||
+                (type.getBaseTypes() ?? []).some(visit);
+        seen.set(type, result);
+        return result;
+    };
+    return visit(
+        context.checker.getNonNullableType(
+            context.checker.getTypeAtLocation(expression),
+        ),
+    );
+}
 
 type Context = Pick<
     LoweringServices,

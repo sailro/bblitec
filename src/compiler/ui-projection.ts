@@ -82,7 +82,11 @@ import {
     eventHandlerResult,
     pinDetached,
 } from "./dom-listeners.js";
-import { elementInterfaceTag } from "./dom-targets.js";
+import {
+    elementInterfaceTag,
+    eventTargetCpp,
+    isDocumentReceiver,
+} from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
 import {
     canvasContextIds,
@@ -310,6 +314,32 @@ export class UiProjection {
             documentEngine(this.context, node) ??
             this.context.requireDefaultEngine(node)
         );
+    }
+
+    /** Calls through stored Documents retain the selected owner before arguments run. */
+    public documentReceiverEngine(
+        expression: ts.Expression,
+        prepared?: Value,
+    ): string {
+        if (this.context.libraryGlobal(expression) === "document")
+            return this.documentEngine(expression);
+        const value = prepared ?? this.context.compileValue(expression);
+        const target = pinDetached(
+            this.context,
+            {
+                kind: "data",
+                cpp: eventTargetCpp(this.context, value, expression),
+                dataType: { kind: "event-target" },
+            },
+            "document_receiver",
+            expression,
+        );
+        const engine = this.context.allocateTemporaryCppName("document_owner");
+        this.context.emit({
+            kind: "expression",
+            code: `auto& ${engine} = bbl::dom_document_owner(${target.cpp});`,
+        });
+        return engine;
     }
 
     private documentRootTag(expression: ts.Expression): string | undefined {
@@ -833,7 +863,7 @@ export class UiProjection {
             ts.isPropertyAccessExpression(callee) &&
             (callee.name.text === "createElement" ||
                 callee.name.text === "createElementNS") &&
-            this.context.libraryGlobal(callee.expression) === "document" &&
+            isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
             (ts.isStringLiteral(value.arguments[0]) ||
                 ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
@@ -5203,7 +5233,7 @@ export class UiProjection {
                     (callee.name.text === "querySelector" ||
                         callee.name.text === "querySelectorAll"))
             ) ||
-            this.context.libraryGlobal(callee.expression) !== "document" ||
+            !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
         ) {
             return false;

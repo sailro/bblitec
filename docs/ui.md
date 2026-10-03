@@ -39,6 +39,7 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
+- Stored Document queries and element construction use their selected owner; optional receivers skip argument evaluation when absent.
 - Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion. Statement `??=`, `||=` and `&&=` evaluate the receiver once and the right operand lazily.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
@@ -79,7 +80,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Construction | Static tags, appendChild, mixed text/element append/prepend/replaceChildren, element-array spreads in append/replaceChildren, remove, retained roots; parent, first/last child and sibling element reads | No general DOM implementation; prepend spreads refuse; tree, text and insertion reads inside innerHTML throw; document roots only append |
 | Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute, isContentEditable from contenteditable | Compound text writes; `<style>` text reads; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
-| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | Interaction states, :scope, dynamic selectors, pseudo-element queries |
+| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | Interaction states, :scope, pseudo-element queries; dynamic selectors throw in deferred capability mode and otherwise refuse |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
 | Handler properties | Element `on<event>` for represented pointer, keyboard, file-drag and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
 | Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |

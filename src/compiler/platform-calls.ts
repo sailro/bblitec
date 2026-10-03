@@ -28,6 +28,9 @@ import {
     compileDeferredListenerOptions,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
+import { isDocumentReceiver } from "./dom-targets.js";
+import type { DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import {
@@ -648,6 +651,11 @@ export class PlatformCalls {
         ) {
             return false;
         }
+        if (
+            this.context.options.deferredCapabilities &&
+            deferredCapabilityDescriptor(this.context.checker, call)
+        )
+            return false;
         if (!preparedElement && callee.questionDotToken) {
             const type = this.context.dataLowerer.dataTypeAt(callee.expression);
             if (
@@ -1012,8 +1020,13 @@ export class PlatformCalls {
                     "read",
                 );
                 return value?.dataType?.kind === "optional" &&
-                    value.dataType.inner.kind === "handle" &&
-                    value.dataType.inner.handle === "ui-element"
+                    ((value.dataType.inner.kind === "handle" &&
+                        value.dataType.inner.handle === "ui-element") ||
+                        (value.dataType.inner.kind === "event-target" &&
+                            isDocumentReceiver(
+                                this.context,
+                                callee.expression,
+                            )))
                     ? value
                     : undefined;
             });
@@ -1022,8 +1035,10 @@ export class PlatformCalls {
                 this.context.dataLowerer.dataTypeAt(callee.expression);
             if (
                 type?.kind === "optional" &&
-                type.inner.kind === "handle" &&
-                type.inner.handle === "ui-element"
+                ((type.inner.kind === "handle" &&
+                    type.inner.handle === "ui-element") ||
+                    (type.inner.kind === "event-target" &&
+                        isDocumentReceiver(this.context, callee.expression)))
             ) {
                 return this.context.dataLowerer.optionalAccess(
                     stored ?? this.context.compileValue(callee.expression),
@@ -1098,6 +1113,10 @@ export class PlatformCalls {
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
+            const engine = this.ui.documentReceiverEngine(
+                callee.expression,
+                preparedElement,
+            );
             // A one-ID-selector query is the same lookup by id.
             const byId = callee.name.text === "getElementById";
             const id = byId
@@ -1107,11 +1126,10 @@ export class PlatformCalls {
                 return this.compileUiQuery(
                     call,
                     callee.name.text,
-                    this.ui.documentEngine(call),
+                    engine,
                     "{}",
                 );
             }
-            const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
             const tag =
                 id !== undefined
@@ -1148,8 +1166,12 @@ export class PlatformCalls {
         if (
             (callee.name.text === "createElement" ||
                 callee.name.text === "createElementNS") &&
-            this.context.libraryGlobal(callee.expression) === "document"
+            isDocumentReceiver(this.context, callee.expression)
         ) {
+            const engine = this.ui.documentReceiverEngine(
+                callee.expression,
+                preparedElement,
+            );
             const svg = callee.name.text === "createElementNS";
             this.context.expectArgumentCount(call, svg ? 2 : 1, svg ? 2 : 1);
             if (
@@ -1182,7 +1204,6 @@ export class PlatformCalls {
                     `Native UI element tag '${tag}' is reserved for the retained projection.`,
                 );
             }
-            const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
             const uiStaticId = this.ui.createUiStaticElement(normalizedTag);
@@ -1232,7 +1253,13 @@ export class PlatformCalls {
                   }
                 : classListMutation
                   ? undefined
-                  : callee.name.text === "getBoundingClientRect"
+                  : [
+                          "getBoundingClientRect",
+                          "querySelector",
+                          "querySelectorAll",
+                          "matches",
+                          "closest",
+                      ].includes(callee.name.text)
                     ? this.ui.compileUiElementReceiver(callee.expression)
                     : this.ui.uiElementValue(callee.expression));
         if (element?.uiTag === "image-bitmap" && callee.name.text === "close") {
@@ -2273,6 +2300,56 @@ export class PlatformCalls {
         found?: string,
     ): Value {
         this.context.expectArgumentCount(call, 1, 1);
+        if (
+            this.context.options.deferredCapabilities &&
+            this.ui.tryUiStaticString(argumentAt(call, 0)) === undefined
+        ) {
+            // Selection and argument effects precede the explicit missing runtime parser.
+            this.context.emit({
+                kind: "expression",
+                code: `static_cast<void>(${engine});`,
+            });
+            if (root !== "{}")
+                this.context.emit({
+                    kind: "expression",
+                    code: `static_cast<void>(${root});`,
+                });
+            this.context.emitDiscardedValue({
+                kind: "string",
+                cpp: this.ui.uiStringCpp(argumentAt(call, 0), "DOM selector"),
+            });
+            const type: DataType =
+                method === "matches"
+                    ? { kind: "boolean" }
+                    : method === "querySelectorAll"
+                      ? {
+                            kind: "vector",
+                            element: { kind: "handle", handle: "ui-element" },
+                        }
+                      : {
+                            kind: "optional",
+                            inner: { kind: "handle", handle: "ui-element" },
+                        };
+            const trap = this.context.deferredCapabilities.emitKnown(
+                call,
+                {
+                    id: `dom:${method}.dynamic-selector`,
+                    origin: "dom",
+                    operation: "call",
+                    signature: this.context.checker.signatureToString(
+                        this.context.checker.getResolvedSignature(call) ??
+                            this.context.fail(
+                                call,
+                                "A deferred DOM query requires its declared signature.",
+                            ),
+                        call,
+                    ),
+                    timing: "throw",
+                },
+                type,
+            );
+            if (trap) return { ...trap, engineCpp: engine };
+        }
         const source = this.context.compileStringLiteral(argumentAt(call, 0));
         const selectors = splitUiSelectorList(source).map((part) => {
             const sequence = parseUiSelectorSequence(part, {
