@@ -1435,9 +1435,12 @@ class Compiler implements LoweringServices {
             this.sourceFile,
             this.checker,
             this.symbols,
+            this.evaluationOrder,
         );
         this.mutatedModuleContainers = mutatedContainers;
         if (modules.length === 0) return;
+
+        const staticDeclarations = new Set<ts.VariableDeclaration>();
 
         // Once a module is materialized, its declarations name the native
         // storage initialized below. They must not continue resolving to the
@@ -1449,6 +1452,22 @@ class Compiler implements LoweringServices {
                 for (const declaration of statement.declarationList
                     .declarations) {
                     if (!ts.isIdentifier(declaration.name)) continue;
+                    if (
+                        (statement.declarationList.flags &
+                            ts.NodeFlags.Const) !==
+                            0 &&
+                        declaration.initializer &&
+                        this.evaluationOrder.isPureExpression(
+                            declaration.initializer,
+                        ) &&
+                        !this.evaluationOrder.hasModuleEffects(
+                            declaration.initializer,
+                        ) &&
+                        !this.moduleConstantIsWritten(declaration.name)
+                    ) {
+                        staticDeclarations.add(declaration);
+                        continue;
+                    }
                     const symbol = this.symbols.valueSymbol(declaration.name);
                     if (symbol) this.staticConstants.delete(symbol);
                 }
@@ -1460,6 +1479,26 @@ class Compiler implements LoweringServices {
             const moduleScope = this.bindings.variableScopes.at(-1)!;
             try {
                 for (const statement of file.statements) {
+                    if (ts.isVariableStatement(statement)) {
+                        for (const declaration of statement.declarationList
+                            .declarations) {
+                            if (!staticDeclarations.has(declaration))
+                                this.declarations.emitVariableDeclaration(
+                                    declaration,
+                                );
+                        }
+                        continue;
+                    }
+                    if (
+                        ts.isExportAssignment(statement) &&
+                        this.evaluationOrder.isPureExpression(
+                            statement.expression,
+                        ) &&
+                        !this.evaluationOrder.hasModuleEffects(
+                            statement.expression,
+                        )
+                    )
+                        continue;
                     if (isModuleInitializerStatement(statement, this.checker)) {
                         this.emitStatement(statement);
                     }

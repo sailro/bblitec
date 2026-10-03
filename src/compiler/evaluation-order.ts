@@ -4,8 +4,11 @@ import { classChain, type ClassHierarchy } from "./class-members.js";
 import { isEngineDeclaration, type EngineBodies } from "./engine-bodies.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { propertyIsReadOnly } from "./data-types.js";
+import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import {
     declaredInDefaultLibrary,
+    declaredInDomLibrary,
+    declarationOrigin,
     libraryGlobal,
     pinnedConstantProperty,
     resolvedSymbol,
@@ -67,6 +70,20 @@ interface DirectAccess extends Access {
 
 /** Code a call runs: a function body, or a class field's initializer. */
 type Unit = ts.FunctionLikeDeclaration | ts.PropertyDeclaration;
+
+/** Eager expressions in one callable or field initializer. */
+function unitRoots(unit: Unit): readonly ts.Node[] {
+    return ts.isPropertyDeclaration(unit)
+        ? unit.initializer
+            ? [unit.initializer]
+            : []
+        : [
+              ...unit.parameters.flatMap((parameter) =>
+                  parameter.initializer ? [parameter.initializer] : [],
+              ),
+              ...(unit.body ? [unit.body] : []),
+          ];
+}
 
 /** The generator `Math.random` advances: each call reads and writes it. */
 const randomState = Symbol("Math.random");
@@ -168,6 +185,8 @@ export class EvaluationOrder {
     private readonly summaries = new Map<Unit, Access>();
     /** @unjournaled A cache of whether one unit answers from its arguments alone. */
     private readonly deterministic = new Map<Unit, boolean>();
+    /** @unjournaled Module effects depend only on checked source bodies. */
+    private readonly moduleEffects = new WeakMap<ts.Node, boolean>();
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -235,6 +254,286 @@ export class EvaluationOrder {
     }
 
     /**
+     * Work which cannot stay in a generation-only module: host observations,
+     * unknown calls and abrupt completion. Writes to source-owned storage are
+     * deliberately separate; the module planner tracks their observed owners.
+     */
+    public hasModuleEffects(node: ts.Node): boolean {
+        const known = this.moduleEffects.get(node);
+        if (known !== undefined) return known;
+        const active = new Set<Unit>();
+        const complete = new Set<Unit>();
+        const visit = (roots: readonly ts.Node[]): boolean => {
+            let effects = false;
+            for (const root of roots) {
+                forEachAnalysisNode(
+                    root,
+                    (current) => {
+                        if (effects) return "skip";
+                        if (
+                            ts.isThrowStatement(current) ||
+                            ts.isAwaitExpression(current) ||
+                            ts.isYieldExpression(current) ||
+                            ts.isTaggedTemplateExpression(current) ||
+                            ts.isWhileStatement(current) ||
+                            ts.isDoStatement(current) ||
+                            ts.isForStatement(current)
+                        ) {
+                            effects = true;
+                            return "skip";
+                        }
+                        if (
+                            ts.isCallExpression(current) ||
+                            ts.isNewExpression(current)
+                        ) {
+                            const callees = this.callees(current);
+                            if (
+                                !callees ||
+                                (callees === "library" &&
+                                    !this.moduleLocalLibraryCall(current))
+                            )
+                                effects = true;
+                        } else if (
+                            ts.isPropertyAccessExpression(current) ||
+                            ts.isElementAccessExpression(current)
+                        ) {
+                            const symbol = resolvedSymbol(
+                                this.checker,
+                                current,
+                            );
+                            const root = libraryGlobal(
+                                this.checker,
+                                accessRoot(current),
+                            );
+                            effects =
+                                declaredInDomLibrary(symbol) ||
+                                declaredInDomLibrary(
+                                    this.checker
+                                        .getTypeAtLocation(current.expression)
+                                        .getSymbol(),
+                                ) ||
+                                (symbol?.declarations?.some(
+                                    ts.isGetAccessorDeclaration,
+                                ) ??
+                                    false) ||
+                                root === "globalThis" ||
+                                root === "window" ||
+                                root === "self";
+                        }
+                    },
+                    { functions: "skip", types: "skip", memberNames: "skip" },
+                );
+                if (effects) return true;
+            }
+            const access = this.walk(roots, undefined);
+            if (access.reads.any || access.writes.any) return true;
+            for (const callee of access.callees) {
+                if (active.has(callee)) return true;
+                if (complete.has(callee)) continue;
+                active.add(callee);
+                if (visit(unitRoots(callee))) return true;
+                active.delete(callee);
+                complete.add(callee);
+            }
+            return false;
+        };
+        const result = visit([node]);
+        this.moduleEffects.set(node, result);
+        return result;
+    }
+
+    /** Library container work stays local; its callbacks are visited by `walk`. */
+    private moduleLocalLibraryCall(
+        call: ts.CallExpression | ts.NewExpression,
+    ): boolean {
+        const declaration =
+            this.checker.getResolvedSignature(call)?.declaration;
+        if (!declaration || declarationOrigin(declaration) !== "default-lib")
+            return false;
+        if (this.libraryAnswersFromArguments(call)) {
+            const callee = unwrapExpression(call.expression);
+            // These conversions can throw for a source-provided precision or
+            // radix even though their answer otherwise depends only on it.
+            return !(
+                (call.arguments?.length ?? 0) > 0 &&
+                ts.isPropertyAccessExpression(callee) &&
+                [
+                    "toFixed",
+                    "toExponential",
+                    "toPrecision",
+                    "toString",
+                ].includes(callee.name.text)
+            );
+        }
+        const owner = declaration.parent;
+        if (!ts.isInterfaceDeclaration(owner)) return false;
+        const args = call.arguments ?? [];
+        if (
+            owner.name.text.endsWith("Constructor") &&
+            TYPED_ARRAY_KINDS.has(
+                owner.name.text.slice(0, -"Constructor".length),
+            )
+        ) {
+            if (args.length === 0) return true;
+            if (args.length !== 1) return false;
+            const elements = unwrapExpression(args[0]!);
+            return (
+                ts.isArrayLiteralExpression(elements) &&
+                elements.elements.every(
+                    (element) =>
+                        !ts.isSpreadElement(element) &&
+                        (this.checker.getTypeAtLocation(element).flags &
+                            ts.TypeFlags.NumberLike) !==
+                            0,
+                )
+            );
+        }
+        if (
+            owner.name.text === "ObjectConstructor" &&
+            "name" in declaration &&
+            declaration.name &&
+            ts.isIdentifier(declaration.name) &&
+            declaration.name.text === "assign"
+        ) {
+            // Assign reads source getters as well as writing the target. Keep
+            // accessor-bearing or unrepresented sources on the runtime path.
+            return (
+                args.length > 0 &&
+                args.every((argument, index) => {
+                    const type = this.checker.getTypeAtLocation(argument);
+                    return (
+                        !type.isUnion() &&
+                        (type.flags & ts.TypeFlags.Object) !== 0 &&
+                        type.getProperties().length > 0 &&
+                        type
+                            .getProperties()
+                            .every(
+                                (property) =>
+                                    !property.declarations?.some(
+                                        index === 0
+                                            ? ts.isAccessor
+                                            : ts.isGetAccessorDeclaration,
+                                    ),
+                            )
+                    );
+                })
+            );
+        }
+        if (
+            ![
+                "Array",
+                "ReadonlyArray",
+                "ArrayConstructor",
+                "Map",
+                "ReadonlyMap",
+                "MapConstructor",
+                "Set",
+                "ReadonlySet",
+                "SetConstructor",
+                "WeakMap",
+                "WeakMapConstructor",
+                "WeakSet",
+                "WeakSetConstructor",
+            ].includes(owner.name.text)
+        )
+            return false;
+        if (owner.name.text.endsWith("Constructor")) {
+            if (args.length === 0) return true;
+            if (
+                !["MapConstructor", "SetConstructor"].includes(
+                    owner.name.text,
+                ) ||
+                args.length !== 1
+            )
+                return false;
+            const entries = unwrapExpression(args[0]!);
+            return (
+                ts.isArrayLiteralExpression(entries) &&
+                entries.elements.every(
+                    (entry) =>
+                        !ts.isSpreadElement(entry) &&
+                        !ts.isOmittedExpression(entry) &&
+                        (owner.name.text === "SetConstructor" ||
+                            ts.isArrayLiteralExpression(
+                                unwrapExpression(entry),
+                            )),
+                )
+            );
+        }
+        if (owner.name.text.startsWith("Weak")) return false;
+        const callee = unwrapExpression(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const receiver = this.checker.getTypeAtLocation(
+            unwrapExpression(callee.expression),
+        );
+        if (
+            (receiver.isUnion() ? receiver.types : [receiver]).some(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Null |
+                            ts.TypeFlags.Undefined |
+                            ts.TypeFlags.Any |
+                            ts.TypeFlags.Unknown)) !==
+                    0,
+            )
+        )
+            return false;
+        if (
+            ![
+                "push",
+                "pop",
+                "shift",
+                "unshift",
+                "splice",
+                "slice",
+                "concat",
+                "map",
+                "filter",
+                "find",
+                "findIndex",
+                "findLast",
+                "findLastIndex",
+                "some",
+                "every",
+                "forEach",
+                "includes",
+                "indexOf",
+                "lastIndexOf",
+                "join",
+                "reverse",
+                "sort",
+                "toReversed",
+                "toSorted",
+                "fill",
+                "copyWithin",
+                "at",
+                "reduce",
+                "reduceRight",
+                "get",
+                "set",
+                "add",
+                "has",
+                "delete",
+                "clear",
+                "keys",
+                "values",
+                "entries",
+            ].includes(callee.name.text)
+        )
+            return false;
+        // Reducing an empty sequence without an initial value throws.
+        if (
+            "name" in declaration &&
+            declaration.name &&
+            ts.isIdentifier(declaration.name) &&
+            ["reduce", "reduceRight"].includes(declaration.name.text) &&
+            (call.arguments?.length ?? 0) < 2
+        )
+            return false;
+        return true;
+    }
+
+    /**
      * Whether every call `unit` makes, with the functions and accessors it
      * reaches, answers from its arguments. The storage model above treats a
      * library call on a global (`Date.now()`, `performance.now()`,
@@ -268,16 +567,7 @@ export class EvaluationOrder {
 
     /** Whether each call `unit` makes itself is to a reachable unit or answers from its arguments. */
     private callsAnswerFromArguments(unit: Unit): boolean {
-        const roots: ts.Node[] = ts.isPropertyDeclaration(unit)
-            ? unit.initializer
-                ? [unit.initializer]
-                : []
-            : [
-                  ...unit.parameters.flatMap((parameter) =>
-                      parameter.initializer ? [parameter.initializer] : [],
-                  ),
-                  ...(unit.body ? [unit.body] : []),
-              ];
+        const roots = unitRoots(unit);
         // A unit's own calls are checked where `answersFromArguments`
         // reaches it.
         return this.callsAnswer(roots, () => true);
@@ -463,16 +753,7 @@ export class EvaluationOrder {
     private directAccess(unit: Unit): DirectAccess {
         const known = this.direct.get(unit);
         if (known) return known;
-        const roots: ts.Node[] = ts.isPropertyDeclaration(unit)
-            ? unit.initializer
-                ? [unit.initializer]
-                : []
-            : [
-                  ...unit.parameters.flatMap((parameter) =>
-                      parameter.initializer ? [parameter.initializer] : [],
-                  ),
-                  ...(unit.body ? [unit.body] : []),
-              ];
+        const roots = unitRoots(unit);
         const direct = this.walk(roots, unit);
         this.direct.set(unit, direct);
         return direct;

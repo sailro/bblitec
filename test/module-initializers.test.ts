@@ -12,6 +12,116 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
+test("initializer planning preserves throwing container and accessor operations", () => {
+    const directory = resolve("artifacts/module-abrupt-initializers");
+    mkdirSync(directory, { recursive: true });
+    for (const source of [
+        "const ignored = new Array(-1);",
+        "const ignored = new Float32Array(-1);",
+        "const ignored = new Map(1 as unknown as []);",
+        "const ignored = new Set(1 as unknown as []);",
+        "const ignored = new WeakMap([[1 as unknown as object, 2]]);",
+        "const ignored = new WeakSet([1 as unknown as object]);",
+        "const values = new WeakMap<object,number>(); values.set(1 as unknown as object,2);",
+        "const ignored = ([] as number[]).reduce((a,b)=>a+b);",
+        "const target={set value(value:number) {throw new Error(String(value));}}; Object.assign(target,{value:7});",
+        "const source={get value():number {throw new Error('getter');return 0;}}; Object.assign({},source);",
+    ]) {
+        writeFileSync(join(directory, "dependency.ts"), source);
+        const { program, sourceFile, checker } = createCompilerProgram(
+            'import "./dependency.js";',
+            join(directory, "entry.ts"),
+        );
+        assert.deepEqual(
+            planImportedModuleInitializers(
+                program,
+                sourceFile,
+                checker,
+                new CompilerSymbols(checker),
+            ).map((file) => basename(file.fileName)),
+            ["dependency.ts"],
+            source,
+        );
+    }
+});
+
+test("host initialization retains effects beside immutable data definitions", (t) => {
+    const directory = resolve("artifacts/module-definition-effects");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        export enum Direction { Left = 3, Right = 7 }
+        export const table = [{key:"left", value:-Direction.Left}, {key:"right", value:Direction.Right}] as const;
+        let calls = 0;
+        const probe = { get value():number { calls++; return Date.now() >= 0 ? 5 : 0; } };
+        const first = probe.value;
+        const second = [2].map((value) => { calls += value; return first + value; });
+        export function verify(): void {
+            if (calls !== 3 || first !== 5 || second[0] !== 7)
+                throw new Error("initializer lifetime");
+        }
+        const label = "definition"; export default label;
+    `,
+    );
+    const result = compileSource(
+        `
+        import label, {table,verify} from "./dependency.js";
+        verify(); verify();
+        if (label !== "definition" || table[0].key !== "left" || table[0].value !== -3 || table[1].value !== 7)
+            throw new Error("static sibling definition");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /v_module\d+_table/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-definition-effects", result.cpp);
+});
+
+for (const [label, work] of [
+    [
+        "source throw",
+        'function effect():number { throw new Error("dependency executed"); } const ignored=effect();',
+    ],
+    [
+        "getter",
+        'const source={get value():number { if(Date.now()>=0) throw new Error("dependency executed"); return 0; }}; const ignored=source.value;',
+    ],
+    [
+        "callback",
+        'const ignored=[1].map(() => { throw new Error("dependency executed"); return 0; });',
+    ],
+] as const)
+    test(`ignored module ${label} cannot disappear`, (t) => {
+        const directory = resolve(
+            `artifacts/module-ignored-${label.replaceAll(" ", "-")}`,
+        );
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "dependency.ts"), work);
+        const result = compileSource(
+            'import "./dependency.js"; if(Date.now()>=0) throw new Error("entry executed");',
+            { fileName: join(directory, "entry.ts") },
+        );
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        assert.throws(
+            () =>
+                runGeneratedProgram(
+                    tools,
+                    `module-ignored-${label.replaceAll(" ", "-")}`,
+                    result.cpp,
+                ),
+            /dependency executed/,
+        );
+    });
+
 for (const declaration of [false, true])
     test(`side-effect-only dependencies retain ${declaration ? "ignored initializers" : "statements"} without observed bindings`, (t) => {
         const directory = resolve("artifacts/module-host-side-effects");

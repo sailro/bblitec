@@ -278,9 +278,8 @@ test("a module constant a platform probe initializes is a run-time condition", (
         render();`;
     writeFileSync(fileName, source);
     const { cpp } = compileSource(source, { fileName });
-    assert.match(
-        cpp,
-        /\(bblscene::detectMac\(\) \? "keys\.cmd" : "keys\.ctrl"\)/,
-    );
-    assert.match(cpp, /if \(bblscene::detectMac\(\)\)/);
+    assert.match(cpp, /bool v_module\d+_IS_MAC = bblscene::detectMac\(\);/);
+    assert.equal((cpp.match(/bblscene::detectMac\(\)/g) ?? []).length, 1);
+    assert.match(cpp, /\(v_module\d+_IS_MAC \? "keys\.cmd" : "keys\.ctrl"\)/);
+    assert.match(cpp, /if \(v_module\d+_IS_MAC\)/);
 });

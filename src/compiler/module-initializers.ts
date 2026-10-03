@@ -10,10 +10,14 @@ import {
     declaredSymbol,
     type CompilerSymbols,
 } from "./symbols.js";
-import { classHasStaticState, classMemberTable } from "./class-members.js";
+import {
+    ClassHierarchy,
+    classHasStaticState,
+    classMemberTable,
+} from "./class-members.js";
+import { EvaluationOrder } from "./evaluation-order.js";
 import {
     assignmentTargets,
-    expressionMayRunCode,
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
@@ -241,15 +245,24 @@ export function planImportedModuleState(
     sourceFile: ts.SourceFile,
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
-): { modules: ts.SourceFile[]; mutatedContainers: ReadonlySet<ts.Symbol> } {
+    evaluationOrder = new EvaluationOrder(
+        checker,
+        new ClassHierarchy(checker, program),
+    ),
+): {
+    modules: ts.SourceFile[];
+    mutatedContainers: ReadonlySet<ts.Symbol>;
+} {
     const planner = new ModuleInitializerPlanner(
         program,
         sourceFile,
         checker,
         symbols,
+        evaluationOrder,
     );
+    const modules = planner.plan();
     return {
-        modules: planner.plan(),
+        modules,
         mutatedContainers: planner.mutatedContainerSymbols(),
     };
 }
@@ -282,6 +295,10 @@ class ModuleInitializerPlanner {
         private readonly sourceFile: ts.SourceFile,
         private readonly checker: ts.TypeChecker,
         private readonly symbols: CompilerSymbols,
+        private readonly evaluationOrder = new EvaluationOrder(
+            checker,
+            new ClassHierarchy(checker, program),
+        ),
     ) {}
 
     public plan(): ts.SourceFile[] {
@@ -678,6 +695,12 @@ class ModuleInitializerPlanner {
     /** @unjournaled Potential host effects depend only on the checked source. */
     private readonly hostInitializerEffects = new Map<ts.SourceFile, boolean>();
 
+    private initializerHasHostEffects(expression: ts.Expression): boolean {
+        return this.evaluationOrder.hasModuleEffects(
+            this.symbols.pinnedWgslTemplate(expression) ?? expression,
+        );
+    }
+
     private moduleHasObservableInitializer(
         file: ts.SourceFile,
         moduleState: ReadonlySet<ts.Symbol>,
@@ -690,13 +713,21 @@ class ModuleInitializerPlanner {
             hostEffects = file.statements.some((statement) => {
                 if (!isModuleInitializerStatement(statement, this.checker))
                     return false;
+                if (ts.isClassDeclaration(statement)) return true;
                 if (ts.isVariableStatement(statement))
                     return statement.declarationList.declarations.some(
                         (declaration) =>
                             declaration.initializer &&
-                            expressionMayRunCode(declaration.initializer),
+                            this.initializerHasHostEffects(
+                                declaration.initializer,
+                            ),
                     );
-                return !ts.isEmptyStatement(statement);
+                if (ts.isExportAssignment(statement))
+                    return this.initializerHasHostEffects(statement.expression);
+                return (
+                    !ts.isEmptyStatement(statement) &&
+                    this.evaluationOrder.hasModuleEffects(statement)
+                );
             });
             this.hostInitializerEffects.set(file, hostEffects);
         }
@@ -812,10 +843,7 @@ class ModuleInitializerPlanner {
                             record(target),
                         );
                     }
-                    if (
-                        ts.isPostfixUnaryExpression(current) ||
-                        ts.isPrefixUnaryExpression(current)
-                    ) {
+                    if (isUpdateExpression(current)) {
                         record(current.operand);
                     }
                     if (ts.isDeleteExpression(current)) {
