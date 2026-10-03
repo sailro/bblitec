@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import { isLogicalAssignmentOperator, unwrapExpression } from "./syntax.js";
 
 type Slot = ts.Declaration;
@@ -50,11 +50,17 @@ function add<T>(
 
 /** Source candidates are indexed by spelling, then matched by declaration identity. */
 export class FiniteArraySources {
+    /** @unjournaled Source writes indexed once during construction; independent of emission. */
     private readonly writes = new Map<string, Write[]>();
+    /** @unjournaled Source aliases indexed once during construction; independent of emission. */
     private readonly bindings = new Map<string, Binding[]>();
+    /** @unjournaled Source initializers indexed once during construction; independent of emission. */
     private readonly sources = new Map<string, Binding[]>();
+    /** @unjournaled Source calls indexed once during construction; independent of emission. */
     private readonly calls = new Map<string, ts.CallExpression[]>();
+    /** @unjournaled Source element inventory cached by declaration; independent of emitted types and replay. */
     private readonly elementsBySlot = new Map<Slot, readonly ts.Expression[]>();
+    /** @unjournaled Source call inventory cached by producer; independent of emitted specializations and replay. */
     private readonly callsByProducer = new WeakMap<
         ts.Node,
         readonly ts.CallExpression[]
@@ -216,7 +222,7 @@ export class FiniteArraySources {
         if (
             !ts.isIdentifier(node) ||
             node.text !== "arguments" ||
-            this.checker.getSymbolAtLocation(node)?.declarations?.length
+            declaredSymbol(this.checker, node)?.declarations?.length
         )
             return undefined;
         let producer: ts.Node | undefined = node.parent;

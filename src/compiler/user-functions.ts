@@ -4790,7 +4790,7 @@ export class UserFunctionLowerer {
                     (node): node is ts.Identifier =>
                         ts.isIdentifier(node) &&
                         node.text === "arguments" &&
-                        !this.checker.getSymbolAtLocation(node)?.declarations
+                        !declaredSymbol(this.checker, node)?.declarations
                             ?.length,
                     {
                         types: "skip",
