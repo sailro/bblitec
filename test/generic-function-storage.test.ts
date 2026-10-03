@@ -180,6 +180,78 @@ check(
 );
 
 check(
+    "owned-unmapped-arguments",
+    `
+    const snapshots:Array<()=>number>=[];
+    function capture(...rest:number[]):void {
+        const object=arguments;
+        if(object!==arguments||Array.isArray(object)||typeof object!=='object')throw new Error('arguments identity and kind');
+        snapshots.push(()=>Number(object[0]??0)+object.length);
+        rest[0]=99;
+        if(arguments!==object)throw new Error('stable arguments');
+    }
+    capture(3,4);
+    const source=[7,8,9];capture(...source);source[0]=20;
+    if(snapshots[0]!()!==5||snapshots[1]!()!==10)throw new Error('owned arguments snapshot');
+    interface Host{report?:(...values:unknown[])=>void;}
+    const hosts:Host[]=[{}];
+    hosts[0]!.report=function(...values:unknown[]):void {
+        const object=arguments;
+        snapshots.push(()=>object.length);
+        values[0]=false;
+    };
+    hosts[0]!.report?.(true,'word');
+    hosts[0]!.report?.(false);
+    if(snapshots[2]!()!==2||snapshots[3]!()!==1)throw new Error('stored arguments lifetime');
+    interface Item{value:number;}
+    function captureItem(...rest:unknown[]):void {
+        const first=arguments[0] as Item;
+        snapshots.push(()=>first.value);
+    }
+    const item={value:4};captureItem(item);item.value=9;
+    if(snapshots[4]!()!==9)throw new Error('argument object alias');
+    function outside(...rest:number[]):void {
+        function inside(...nested:number[]):void {snapshots.push(()=>Number(arguments[0]??0));}
+        inside(8);
+        snapshots.push(()=>Number(arguments[0]??0));
+    }
+    outside(6);
+    if(snapshots[5]!()!==8||snapshots[6]!()!==6)throw new Error('lexical arguments owner');
+    let prefixCalls=0;
+    function nextPrefix():number {prefixCalls++;return prefixCalls;}
+    function prefixed(first:number,...rest:number[]):void {
+        if(first!==arguments[0]||rest[0]!==arguments[1]||arguments.length!==2)
+            throw new Error('prefix and rest argument order');
+        snapshots.push(()=>Number(arguments[0]??0));
+    }
+    prefixed(nextPrefix(),nextPrefix());
+    if(prefixCalls!==2||snapshots[7]!()!==1)throw new Error('prefix evaluation once');
+`,
+);
+
+test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
+    for (const mutation of [
+        "arguments[0]=3;",
+        "arguments.length=0;",
+        "arguments.callee;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `function capture(...rest:number[]):void{${mutation}}capture(1);`,
+                ),
+            /arguments/i,
+        );
+    assert.throws(
+        () =>
+            compileSource(
+                `document.createElement("div");type Host=Window & {queue?:unknown[]};const host=window as Host;host.queue??=[];globalThis.close();`,
+            ),
+        /Window logical assignment requires a represented declared property type/,
+    );
+});
+
+check(
     "generic-async-results-and-hook-absence",
     `
     interface Gate { ready():boolean; run<T>(fn:()=>T|Promise<T>):Promise<T>; }

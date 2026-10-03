@@ -39,7 +39,7 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
   listed together; a sheet refusal names its rule's line.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
-- Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion.
+- Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion. Statement `??=`, `||=` and `&&=` evaluate the receiver once and the right operand lazily.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.

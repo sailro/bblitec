@@ -1167,6 +1167,7 @@ export class DataTypeRegistry {
                     element: this.markStoredObjectReferences(dataType.element),
                 };
             case "iterator":
+            case "arguments":
             case "set":
                 return {
                     ...dataType,
@@ -2067,6 +2068,11 @@ export class DataTypeRegistry {
             if (!element) return undefined;
             elements.push(markIdentityFunctions(element));
         }
+        return this.ownedArrayType(elements);
+    }
+
+    /** Concrete value lanes share the existing tuple union and object ownership rules. */
+    public ownedArrayType(elements: DataType[]): DataType<"vector"> {
         if (!elements.length)
             return { kind: "vector", element: { kind: "undefined" } };
         const storage = this.tupleStorage(elements);
@@ -2789,7 +2795,7 @@ export class DataTypeRegistry {
         return this.tupleStorage(complete);
     }
 
-    public tupleStorage(elements: DataType[]): DataType {
+    public tupleStorage(elements: DataType[]): DataType<"vector" | "tuple"> {
         if (
             elements.length > 0 &&
             elements.every(

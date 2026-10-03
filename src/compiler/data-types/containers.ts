@@ -6,6 +6,7 @@ export const containerKinds: DataKindOperations<
     | "optional"
     | "union"
     | "vector"
+    | "arguments"
     | "map"
     | "set"
     | "iterator"
@@ -86,6 +87,15 @@ export const containerKinds: DataKindOperations<
         equal: (left, right, equal) => equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
+        tracedEdges: "children",
+    },
+    arguments: {
+        cpp: (type, context) =>
+            `bbl::js::Arguments<${context.cppType(type.element)}>`,
+        key: (type, key) => `arguments(${key(type.element)})`,
+        equal: (left, right, equal) => equal(left.element, right.element),
+        children: (type) => [type.element],
+        byReference: false,
         tracedEdges: "children",
     },
     map: {

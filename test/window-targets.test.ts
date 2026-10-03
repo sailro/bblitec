@@ -82,6 +82,19 @@ test("Window targets retain document, extension and listener identity through st
         delete reporting.host.report;
         reporting.host.report?.(reportArgument());
         if(reportArguments!==1)throw new Error("deleted host rest callback");
+        type QueueHost=Window & {queue?:number[];enabled?:boolean};
+        let queueOwners=0,queueInitializers=0;
+        function queueHost():QueueHost {queueOwners++;return window as QueueHost;}
+        function queueValues():number[] {queueInitializers++;return [3];}
+        queueHost().queue??=queueValues();
+        queueHost().queue??=queueValues();
+        if(queueOwners!==2||queueInitializers!==1||(window as QueueHost).queue?.[0]!==3)
+            throw new Error("host logical assignment evaluation");
+        (window as QueueHost).enabled=false;
+        queueHost().enabled||=true;
+        queueHost().enabled&&=false;
+        if(queueOwners!==4||(window as QueueHost).enabled!==false)
+            throw new Error("host logical truthiness");
         delete hosts[0]!.state;
         if (read(hosts[0]!)!==0) throw new Error("host field deletion");
         const optionalHosts:Array<Host|null>=[null,hosts[0]!];

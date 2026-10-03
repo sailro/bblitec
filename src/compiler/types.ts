@@ -1981,6 +1981,8 @@ export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
 /** Field types for payloads; producers use the discriminated Value type. */
 export interface ValueFields {
+    /** Source producer retained by an owned implicit arguments object. */
+    argumentsProducer?: ts.SignatureDeclaration;
     /** Awaited void may hide a value erased by a source callback annotation. */
     erasedVoidCompletion?: true;
     /** Exact immutable packaged response bytes retained by a text result. */

@@ -1583,6 +1583,29 @@ template <typename T> struct MapGetResult<Ref<T>> {
     [[nodiscard]] static Type found(Ref<T>& value) { return value; }
 };
 
+/** An unmapped arguments object owns indexed values independently of the rest array. */
+template <typename T> class Arguments {
+public:
+    using Result = std::remove_cvref_t<typename MapGetResult<T>::Type>;
+    Arguments() = default;
+    explicit Arguments(const Array<T>& values) : values_(values.begin(), values.end()) {}
+    [[nodiscard]] double length() const { return static_cast<double>(values_.size()); }
+    [[nodiscard]] Result get(double index) const {
+        if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= length())
+            return Result{};
+        return Result(values_[static_cast<std::size_t>(index)]);
+    }
+    [[nodiscard]] bool operator==(const Arguments& other) const { return values_ == other.values_; }
+    [[nodiscard]] const void* identity() const { return values_.identity(); }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
+
+private:
+    Array<T> values_;
+};
+namespace gc {
+template <typename T> struct Traceable<Arguments<T>> : Traceable<T> {};
+} // namespace gc
+
 /** JavaScript arithmetic converts a missing numeric lookup to NaN. */
 [[nodiscard]] inline double number_from_optional(const Nullable<double>& value) {
     return value.has_value() ? *value : std::numeric_limits<double>::quiet_NaN();

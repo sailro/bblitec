@@ -288,6 +288,32 @@ export class WindowProperties {
         return true;
     }
 
+    assignLogical(expression: ts.BinaryExpression): boolean {
+        const target = this.target(expression.left);
+        if (!target) return false;
+        const field =
+            this.fields.get(target.node.name.text) ??
+            this.declaredField(target.node);
+        if (!field)
+            return this.context.fail(
+                expression.left,
+                "Window logical assignment requires a represented declared property type.",
+            );
+        const owner = this.snapshotTarget(target);
+        const slot = this.context.allocateTemporaryCppName("window_slot");
+        this.context.emit({
+            kind: "declaration",
+            type: "auto&",
+            name: slot,
+            initializer: `${field.functionCpp}(${owner})`,
+        });
+        this.context.dataLowerer.emitLogicalSlotAssignment(
+            expression,
+            this.context.dataLowerer.leafValue(slot, field.type),
+        );
+        return true;
+    }
+
     remove(expression: ts.DeleteExpression): boolean {
         const target = this.target(expression.expression);
         if (!target) return false;

@@ -10,6 +10,7 @@ import {
     someAnalysisNode,
     forEachAnalysisNode,
     findAnalysisNodeWithState,
+    findAnalysisNode,
 } from "./analysis-walk.js";
 import {
     EmissionSet,
@@ -1319,6 +1320,11 @@ function nullFallbackTryShape(
 }
 
 export class UserFunctionLowerer {
+    /** @unjournaled Immutable source references; independent of emitted bindings and replay. */
+    private readonly argumentsReferences = new WeakMap<
+        SupportedFunction,
+        ts.Identifier | null
+    >();
     private readonly invocations = new EmissionMap<
         SupportedFunction,
         {
@@ -4314,6 +4320,22 @@ export class UserFunctionLowerer {
         try {
             const compileBody = () =>
                 context.captureManagedClosureLines(() => {
+                    this.bindArgumentsObject(
+                        context,
+                        ir,
+                        () =>
+                            parameters.map(({ type, cppName }) => {
+                                context.registerNativeBindingType(
+                                    cppName,
+                                    context.dataTypes.cppType(type),
+                                );
+                                return context.dataLowerer.leafValue(
+                                    cppName,
+                                    type,
+                                );
+                            }),
+                        declaration,
+                    );
                     let runtimeIndex = 0;
                     for (const parameter of ir.parameters) {
                         if (
@@ -4729,11 +4751,14 @@ export class UserFunctionLowerer {
         arguments_: readonly Value[],
         callNode: ts.Node,
     ): void {
+        const values =
+            this.bindArgumentsObject(context, ir, arguments_, callNode) ??
+            arguments_;
         ir.parameters.forEach((parameter, index) => {
             const value = this.parameterValue(
                 context,
                 parameter,
-                arguments_[index],
+                values[index],
                 ts.isCallExpression(callNode)
                     ? callNode.arguments[index]
                     : undefined,
@@ -4745,6 +4770,137 @@ export class UserFunctionLowerer {
                 value,
             );
         });
+    }
+
+    private bindArgumentsObject(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        input: readonly Value[] | (() => readonly Value[]),
+        callNode: ts.Node,
+    ): readonly Value[] | undefined {
+        const declaration = ir.declaration;
+        if (ts.isArrowFunction(declaration) || !declaration.body) return;
+        let reference = this.argumentsReferences.get(declaration);
+        if (reference === undefined) {
+            reference =
+                findAnalysisNode(
+                    declaration.body,
+                    (node): node is ts.Identifier =>
+                        ts.isIdentifier(node) &&
+                        node.text === "arguments" &&
+                        !this.checker.getSymbolAtLocation(node)?.declarations
+                            ?.length,
+                    {
+                        types: "skip",
+                        memberNames: "skip",
+                        skip: (node) =>
+                            ts.isFunctionLike(node) &&
+                            !ts.isArrowFunction(node),
+                    },
+                ) ?? null;
+            this.argumentsReferences.set(declaration, reference);
+        }
+        if (!reference) return;
+        const arguments_ = typeof input === "function" ? input() : input;
+        const rest = restParameterIndex(declaration);
+        if (
+            rest === undefined ||
+            declaration.parameters.some(
+                (parameter) => parameter.initializer || parameter.questionToken,
+            )
+        )
+            return context.fail(
+                reference,
+                "Arguments objects require an unmapped rest-parameter function without optional or defaulted parameters.",
+            );
+        const trailing = arguments_[rest];
+        const lanes = [...arguments_.slice(0, rest)];
+        if (trailing?.kind === "tuple")
+            lanes.push(...(trailing.tupleElements ?? []));
+        const runtimeRest =
+            trailing?.dataType?.kind === "vector" ? trailing : undefined;
+        if (trailing && trailing.kind !== "tuple" && !runtimeRest)
+            return context.fail(
+                reference,
+                "Arguments objects require concrete owned argument lanes.",
+            );
+        const types = lanes.map(
+            (value, index) =>
+                value.dataType ??
+                (value.kind === "number" ||
+                value.kind === "boolean" ||
+                value.kind === "string"
+                    ? { kind: value.kind }
+                    : ts.isCallExpression(callNode) && callNode.arguments[index]
+                      ? context.dataTypes.fromStoredTsType(
+                            this.checker.getTypeAtLocation(
+                                callNode.arguments[index],
+                            ),
+                            callNode.arguments[index],
+                        )
+                      : undefined),
+        );
+        if (types.some((type) => !type))
+            return context.fail(
+                reference,
+                "Arguments objects require a represented type for every argument.",
+            );
+        const concrete = types.filter(
+            (type): type is DataType => type !== undefined,
+        );
+        if (runtimeRest?.dataType?.kind === "vector")
+            concrete.push(runtimeRest.dataType.element);
+        const arrayType = context.dataTypes.ownedArrayType(concrete);
+        const array =
+            runtimeRest && !lanes.length
+                ? runtimeRest.cpp
+                : context.allocateTemporaryCppName("arguments_values");
+        if (!runtimeRest || lanes.length) {
+            context.emit({
+                kind: "declaration",
+                type: context.dataTypes.cppType(arrayType),
+                name: array,
+                initializer: context.dataLowerer.compileKnownValueForSink(
+                    { kind: "tuple", cpp: "", tupleElements: lanes },
+                    arrayType,
+                    reference,
+                ),
+            });
+            context.registerNativeTemporary(array, arrayType);
+            if (runtimeRest?.dataType?.kind === "vector") {
+                const element =
+                    context.allocateTemporaryCppName("argument_value");
+                const value = context.dataLowerer.leafValue(
+                    element,
+                    runtimeRest.dataType.element,
+                );
+                context.emit(
+                    `for (const auto& ${element} : ${runtimeRest.cpp}) ${array}.push_back(${context.dataLowerer.compileKnownValueForSink(value, arrayType.element, reference)});`,
+                );
+            }
+        }
+        const type: DataType<"arguments"> = {
+            kind: "arguments",
+            element: arrayType.element,
+        };
+        const name = context.allocateTemporaryCppName("arguments_object");
+        context.reachJsData();
+        context.emit({
+            kind: "declaration",
+            type: context.dataTypes.cppType(type),
+            name,
+            initializer: `${context.dataTypes.cppType(type)}(${array})`,
+        });
+        context.registerNativeTemporary(name, type);
+        context.bindings.bindCompileTimeValue(reference, {
+            kind: "data",
+            cpp: name,
+            dataType: type,
+            argumentsProducer: declaration,
+        });
+        if (trailing?.kind === "tuple" && rest === 0)
+            return [context.dataLowerer.leafValue(array, arrayType)];
+        return undefined;
     }
 
     private lower(

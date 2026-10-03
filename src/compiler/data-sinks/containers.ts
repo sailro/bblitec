@@ -347,25 +347,37 @@ function valueProduct(
         : undefined;
 }
 
+const identityContainerSink = {
+    expression: (
+        type: DataType<"iterator" | "arguments">,
+        lowerer: DataSinkHost,
+        _expression: ts.Expression,
+        unwrapped: ts.Expression,
+    ) => lowerer.requireDataValue(unwrapped, type).cpp,
+    value: (
+        type: DataType<"iterator" | "arguments">,
+        _lowerer: DataSinkHost,
+        value: Value,
+    ) =>
+        value.dataType && dataTypesEqual(type, value.dataType)
+            ? value.cpp
+            : undefined,
+};
+
 export const containersSinks: DataSinkOperations<
     | "optional"
     | "vector"
     | "map"
     | "set"
     | "iterator"
+    | "arguments"
     | "span"
     | "tuple"
     | "product"
     | "table"
 > = {
-    iterator: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (type, _lowerer, value) =>
-            value.dataType && dataTypesEqual(type, value.dataType)
-                ? value.cpp
-                : undefined,
-    },
+    iterator: identityContainerSink,
+    arguments: identityContainerSink,
     product: {
         expression: (type, lowerer, _expression, unwrapped) =>
             lowerer.compileKnownValueForSink(

@@ -2303,6 +2303,12 @@ class Compiler implements LoweringServices {
         return this.ui.emitUiPropertyAssignment(expression);
     }
 
+    public emitWindowLogicalAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean {
+        return this.windowProperties.assignLogical(expression);
+    }
+
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
         this.asyncActivations.requirePendingActivationRealm(expression);

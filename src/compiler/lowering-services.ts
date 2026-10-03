@@ -166,6 +166,7 @@ export interface LoweringServices {
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
+    emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
     withOwnedCallbackBody<T>(body: () => T): T;

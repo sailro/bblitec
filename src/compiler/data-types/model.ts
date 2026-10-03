@@ -193,6 +193,10 @@ interface DataKinds {
         kind: "vector";
         element: DataType;
     };
+    arguments: {
+        kind: "arguments";
+        element: DataType;
+    };
     map: {
         kind: "map";
         /** Erased object identity, with concrete ownership proven at each key sink. */

@@ -787,7 +787,9 @@ export class DataLowerer {
         if (type.kind === "optional")
             return this.sharesObjectStorage(type.inner);
         return (
-            ["vector", "map", "set", "tuple", "product"].includes(type.kind) ||
+            ["vector", "map", "set", "tuple", "product", "arguments"].includes(
+                type.kind,
+            ) ||
             isTypedArrayType(type) ||
             (type.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(type.name))
@@ -1053,6 +1055,11 @@ export class DataLowerer {
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
                     : owner.dataType;
+            if (mode === "write" && ownerType?.kind === "arguments")
+                this.context.fail(
+                    unwrapped,
+                    "Arguments property mutation is not represented.",
+                );
             if (
                 mode === "write" &&
                 !throughReceiver &&
@@ -2968,6 +2975,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       dataType: { kind: "json" },
                   };
         }
+        if (dataType.kind === "arguments") {
+            if (property !== "length")
+                return this.context.fail(
+                    access,
+                    "Arguments objects support indexed reads and length.",
+                );
+            return this.leafValue(`${owner.cpp}.length()`, { kind: "number" });
+        }
         if (dataType.kind === "optional") {
             this.context.fail(
                 access,
@@ -3337,6 +3352,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const dataType = owner.dataType;
         if (!dataType) {
             return undefined;
+        }
+        if (dataType.kind === "arguments") {
+            if (mode === "write")
+                return this.context.fail(
+                    access,
+                    "Arguments indexed mutation is not represented.",
+                );
+            const retained = this.context.bindings.retainedValue(
+                owner,
+                "arguments_owner",
+            );
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            const result = this.context.dataTypes.nullableType(
+                dataType.element,
+                true,
+            );
+            return {
+                ...this.leafValue(
+                    `${retained.cpp}.get(${this.compileKnownValueForSink(index, { kind: "number" }, access.argumentExpression)})`,
+                    result,
+                ),
+                freshData: true,
+            };
         }
         if (mode === "write" && dataType.kind === "tuple") {
             this.invalidateStaticElements(owner);
@@ -9175,6 +9215,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       left,
                       ts.isIdentifier(left) ? "read" : "write",
                   );
+        this.emitLogicalSlotAssignment(expression, target);
+    }
+
+    /** A host-selected reference uses the same lazy store without evaluating its receiver again. */
+    public emitLogicalSlotAssignment(
+        expression: ts.BinaryExpression,
+        target: Value | undefined,
+    ): void {
+        const left = this.context.unwrap(expression.left);
         const scalarKind =
             target &&
             (target.kind === "number" ||
@@ -9220,7 +9269,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (nullish) {
             this.context.reachJsData();
         }
-        const guard = this.logicalAssignmentGuard(expression, `!${presence}`);
+        const truthy = nullish ? undefined : this.truthinessCondition(target);
+        if (!nullish && truthy === undefined)
+            this.context.fail(
+                expression.left,
+                "Logical assignment requires a truth-testable stored value.",
+            );
+        const guard = nullish
+            ? `!${presence}`
+            : expression.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandEqualsToken
+              ? truthy!
+              : `!(${truthy})`;
         this.emitGuardedStore(guard, () => {
             const value =
                 scalarKind === "number"
@@ -10841,6 +10901,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "dataview",
                     "bufferview",
                     "numberindex",
+                    "arguments",
                 ].includes(value.dataType.kind))
         ) {
             // JavaScript containers and typed arrays are objects and are
