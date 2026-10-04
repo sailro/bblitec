@@ -155,6 +155,15 @@ test("opaque calls do not prove parameter field writes or scalar rebinding", () 
         function possible(value: Options) { opaque(value); }
         function written(value: Options) { const alias = value; alias.enabled = true; }
         function copied(value: number) { scalar(value); }
+        function primitiveFields(value: { text: string; count: number; enabled: boolean }) {
+            return value.text.startsWith("a") && value.count.toFixed(1) !== "" && value.enabled.valueOf();
+        }
+        function customReceiver(value: { text: { startsWith(search: string): boolean } }) {
+            return value.text.startsWith("a");
+        }
+        function callbackWrite(value: { text: string }) {
+            return value.text.replace("a", () => { value.text = "changed"; return "b"; });
+        }
         `,
         "test/analysis-parameter-writes.ts",
     );
@@ -173,5 +182,8 @@ test("opaque calls do not prove parameter field writes or scalar rebinding", () 
         [false, false],
         [false, true],
         [true, false],
+        [true, false],
+        [false, true],
+        [false, true],
     ]);
 });

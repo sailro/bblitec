@@ -262,6 +262,19 @@ test("static string specialization evaluates argument effects once and preserves
         function chooseSearch(): string { replaced = "after"; return "a"; }
         const searchResult = replaced.replace(chooseSearch(), "x");
         if (searchResult !== "xba" || replaced !== "after") throw new Error("replacement argument snapshot");
+        const record = { text: "abc", count: 1.25 };
+        function describe(value: { text: string; count: number }): string {
+            return value.text.startsWith("a") ? value.count.toFixed(1) : "other";
+        }
+        const description = describe(record);
+        record.text = "later";
+        if (description !== "1.3" || describe(record) !== "other")
+            throw new Error("primitive receiver facts");
+        function replaceField(value: { text: string; count: number }): string {
+            return value.text.replace("l", () => { value.text = "changed"; return "L"; });
+        }
+        if (replaceField(record) !== "Later" || record.text !== "changed")
+            throw new Error("primitive receiver callback writes");
         }
         main();
     `);

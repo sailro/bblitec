@@ -339,6 +339,7 @@ function writesThroughRoot(
     isTarget: (expression: ts.Expression) => boolean,
     mutatesVia: (method: string) => boolean = (method) =>
         !readOnlyDataMethods.has(method),
+    checker?: ts.TypeChecker,
 ): boolean {
     if (isAssignmentExpression(node)) {
         return assignmentTargets(node.left).some(isTarget);
@@ -347,7 +348,14 @@ function writesThroughRoot(
         return isTarget(node.operand);
     }
     const target = mutatingCallTarget(node, mutatesVia);
-    return target !== undefined && isTarget(target);
+    // Calling a method on a primitive field cannot write through its owner.
+    // Argument and callback effects remain the enclosing analysis's concern.
+    return (
+        target !== undefined &&
+        (!checker ||
+            typeCanCarryReference(checker.getTypeAtLocation(target))) &&
+        isTarget(target)
+    );
 }
 
 /** `writesThroughRoot`, for a caller outside this module. */
@@ -534,7 +542,8 @@ export function parameterIsMutated(
                     const root = rootIdentifier(unwrapExpression(expression));
                     return root !== undefined && scan.namesAlias(root);
                 };
-                if (writesThroughRoot(node, rootNamesAlias)) return true;
+                if (writesThroughRoot(node, rootNamesAlias, undefined, checker))
+                    return true;
                 const retainedTarget = retainedNativeMutationTarget(
                     symbols,
                     node,
@@ -672,6 +681,7 @@ export function parameterIsReadOnly(
                 rootNamesParameter,
                 (method) =>
                     parameterCanAlias && !readOnlyDataMethods.has(method),
+                checker,
             )
         ) {
             return true;
@@ -841,7 +851,7 @@ function writesSharedBinding(
     active: Set<SupportedFunction>,
 ): boolean {
     const writes = someAnalysisNode(body, (node) => {
-        if (writesThroughRoot(node, isShared)) {
+        if (writesThroughRoot(node, isShared, undefined, checker)) {
             return true;
         }
         if (ts.isCallExpression(node)) {
