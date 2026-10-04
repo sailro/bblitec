@@ -12,6 +12,7 @@ import {
     withNativeMetadata,
 } from "./types.js";
 import { emitStringAppend } from "./expressions.js";
+import { BranchState } from "./branch-state.js";
 import {
     compileDataExpressionSink,
     compileDataValueSink,
@@ -55,7 +56,11 @@ import {
     browserFileDataProperty,
     browserFileElementRead,
 } from "./browser-file.js";
-import { errorValue, thrownMessage } from "./error-values.js";
+import {
+    errorValue,
+    thrownMessage,
+    refuseErrorReflection,
+} from "./error-values.js";
 import {
     renderClosure,
     type NativeCaptureBinding,
@@ -64,6 +69,7 @@ import { cppIdentifierPattern } from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { isObjectIdentityFunction } from "./static-evaluator.js";
 import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
@@ -98,7 +104,11 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { structOwnEntries } from "./object-statics.js";
+import {
+    deleteRecordProperty,
+    setRecordProperty,
+    structOwnEntries,
+} from "./object-statics.js";
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
@@ -217,6 +227,7 @@ export function isNeverResized(
 interface DataLoweringContext extends Pick<
     LoweringServices,
     | "moduleNamespaces"
+    | "recordProxies"
     | "options"
     | "expectArgumentCount"
     | "sourceFile"
@@ -254,6 +265,7 @@ interface DataLoweringContext extends Pick<
     | "emit"
     | "probeEmission"
     | "captureEmittedLines"
+    | "captureNativeDependencies"
     | "captureEmittedStatements"
     | "emitCapturedStatements"
     | "allocateTemporaryCppName"
@@ -359,13 +371,16 @@ export class DataLowerer {
         ts.ObjectLiteralExpression,
         string[]
     >();
-    private readonly ownership = new EmissionMap<string, LocalOwnership>();
+    private readonly ownership = new BranchState<LocalOwnership>();
 
     public constructor(public readonly context: DataLoweringContext) {}
 
     public compileAssignmentValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
+        const deferred =
+            this.context.deferredCapabilities.assignment(expression);
+        if (deferred) return deferred;
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             return undefined;
         }
@@ -523,6 +538,18 @@ export class DataLowerer {
                 "Stored generic callbacks require a source call with concrete type arguments.",
             );
         this.context.useNativeValue(callback);
+        const argumentsCpp = this.functionValueArguments(type, values, node);
+        const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
+        return type.result
+            ? { ...this.leafValue(cpp, type.result), impure: true }
+            : { kind: "void", cpp };
+    }
+
+    private functionValueArguments(
+        type: DataType<"function">,
+        values: readonly Value[],
+        node: ts.Node,
+    ): string[] {
         const erased = new Set(type.erasedParameters ?? []);
         const argumentsCpp: string[] = [];
         let runtimeIndex = 0;
@@ -570,10 +597,106 @@ export class DataLowerer {
                     : this.context.dataTypes.absentValue(parameter),
             );
         }
-        const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
-        return type.result
-            ? { ...this.leafValue(cpp, type.result), impure: true }
-            : { kind: "void", cpp };
+        return argumentsCpp;
+    }
+
+    /** Apply snapshots its array after the callee and thisArg have been evaluated. */
+    private appliedFunctionArguments(
+        call: ts.CallExpression,
+        type: DataType<"function">,
+    ): string[] {
+        this.context.expectArgumentCount(call, 0, 2);
+        if (call.arguments[0])
+            this.context.emitDiscardedValue(
+                this.context.compileValue(call.arguments[0]),
+            );
+        const argument = call.arguments[1];
+        if (!argument) return this.functionValueArguments(type, [], call);
+        const value = this.context.compileValue(argument);
+        if (value.kind === "json-null") {
+            this.context.emitDiscardedValue(value);
+            return this.functionValueArguments(type, [], call);
+        }
+        if (value.kind === "tuple")
+            return this.functionValueArguments(
+                type,
+                (value.tupleElements ?? []).map((lane) =>
+                    pinOperand(this.context, lane, argument, "apply_argument"),
+                ),
+                call,
+            );
+        const storage = value.dataType ?? this.dataTypeAt(argument);
+        if (
+            storage?.kind !== "tuple" &&
+            storage?.kind !== "product" &&
+            storage?.kind !== "vector"
+        )
+            this.context.fail(
+                argument,
+                "Function.apply requires an owned tuple or array argument list.",
+            );
+        const source = this.context.allocateTemporaryCppName("apply_arguments");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: source,
+            initializer: this.compileKnownValueForSink(
+                value,
+                storage,
+                argument,
+            ),
+        });
+        const owner = this.leafValue(source, storage);
+        if (storage.kind === "vector") {
+            if (type.erasedParameters?.length)
+                this.context.fail(
+                    argument,
+                    "Function.apply with an array requires represented parameter lanes.",
+                );
+            return type.parameters.map((parameter, index) => {
+                if (index === type.restParameter)
+                    return this.compileKnownValueForSink(
+                        this.arrayRestValue(owner, index, argument),
+                        parameter,
+                        argument,
+                    );
+                const optional =
+                    parameter.kind === "optional" ||
+                    type.optionalParameters?.includes(index);
+                if (!optional)
+                    this.context.emit(
+                        `if (${source}.size() <= ${index}) throw std::runtime_error("Function.apply is missing a required represented argument.");`,
+                    );
+                const selected = optional
+                    ? this.guardableElementRead(
+                          owner,
+                          ts.factory.createElementAccessExpression(
+                              argument,
+                              ts.factory.createNumericLiteral(index),
+                          ),
+                      )
+                    : this.leafValue(`${source}[${index}]`, storage.element);
+                if (!selected)
+                    this.context.fail(
+                        argument,
+                        "Function.apply requires a represented optional array lane.",
+                    );
+                return this.compileKnownValueForSink(
+                    selected,
+                    parameter,
+                    argument,
+                );
+            });
+        }
+        const count =
+            storage.kind === "tuple" ? storage.arity : storage.elements.length;
+        return this.functionValueArguments(
+            type,
+            Array.from({ length: count }, (_, index) =>
+                this.fixedTupleElement(owner, index, argument)!,
+            ),
+            call,
+        );
     }
 
     /** Arguments for a stored std::function, including omitted TS optionals. */
@@ -581,8 +704,10 @@ export class DataLowerer {
         call: ts.CallExpression,
         functionType: DataType & { kind: "function" },
         label = "Stored function",
-        argumentOffset = 0,
+        argumentOffset: number | "apply" = 0,
     ): string[] {
+        if (argumentOffset === "apply")
+            return this.appliedFunctionArguments(call, functionType);
         for (const argument of call.arguments.slice(0, argumentOffset))
             this.context.emitDiscardedValue(
                 this.context.compileValue(argument),
@@ -760,15 +885,9 @@ export class DataLowerer {
         }
     }
 
-    /** Captures alias states so a terminating branch can roll back. */
-    public snapshotAliasState(): Map<string, string> {
-        return new Map(this.ownership);
-    }
-
-    public restoreAliasState(snapshot: Map<string, string>): void {
-        for (const [name, state] of snapshot) {
-            this.ownership.set(name, state as LocalOwnership);
-        }
+    /** Restore only the alias states changed by a terminating branch. */
+    public withPreservedAliasState(work: () => void): void {
+        this.ownership.withRestoredChanges(work);
     }
 
     private rootName(cpp: string): string {
@@ -777,6 +896,7 @@ export class DataLowerer {
     }
 
     public markEscaped(value: Value): void {
+        this.invalidateRecordArrayFacts(value);
         if (value.kind !== "data" || this.sharesObjectStorage(value.dataType)) {
             return;
         }
@@ -971,6 +1091,12 @@ export class DataLowerer {
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
+            const instance = this.context.compileValue(unwrapped.expression);
+            if (
+                instance.dataType?.kind === "struct" &&
+                !this.context.dataTypes.isClassStruct(instance.dataType.name)
+            )
+                return this.propertyRead(instance, unwrapped);
             // A class field resolves to the local it was bound to, so
             // container methods and alias tracking see the same
             // storage a field read outside the method sees.
@@ -1055,6 +1181,12 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            if (owner.dataType?.kind === "error")
+                owner =
+                    this.context.classLowerer.errorView(
+                        owner,
+                        unwrapped.expression,
+                    ) ?? owner;
             const ownerType =
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
@@ -1115,7 +1247,9 @@ export class DataLowerer {
                     kind: "declaration",
                     type: "const auto",
                     name: temporary,
-                    initializer: owner.cpp,
+                    initializer: presenceFlagCpp(owner)
+                        ? `(${presenceFlagCpp(owner)} ? ${owner.cpp} : ${this.context.dataTypes.cppType(owner.dataType)}{})`
+                        : owner.cpp,
                     attributes: "[[maybe_unused]] ",
                 });
                 owner = withNativeMetadata(
@@ -1141,6 +1275,8 @@ export class DataLowerer {
                     unwrapped,
                     `Accessor property '${unwrapped.name.text}' takes a plain assignment through its setter.`,
                 );
+            if (mode === "write" && owner.staticElementsOwner)
+                this.invalidateStaticElements(owner);
             // A call can yield an intrinsic record or engine handle rather
             // than native data. Its owner has already been evaluated, so
             // continue through the shared property reader before declining
@@ -1179,7 +1315,7 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
-            if (unwrapped.questionDotToken) {
+            if (ts.isOptionalChain(unwrapped)) {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
             }
@@ -1499,9 +1635,9 @@ export class DataLowerer {
                       return { ...owner, cpp: temporary };
                   })();
             present = optionalPresentCpp(selected.cpp);
-            presentOwner = withNativeMetadata(
-                this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
-                plainOwner,
+            presentOwner = this.presentOptionalValue(
+                { ...plainOwner, cpp: selected.cpp },
+                owner.dataType.inner,
             );
         } else if (ownerFound !== undefined) {
             if (
@@ -1697,7 +1833,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const resultType: DataType =
             selectedType.kind === "optional"
                 ? selectedType
-                : checkerType?.kind === "optional"
+                : checkerType?.kind === "optional" &&
+                    !(
+                        selectedType.kind === "vector" &&
+                        checkerType.inner.kind === "span"
+                    )
                   ? checkerType
                   : nullableType;
         const selectedCpp =
@@ -2281,16 +2421,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     private presentOptionalValue(value: Value, inner: DataType): Value {
-        const present = withNativeMetadata(
-            this.leafValue(optionalValueCpp(value.cpp), inner),
+        return this.projectedNativeValue(
             value,
+            optionalValueCpp(value.cpp),
+            inner,
         );
+    }
+
+    /** A narrowed payload owns a snapshot of that payload, not its carrier. */
+    private projectedNativeValue(
+        value: Value,
+        cpp: string,
+        type: DataType,
+    ): Value {
+        const present = withNativeMetadata(this.leafValue(cpp, type), value);
         writable(present).nativeLvalue = true;
         if (cppIdentifierPattern.test(value.cpp))
             writable(present).stableOwnerCpp = value.cpp;
         if (value.ownedCpp !== undefined) {
-            writable(present).ownedCpp =
-                `bbl::js::snapshot_value(*(${value.cpp}))`;
+            writable(present).ownedCpp = `bbl::js::snapshot_value(${cpp})`;
         } else {
             delete writable(present).ownedCpp;
         }
@@ -2323,12 +2472,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return index < 0
                 ? value
-                : withNativeMetadata(
-                      this.leafValue(
-                          `std::get<${index}>(${value.cpp})`,
-                          value.dataType.members[index]!,
-                      ),
+                : this.projectedNativeValue(
                       value,
+                      `std::get<${index}>(${value.cpp})`,
+                      value.dataType.members[index]!,
                   );
         }
         if (value.kind !== "data" || value.dataType?.kind !== "optional") {
@@ -3033,7 +3180,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 writable(value).preserveUncheckedLookup = true;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
-                field.readOnly
+                field.readOnly ||
+                (owner.recordProperties !== undefined &&
+                    owner.staticElementIndex !== undefined &&
+                    owner.staticElementsOwner?.staticElements?.[
+                        owner.staticElementIndex
+                    ]?.recordProperties === owner.recordProperties)
                     ? owner.recordProperties?.[property]
                     : undefined;
             if (staticField?.staticNumber !== undefined) {
@@ -3087,7 +3239,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner.cpp,
                 this.context.cppString(property),
                 dataType.value,
-                this.context.dataTypes.nullableType(dataType.value),
             );
         }
         if (
@@ -3238,6 +3389,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** Rest binding creates fresh array storage, retaining the identity of its elements. */
     public arrayRestValue(value: Value, index: number, node: ts.Node): Value {
+        this.invalidateRecordArrayFacts(value);
         const sourceType = value.dataType;
         let type: DataType;
         let initializer: string;
@@ -3997,6 +4149,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (owner.runtimeElementTemplate
                         ? [owner.runtimeElementTemplate]
                         : undefined);
+                const snapshotOwner = owner.staticElementsOwner ?? owner;
+                const recordFacts = snapshotOwner.staticElements;
+                if (
+                    dataType.element.kind === "struct" &&
+                    recordFacts?.[0]?.staticElementIndex === 0 &&
+                    recordFacts?.[0]?.staticElementsOwner === snapshotOwner
+                ) {
+                    writable(value).staticElementsOwner = snapshotOwner;
+                    const fixed =
+                        preparedIndex?.staticNumber ??
+                        staticNumberValue(
+                            this.context,
+                            access.argumentExpression,
+                        );
+                    const facts =
+                        fixed !== undefined && Number.isInteger(fixed)
+                            ? recordFacts[fixed]?.recordProperties
+                            : undefined;
+                    if (facts && fixed !== undefined) {
+                        writable(value).recordProperties = facts;
+                        writable(value).staticElementIndex = fixed;
+                    }
+                    if (mode === "write") this.invalidateStaticElements(value);
+                }
                 return mode === "read" &&
                     value.kind === "material" &&
                     candidates?.length
@@ -4518,13 +4694,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
     ): Value | undefined {
-        const owner = this.compileDataPath(access.expression, "read");
-        return owner
-            ? this.guardableElementRead(
-                  this.narrowOptional(owner, access.expression),
-                  access,
-              )
-            : undefined;
+        if (ts.isOptionalChain(access)) return undefined;
+        // Resolving a computed owner can emit code. A declined guard must
+        // discard that work before the ordinary element reader evaluates it.
+        return this.context.probeEmission(() => {
+            let owner = this.compileDataPath(access.expression, "read");
+            if (!owner) {
+                if (this.namesHandleCollection(access.expression))
+                    return undefined;
+                const declared = this.dataTypeAt(access.expression);
+                const type =
+                    declared?.kind === "optional" ? declared.inner : declared;
+                if (type?.kind !== "vector" && type?.kind !== "span")
+                    return undefined;
+                owner = this.context.compileValue(access.expression);
+            }
+            return this.guardableElementRead(
+                this.narrowOptional(owner, access.expression),
+                access,
+            );
+        });
     }
 
     /**
@@ -4537,6 +4726,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         index: number,
         node: ts.Node,
     ): Value {
+        this.invalidateRecordArrayFacts(vector);
         if (vector.kind !== "data" || vector.dataType?.kind !== "vector") {
             this.context.fail(
                 node,
@@ -4572,7 +4762,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
-        const element = owner.dataType.element;
+        const ownerType = owner.dataType;
+        const element = ownerType.element;
+        if (
+            element.kind !== "optional" &&
+            ![
+                "event-target",
+                "struct",
+                "date",
+                "date-time-format",
+                "storage",
+                "vector",
+                "tuple",
+                "product",
+                "map",
+                "set",
+                "arraybuffer",
+                "dataview",
+                "bufferview",
+                "numberindex",
+                "function",
+                "handle",
+                "number",
+                "boolean",
+                "string",
+                "enum",
+            ].includes(element.kind) &&
+            !isTypedArrayType(element)
+        ) {
+            return undefined;
+        }
+        this.invalidateRecordArrayFacts(owner);
+        // Array presence and element reads share this receiver. Retain it
+        // before the index, which may run code or replace the source binding.
+        owner = this.context.bindings.pinValueToTemporary(
+            owner,
+            "element_owner",
+            access.expression,
+        );
+        const ownerCaptures = this.context.captureNativeDependencies(() =>
+            this.context.useNativeValue(owner),
+        ).nativeCaptures;
         // An array whose element type is already nullable has a native value
         // for JavaScript's out-of-range `undefined`: the empty optional. Read
         // it through the defaulting accessor and let the ordinary optional
@@ -4613,35 +4843,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       }
                     : {}),
                 nativeCaptures: [
-                    ...(owner.nativeCaptures ?? []),
+                    ...ownerCaptures,
                     this.context.registerNativeBinding(indexTemporary),
                 ],
             };
-        }
-        if (
-            ![
-                "event-target",
-                "struct",
-                "date",
-                "date-time-format",
-                "storage",
-                "vector",
-                "map",
-                "set",
-                "arraybuffer",
-                "dataview",
-                "bufferview",
-                "numberindex",
-                "function",
-                "handle",
-                "number",
-                "boolean",
-                "string",
-                "enum",
-            ].includes(element.kind) &&
-            !isTypedArrayType(element)
-        ) {
-            return undefined;
         }
         const index = this.context.compileNumber(
             access.argumentExpression,
@@ -4663,7 +4868,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const indexed = `bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`;
         const found = `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`;
         const captures = [
-            ...(owner.nativeCaptures ?? []),
+            ...ownerCaptures,
             this.context.registerNativeBinding(indexTemporary),
         ];
         const leaf = this.leafValue(indexed, element);
@@ -4686,17 +4891,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 element.kind === "boolean" ||
                 element.kind === "string" ||
                 element.kind === "enum") &&
-            !this.indexProvenInBounds(owner, access, owner.dataType);
+            !this.indexProvenInBounds(owner, access, ownerType);
         return {
             ...leaf,
             nativeCaptures: captures,
             nativeCompanionCaptures: {
                 optionalFoundCpp: captures,
-                truthinessCpp: captures,
+                ...(truthiness !== present ? { truthinessCpp: captures } : {}),
                 ...(mayMiss ? { slotFoundCpp: captures } : {}),
             },
             optionalFoundCpp: present,
-            truthinessCpp: truthiness,
+            // Object truthiness is its presence. Keep only the presence
+            // metadata so a declaration's pinned bit remains authoritative.
+            ...(truthiness !== present ? { truthinessCpp: truthiness } : {}),
             ...(mayMiss ? { slotFoundCpp: found } : {}),
         };
     }
@@ -4716,11 +4923,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
-    private mapPropertyValue(
+    public mapPropertyValue(
         owner: string,
         key: string,
         type: DataType,
-        lookupType = this.context.dataTypes.nullableType(type),
+        preserveUncheckedLookup = true,
     ): Value {
         this.context.reachJsData();
         const lookup = `${owner}.get(${key})`;
@@ -4729,10 +4936,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return this.leafValue(`bbl::js::json_value(${lookup})`, type);
         }
         return {
-            ...this.leafValue(lookup, lookupType),
+            ...this.leafValue(
+                lookup,
+                this.context.dataTypes.nullableType(type),
+            ),
             ownedCpp: `${owner}.get_owned(${key})`,
             nativeLvalue: true,
-            preserveUncheckedLookup: true,
+            ...(preserveUncheckedLookup
+                ? { preserveUncheckedLookup: true as const }
+                : {}),
         };
     }
 
@@ -4988,11 +5200,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const scalarElements = ["number", "boolean", "string", "enum"].includes(
             element.kind,
         );
-        if (!scalarElements && bound) {
+        if (!scalarElements) {
             // Prove constant storage before requesting lexical replay. A
             // resource view can have a nominal data type without retaining
             // the native identity and metadata its specialized reads need.
             if (
+                bound &&
                 !bound.tupleElements!.every((entry) =>
                     this.knownValueFitsSink(entry, element, unwrapped, true),
                 )
@@ -5010,7 +5223,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 declaration.initializer
             )
                 throw new DynamicBindingStorageRequired(declaration, "array");
-            return this.materializeKnownTuple(unwrapped, bound);
+            if (bound) return this.materializeKnownTuple(unwrapped, bound);
         }
         const elements = this.context.probeEmission(
             () => {
@@ -5034,11 +5247,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     )
                 )
                     return undefined;
-                return entries.map((entry) =>
+                return entries.map((entry, index) =>
                     this.compileKnownValueForSink(
                         this.constantInitializerValue(entry),
                         element,
-                        unwrapped,
+                        literal?.elements[index] ?? unwrapped,
                     ),
                 );
             },
@@ -5287,7 +5500,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ];
                 const value = storedMapper
                     ? this.compileFunctionValueCall(storedMapper, args, call)
-                    : context.compileCallbackWithValues(mapper, args, call);
+                    : context.compileCallbackWithValues(
+                          mapper,
+                          args,
+                          call,
+                          false,
+                          { resultType: type.element },
+                      );
                 context.emit({
                     kind: "expression",
                     code: `${result}.push_back(${this.compileKnownValueForSink(value, type.element, call)});`,
@@ -5388,6 +5607,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             const source = this.context.compileValue(argumentAt(call, 0));
+            this.invalidateRecordArrayFacts(source);
             if (
                 source.kind !== "data" ||
                 (source.dataType?.kind !== "vector" &&
@@ -5956,6 +6176,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
+        const identity = isObjectIdentityFunction(callback, (expression) =>
+            this.context.libraryGlobal(expression),
+        );
         const local =
             ts.isIdentifier(callback) ||
             ts.isArrowFunction(callback) ||
@@ -5986,8 +6209,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             sourceType &&
                 `${!receiverPolicy.snapshotIdentity && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
-        const storedCallback = this.prepareCallbackValue(callback, label);
-        if (!local && !storedCallback)
+        const storedCallback = identity
+            ? undefined
+            : this.prepareCallbackValue(callback, label);
+        if (!local && !storedCallback && !identity)
             this.context.fail(
                 callback,
                 `Array.${method} requires a represented callback.`,
@@ -6069,48 +6294,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ].includes(method);
                 const predicate =
                     predicateMethod && !this.callbackReturnsBoolean(callback);
-                let result = storedCallback
-                    ? this.compileFunctionValueCall(
-                          storedCallback,
-                          callbackArguments,
-                          call,
-                      )
-                    : booleanConstructor
-                      ? dataType.element.kind === "boolean"
-                          ? {
-                                kind: "boolean" as const,
-                                cpp: elementValue.cpp,
-                                dataType: { kind: "boolean" as const },
-                            }
-                          : dataType.element.kind === "number"
-                            ? (this.context.reachJsData(),
-                              {
+                let result = identity
+                    ? callbackValue
+                    : storedCallback
+                      ? this.compileFunctionValueCall(
+                            storedCallback,
+                            callbackArguments,
+                            call,
+                        )
+                      : booleanConstructor
+                        ? dataType.element.kind === "boolean"
+                            ? {
                                   kind: "boolean" as const,
-                                  cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
+                                  cpp: elementValue.cpp,
                                   dataType: { kind: "boolean" as const },
-                              })
-                            : dataType.element.kind === "string"
-                              ? {
+                              }
+                            : dataType.element.kind === "number"
+                              ? (this.context.reachJsData(),
+                                {
                                     kind: "boolean" as const,
-                                    cpp: `!(${elementValue.cpp}).empty()`,
+                                    cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
                                     dataType: { kind: "boolean" as const },
-                                }
-                              : this.context.fail(
-                                    callback,
-                                    `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
-                                )
-                      : predicate
-                        ? this.context.compilePredicateWithValues(
-                              local!,
-                              callbackArguments,
-                              call,
-                          )
-                        : this.context.compileCallbackWithValues(
-                              local!,
-                              callbackArguments,
-                              call,
-                              method === "forEach",
-                          );
+                                })
+                              : dataType.element.kind === "string"
+                                ? {
+                                      kind: "boolean" as const,
+                                      cpp: `!(${elementValue.cpp}).empty()`,
+                                      dataType: { kind: "boolean" as const },
+                                  }
+                                : this.context.fail(
+                                      callback,
+                                      `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
+                                  )
+                        : predicate
+                          ? this.context.compilePredicateWithValues(
+                                local!,
+                                callbackArguments,
+                                call,
+                            )
+                          : this.context.compileCallbackWithValues(
+                                local!,
+                                callbackArguments,
+                                call,
+                                method === "forEach",
+                            );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
                         kind: "boolean",
@@ -6149,6 +6376,91 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /** Keep scalar facts on views of the native elements, never on copied records. */
+    public retainArrayLiteralFacts(
+        owner: Value,
+        initializer: Value,
+        node: ts.Node,
+    ): void {
+        const type = owner.dataType;
+        if (
+            type?.kind !== "vector" ||
+            type.element.kind !== "struct" ||
+            initializer.kind !== "tuple" ||
+            !initializer.tupleElements
+        )
+            return;
+        const fields = this.context.dataTypes.structFields(
+            type.element.name,
+            node,
+            "accessors",
+        );
+        if (
+            fields.some(
+                (field) =>
+                    field.accessor ||
+                    field.optionalProperty ||
+                    !["number", "boolean", "string"].includes(field.type.kind),
+            )
+        )
+            return;
+        if (
+            !initializer.tupleElements.every(
+                (element) =>
+                    element.kind === "record" &&
+                    element.recordProperties &&
+                    Object.keys(element.recordGetters ?? {}).length === 0 &&
+                    Object.keys(element.recordSetters ?? {}).length === 0 &&
+                    Object.keys(element.recordMethods ?? {}).length === 0 &&
+                    fields.every(
+                        (field) =>
+                            element.recordProperties?.[field.sourceName] !==
+                            undefined,
+                    ),
+            )
+        )
+            return;
+        const captures = this.context.captureNativeDependencies(() =>
+            this.context.useNativeValue(owner),
+        );
+        const elementType = type.element;
+        const reference = this.context.dataTypes.isReferenceStruct(
+            elementType.name,
+        );
+        writable(owner).staticElements = initializer.tupleElements.map(
+            (element, index) => {
+                const cpp = `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`;
+                const recordProperties: Record<string, Value> = {};
+                for (const field of fields) {
+                    const source = element.recordProperties![field.sourceName]!;
+                    recordProperties[field.sourceName] = {
+                        ...this.leafValue(
+                            `${cpp}${reference ? "->" : "."}${field.name}`,
+                            field.type,
+                        ),
+                        nativeCaptures: captures.nativeCaptures,
+                        ...(source.staticNumber !== undefined
+                            ? { staticNumber: source.staticNumber }
+                            : {}),
+                        ...(source.staticString !== undefined
+                            ? { staticString: source.staticString }
+                            : {}),
+                        ...(source.staticBoolean !== undefined
+                            ? { staticBoolean: source.staticBoolean }
+                            : {}),
+                    };
+                }
+                const value = this.leafValue(cpp, elementType);
+                writable(value).nativeCaptures = captures.nativeCaptures;
+                writable(value).optionalFoundCpp = "true";
+                writable(value).staticElementsOwner = owner;
+                writable(value).staticElementIndex = index;
+                writable(value).recordProperties = recordProperties;
+                return value;
+            },
+        );
+    }
+
     /** Clear a complete element snapshot through every compiler alias. */
     public invalidateStaticElements(
         value: Value,
@@ -6171,6 +6483,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         this.invalidateStaticElements(value);
     }
 
+    /** Runtime iteration or storage may retain any of the linked mutable records. */
+    public invalidateRecordArrayFacts(value: Value): void {
+        const owner =
+            value.staticElementsOwner ??
+            value.staticElements?.[0]?.staticElementsOwner;
+        if (
+            owner &&
+            owner.staticElements?.[0]?.staticElementIndex === 0 &&
+            owner.staticElements[0].staticElementsOwner === owner
+        )
+            this.invalidateEscapingCollection(owner);
+    }
+
     /**
      * Compiles data-container method calls (`push`, `pop`, `fill`) and the
      * `new Array(n).fill(v)` chain. The dispatcher itself lives in
@@ -6190,13 +6515,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callable: string,
         functionType: DataType<"function">,
         receiver?: string,
-        argumentOffset = 0,
+        argumentOffset: number | "apply" = 0,
     ): Value {
         if (functionType.generic) {
             if (argumentOffset !== 0)
                 this.context.fail(
                     call,
-                    "Stored generic Function.call requires a concrete signature.",
+                    "Stored generic Function.call/apply requires a concrete signature.",
                 );
             const field = this.context.dataTypes.genericFunctionCall(
                 functionType.generic,
@@ -6249,7 +6574,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callable: string,
         functionType: DataType<"function">,
         receiver?: string,
-        argumentOffset = 0,
+        argumentOffset: number | "apply" = 0,
     ): Value {
         // A called helper can clear the slot without invalidating TypeScript's
         // property narrowing. Optional invocation still observes that absence.
@@ -6271,7 +6596,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 name: callback,
                 initializer: `bbl::js::snapshot_callback(${callable})`,
             });
-            if (call.questionDotToken)
+            if (
+                call.questionDotToken ||
+                (argumentOffset !== 0 &&
+                    ts.isPropertyAccessExpression(call.expression) &&
+                    call.expression.questionDotToken)
+            )
                 this.context.emit(`if (!${callback}) ${missing}`);
             this.context.enterRuntimeControlFlow();
             try {
@@ -6673,16 +7003,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const iterable = this.context.unwrap(arguments_[0]!);
         if (ts.isArrayLiteralExpression(iterable)) {
-            const values = iterable.elements.map((element) =>
-                this.compileForRetainedSink(
-                    element,
-                    dataType.element,
-                    "Set constructor",
-                ),
-            );
+            const values = this.compileVectorSink(iterable, {
+                kind: "vector",
+                element: dataType.element,
+            });
             return {
                 kind: "data",
-                cpp: `${cppType}{${values.join(", ")}}`,
+                cpp: `${cppType}(${values})`,
                 dataType,
             };
         }
@@ -7392,6 +7719,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (value.cameraVector)
             this.context.admissions.noteCameraVectorCopy(value, node);
         this.context.useNativeValue(value);
+        this.invalidateRecordArrayFacts(value);
         // A stored tuple aliases its source. Once that alias leaves the local
         // binding graph, generation cannot retain a snapshot of its contents.
         if (value.dataType?.kind === "tuple")
@@ -7446,12 +7774,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             );
             if (member >= 0)
-                value = withNativeMetadata(
-                    this.leafValue(
-                        `std::get<${member}>(${value.cpp})`,
-                        value.dataType.members[member]!,
-                    ),
+                value = this.projectedNativeValue(
                     value,
+                    `std::get<${member}>(${value.cpp})`,
+                    value.dataType.members[member]!,
                 );
         }
         // A parsed array reaching a fixed or growable numeric sink is the
@@ -7542,19 +7868,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.compileDataPath(expression, "read") ??
             this.materializeStaticTable(expression) ??
             this.context.compileValue(expression);
-        const value =
-            dataType.kind !== "optional" &&
-            rawValue.kind === "data" &&
-            rawValue.dataType?.kind === "optional" &&
-            dataTypesEqual(rawValue.dataType.inner, dataType)
-                ? withNativeMetadata(
-                      this.leafValue(
-                          `(*${rawValue.cpp})`,
-                          rawValue.dataType.inner,
-                      ),
-                      rawValue,
-                  )
-                : rawValue;
+        const value = this.narrowOptional(rawValue, expression);
+        this.invalidateRecordArrayFacts(value);
         if (isJsonValue(value))
             return this.compileKnownValueForSink(value, dataType, expression);
         if (value.dataType?.kind === "tuple")
@@ -7620,8 +7935,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `[&]() { auto&& ${source} = ${value.cpp}; ` +
                 `${destinationCpp} ${result}; ` +
                 `${result}.reserve(${source}.size()); ` +
-                `for (const auto& ${item} : ${source}) ` +
-                `${result}.push_back(${projected}); ` +
+                `for (const auto& ${item} : ${source}) { ` +
+                `${result}.push_back(${projected}); } ` +
                 `return ${result}; }()`
             );
         }
@@ -7786,7 +8101,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "map" },
     ): string {
-        if (literal.properties.some(ts.isSpreadAssignment)) {
+        if (
+            literal.properties.some(
+                (property) =>
+                    ts.isSpreadAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property) ||
+                    (property.name && ts.isComputedPropertyName(property.name)),
+            )
+        ) {
             const result =
                 this.context.allocateTemporaryCppName("record_spread");
             this.context.reachJsData();
@@ -8091,11 +8413,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         `Method '${field.sourceName}' requires a stored function field.`,
                     );
                 }
-                return this.context.compileStoredDataFunction(
+                this.context.recordProxies.requireIndependentFunction(
+                    field,
+                    initializer,
+                );
+                const callback = this.context.compileStoredDataFunction(
                     initializer,
                     field.type,
                 );
+                return this.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    callback,
+                );
             }
+            if (
+                ts.isArrowFunction(initializer) ||
+                ts.isFunctionExpression(initializer) ||
+                ts.isIdentifier(initializer)
+            )
+                this.context.recordProxies.requireIndependentFunction(
+                    field,
+                    initializer,
+                );
             return this.context.dataTypes.structFieldInitializerCpp(
                 field,
                 this.compileForSink(initializer, field.type),
@@ -8245,7 +8584,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         const targetField = targetFields.get(
                             sourceField.sourceName,
                         );
-                        if (!targetField) continue;
+                        if (!targetField)
+                            this.context.fail(
+                                property,
+                                `Spread property '${sourceField.sourceName}' cannot be retained in the narrower '${dataType.name}' storage.`,
+                            );
                         const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
                         if (sourceField.type.kind === "optional") {
                             this.context.emit({
@@ -8538,18 +8881,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.fail(
                         target.argumentExpression,
                         "Deleting a compile-time record property requires a static key.",
+                        "static-value-required",
                     );
                 }
                 if (this.context.isInRuntimeControlFlow()) {
                     this.context.fail(
                         expression,
                         "A compile-time record cannot be edited from runtime control flow.",
+                        "static-value-required",
                     );
                 }
-                if (recordOwner.recordProperties)
-                    delete writable(recordOwner.recordProperties)[
-                        key.staticString
-                    ];
+                deleteRecordProperty(recordOwner, key.staticString);
                 return;
             }
             const owner = this.compileDataPath(target.expression, "read");
@@ -8586,12 +8928,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.fail(
                         expression,
                         "A compile-time record cannot be edited from runtime control flow.",
+                        "static-value-required",
                     );
                 }
-                if (recordOwner.recordProperties)
-                    delete writable(recordOwner.recordProperties)[
-                        target.name.text
-                    ];
+                deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
             const field = this.compileDataPath(target, "write");
@@ -8712,6 +9052,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         keyNode: ts.Expression,
         operator: "in" | "Object.hasOwn",
     ): string {
+        refuseErrorReflection(this.context, owner, ownerNode);
         const narrowed =
             owner.kind === "data"
                 ? this.narrowOptional(owner, ownerNode)
@@ -8770,9 +9111,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ];
             if (key.staticString !== undefined) {
                 if (keys.includes(key.staticString)) return "true";
-                if (operator === "Object.hasOwn") return "false";
-                this.context.reachJsData();
-                return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
+                return String(
+                    operator === "in" &&
+                        Object.hasOwn(Object.prototype, key.staticString),
+                );
             }
             const name = this.membershipStringKeyCpp(key, keyNode);
             const tests = keys.map(
@@ -8811,6 +9153,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const fields = this.context.dataTypes.structFields(
                     dataType.name,
                     ownerNode,
+                    "accessors",
                 );
                 const tests = fields.map((field) => {
                     const present = this.structFieldMembershipCpp(
@@ -8830,14 +9173,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return tests.length ? `(${tests.join(" || ")})` : "false";
             }
             const field = this.context.dataTypes
-                .structFields(dataType.name, ownerNode)
+                .structFields(dataType.name, ownerNode, "accessors")
                 .find((candidate) => candidate.sourceName === key.staticString);
             if (!field) {
-                if (operator === "in") {
-                    this.context.reachJsData();
-                    return `bbl::js::object_prototype_has_property(${this.context.cppString(key.staticString)})`;
-                }
-                return "false";
+                return String(
+                    operator === "in" &&
+                        Object.hasOwn(Object.prototype, key.staticString),
+                );
             }
             return this.structFieldMembershipCpp(
                 narrowed.cpp,
@@ -9394,6 +9736,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     public emitAssignment(expression: ts.BinaryExpression): boolean {
+        const deferred =
+            this.context.deferredCapabilities.assignment(expression);
+        if (deferred) {
+            this.context.emit({ kind: "expression", code: `${deferred.cpp};` });
+            return true;
+        }
         const operator = ASSIGNMENT_OPERATORS.get(
             expression.operatorToken.kind,
         );
@@ -9560,12 +9908,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.fail(
                         left.argumentExpression,
                         "A compile-time record assignment requires a static string key.",
+                        "static-value-required",
                     );
                 }
                 if (this.context.isInRuntimeControlFlow()) {
                     this.context.fail(
                         expression,
                         "A compile-time record cannot be populated from runtime control flow.",
+                        "static-value-required",
                     );
                 }
                 const assigned = this.context.compileValue(expression.right);
@@ -9574,9 +9924,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression,
                         "Module namespace properties are read-only.",
                     );
-                writable((writable(recordOwner).recordProperties ??= {}))[
-                    key.staticString
-                ] = assigned;
+                setRecordProperty(
+                    recordOwner,
+                    key.staticString,
+                    this.context.bindings.pinValueToTemporary(
+                        assigned,
+                        "record_member",
+                        expression.right,
+                    ),
+                );
                 return true;
             }
             // This first resolution only asks whether the target is a Map.
@@ -9982,14 +10338,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 tupleElements: right.elements.map((element, index) => {
                     if (ts.isOmittedExpression(element))
                         return { kind: "json-null", cpp: "std::nullopt" };
+                    // Each RHS lane is saved independently before assigning any
+                    // target. Erased assertions cannot narrow that snapshot:
+                    // `T!` can still contain null under the active substitution.
                     let elementType =
-                        type?.kind === "vector"
+                        this.dataTypeAt(this.context.unwrap(element)) ??
+                        (type?.kind === "vector"
                             ? type.element
                             : type?.kind === "tuple"
                               ? { kind: "number" as const }
                               : type?.kind === "product"
                                 ? type.elements[index]
-                                : this.dataTypeAt(element);
+                                : this.dataTypeAt(element));
                     // A generic AST can still say T after its argument has an owned
                     // native representation. Read that value once to obtain its type.
                     const absence = isNullishLiteral(
@@ -10799,43 +11159,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public conditionOperand(expression: ts.Expression): string | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isElementAccessExpression(unwrapped)) {
-            const owner = this.compileDataPath(unwrapped.expression, "read");
-            if (
-                owner?.kind === "data" &&
-                (owner.dataType?.kind === "vector" ||
-                    owner.dataType?.kind === "span")
-            ) {
-                const element = owner.dataType.element;
-                // Objects are truthy whenever the indexed element exists.
-                // With noUncheckedIndexedAccess the source commonly writes
-                // exactly this guard before dereferencing a dynamic index.
-                if (
-                    element.kind === "struct" ||
-                    element.kind === "date" ||
-                    element.kind === "date-time-format" ||
-                    element.kind === "storage" ||
-                    element.kind === "vector" ||
-                    element.kind === "map" ||
-                    element.kind === "set" ||
-                    element.kind === "arraybuffer" ||
-                    element.kind === "dataview" ||
-                    element.kind === "bufferview" ||
-                    element.kind === "numberindex" ||
-                    isTypedArrayType(element) ||
-                    element.kind === "handle" ||
-                    element.kind === "number" ||
-                    element.kind === "boolean" ||
-                    element.kind === "string" ||
-                    element.kind === "enum"
-                ) {
-                    // The owner has already been resolved above. Reuse it:
-                    // resolving it again would duplicate a call expression
-                    // merely to derive the guard predicate.
-                    const guarded = this.guardableElementRead(owner, unwrapped);
-                    const truthiness = guarded && statedTruthinessCpp(guarded);
-                    if (truthiness) return truthiness;
-                }
-            }
+            const guarded = this.compileGuardableElementAccess(unwrapped);
+            const truthiness = guarded && this.truthinessCondition(guarded);
+            if (truthiness !== undefined) return truthiness;
         }
         const value =
             this.compileDataPath(unwrapped, "read") ??
@@ -11290,9 +11616,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             const value =
                 (ts.isElementAccessExpression(nullSide)
-                    ? this.context.probeEmission(() =>
-                          this.compileGuardableElementAccess(nullSide),
-                      )
+                    ? this.compileGuardableElementAccess(nullSide)
                     : undefined) ??
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
@@ -11725,7 +12049,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const leftObject = this.objectIdentity(left);
         const rightObject = this.objectIdentity(right);
         if (leftObject && rightObject) {
-            return `${leftObject} ${negated ? "!=" : "=="} ${rightObject}`;
+            return `static_cast<const void*>(${leftObject}) ${negated ? "!=" : "=="} static_cast<const void*>(${rightObject})`;
         }
         return undefined;
     }
@@ -11882,6 +12206,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType.kind === "iterator" ||
             dataType.kind === "set"
         ) {
+            this.invalidateRecordArrayFacts(value);
             const elements =
                 value.staticElementsOwner?.staticElements ??
                 value.staticElements;
@@ -12734,6 +13059,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         spread.expression,
                         true,
                     );
+                    this.invalidateRecordArrayFacts(iterable);
                     if (
                         this.context.dataTypes.carriesBorrowedPlatformEvent(
                             dataType.element,

@@ -1,7 +1,8 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
+import { isPresentValue, presenceCpp, type Value } from "./types.js";
+import { isNullable } from "./type-facts.js";
 import { argumentAt, expressionMayRunCode } from "./syntax.js";
 
 const collationOptionNames = [
@@ -106,18 +107,39 @@ function compileLocalesAndOptions(
         (options.kind === "json-null" && options.cpp === "std::nullopt")
     )
         return { locales, fields: {} };
+    const unsupportedOption = (
+        key: string,
+        optional: boolean,
+        present: string,
+    ): void => {
+        if (!optional)
+            context.fail(optionsNode, `${api} option '${key}' is not lowered.`);
+        context.emit({
+            kind: "expression",
+            code: `if (${present}) throw std::runtime_error(${context.cppString(`${api} option '${key}' is not supported natively.`)});`,
+        });
+    };
     if (
         options.kind === "record" &&
         !Object.keys(options.recordGetters ?? {}).length &&
         !Object.keys(options.recordMethods ?? {}).length
     ) {
         const fields = options.recordProperties ?? {};
-        for (const key of Object.keys(fields))
-            if (!names.includes(key))
-                context.fail(
-                    optionsNode,
-                    `${api} option '${key}' is not lowered.`,
+        for (const [key, value] of Object.entries(fields))
+            if (!names.includes(key)) {
+                const property = context.checker.getPropertyOfType(
+                    context.checker.getNonNullableType(
+                        context.checker.getTypeAtLocation(optionsNode),
+                    ),
+                    key,
                 );
+                unsupportedOption(
+                    key,
+                    property !== undefined &&
+                        (property.flags & ts.SymbolFlags.Optional) !== 0,
+                    presenceCpp(value) ?? String(isPresentValue(value)),
+                );
+            }
         return { locales, fields };
     }
     // A struct, or an optional one whose absence leaves every field absent.
@@ -131,10 +153,15 @@ function compileLocalesAndOptions(
             optionsNode,
             `${api} options require a record of ${kind}.`,
         );
-    const cpp = context.bindings.pinValueToTemporary(
+    const bound = context.bindings.pinValueToTemporary(
         options,
         "locale_options",
-    ).cpp;
+    );
+    const cpp = bound.cpp;
+    const present =
+        optional || isNullable(context.checker.getTypeAtLocation(optionsNode))
+            ? presenceCpp(bound)
+            : undefined;
     const access =
         optional || context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
     const fields: Record<string, Value> = {};
@@ -144,12 +171,12 @@ function compileLocalesAndOptions(
     )) {
         const read = `${cpp}${access}${field.name}`;
         const fieldType: DataType =
-            !optional || field.type.kind === "optional"
+            !present || field.type.kind === "optional"
                 ? field.type
                 : { kind: "optional", inner: field.type };
         const fieldCpp = context.dataTypes.cppType(fieldType);
-        const value = optional
-            ? `(${cpp} ? ${fieldCpp}(${read}) : ${fieldCpp}{})`
+        const value = present
+            ? `(${present} ? ${fieldCpp}(${read}) : ${fieldCpp}{})`
             : read;
         if (names.includes(field.sourceName)) {
             fields[field.sourceName] = lowerer.leafValue(value, fieldType);
@@ -157,15 +184,11 @@ function compileLocalesAndOptions(
         }
         // The declared type names an option this lowering does not
         // implement: the program may leave it absent, never set it.
-        if (fieldType.kind !== "optional")
-            context.fail(
-                optionsNode,
-                `${api} option '${field.sourceName}' is not lowered.`,
-            );
-        context.emit({
-            kind: "expression",
-            code: `if (${value}) throw std::runtime_error(${context.cppString(`${api} option '${field.sourceName}' is not supported natively.`)});`,
-        });
+        unsupportedOption(
+            field.sourceName,
+            fieldType.kind === "optional",
+            value,
+        );
     }
     return { locales, fields };
 }

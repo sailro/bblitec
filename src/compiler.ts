@@ -187,21 +187,24 @@ import {
 } from "./compiler/loop-control.js";
 import {
     isModuleInitializerStatement,
+    moduleContainerReferenceFiles,
     moduleContainerSymbol,
     planEntryModuleState,
     planImportedModuleState,
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
-import { ModuleNamespaces } from "./compiler/module-namespaces.js";
+import {
+    ModuleActivationRequired,
+    ModuleNamespaces,
+} from "./compiler/module-namespaces.js";
+import { RecordProxies } from "./compiler/proxies.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
-    declarationInDefaultLibrary,
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
-    libraryGlobal,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import {
@@ -225,6 +228,7 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
+import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
     bindingNameIdentifiers,
@@ -235,7 +239,6 @@ import {
     objectProperty,
     sourceFunctionName,
     stringLiteralText,
-    unwrapExpression,
     unwrappedIdentifier,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
@@ -458,36 +461,6 @@ export { CompileError };
 /** A transaction that is not a probe: its work stands unless it throws. */
 const commitAlways = (): boolean => true;
 
-/** The library calls that write through their first argument. */
-const writingLibraryCalls: ReadonlySet<string> = new Set([
-    "Object.assign",
-    "Object.defineProperty",
-    "Object.defineProperties",
-    "Object.setPrototypeOf",
-    "Reflect.set",
-    "Reflect.defineProperty",
-    "Reflect.deleteProperty",
-    "Reflect.setPrototypeOf",
-]);
-
-/**
- * Whether a language or platform library call leaves an argument alone:
- * every one but the first argument of a call that writes through it.
- */
-function libraryArgumentIsReadOnly(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-    index: number,
-): boolean {
-    const called = checker.getResolvedSignature(call)?.declaration;
-    if (!called || !declarationInDefaultLibrary(called)) return false;
-    const callee = unwrapExpression(call.expression);
-    const name = ts.isPropertyAccessExpression(callee)
-        ? `${libraryGlobal(checker, callee.expression) ?? ""}.${callee.name.text}`
-        : undefined;
-    return index > 0 || name === undefined || !writingLibraryCalls.has(name);
-}
-
 /**
  * Executed module constants: numbers are JavaScript doubles, and every value
  * keeps full static metadata for the static positions that read it.
@@ -569,6 +542,9 @@ function compileSourceApplication(
                 ? { publicUrl: deploymentPublicUrl(options.publicUrl) }
                 : {}),
             ...(workers ? { workers } : {}),
+            ...(options.hostPage && !workers?.namespace
+                ? { hostPage: options.hostPage }
+                : {}),
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
                 : {}),
@@ -579,6 +555,9 @@ function compileSourceApplication(
                           specifier: options.hostPage.loader.specifier,
                       },
                   }
+                : {}),
+            ...(input.startupFiles?.length && !workers?.namespace
+                ? { pageStartup: input.startupFiles }
                 : {}),
             ...(options.sourceProfile?.length
                 ? { sourceProfile: options.sourceProfile }
@@ -595,6 +574,7 @@ function compileSourceApplication(
             NativeRecordStorageDemand
         >();
         const genericFunctions = new GenericFunctionStorage();
+        const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planning: boolean): Compiler => {
             recordStorageCompileAttempt(planning);
             return new Compiler(
@@ -605,6 +585,7 @@ function compileSourceApplication(
                 dynamicBindings,
                 ownedRecords,
                 genericFunctions,
+                lazyModules,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -628,7 +609,9 @@ function compileSourceApplication(
                 dynamicBindings.set(request.declaration, request.storage);
             } else if (
                 request.kind === "record" &&
-                !ownedRecords.has(request.demand.identity)
+                (!ownedRecords.has(request.demand.identity) ||
+                    (request.demand.proxy &&
+                        !ownedRecords.get(request.demand.identity)?.proxy))
             ) {
                 ownedRecords.set(request.demand.identity, request.demand);
             } else if (
@@ -640,6 +623,11 @@ function compileSourceApplication(
             return true;
         };
         const acceptReplay = (error: unknown): boolean => {
+            if (error instanceof ModuleActivationRequired) {
+                if (lazyModules.has(error.file)) return false;
+                lazyModules.add(error.file);
+                return true;
+            }
             if (isStorageDemand(error))
                 return acceptStorage(storageRequest(error));
             if (
@@ -749,6 +737,7 @@ class Compiler implements LoweringServices {
         new PropertyAccessLowerer(this);
     /** Per-intrinsic option objects and the shader programs they reach. */
     public readonly deferredCapabilities = new DeferredCapabilities(this);
+    public readonly recordProxies: RecordProxies = new RecordProxies(this);
 
     public readonly intrinsicOptions: IntrinsicOptions = new IntrinsicOptions(
         this,
@@ -952,6 +941,7 @@ class Compiler implements LoweringServices {
             NativeRecordStorageDemand
         >,
         genericFunctions: GenericFunctionStorage,
+        private readonly lazyModules: ReadonlySet<ts.SourceFile>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -1035,14 +1025,20 @@ class Compiler implements LoweringServices {
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
+        this.moduleNamespaces.prepare(this.lazyModules);
+        if (this.options.pageStartup?.length) {
+            if (!this.options.workers) throw new ApplicationRealmRequired();
+            this.emitNativeHostUi();
+        }
         // The page's script runs up to its import of the entry, which then
         // evaluates the entry's imports and the entry itself.
         this.pageLoader?.emit((statement) => this.emitStatement(statement));
         this.emitImportedModuleInitializers();
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
+        this.moduleNamespaces.defineInitializers();
         this.emitEntryBody(entry);
-        this.emitNativeHostUi();
+        if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         if (this.features.has("engine:device-recovery")) {
             if (
@@ -1160,12 +1156,28 @@ class Compiler implements LoweringServices {
     public readonly pendingHostUiLookups: Value[] = emissionArray([]);
 
     private emitNativeHostUi(): void {
+        const startup = this.options.pageStartup;
+        const script = startup
+            ? (fileName: string): string[] => {
+                  const source = startup.find(
+                      (file) => resolve(file.fileName) === resolve(fileName),
+                  );
+                  if (!source)
+                      this.failAtFile(
+                          `Missing page startup script '${fileName}'.`,
+                      );
+                  return this.captureEmittedLines(() => {
+                      for (const statement of source.statements)
+                          this.emitStatement(statement);
+                  });
+              }
+            : undefined;
         const host = this.options.nativeHostUi;
         const emitted = host
             ? this.attributeRefusalsTo({ file: host.sourcePath, line: 1 }, () =>
-                  this.ui.compileHostUi(),
+                  this.ui.compileHostUi(script),
               )
-            : this.ui.compileHostUi();
+            : this.ui.compileHostUi(script);
         const insertion = this.options.workers
             ? 0
             : (this.engineCreationInsertion ?? this.body.length);
@@ -1190,6 +1202,7 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
+        this.dataTypes.prepareProxyRecords(this.ownedRecords.values());
         for (const demand of this.ownedRecords.values())
             this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {
@@ -1394,9 +1407,13 @@ class Compiler implements LoweringServices {
             this.sourceFile,
             this.checker,
             this.symbols,
+            this.evaluationOrder,
+            this.dynamicBindings.keys(),
         );
         this.mutatedModuleContainers = mutatedContainers;
         if (modules.length === 0) return;
+
+        const staticDeclarations = new Set<ts.VariableDeclaration>();
 
         // Once a module is materialized, its declarations name the native
         // storage initialized below. They must not continue resolving to the
@@ -1408,6 +1425,23 @@ class Compiler implements LoweringServices {
                 for (const declaration of statement.declarationList
                     .declarations) {
                     if (!ts.isIdentifier(declaration.name)) continue;
+                    if (
+                        (statement.declarationList.flags &
+                            ts.NodeFlags.Const) !==
+                            0 &&
+                        declaration.initializer &&
+                        !this.dynamicBindings.has(declaration) &&
+                        this.evaluationOrder.isPureExpression(
+                            declaration.initializer,
+                        ) &&
+                        !this.evaluationOrder.hasModuleEffects(
+                            declaration.initializer,
+                        ) &&
+                        !this.moduleConstantIsWritten(declaration.name)
+                    ) {
+                        staticDeclarations.add(declaration);
+                        continue;
+                    }
                     const symbol = this.symbols.valueSymbol(declaration.name);
                     if (symbol) this.staticConstants.delete(symbol);
                 }
@@ -1419,6 +1453,45 @@ class Compiler implements LoweringServices {
             const moduleScope = this.bindings.variableScopes.at(-1)!;
             try {
                 for (const statement of file.statements) {
+                    if (ts.isVariableStatement(statement)) {
+                        const declarations =
+                            statement.declarationList.declarations.filter(
+                                (declaration) =>
+                                    !staticDeclarations.has(declaration),
+                            );
+                        if (declarations.length === 0) continue;
+                        // Keep checker-bound declarations and original source
+                        // identity; only the filtered statement is synthetic.
+                        const runtimeStatement =
+                            declarations.length ===
+                            statement.declarationList.declarations.length
+                                ? statement
+                                : Object.assign(
+                                      writable(
+                                          ts.factory.updateVariableStatement(
+                                              statement,
+                                              statement.modifiers,
+                                              ts.factory.updateVariableDeclarationList(
+                                                  statement.declarationList,
+                                                  declarations,
+                                              ),
+                                          ),
+                                      ),
+                                      { parent: statement.parent },
+                                  );
+                        this.emitStatement(runtimeStatement);
+                        continue;
+                    }
+                    if (
+                        ts.isExportAssignment(statement) &&
+                        this.evaluationOrder.isPureExpression(
+                            statement.expression,
+                        ) &&
+                        !this.evaluationOrder.hasModuleEffects(
+                            statement.expression,
+                        )
+                    )
+                        continue;
                     if (isModuleInitializerStatement(statement, this.checker)) {
                         this.emitStatement(statement);
                     }
@@ -1464,6 +1537,7 @@ class Compiler implements LoweringServices {
             this.sourceFile,
             this.checker,
             this.symbols,
+            this.dynamicBindings.keys(),
         )) {
             if (!emitted.has(statement)) this.emitStatement(statement);
         }
@@ -1573,6 +1647,7 @@ class Compiler implements LoweringServices {
                     this.sourceFile,
                     this.checker,
                     this.symbols,
+                    this.dynamicBindings.keys(),
                 ),
             );
             // Immutable literals retain the static evaluator's source shape;
@@ -2026,6 +2101,7 @@ class Compiler implements LoweringServices {
     }
 
     public emitDelete(expression: ts.DeleteExpression): void {
+        if (this.recordProxies.remove(expression)) return;
         if (this.windowProperties.remove(expression)) return;
         this.dataLowerer.emitDelete(expression);
     }
@@ -2336,6 +2412,15 @@ class Compiler implements LoweringServices {
         return this.ui.emitUiPropertyAssignment(expression);
     }
 
+    public emitUiDatasetProperty(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        this.ui.emitUiDatasetProperty(element, property, value, site);
+    }
+
     public emitWindowLogicalAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
@@ -2395,19 +2480,7 @@ class Compiler implements LoweringServices {
         }
         if (retained.size && !this.nativeStoredValues.has(value))
             writable(value).nativeCaptures = [...retained];
-        if (this.options.workers && value.engineCpp) {
-            if (value.kind === "engine" && value.ownedEngineCpp) {
-                const owner = this.nativeBindings.get(value.ownedEngineCpp);
-                if (owner)
-                    this.realmEngineCaptures.set(value.engineCpp, [owner]);
-            }
-            const owners = this.realmEngineCaptures.get(value.engineCpp);
-            if (owners)
-                writable(value).nativeCompanionCaptures = {
-                    ...value.nativeCompanionCaptures,
-                    engineCpp: owners,
-                };
-        }
+        this.describeEngineCaptures(value);
         this.useNativeValue(value);
         // A generation-known list of strings travels on the value, exactly
         // as one string travels on `staticString`. It has to: an inlined
@@ -2562,7 +2635,7 @@ class Compiler implements LoweringServices {
      * an update or a mutating call through it, through a binding initialized
      * from an expression that mentions it, or through an iteration binding
      * over one; or it hands one to a call that may write it. The scan covers
-     * the constant's file, and every file when it is exported. A binding
+     * the constant's file, and referencing files when it is exported. A binding
      * that only mentions the constant counts as one, which can only refuse
      * more.
      */
@@ -2579,9 +2652,12 @@ class Compiler implements LoweringServices {
                 ts.ModifierFlags.Export) !==
             0;
         const files = exported
-            ? this.program
-                  .getSourceFiles()
-                  .filter((file) => !file.isDeclarationFile)
+            ? moduleContainerReferenceFiles(
+                  this.program,
+                  this.checker,
+                  this.symbols,
+                  symbol,
+              )
             : [declaration.getSourceFile()];
         const written = files.some((file) =>
             this.writesThroughBinding(file, symbol),
@@ -4922,6 +4998,7 @@ class Compiler implements LoweringServices {
     public compileRecordGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
+        receiver?: Value,
     ): Value {
         const dispatched = this.classLowerer.dispatchGetter(
             owner,
@@ -4954,7 +5031,7 @@ class Compiler implements LoweringServices {
             // object-literal accessors. The record may have crossed a return
             // boundary that copied its compile-time Value wrapper, so its
             // identity in classInstances is not a reliable dispatch guard.
-            this.defineThis(owner);
+            this.defineThis(receiver ?? owner);
             try {
                 emitReachableStatements(this, leading);
                 // A getter is an evaluation, even when its return happens
@@ -5719,7 +5796,22 @@ class Compiler implements LoweringServices {
         return lines;
     }
 
+    private describeEngineCaptures(value: Value): void {
+        if (!this.options.workers || !value.engineCpp) return;
+        if (value.kind === "engine" && value.ownedEngineCpp) {
+            const owner = this.nativeBindings.get(value.ownedEngineCpp);
+            if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
+        }
+        const owners = this.realmEngineCaptures.get(value.engineCpp);
+        if (owners)
+            writable(value).nativeCompanionCaptures = {
+                ...value.nativeCompanionCaptures,
+                engineCpp: owners,
+            };
+    }
+
     public describeNativeValue(value: Value): void {
+        this.describeEngineCaptures(value);
         this.nativeStoredValues.add(value);
         const counter = integerCounterOf(value);
         const storage =
@@ -6636,13 +6728,18 @@ class Compiler implements LoweringServices {
      * A body emitted once for every caller runs from any control flow, any
      * number of times: its lowering sees runtime control flow and iteration,
      * and it may not record a generation-owned construction.
+     * A call-site reuse probe preserves its original control flow so the proof
+     * cannot turn an unconditional construction into a runtime profile.
      */
     public emitReusableNativeBody<T>(
         declaration: ts.Node,
         emitBody: () => T,
+        preserveControlFlow = false,
     ): T {
-        this.enterRuntimeControlFlow();
-        this.enterRuntimeIteration();
+        if (!preserveControlFlow) {
+            this.enterRuntimeControlFlow();
+            this.enterRuntimeIteration();
+        }
         try {
             const checkpoint = this.checkpointResourceConstruction();
             try {
@@ -6663,8 +6760,10 @@ class Compiler implements LoweringServices {
                 this.resourceConstructionCheckpoints.delete(checkpoint);
             }
         } finally {
-            this.leaveRuntimeIteration();
-            this.leaveRuntimeControlFlow();
+            if (!preserveControlFlow) {
+                this.leaveRuntimeIteration();
+                this.leaveRuntimeControlFlow();
+            }
         }
     }
 
@@ -7437,13 +7536,36 @@ class Compiler implements LoweringServices {
         owner: Value,
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
+        receiverType?: DataType<"struct">,
     ): string {
         const getter = ts.isGetAccessorDeclaration(accessor);
         const valueCpp = this.dataTypes.cppType(valueType);
         const argument = this.allocateTemporaryCppName("accessor_value");
+        const receiverName = receiverType
+            ? this.allocateTemporaryCppName("accessor_receiver")
+            : "";
+        const receiverCpp =
+            receiverType && this.dataTypes.cppType(receiverType);
         const body = this.captureManagedClosureLines(() => {
+            const receiver: Value | undefined = receiverType
+                ? {
+                      ...this.dataLowerer.leafValue(receiverName, receiverType),
+                      nativeCaptures: [
+                          this.registerNativeBinding(
+                              receiverName,
+                              false,
+                              false,
+                              receiverCpp,
+                          ),
+                      ],
+                  }
+                : undefined;
             if (getter) {
-                const value = this.compileRecordGetter(owner, accessor);
+                const value = this.compileRecordGetter(
+                    owner,
+                    accessor,
+                    receiver,
+                );
                 this.emit(
                     `return ${this.dataLowerer.compileKnownValueForSink(value, valueType, accessor)};`,
                 );
@@ -7467,15 +7589,20 @@ class Compiler implements LoweringServices {
                 owner,
                 () =>
                     this.classLowerer.compileSetter(
-                        owner,
+                        receiver ?? owner,
                         accessor,
                         parameterName,
                         argumentValue,
                     ),
                 accessor,
             );
+            if (receiverType) this.emit("return true;");
         });
         this.reachJsData();
+        if (receiverCpp)
+            return getter
+                ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`
+                : `bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${argument}`, "bool")})`;
         return getter
             ? `bbl::js::Callback<${valueCpp}()>(${renderClosure(body, "", valueCpp)})`
             : `bbl::js::Callback<void(${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${valueCpp} ${argument}`, "void")})`;
@@ -8321,6 +8448,7 @@ class Compiler implements LoweringServices {
             deferredCapabilitiesReached:
                 this.deferredCapabilities.sites.length > 0 ||
                 this.dataTypes.usesDeferredDomStorage(),
+            windowStorageReached: this.dataTypes.usesWindowStorage(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

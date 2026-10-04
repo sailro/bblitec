@@ -157,6 +157,7 @@ export interface CompilerProgram {
     localFiles: string[];
     /** The host page's inline module script, a second root. */
     loaderFile?: ts.SourceFile;
+    startupFiles?: ts.SourceFile[];
 }
 
 export function createCompilerProgram(
@@ -166,6 +167,12 @@ export function createCompilerProgram(
 ): CompilerProgram {
     const rootName = resolve(fileName);
     const loaderName = page?.loader ? resolve(page.loader.fileName) : undefined;
+    const startup = new Map(
+        (page?.startup ?? []).map((script) => [
+            resolve(script.fileName),
+            script.source,
+        ]),
+    );
     const pageRoot = page ? hostPageRoot(page) : undefined;
     const virtualSource = (path: string): string | undefined => {
         const absolute = resolve(path);
@@ -173,7 +180,7 @@ export function createCompilerProgram(
             ? source
             : absolute === loaderName
               ? page?.loader?.source
-              : undefined;
+              : startup.get(absolute);
     };
     const repositoryRoot = findRepositoryRoot(
         dirname(fileURLToPath(import.meta.url)),
@@ -332,7 +339,12 @@ export function createCompilerProgram(
     // Include the pin's WebGPU peer typings explicitly, including for entries
     // outside this checkout. Keep unrelated ambient packages excluded above.
     const program = ts.createProgram(
-        [rootName, webGpuTypes, ...(loaderName ? [loaderName] : [])],
+        [
+            rootName,
+            webGpuTypes,
+            ...(loaderName ? [loaderName] : []),
+            ...startup.keys(),
+        ],
         options,
         host,
     );
@@ -349,7 +361,7 @@ export function createCompilerProgram(
         .map((file) =>
             resolve(rawTextSourcePath(file.fileName) ?? file.fileName),
         )
-        .filter((path) => path !== loaderName)
+        .filter((path) => path !== loaderName && !startup.has(path))
         .concat(page ? [resolve(page.path)] : [])
         .filter((path) => !path.includes(nodeModules))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
@@ -361,5 +373,12 @@ export function createCompilerProgram(
         sourceFile,
         localFiles,
         ...(loaderFile ? { loaderFile } : {}),
+        ...(startup.size
+            ? {
+                  startupFiles: [...startup.keys()].map((name) =>
+                      program.getSourceFile(name)!,
+                  ),
+              }
+            : {}),
     };
 }

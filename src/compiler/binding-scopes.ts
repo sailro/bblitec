@@ -12,7 +12,7 @@ import { CPP_SCALAR } from "../lowering/cpp-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { syntaxKindName } from "../source-location.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { isDeclaredInside } from "./syntax.js";
+import { isDeclaredInside, unwrapExpression } from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     isHandleKind,
@@ -52,9 +52,12 @@ import {
 import {
     functionOfDeclaration,
     isSupportedFunction,
+    parameterIsMutated,
     parameterIsReadOnly,
 } from "./user-functions.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -279,6 +282,53 @@ export class BindingScopes {
             }
         }
         return undefined;
+    }
+
+    /** The earliest live declaration sharing this record, before any lexical aliases. */
+    public recordDeclaration(
+        value: Value,
+        expression: ts.Expression,
+    ): ts.VariableDeclaration | undefined {
+        if (!value.recordProperties) return undefined;
+        let origin: ts.Declaration | undefined;
+        for (const scope of this.variableScopes) {
+            for (const [symbol, binding] of scope) {
+                if (binding.value.recordProperties !== value.recordProperties)
+                    continue;
+                const declaration = symbol.valueDeclaration;
+                if (
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer
+                )
+                    origin = declaration;
+                if (origin) break;
+            }
+            if (origin) break;
+        }
+        const source = unwrapExpression(expression);
+        origin ??= ts.isIdentifier(source)
+            ? this.context.symbols.valueSymbol(source)?.valueDeclaration
+            : undefined;
+        if (!origin || !ts.isVariableDeclaration(origin)) return undefined;
+        // An imported constant may have no live binding yet. Follow its const
+        // aliases to request storage where the original container is created.
+        const visited = new Set<ts.VariableDeclaration>();
+        let declaration = origin;
+        while (declaration.initializer && !visited.has(declaration)) {
+            visited.add(declaration);
+            const initializer = unwrapExpression(declaration.initializer);
+            if (
+                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                !ts.isIdentifier(initializer)
+            )
+                break;
+            const target =
+                this.context.symbols.valueSymbol(initializer)?.valueDeclaration;
+            if (!target || !ts.isVariableDeclaration(target)) break;
+            declaration = target;
+        }
+        return declaration.initializer ? declaration : undefined;
     }
 
     /**
@@ -965,13 +1015,54 @@ export class BindingScopes {
     }
 
     public bindParameterValue(identifier: ts.Identifier, value: Value): void {
-        const narrowed =
+        let narrowed =
             value.kind === "data"
                 ? this.context.dataLowerer.narrowForDeclaration(
                       value,
                       identifier,
                   )
                 : value;
+        if (
+            narrowed.kind === "record" &&
+            !this.context.classOf(narrowed) &&
+            !this.containsPlatformEvent(narrowed) &&
+            ts.isParameter(identifier.parent) &&
+            this.context.sharedClosures.needsSharedClosureStorage(
+                identifier.parent,
+                identifier,
+            )
+        ) {
+            const represented = this.context.dataTypes.fromStoredTsType(
+                this.context.checker.getTypeAtLocation(identifier),
+                identifier,
+            );
+            if (
+                represented?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(represented.name)
+            ) {
+                const declaration = this.recordDeclaration(
+                    narrowed,
+                    identifier,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+                narrowed = this.pinValueToTemporary(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            narrowed,
+                            represented,
+                            identifier,
+                        ),
+                        represented,
+                    ),
+                    "parameter_object",
+                    identifier,
+                );
+            }
+        }
         if (
             narrowed.dataType?.kind === "struct" &&
             this.context.sharedClosures.identifierIsRebound(identifier)
@@ -999,16 +1090,100 @@ export class BindingScopes {
         this.context.useNativeValue(value);
         // A parameter the function never rebinds keeps its argument as the
         // binding; a private name is never a parameter.
+        const parameterDeclaration =
+            parameter && ts.isIdentifier(identifier)
+                ? ts.findAncestor(identifier, ts.isParameter)
+                : undefined;
         const readOnlyParameter =
-            parameter &&
+            parameterDeclaration !== undefined &&
             ts.isIdentifier(identifier) &&
-            ts.isParameter(identifier.parent) &&
-            isSupportedFunction(identifier.parent.parent) &&
+            isSupportedFunction(parameterDeclaration.parent) &&
             parameterIsReadOnly(
                 this.context.checker,
-                identifier.parent.parent,
+                parameterDeclaration.parent,
                 identifier,
             );
+        if (
+            parameter &&
+            !readOnlyParameter &&
+            value.kind === "record" &&
+            !this.containsPlatformEvent(value) &&
+            ts.isIdentifier(identifier) &&
+            parameterDeclaration !== undefined &&
+            isSupportedFunction(parameterDeclaration.parent) &&
+            parameterIsMutated(
+                this.context.checker,
+                parameterDeclaration.parent,
+                identifier,
+            )
+        ) {
+            // Literal scalar-only children cannot contain a backreference to
+            // this owner. Unknown storage, callbacks and accessors cannot
+            // establish that separation from a declared property path alone.
+            const rawOwner = (owner: Value): boolean =>
+                owner.dataType === undefined &&
+                !owner.nativeBinding &&
+                !owner.retainedNativeRecord &&
+                !this.context.classOf(owner);
+            const plainScalar = (member: Value): boolean =>
+                !member.sharedRecordScalar &&
+                !member.nativeBinding &&
+                (member.kind === "number" ||
+                    member.kind === "boolean" ||
+                    isStringValue(member));
+            const independentFields =
+                rawOwner(value) &&
+                Object.keys(value.recordGetters ?? {}).length === 0 &&
+                Object.keys(value.recordSetters ?? {}).length === 0 &&
+                Object.keys(value.recordMethods ?? {}).length === 0 &&
+                Object.values(value.recordProperties ?? {}).every(
+                    (member) =>
+                        plainScalar(member) ||
+                        (member.kind === "tuple" &&
+                            rawOwner(member) &&
+                            member.tupleElements !== undefined &&
+                            member.tupleElements.every(plainScalar)) ||
+                        (member.kind === "record" &&
+                            rawOwner(member) &&
+                            member.recordProperties !== undefined &&
+                            Object.keys(member.recordGetters ?? {}).length ===
+                                0 &&
+                            Object.keys(member.recordSetters ?? {}).length ===
+                                0 &&
+                            Object.keys(member.recordMethods ?? {}).length ===
+                                0 &&
+                            Object.values(member.recordProperties ?? {}).every(
+                                plainScalar,
+                            )),
+                );
+            const unchangedFields = new Set(
+                Object.entries(value.recordProperties ?? {})
+                    .filter(
+                        ([name, member]) =>
+                            (member.kind === "number" ||
+                                member.kind === "boolean" ||
+                                member.staticString !== undefined) &&
+                            parameterProjectionIsReadOnly(
+                                this.context.checker,
+                                parameterDeclaration.parent,
+                                parameterDeclaration.parent.parameters.indexOf(
+                                    parameterDeclaration,
+                                ),
+                                [name],
+                                independentFields,
+                            ),
+                    )
+                    .map(([name]) => name),
+            );
+            value = this.materializeRecordScalars(
+                value,
+                `${identifier.text}_parameter`,
+                true,
+                undefined,
+                undefined,
+                unchangedFields,
+            );
+        }
         if (value.kind === "void") {
             this.context.fail(
                 identifier,
@@ -1190,6 +1365,11 @@ export class BindingScopes {
                   }
                 : {}),
         };
+        if (parameter && !readOnlyParameter) {
+            delete writable(stored).staticNumber;
+            delete writable(stored).staticString;
+            delete writable(stored).staticBoolean;
+        }
         delete writable(stored).nativeOwnedRvalue;
         // The value now reads its own storage, not a counted loop's counter.
         delete writable(stored).integerCounterCpp;
@@ -1248,6 +1428,13 @@ export class BindingScopes {
     ): void {
         const owner = value.staticElementsOwner ?? value;
         const elements = owner.staticElements ?? value.staticElements;
+        const recordSnapshot =
+            elements?.[0]?.staticElementIndex === 0 &&
+            elements[0].staticElementsOwner === owner;
+        if (recordSnapshot)
+            for (const element of elements ?? [])
+                for (const key of Object.keys(element.recordProperties ?? {}))
+                    delete writable(element.recordProperties!)[key];
         const cardinality =
             owner.collectionCardinality ?? value.collectionCardinality;
         if (cardinality && !preserveCardinality) {
@@ -1264,6 +1451,8 @@ export class BindingScopes {
                 (elements !== undefined &&
                     candidate.staticElements === elements)
             ) {
+                if (recordSnapshot && candidate.staticElementsOwner === owner)
+                    delete writable(candidate).recordProperties;
                 if (owner.runtimeElementTemplate) {
                     writable(candidate).runtimeElementTemplate =
                         owner.runtimeElementTemplate;
@@ -1272,6 +1461,7 @@ export class BindingScopes {
                     writable(candidate).collectionCardinality = cardinality;
                 delete writable(candidate).staticElements;
                 delete writable(candidate).staticElementsOwner;
+                delete writable(candidate).staticElementIndex;
             }
         };
         for (const candidate of this.factIndex.matching([
@@ -1287,6 +1477,7 @@ export class BindingScopes {
 
     /** Invalidate one native map/object snapshot through all shared aliases. */
     public invalidateRecordProperties(value: Value): void {
+        if (value.staticElementsOwner) this.invalidateStaticElements(value);
         const properties = value.recordProperties;
         if (!properties) return;
         const invalidate = (candidate: Value): void => {
@@ -1712,10 +1903,13 @@ export class BindingScopes {
         node: ts.Expression,
         label: string,
         field?: ts.Symbol,
+        parameter?: ts.ParameterDeclaration,
+        path: readonly string[] = [],
     ): Value {
         const present = this.context.checker.getNonNullableType(type);
         if (
             field &&
+            !parameter &&
             value.kind === "record" &&
             !value.sceneNodeVector &&
             !value.cameraVector &&
@@ -1742,9 +1936,18 @@ export class BindingScopes {
                 );
             }
         }
-        if (field && value.kind === "json-null" && present !== type) {
+        if (
+            field &&
+            !parameter &&
+            value.kind === "json-null" &&
+            present !== type
+        ) {
             const mapped = this.context.dataTypes.fromStoredTsType(type, node);
-            if (mapped?.kind === "optional") {
+            if (
+                mapped?.kind === "optional" ||
+                (mapped?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(mapped.name))
+            ) {
                 return this.materializeRecordFieldCell(
                     value,
                     mapped,
@@ -1754,6 +1957,19 @@ export class BindingScopes {
             }
         }
         if (field && value.kind === "tuple" && present.getProperty("push")) {
+            // Contextual arguments keep their record fields in the existing
+            // parameter owner. Only written or retained collections need the
+            // declaration's array storage; read-only composition stays static.
+            if (
+                parameter &&
+                parameterProjectionIsReadOnly(
+                    this.context.checker,
+                    parameter.parent,
+                    parameter.parent.parameters.indexOf(parameter),
+                    path,
+                )
+            )
+                return value;
             const dataType = this.context.dataTypes.fromStoredTsType(
                 present,
                 node,
@@ -1795,6 +2011,8 @@ export class BindingScopes {
                     node,
                     `${label}_${name}`,
                     symbol,
+                    parameter,
+                    parameter ? [...path, name] : path,
                 );
         }
         return value;
@@ -1808,10 +2026,7 @@ export class BindingScopes {
         if (
             value.kind !== "record" ||
             value.staticJson !== undefined ||
-            this.context.classOf(value) !== undefined ||
-            Object.keys(value.recordMethods ?? {}).length !== 0 ||
-            Object.keys(value.recordGetters ?? {}).length !== 0 ||
-            Object.keys(value.recordSetters ?? {}).length !== 0
+            this.context.classOf(value) !== undefined
         )
             return undefined;
         return this.context.probeEmission(() => {
@@ -1832,6 +2047,29 @@ export class BindingScopes {
             const declared = storedCallbacks
                 ? this.context.dataTypes.fromStoredTsType(sourceType, node)
                 : this.context.dataTypes.fromTsType(sourceType, node);
+            const receiverRecord =
+                declared?.kind === "struct" &&
+                this.context.dataTypes
+                    .structFields(declared.name, node, "accessors")
+                    .some((field) => field.accessorReceiver);
+            if (receiverRecord)
+                return {
+                    ...this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            declared,
+                            node,
+                        ),
+                        declared,
+                    ),
+                    freshData: true,
+                };
+            if (
+                Object.keys(value.recordMethods ?? {}).length ||
+                Object.keys(value.recordGetters ?? {}).length ||
+                Object.keys(value.recordSetters ?? {}).length
+            )
+                return undefined;
             const stored =
                 declared &&
                 this.context.dataLowerer.retainedResultType(
@@ -2005,6 +2243,7 @@ export class BindingScopes {
         preserveIdentity = false,
         node?: ts.Expression,
         materialized = new Map<object, Value>(),
+        unchangedFields?: ReadonlySet<string>,
     ): Value {
         if (
             record.retainedNativeRecord ||
@@ -2052,7 +2291,8 @@ export class BindingScopes {
         const scalarFields = Object.entries(
             record.recordProperties ?? {},
         ).filter(
-            ([, property]) =>
+            ([name, property]) =>
+                !unchangedFields?.has(name) &&
                 !property.sharedRecordScalar &&
                 !property.sharedRecordContainer &&
                 !(property.readOnly && property.staticString !== undefined) &&
@@ -2074,6 +2314,10 @@ export class BindingScopes {
         for (const [name, property] of Object.entries(
             record.recordProperties ?? {},
         )) {
+            if (unchangedFields?.has(name)) {
+                properties[name] = property;
+                continue;
+            }
             if (property.readOnly && property.staticString !== undefined) {
                 properties[name] = property;
                 continue;

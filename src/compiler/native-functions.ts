@@ -33,7 +33,7 @@ import {
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
 import { classMemberTable, classMethod } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
-import { storedSourceTypes } from "./storage-demand-index.js";
+import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
     borrowsReferenceParameter,
@@ -812,6 +812,15 @@ export class NativeFunctionLowerer {
             parameter.type.kind === "optional"
                 ? parameter.type.inner
                 : parameter.type;
+        if (target.kind === "span" && target.element.kind === "number") {
+            const actual =
+                this.context.knownValueWithoutEvaluation(argument)?.dataType ??
+                this.context.dataLowerer.dataTypeAt(argument);
+            const inner = actual?.kind === "optional" ? actual.inner : actual;
+            // Typed arrays require their concrete live view, not a copied
+            // double span. The shared/inlined call binds that actual owner.
+            if (inner && isTypedArrayType(inner)) return false;
+        }
         if (
             target.kind === "map" &&
             target.dictionary &&
@@ -863,13 +872,9 @@ export class NativeFunctionLowerer {
             )
         )
             return false;
-        const mutableReference = parameter.byReference && !parameter.readOnly;
-        if (
-            !mutableReference &&
-            !this.context.dataTypes.isReferenceStruct(parameter.type.name)
-        ) {
-            return true;
-        }
+        // Readonly callees still observe the complete object through own-key
+        // queries and returned aliases. A narrower value copy changes that
+        // contract just as a narrower reference copy changes mutation.
         const unwrapped = this.context.unwrap(argument);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return true;
@@ -955,9 +960,10 @@ export class NativeFunctionLowerer {
                         expression,
                     ).cpp;
                 }
-                return this.context.dataLowerer.compileForSink(
-                    expression,
+                return this.context.dataLowerer.compileKnownValueForSink(
+                    value,
                     dataType,
+                    expression,
                 );
             }
             if (parameter.readOnly) {
@@ -2199,35 +2205,13 @@ export class NativeFunctionLowerer {
         sourceType: ts.Type,
         structName: string,
     ): boolean {
-        const target = this.context.checker.getNonNullableType(sourceType);
         const cached = this.referenceStorageCache.get(structName);
         if (cached !== undefined) return cached;
-        const sameType = (candidate: ts.Type): boolean => {
-            const normalized =
-                this.context.checker.getNonNullableType(candidate);
-            return (
-                normalized === target ||
-                (normalized.aliasSymbol !== undefined &&
-                    normalized.aliasSymbol === target.aliasSymbol) ||
-                (normalized.symbol !== undefined &&
-                    normalized.symbol === target.symbol) ||
-                // The data registry coalesces structurally equal records.
-                // A differently named equivalent type can therefore impose
-                // the same storage requirement on this native parameter.
-                (this.context.checker.isTypeAssignableTo(normalized, target) &&
-                    this.context.checker.isTypeAssignableTo(target, normalized))
-            );
-        };
-        let stored = false;
-        for (const candidate of storedSourceTypes(
+        const stored = sourceTypeRequiresReferenceStorage(
             this.context.checker,
             this.context.sourceFiles(),
-        )) {
-            if (sameType(candidate)) {
-                stored = true;
-                break;
-            }
-        }
+            sourceType,
+        );
         this.referenceStorageCache.set(structName, stored);
         return stored;
     }

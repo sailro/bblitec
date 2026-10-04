@@ -85,9 +85,15 @@ test("Abort nominal results preserve later sites and callback diagnostics after 
     );
     assert.throws(
         () =>
-            compileSource(source.replace('atob("lazy")', "new Proxy({}, {})"), {
-                deferredCapabilities,
-            }),
+            compileSource(
+                source.replace(
+                    'atob("lazy")',
+                    "new FinalizationRegistry(() => {})",
+                ),
+                {
+                    deferredCapabilities,
+                },
+            ),
         /Unsupported constructor/,
     );
     const tools = optionalNativeFixtureTools(false);

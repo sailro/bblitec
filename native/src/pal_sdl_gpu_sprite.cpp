@@ -335,10 +335,10 @@ public:
             const std::size_t end_index = sprite_pass_target_run_end(engine, passes, first_index);
             SDL_GPUColorTargetInfo color_target{};
             color_target.texture = target;
+            const Color4 clear_value = sprite_renderer_clear_value(first_renderer);
             color_target.clear_color = gpu_clear_color(
                 device, swapchain_format,
-                SDL_FColor{first_renderer.clear_value.r, first_renderer.clear_value.g,
-                           first_renderer.clear_value.b, first_renderer.clear_value.a});
+                SDL_FColor{clear_value.r, clear_value.g, clear_value.b, clear_value.a});
             color_target.load_op =
                 first_renderer.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
             color_target.store_op = SDL_GPU_STOREOP_STORE;

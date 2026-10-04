@@ -39,6 +39,7 @@ import {
     dataTypesEqual,
     isOpaqueReference,
     isHandleKind,
+    isTypedArrayType,
     tupleComponents,
     type DataType,
     type DataTypeRegistry,
@@ -92,6 +93,8 @@ export interface CallbackInvocationOptions {
     coroutine?: true;
     frameDriven?: true;
     generator?: DataType<"iterator">;
+    /** A concrete collection sink can retain its mapper's declared result model. */
+    resultType?: DataType;
 }
 
 const directCallBindingCache = new EmissionWeakMap<
@@ -277,6 +280,24 @@ export function requiresDefaultParameterBinding(
 }
 
 type Fail = (node: ts.Node, message: string) => never;
+/** Dynamic `this` belongs to the nearest non-arrow function. */
+export function functionUsesDynamicThis(
+    declaration: SupportedFunction,
+): boolean {
+    return (
+        !ts.isArrowFunction(declaration) &&
+        !!declaration.body &&
+        someAnalysisNode(
+            declaration.body,
+            (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+            {
+                skip: (node) =>
+                    ts.isFunctionLike(node) && !ts.isArrowFunction(node),
+            },
+        )
+    );
+}
+
 export type SupportedFunction =
     | ts.FunctionDeclaration
     | ts.FunctionExpression
@@ -318,6 +339,7 @@ function writesThroughRoot(
     isTarget: (expression: ts.Expression) => boolean,
     mutatesVia: (method: string) => boolean = (method) =>
         !readOnlyDataMethods.has(method),
+    checker?: ts.TypeChecker,
 ): boolean {
     if (isAssignmentExpression(node)) {
         return assignmentTargets(node.left).some(isTarget);
@@ -326,7 +348,14 @@ function writesThroughRoot(
         return isTarget(node.operand);
     }
     const target = mutatingCallTarget(node, mutatesVia);
-    return target !== undefined && isTarget(target);
+    // Calling a method on a primitive field cannot write through its owner.
+    // Argument and callback effects remain the enclosing analysis's concern.
+    return (
+        target !== undefined &&
+        (!checker ||
+            typeCanCarryReference(checker.getTypeAtLocation(target))) &&
+        isTarget(target)
+    );
 }
 
 /** `writesThroughRoot`, for a caller outside this module. */
@@ -481,6 +510,19 @@ const parameterMutationCache = new EmissionWeakMap<
     WeakMap<ts.Symbol, boolean>
 >();
 
+/** Scalar results copy their value rather than retaining a referenced owner. */
+function containsReferenceTo(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+    names: (node: ts.Node) => boolean,
+): boolean {
+    return someAnalysisNode(node, names, {
+        skip: (candidate) =>
+            ts.isExpression(candidate) &&
+            !typeCanCarryReference(checker.getTypeAtLocation(candidate)),
+    });
+}
+
 /** Whether a supported function actually writes through one parameter. */
 export function parameterIsMutated(
     checker: ts.TypeChecker,
@@ -506,14 +548,23 @@ export function parameterIsMutated(
         {
             aliasingInitializer: (initializer, scan) => {
                 const root = rootIdentifier(unwrapExpression(initializer));
-                return root !== undefined && scan.namesAlias(root);
+                return (
+                    root !== undefined &&
+                    scan.namesAlias(root) &&
+                    typeCanCarryReference(
+                        checker.getTypeAtLocation(initializer),
+                    )
+                );
             },
             mutates: (node, scan) => {
+                const containsReference = (expression: ts.Node): boolean =>
+                    containsReferenceTo(checker, expression, scan.namesAlias);
                 const rootNamesAlias = (expression: ts.Expression): boolean => {
                     const root = rootIdentifier(unwrapExpression(expression));
                     return root !== undefined && scan.namesAlias(root);
                 };
-                if (writesThroughRoot(node, rootNamesAlias)) return true;
+                if (writesThroughRoot(node, rootNamesAlias, undefined, checker))
+                    return true;
                 const retainedTarget = retainedNativeMutationTarget(
                     symbols,
                     node,
@@ -525,13 +576,13 @@ export function parameterIsMutated(
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                     (ts.isPropertyAccessExpression(node.left) ||
                         ts.isElementAccessExpression(node.left)) &&
-                    scan.containsAlias(node.right)
+                    containsReference(node.right)
                 ) {
                     return true;
                 }
                 if (
                     (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
-                    node.arguments?.some(scan.containsAlias) &&
+                    node.arguments?.some(containsReference) &&
                     isStoringDataCall(node, checker)
                 )
                     return true;
@@ -540,11 +591,11 @@ export function parameterIsMutated(
                 if (!isSupportedFunction(called) || !called.body)
                     return node.arguments.some(
                         (argument, index) =>
-                            scan.containsAlias(argument) &&
+                            containsReference(argument) &&
                             engineCallMutatesArgument(checker, node, index),
                     );
                 for (const [index, argument] of node.arguments.entries()) {
-                    if (!scan.containsAlias(argument)) continue;
+                    if (!containsReference(argument)) continue;
                     const nested = called.parameters[index]?.name;
                     if (
                         nested !== undefined &&
@@ -636,11 +687,7 @@ export function parameterIsReadOnly(
         return root !== undefined && namesParameter(root);
     };
     const containsAliasingParameter = (node: ts.Node): boolean =>
-        someAnalysisNode(node, namesParameter, {
-            skip: (candidate) =>
-                ts.isExpression(candidate) &&
-                !typeCanCarryReference(checker.getTypeAtLocation(candidate)),
-        });
+        containsReferenceTo(checker, node, namesParameter);
     const parameterCanAlias = typeCanCarryReference(
         checker.getTypeAtLocation(parameter),
     );
@@ -651,6 +698,7 @@ export function parameterIsReadOnly(
                 rootNamesParameter,
                 (method) =>
                     parameterCanAlias && !readOnlyDataMethods.has(method),
+                checker,
             )
         ) {
             return true;
@@ -820,7 +868,7 @@ function writesSharedBinding(
     active: Set<SupportedFunction>,
 ): boolean {
     const writes = someAnalysisNode(body, (node) => {
-        if (writesThroughRoot(node, isShared)) {
+        if (writesThroughRoot(node, isShared, undefined, checker)) {
             return true;
         }
         if (ts.isCallExpression(node)) {
@@ -1223,6 +1271,7 @@ export interface UserFunctionContext
             | "dataLowerer"
             | "useNativeValue"
             | "compileValue"
+            | "unwrap"
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
             | "sharedClosures"
@@ -1997,7 +2046,25 @@ export class UserFunctionLowerer {
                 ...(browserValue ? { browserValue } : {}),
             };
         }
-        const value = context.compileValue(argument);
+        const value = context.dataLowerer.narrowOptional(
+            context.compileValue(argument),
+            argument,
+        );
+        if (
+            value.kind === "record" &&
+            expected &&
+            parameter &&
+            ts.isObjectLiteralExpression(context.unwrap(argument))
+        ) {
+            return context.bindings.materializeDeclaredRecordContainers(
+                value,
+                expected,
+                argument,
+                "argument_container",
+                undefined,
+                parameter,
+            );
+        }
         if (
             value.kind === "callback" &&
             value.callbackRecordOwner?.repeatedCallbackEvaluation &&
@@ -2691,6 +2758,7 @@ export class UserFunctionLowerer {
         declarations: readonly SupportedFunction[],
         recursive = true,
         pinArguments = true,
+        reuseCallSite = false,
     ): Value {
         // Calls through an existing sibling's storage no longer need a shared
         // recursive group. Recompute the cycle without crossing those bindings,
@@ -2790,6 +2858,32 @@ export class UserFunctionLowerer {
             !recursive &&
             root.declaration.body !== undefined &&
             context.canReplaySharedCallEffects(root.declaration.body);
+        if (callSiteEffects && !reuseCallSite) {
+            // Reached factories do not necessarily record a construction on
+            // every call: a runtime queue may invoke them conditionally. The
+            // existing reusable-body checkpoint proves that distinction and
+            // keeps its native definition in the ordinary specialization cache.
+            try {
+                return context.probeEmission(() =>
+                    this.lowerRecursiveGroup(
+                        context,
+                        root,
+                        call,
+                        rootArguments,
+                        declarations,
+                        recursive,
+                        pinArguments,
+                        true,
+                    ),
+                );
+            } catch (error) {
+                if (
+                    !(error instanceof SharedCallRequiresInline) &&
+                    !(error instanceof CompileError)
+                )
+                    throw error;
+            }
+        }
         // A replayed call records its constructions at this site; one that
         // reaches them through a callback keeps the callback's iteration
         // facts only inline.
@@ -2883,12 +2977,26 @@ export class UserFunctionLowerer {
                 ? arrayReturnStorage(this.checker, declaration)
                 : undefined;
             const parameterTypes = ir.parameters.map(
-                ({ type, declaration: parameter }) => {
+                ({ type, declaration: parameter }, index) => {
                     let mapped =
                         dynamicReturn && type === returnTsType
                             ? ({ kind: "json" } as const)
                             : (context.dataTypes.dynamicJsonType(type) ??
                               context.dataTypes.fromTsType(type, parameter));
+                    const supplied =
+                        declaration === root.declaration
+                            ? rootArguments[index]?.dataType
+                            : undefined;
+                    // A concrete typed view remains a live object when passed
+                    // through ArrayLike<number>; widening into a double span
+                    // would sever aliases and cannot read buffer-backed views.
+                    if (
+                        mapped?.kind === "span" &&
+                        mapped.element.kind === "number" &&
+                        supplied &&
+                        isTypedArrayType(supplied)
+                    )
+                        mapped = supplied;
                     const freshMatchingArray =
                         arrayStorage === "fresh" &&
                         mapped?.kind === "span" &&
@@ -2964,6 +3072,21 @@ export class UserFunctionLowerer {
         const rootEntry = entryByDeclaration.get(root.declaration)!;
         root.parameters.forEach((parameter, index) => {
             const argument = rootArguments[index];
+            if (
+                parameter.declaration.initializer &&
+                (!argument ||
+                    (argument.kind === "json-null" &&
+                        argument.cpp === "std::nullopt"))
+            ) {
+                // Keep omission until the callee binds its parameters: defaults
+                // can read earlier parameters and must run on every invocation.
+                rootEntry.parameterTypes[index] = undefined;
+                rootEntry.captured[index] = argument ?? {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                };
+                return;
+            }
             const represented = argument?.dataType;
             const argumentType =
                 represented?.kind === "optional"
@@ -3061,17 +3184,15 @@ export class UserFunctionLowerer {
             if (rootEntry.parameterTypes[index]) return;
             const value =
                 argument ??
-                (parameter.declaration.initializer
-                    ? context.compileValue(parameter.declaration.initializer)
-                    : parameter.declaration.questionToken
-                      ? ({
-                            kind: "json-null",
-                            cpp: "std::nullopt",
-                        } satisfies Value)
-                      : context.fail(
-                            parameter.declaration,
-                            `Recursive function requires argument '${parameter.name.getText()}'.`,
-                        ));
+                (parameter.declaration.questionToken
+                    ? ({
+                          kind: "json-null",
+                          cpp: "std::nullopt",
+                      } satisfies Value)
+                    : context.fail(
+                          parameter.declaration,
+                          `Recursive function requires argument '${parameter.name.getText()}'.`,
+                      ));
             rootEntry.captured[index] = value;
         });
 
@@ -3096,21 +3217,24 @@ export class UserFunctionLowerer {
                   continuation: -1,
               }
             : context.functionEmissionScope();
-        const specialization = callSiteEffects
-            ? undefined
-            : this.emittedRecursiveGroups.key(scope, [
-                  context.dataTypes.captureTypeArguments(),
-                  rootEntry.captured,
-                  declarations.some((declaration) =>
-                      this.readsReceiver(declaration),
-                  )
-                      ? context.activeThis()
-                      : undefined,
-                  functionDependencies(context, declarations),
-                  // A body calling a method whose recursive group is being
-                  // emitted calls that group, which the next group is not.
-                  context.classLowerer.activeRecursion(),
-              ]);
+        const specialization =
+            callSiteEffects && !reuseCallSite
+                ? undefined
+                : this.emittedRecursiveGroups.key(scope, [
+                      context.dataTypes.captureTypeArguments(),
+                      rootEntry.captured,
+                      reuseCallSite ? rootEntry.argumentFacts : undefined,
+                      reuseCallSite,
+                      declarations.some((declaration) =>
+                          this.readsReceiver(declaration),
+                      )
+                          ? context.activeThis()
+                          : undefined,
+                      functionDependencies(context, declarations),
+                      // A body calling a method whose recursive group is being
+                      // emitted calls that group, which the next group is not.
+                      context.classLowerer.activeRecursion(),
+                  ]);
         const previous =
             specialization === undefined
                 ? undefined
@@ -3244,10 +3368,11 @@ export class UserFunctionLowerer {
             };
             context.bindings.pushScope(context.allocateUserFunctionPrefix());
             try {
-                if (sharedBody && !callSiteEffects)
+                if (sharedBody && (!callSiteEffects || reuseCallSite))
                     context.emitReusableNativeBody(
                         root.declaration,
                         emitBodies,
+                        reuseCallSite,
                     );
                 else emitBodies();
             } finally {
@@ -3662,8 +3787,15 @@ export class UserFunctionLowerer {
                                             ),
                                         ];
                                     }
+                                    const initialized = this.parameterValue(
+                                        context,
+                                        parameter,
+                                        value,
+                                        undefined,
+                                    );
                                     if (
                                         compileTime &&
+                                        initialized === value &&
                                         ts.isIdentifier(parameter.name)
                                     ) {
                                         context.bindings.bindCompileTimeValue(
@@ -3676,7 +3808,7 @@ export class UserFunctionLowerer {
                                         context,
                                         entry.declaration,
                                         parameter,
-                                        value,
+                                        initialized,
                                     );
                                 }
                                 const body = entry.declaration.body;
@@ -4447,14 +4579,17 @@ export class UserFunctionLowerer {
                             code: "co_return bbl::js::PromiseVoid{};",
                             transfer: "suspend",
                         });
-                    if (
-                        !terminated &&
-                        !ir.returnExpression &&
-                        bodyResult?.kind === "optional"
-                    ) {
-                        context.emit(
-                            `${asynchronous ? "co_return" : "return"} std::nullopt;`,
-                        );
+                    if (!terminated && !ir.returnExpression && bodyResult) {
+                        if (bodyResult.kind === "optional")
+                            context.emit(
+                                `${asynchronous ? "co_return" : "return"} std::nullopt;`,
+                            );
+                        else
+                            context.emit({
+                                kind: "control",
+                                code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                                transfer: "throw",
+                            });
                     }
                 });
             closure =
@@ -4774,14 +4909,11 @@ export class UserFunctionLowerer {
         });
     }
 
-    private bindArgumentsObject(
-        context: UserFunctionContext,
-        ir: UserFunctionIr,
-        input: readonly Value[] | (() => readonly Value[]),
-        callNode: ts.Node,
-    ): readonly Value[] | undefined {
-        const declaration = ir.declaration;
-        if (ts.isArrowFunction(declaration) || !declaration.body) return;
+    /** The implicit arguments owner is shared by native storage and finite-call admission. */
+    public argumentsReference(
+        declaration: SupportedFunction,
+    ): ts.Identifier | null {
+        if (ts.isArrowFunction(declaration) || !declaration.body) return null;
         let reference = this.argumentsReferences.get(declaration);
         if (reference === undefined) {
             reference =
@@ -4802,6 +4934,17 @@ export class UserFunctionLowerer {
                 ) ?? null;
             this.argumentsReferences.set(declaration, reference);
         }
+        return reference;
+    }
+
+    private bindArgumentsObject(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        input: readonly Value[] | (() => readonly Value[]),
+        callNode: ts.Node,
+    ): readonly Value[] | undefined {
+        const declaration = ir.declaration;
+        const reference = this.argumentsReference(declaration);
         if (!reference) return;
         const arguments_ = typeof input === "function" ? input() : input;
         const rest = restParameterIndex(declaration);
@@ -5028,7 +5171,12 @@ export class UserFunctionLowerer {
                 if (specialized) return specialized;
                 const returnType = discardReturn
                     ? undefined
-                    : this.valueLambdaReturnType(context, ir, callNode);
+                    : this.valueLambdaReturnType(
+                          context,
+                          ir,
+                          callNode,
+                          body?.resultType,
+                      );
                 if (this.documentReturnStorage(returnType)) {
                     try {
                         return context.probeEmission(() =>
@@ -5315,15 +5463,34 @@ export class UserFunctionLowerer {
         ir: UserFunctionIr,
         expression: ts.Expression,
     ): Value {
-        let returned = context.compileValue(expression);
         // Mutable arrays in returned records retain their declared storage,
         // including empty arrays and tuple fields written through aliases.
         const signature = context.checker.getSignatureFromDeclaration(
             ir.declaration,
         );
-        if (signature) {
-            const resultType =
-                context.checker.getReturnTypeOfSignature(signature);
+        const resultType =
+            signature && context.checker.getReturnTypeOfSignature(signature);
+        const declaredResult =
+            resultType &&
+            ir.declaration.type &&
+            context.checker.isArrayType(resultType)
+                ? context.dataTypes.fromTsType(resultType, ir.declaration)
+                : undefined;
+        const ownedResult =
+            declaredResult &&
+            context.dataTypes.ownReturnedArray(declaredResult);
+        const source =
+            ownedResult?.kind === "vector"
+                ? context.unwrap(expression)
+                : undefined;
+        const mappedArray =
+            ownedResult?.kind === "vector" &&
+            source &&
+            ts.isCallExpression(source)
+                ? context.dataLowerer.compileArrayFrom(source, ownedResult)
+                : undefined;
+        let returned = mappedArray ?? context.compileValue(expression);
+        if (resultType) {
             returned = context.bindings.materializeDeclaredRecordContainers(
                 returned,
                 context.checker.getAwaitedType(resultType) ?? resultType,
@@ -5686,6 +5853,7 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         ir: UserFunctionIr,
         callNode: ts.Node,
+        expectedResult?: DataType,
     ): DataType {
         const signature = this.checker.getSignatureFromDeclaration(
             ir.declaration,
@@ -5751,6 +5919,7 @@ export class UserFunctionLowerer {
             );
             if (!incompatible) type = inferred;
         }
+        type ??= expectedResult;
         if (!type) {
             context.fail(
                 callNode,
@@ -5796,8 +5965,12 @@ export class UserFunctionLowerer {
         fail: Fail,
     ): void {
         const rest = restParameterIndex(ir.declaration);
-        const minimum = ir.parameters.filter(
-            ({ declaration }) =>
+        const resolved = this.checker.getResolvedSignature(call);
+        const parameters =
+            resolved?.getDeclaration()?.parameters ??
+            ir.parameters.map((parameter) => parameter.declaration);
+        const minimum = parameters.filter(
+            (declaration) =>
                 !declaration.initializer &&
                 !declaration.questionToken &&
                 !declaration.dotDotDotToken,
@@ -5811,12 +5984,9 @@ export class UserFunctionLowerer {
                 `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
             );
         }
-        // A generic declaration's parameters are typed in its own
-        // parameters; the resolved signature spells what this call made
-        // of them.
-        const resolved = ir.declaration.typeParameters?.length
-            ? this.checker.getResolvedSignature(call)
-            : undefined;
+        // A returned callback can mention its factory's type parameters
+        // without declaring any itself. The source call's signature carries
+        // those captured substitutions as well as directly generic calls.
         call.arguments.forEach((argument, index) => {
             const parameter = ir.parameters[index];
             if (
@@ -6006,6 +6176,12 @@ export class UserFunctionLowerer {
                     ),
             );
             if (
+                value.dataType?.kind === "struct" &&
+                !context.dataTypes.isClassStruct(value.dataType.name) &&
+                !callArgumentIsReadOnly(this.checker, call, index)
+            )
+                context.dataTypes.markStoredObjectReferences(value.dataType);
+            if (
                 pinArguments &&
                 value.kind === "data" &&
                 value.dataType &&
@@ -6044,6 +6220,18 @@ export class UserFunctionLowerer {
         });
         if (rest !== undefined && values.length === rest) {
             values.push({ kind: "tuple", cpp: "", tupleElements: expanded });
+        }
+        // Contextual methods can implement an optional signature without a
+        // question token in their own syntax. Omission is decided by the call's
+        // signature; the implementation still owns default evaluation.
+        const parameters = this.checker
+            .getResolvedSignature(call)
+            ?.getDeclaration()?.parameters;
+        while (values.length < ir.parameters.length) {
+            const parameter = parameters?.[values.length];
+            if (!parameter || !this.checker.isOptionalParameter(parameter))
+                break;
+            values.push({ kind: "json-null", cpp: "std::nullopt" });
         }
         return values;
     }

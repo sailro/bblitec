@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 
 /**
  * A module-scope string constant a required-text position reads (a shader
@@ -116,11 +117,19 @@ document.body.appendChild(createDeck());`;
     return compileSource(source, { fileName }).cpp;
 }
 
-test("unrolls a static iteration over a module constant the program computes", () => {
-    const labels = [...deckModule("").matchAll(/"(Left|Up|Right) arrow"/g)].map(
-        ([, label]) => label,
+test("preserves UI iteration order from a computed module constant", (t) => {
+    const cpp = deckModule("");
+    writeFileSync(
+        resolve("artifacts/executed-module-constants/program.hpp"),
+        cpp,
     );
-    assert.deepEqual(labels, ["Left", "Up", "Right"]);
+    runRmlUiFixture(t, "executed-module-constants", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
 });
 
 test("leaves a module constant built from a written one to its refusal", () => {

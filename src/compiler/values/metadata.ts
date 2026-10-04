@@ -18,6 +18,7 @@ const resourceMetadataFields = {
     "ui-element": [
         "uiTag",
         "uiHostId",
+        "uiLookupId",
         "uiDataset",
         "uiStaticId",
         "uiRoot",
@@ -58,6 +59,7 @@ const resourceMetadataFields = {
         "sharedRecordContainer",
         "retainedNativeRecord",
         "recordProperties",
+        "recordPropertyOrder",
         "recordOwnKeys",
         "moduleNamespace",
         "staticJson",

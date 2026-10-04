@@ -6,7 +6,7 @@ import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
-import { thrownMessage } from "../error-values.js";
+import { authoredErrorValue, thrownMessage } from "../error-values.js";
 import { provenUndefinedValue } from "../undefined-values.js";
 import {
     compileJsonRecordView,
@@ -380,6 +380,8 @@ export const scalarsSinks: DataSinkOperations<
             ),
         value: (_type, lowerer, value, node) => {
             if (value.dataType?.kind === "error") return value.cpp;
+            const authored = authoredErrorValue(lowerer.context, value);
+            if (authored) return authored.cpp;
             if (!value.nativeError) return undefined;
             const message = thrownMessage(value);
             return message

@@ -2291,6 +2291,7 @@ SpriteRendererHandle create_sprite_renderer(
     renderer.layers = std::move(options.layers);
     renderer.clear = options.clear;
     renderer.clear_value = options.clear_value;
+    renderer.clear_value_reader = std::move(options.clear_value_reader);
     for (const Sprite2DLayerHandle& layer : renderer.layers) {
         if (layer.value >= engine.sprite_layers.size()) {
             throw std::runtime_error(
@@ -2385,6 +2386,7 @@ void dispose_sprite_renderer(
     if (record.disposed) return;
     unregister_sprite_renderer(engine, renderer);
     record.disposed = true;
+    record.clear_value_reader = {};
     record.layers.clear();
     record.layers_version += 1u;
 }

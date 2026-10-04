@@ -653,7 +653,10 @@ template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... 
         block->attach();
     auto* value = block.get();
     value->lifetime = std::move(block);
-    return Ref<T>(value);
+    Ref<T> result(value);
+    if constexpr (requires { result->bind_accessors(result); })
+        result->bind_accessors(result);
+    return result;
 }
 
 /**
@@ -1574,6 +1577,7 @@ namespace detail {
  * reads it without the guard a function-local static checks on every call.
  */
 template <typename T> inline constinit const Ref<T> empty_ref{};
+template <typename Signature> inline const Callback<Signature> empty_callback{};
 } // namespace detail
 
 template <typename T> struct MapGetResult<Ref<T>> {
@@ -1581,6 +1585,14 @@ template <typename T> struct MapGetResult<Ref<T>> {
 
     [[nodiscard]] static Type missing() { return detail::empty_ref<T>; }
     [[nodiscard]] static Type found(Ref<T>& value) { return value; }
+};
+
+/** Stored callbacks carry absence in their empty function identity. */
+template <typename R, typename... Args> struct MapGetResult<Callback<R(Args...)>> {
+    using Type = const Callback<R(Args...)>&;
+
+    [[nodiscard]] static Type missing() { return detail::empty_callback<R(Args...)>; }
+    [[nodiscard]] static Type found(Callback<R(Args...)>& value) { return value; }
 };
 
 /** An unmapped arguments object owns indexed values independently of the rest array. */
@@ -4031,6 +4043,11 @@ template <typename T> inline Array<T>& array_reverse(Array<T>& values) {
     return values;
 }
 
+template <typename T> inline Array<T> array_reverse(Array<T>&& values) {
+    array_reverse(values);
+    return std::move(values);
+}
+
 /**
  * `fill(value, start, end)` — the ranged form, over any container the
  * lowerer serves. Both endpoints are relative indices, so a negative one
@@ -4297,6 +4314,11 @@ template <typename Values>
         throw_index_error(site, "read", index, values.size());
     }
     return values[accepted_index(index)];
+}
+
+[[nodiscard]] inline U8Array::value_type array_index_checked(U8Array&& values, double index,
+                                                             const char* site) {
+    return array_index_checked(values, index, site);
 }
 template <typename T>
 [[nodiscard]] inline T array_index_checked(const TypedArray<T>& values, double index,

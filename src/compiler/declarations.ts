@@ -396,6 +396,38 @@ export class DeclarationLowerer {
         this.forwardBindings.set(symbol, "hoisted");
     }
 
+    /** A module's retained lexical home exists before its lazy evaluation. */
+    public prepareModuleBinding(declaration: ts.VariableDeclaration): void {
+        if (
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.BlockScoped) === 0
+        )
+            return this.context.fail(
+                declaration,
+                "Lazy module var bindings require hoisted undefined storage.",
+            );
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
+            return this.context.fail(
+                declaration,
+                "Lazy module bindings require an identifier and initializer.",
+            );
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        const mapped = this.lexicalBindingType(
+            declaration.name,
+            declaration.initializer,
+        );
+        if (!symbol || !mapped)
+            return this.context.fail(
+                declaration,
+                "Lazy module bindings require an owned data representation.",
+            );
+        const type = this.context.dataTypes.markStoredObjectReferences(mapped);
+        this.forwardBindings.set(symbol, {
+            cppName: this.declareLexicalBinding(declaration.name, symbol, type),
+            type,
+        });
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -758,8 +790,11 @@ export class DeclarationLowerer {
             this.context.isNativeHostUiLookup(hostLookup)
                 ? this.context.ui.lookupElementId(hostLookup)
                 : undefined;
-        if (id !== undefined) {
-            const tag = this.context.ui.nativeHostUiTags().get(id)!;
+        const tag =
+            id !== undefined
+                ? this.context.ui.nativeHostUiTags().get(id)
+                : undefined;
+        if (id !== undefined && tag !== undefined) {
             const value: Value = {
                 kind: "ui-element",
                 cpp: cppName,
@@ -986,11 +1021,22 @@ export class DeclarationLowerer {
             );
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
+            const accessors = [
+                ...Object.values(value.recordGetters ?? {}),
+                ...Object.values(value.recordSetters ?? {}),
+            ];
+            const accessorWrites = accessors.length
+                ? this.context.evaluationOrder.bodyAccess(accessors).writes
+                : undefined;
             if (
                 value.kind === "record" &&
                 !aliasesRecord &&
-                this.inferredObjectIsMutated(declaration.name)
+                (accessorWrites?.heap ||
+                    accessorWrites?.any ||
+                    this.inferredObjectIsMutated(declaration.name))
             ) {
+                // Accessor bodies can mutate their receiver even when a caller
+                // only consumes a scalar result through a structural view.
                 value = this.context.bindings.materializeRecordScalars(
                     value,
                     `${sourceName}_fields`,
@@ -1229,6 +1275,17 @@ export class DeclarationLowerer {
                               staticElementsOwner,
                           }
                         : {}),
+                    ...(referenceStruct && narrowed.staticElementsOwner
+                        ? {
+                              staticElementsOwner: narrowed.staticElementsOwner,
+                              ...(narrowed.staticElementIndex !== undefined
+                                  ? {
+                                        staticElementIndex:
+                                            narrowed.staticElementIndex,
+                                    }
+                                  : {}),
+                          }
+                        : {}),
                     ...(!narrowed.freshData && narrowed.collectionCardinality
                         ? {
                               collectionCardinality:
@@ -1386,7 +1443,19 @@ export class DeclarationLowerer {
             ...value,
             cpp: boundCpp,
             ...(sharedBinding ? { sharedStorageCpp: cppName } : {}),
-            ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
+            ...(optionalFoundCpp
+                ? {
+                      optionalFoundCpp,
+                      nativeCompanionCaptures: {
+                          ...value.nativeCompanionCaptures,
+                          optionalFoundCpp: [
+                              this.context.registerNativeConstBinding(
+                                  optionalFoundCpp,
+                              ),
+                          ],
+                      },
+                  }
+                : {}),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
             nativeBinding: true,
         };
@@ -2261,11 +2330,30 @@ export class DeclarationLowerer {
                         declaration,
                         "Demanded binding no longer has a native storage representation.",
                     );
+                // Retained readonly arrays own their initializer just like
+                // returned arrays; a span would outlive a temporary projection.
+                type = this.context.dataTypes.ownReturnedArray(type);
                 this.context.reachJsData();
-                const initializer = this.context.dataLowerer.compileForSink(
-                    declaration.initializer,
-                    type,
-                );
+                const literal = this.context.unwrap(declaration.initializer);
+                const arraySnapshot =
+                    type.kind === "vector" &&
+                    type.element.kind === "struct" &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name) &&
+                    ts.isArrayLiteralExpression(literal) &&
+                    literal.elements.every(ts.isObjectLiteralExpression)
+                        ? this.context.compileValue(literal)
+                        : undefined;
+                const initializer = arraySnapshot
+                    ? this.context.dataLowerer.compileKnownValueForSink(
+                          arraySnapshot,
+                          type,
+                          declaration.initializer,
+                      )
+                    : this.context.dataLowerer.compileForSink(
+                          declaration.initializer,
+                          type,
+                      );
                 this.context.emit({
                     kind: "declaration",
                     type: sharedClosureStorage
@@ -2276,15 +2364,31 @@ export class DeclarationLowerer {
                         ? `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(type)}>(${initializer})`
                         : initializer,
                 });
-                this.context.bindings.defineVariable(name, {
+                const bound: Value = {
                     ...this.context.dataLowerer.leafValue(
                         sharedClosureStorage ? `(*${cppName})` : cppName,
                         type,
                     ),
+                    ...(type.kind === "struct" &&
+                    ts.isObjectLiteralExpression(
+                        this.context.unwrap(declaration.initializer),
+                    ) &&
+                    !this.context.sharedClosures.identifierIsRebound(name)
+                        ? { optionalFoundCpp: "true" }
+                        : {}),
                     ...(sharedClosureStorage
                         ? { sharedStorageCpp: cppName }
                         : {}),
-                });
+                };
+                this.context.bindings.defineVariable(name, bound);
+                if (arraySnapshot)
+                    this.context.dataLowerer.retainArrayLiteralFacts(
+                        bound,
+                        arraySnapshot,
+                        declaration.initializer,
+                    );
+                const symbol = this.context.symbols.valueSymbol(name);
+                if (symbol) this.context.staticConstants.delete(symbol);
                 return true;
             }
             return this.emitDynamicDataBinding(
@@ -2815,6 +2919,11 @@ export class DeclarationLowerer {
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
+            ...(annotated.kind === "struct"
+                ? nativeDataMetadata(
+                      this.context.dataLowerer.leafValue(boundCpp, annotated),
+                  )
+                : {}),
             ...(initializerSnapshot?.packagedBodySource
                 ? { packagedBodySource: initializerSnapshot.packagedBodySource }
                 : {}),
@@ -2845,7 +2954,8 @@ export class DeclarationLowerer {
                     }
                   : {}),
             // Shared storage does not change a selected object's presence.
-            ...(ts.isConditionalExpression(initializer) &&
+            ...((ts.isConditionalExpression(initializer) ||
+                ts.isObjectLiteralExpression(initializer)) &&
             settledPresence !== undefined &&
             !this.context.sharedClosures.identifierIsRebound(name)
                 ? { optionalFoundCpp: settledPresence }
@@ -3889,10 +3999,19 @@ export class DeclarationLowerer {
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
             let propertyValue =
-                (!present || present.kind === "json-null") &&
+                (!present ||
+                    (present.kind === "json-null" &&
+                        present.cpp === "std::nullopt")) &&
                 element.initializer
                     ? this.context.compileValue(element.initializer)
                     : present;
+            if (
+                !propertyValue &&
+                !value.moduleNamespace &&
+                nullability(this.context.checker.getTypeAtLocation(name))
+                    .undefined
+            )
+                propertyValue = { kind: "json-null", cpp: "std::nullopt" };
             if (!propertyValue) {
                 this.context.fail(
                     element,

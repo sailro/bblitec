@@ -40,6 +40,28 @@ test("retained DOM queries observe authored tree changes and return ordered snap
         if (!root.matches("div:has(> button.last)")) throw new Error("relative match");
         function find(parent: HTMLElement): Element | null { return parent.querySelector(".entry"); }
         if (find(root) !== first) throw new Error("helper query");
+        function documentQueries(doc: Document): void {
+            if (doc.querySelector("#panel") !== root) throw new Error("stored document query");
+            if (doc.querySelectorAll("button.entry").length !== 2) throw new Error("stored document list");
+            if (doc.getElementById("panel") !== root) throw new Error("stored document id");
+            const extra = doc.createElement("div");
+            extra.id = "through-document";
+            doc.body.appendChild(extra);
+            if (doc.querySelector("#through-document") !== extra) throw new Error("stored document construction");
+            const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.id = "through-svg";
+            doc.body.appendChild(svg);
+            if (doc.getElementById("through-svg") !== svg) throw new Error("stored document namespace");
+        }
+        documentQueries(document);
+        const documents: Array<Document | null> = [document, null];
+        let receiverReads = 0;
+        let idReads = 0;
+        function selected(index: number): Document | null { receiverReads++; return documents[index]!; }
+        function lookupId(): string { idReads++; return "panel"; }
+        if (selected(0)?.getElementById(lookupId()) !== root) throw new Error("optional document lookup");
+        if ((selected(1)?.getElementById(lookupId()) ?? null) !== null) throw new Error("absent document lookup");
+        if (receiverReads !== 2 || idReads !== 1) throw new Error("document receiver and argument effects");
         third.appendChild(first);
         second.classList.remove("entry");
         if (snapshot.length !== 2 || snapshot[0] !== first || snapshot[1] !== second) throw new Error("snapshot lifetime");

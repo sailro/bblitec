@@ -5,6 +5,10 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { FunctionSpecializations } from "../src/compiler/function-specializations.js";
+import {
+    EmissionTransaction,
+    writable,
+} from "../src/compiler/emission-transaction.js";
 import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import {
     optionalNativeFixtureTools,
@@ -252,6 +256,71 @@ test("specialization snapshots distinguish changed facts, aliases and scopes", (
     assert.notEqual(
         cache.key(scope, [{ [key]: 1 }]),
         cache.key(scope, [{ [key]: 2 }]),
+    );
+});
+
+test("specialization schemas preserve descriptors, cycles, sparse arrays and rollback", () => {
+    const cache = new FunctionSpecializations<string>();
+    const scope = { lexical: {}, emission: 0, block: 0, continuation: -1 };
+    let calls = 0;
+    const getter = () => {
+        calls++;
+        return 4;
+    };
+    const metadata: Record<string | symbol, unknown> = { value: 1 };
+    Object.defineProperty(metadata, "computed", {
+        get: getter,
+        configurable: true,
+    });
+    metadata.self = metadata;
+    const original = cache.key(scope, [metadata]);
+    const equivalent: Record<string | symbol, unknown> = {};
+    equivalent.self = equivalent;
+    Object.defineProperty(equivalent, "computed", {
+        get: getter,
+        configurable: true,
+    });
+    equivalent.value = 1;
+    assert.equal(cache.key(scope, [equivalent]), original);
+    assert.equal(calls, 0);
+    new EmissionTransaction().run(() => {
+        writable(metadata).value = 2;
+        writable(metadata).extra = metadata;
+        writable(metadata)[Symbol("temporary")] = 3;
+        assert.notEqual(cache.key(scope, [metadata]), original);
+        return false;
+    }, Boolean);
+    assert.equal(cache.key(scope, [metadata]), original);
+    Object.defineProperty(metadata, "computed", {
+        get: () => 4,
+        configurable: true,
+    });
+    assert.notEqual(cache.key(scope, [metadata]), original);
+    assert.equal(calls, 0);
+    const sparse: unknown[] = [];
+    sparse.length = 2;
+    sparse[1] = undefined;
+    assert.notEqual(
+        cache.key(scope, [sparse]),
+        cache.key(scope, [[undefined, undefined]]),
+    );
+    assert.notEqual(
+        cache.key(scope, [
+            new Map([
+                ["a", metadata],
+                ["b", equivalent],
+            ]),
+        ]),
+        cache.key(scope, [
+            new Map([
+                ["b", equivalent],
+                ["a", metadata],
+            ]),
+        ]),
+    );
+    assert.equal(
+        cache.key(scope, [{ b: [1, true], a: "x" }]),
+        '0:0:0:-1:[{string:"a":string:"x",string:"b":[number:"1",boolean:"true"]}]',
     );
 });
 

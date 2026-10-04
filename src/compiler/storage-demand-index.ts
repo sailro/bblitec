@@ -12,7 +12,45 @@ const candidatesByChecker = new WeakMap<
     }
 >();
 
-export function storedSourceTypes(
+/** Structural storage proofs depend only on the checked source, not emitted layouts. */
+const referenceStorageByChecker = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.Type, boolean>
+>();
+
+export function sourceTypeRequiresReferenceStorage(
+    checker: ts.TypeChecker,
+    sources: readonly ts.SourceFile[],
+    sourceType: ts.Type,
+): boolean {
+    const target = checker.getNonNullableType(sourceType);
+    let cache = referenceStorageByChecker.get(checker);
+    if (!cache) {
+        cache = new WeakMap();
+        referenceStorageByChecker.set(checker, cache);
+    }
+    const cached = cache.get(target);
+    if (cached !== undefined) return cached;
+    for (const candidate of storedSourceTypes(checker, sources)) {
+        if (
+            candidate === target ||
+            (candidate.aliasSymbol !== undefined &&
+                candidate.aliasSymbol === target.aliasSymbol) ||
+            (candidate.symbol !== undefined &&
+                candidate.symbol === target.symbol) ||
+            // Coalesced native layouts retain structurally equivalent demands.
+            (checker.isTypeAssignableTo(candidate, target) &&
+                checker.isTypeAssignableTo(target, candidate))
+        ) {
+            cache.set(target, true);
+            return true;
+        }
+    }
+    cache.set(target, false);
+    return false;
+}
+
+function storedSourceTypes(
     checker: ts.TypeChecker,
     sources: readonly ts.SourceFile[],
 ): Iterable<ts.Type> {

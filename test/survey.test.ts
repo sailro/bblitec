@@ -27,7 +27,7 @@ function first(): void {
     total += 1;
 }
 function second(): void {
-    const p = new Proxy({}, {});
+    const p = new FinalizationRegistry(() => {});
     if (p) total += 2;
     total += 3;
 }
@@ -66,13 +66,13 @@ test("a survey records every refusal it reaches and continues past each", () => 
     assert.equal(inheritance.statement.kind, "ExpressionStatement");
     assert.equal(inheritance.statement.function, "first");
     assert.equal(inheritance.cascade, undefined);
-    const proxy = report.refusals.find(
+    const unsupported = report.refusals.find(
         (refusal) => refusal.message === "Unsupported constructor expression.",
     );
-    assert.ok(proxy, listed(report));
-    assert.equal(proxy.statement.function, "second");
-    assert.equal(proxy.statement.kind, "VariableStatement");
-    assert.equal(proxy.cascade, undefined);
+    assert.ok(unsupported, listed(report));
+    assert.equal(unsupported.statement.function, "second");
+    assert.equal(unsupported.statement.kind, "VariableStatement");
+    assert.equal(unsupported.cascade, undefined);
     // `p` was declared by the refused statement: its later read is a cascade
     // of that refusal, not a gap of its own.
     const cascade = report.refusals.find(
@@ -80,7 +80,7 @@ test("a survey records every refusal it reaches and continues past each", () => 
     );
     assert.ok(cascade, listed(report));
     assert.match(cascade.message, /^Unknown or unsupported variable 'p'\./);
-    assert.deepEqual(cascade.cascade, proxy.site);
+    assert.deepEqual(cascade.cascade, unsupported.site);
     assert.equal(cascade.statement.line, 11);
     assert.equal(cascade.statement.kind, "IfStatement");
     assert.equal(cascade.class, refusalClass(cascade.message));
@@ -88,8 +88,8 @@ test("a survey records every refusal it reaches and continues past each", () => 
     const classes = Object.fromEntries(
         report.classes.map((entry) => [entry.class, entry]),
     );
-    assert.equal(classes[proxy.class]?.sites, 1);
-    assert.equal(classes[proxy.class]?.cascades, 0);
+    assert.equal(classes[unsupported.class]?.sites, 1);
+    assert.equal(classes[unsupported.class]?.cascades, 0);
     assert.equal(classes[cascade.class]?.example, cascade.message);
     assert.equal(classes[cascade.class]?.cascades, 1);
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
@@ -97,12 +97,13 @@ test("a survey records every refusal it reaches and continues past each", () => 
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
     // `handle` is never bound: its member calls name it, not a gap of their own.
+    // FinalizationRegistry is deliberately outside the supported runtime.
     const { report } = surveySource(
         `
         let total = 0;
         function create(name: string): { ready: number; add(value: number): void } {
-            const raw = document.getElementById(name);
-            return { ready: raw !== null ? 1 : 0, add(value: number): void { total += value; } };
+            const raw = { name };
+            return { ready: new FinalizationRegistry<string>(() => {}).unregister(raw) ? 1 : 0, add(value: number): void { total += value; } };
         }
         const handle = create("mode");
         handle.add(2);
@@ -130,8 +131,8 @@ test("a refused value return is the calling statement's refusal", () => {
     const { report } = surveySource(
         `
         function pick(name: string): number {
-            const raw = document.getElementById(name);
-            return raw !== null ? 1 : 0;
+            const raw = { name };
+            return new FinalizationRegistry<string>(() => {}).unregister(raw) ? 1 : 0;
         }
         const chosen = pick("mode");
         const other = pick("other");
@@ -150,7 +151,8 @@ test("a refused value return is the calling statement's refusal", () => {
     assert.equal(declaration.occurrences, 4);
     assert.equal(declaration.statements, 4);
     assert.equal(declaration.cascade, undefined);
-    assert.deepEqual(report.statements, { attempted: 4, refused: 4 });
+    // Each calling statement also visits the successful local declaration.
+    assert.deepEqual(report.statements, { attempted: 8, refused: 4 });
 });
 
 test("a survey names a class member's refusal by its qualified name", () => {
@@ -160,7 +162,7 @@ test("a survey names a class member's refusal by its qualified name", () => {
         let total = 0;
         class Holder {
             run(): void {
-                const p = new Proxy({}, {});
+                const p = new FinalizationRegistry(() => {});
                 if (p) total += 1;
             }
         }
@@ -169,11 +171,11 @@ test("a survey names a class member's refusal by its qualified name", () => {
     `,
         { fileName: resolve("survey-member.ts") },
     );
-    const proxy = report.refusals.find(
+    const unsupported = report.refusals.find(
         (refusal) => refusal.message === "Unsupported constructor expression.",
     );
-    assert.ok(proxy, listed(report));
-    assert.equal(proxy.statement.function, "Holder.run");
+    assert.ok(unsupported, listed(report));
+    assert.equal(unsupported.statement.function, "Holder.run");
 });
 
 test("refusal classes elide names, numbers and parenthesised detail", () => {

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
+import { CompileError } from "../src/compiler/compile-error.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -86,6 +87,28 @@ test("local storage can be injected through nullable method records", async (t) 
                 source,
             ]);
             execFileSync(executable, { stdio: "pipe" });
+        },
+    );
+});
+
+test("retained native service views refuse unrepresented structural identity", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Store { getItem(key:string):string|null; setItem(key:string,value:string):void; }
+            function boundary():{storage:Store|null} {
+                let storage:Store|null=null;
+                try { storage=typeof localStorage==='undefined'?null:localStorage; }
+                catch { storage=null; }
+                return {storage};
+            }
+            const retained:(()=>{storage:Store|null})[]=[boundary];
+            if(retained.length!==1) throw new Error('retained boundary');
+        `),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(error.detail, /structural record.*identity/);
+            return true;
         },
     );
 });
@@ -278,9 +301,8 @@ test("a module constant a platform probe initializes is a run-time condition", (
         render();`;
     writeFileSync(fileName, source);
     const { cpp } = compileSource(source, { fileName });
-    assert.match(
-        cpp,
-        /\(bblscene::detectMac\(\) \? "keys\.cmd" : "keys\.ctrl"\)/,
-    );
-    assert.match(cpp, /if \(bblscene::detectMac\(\)\)/);
+    assert.match(cpp, /bool v_module\d+_IS_MAC = bblscene::detectMac\(\);/);
+    assert.equal((cpp.match(/bblscene::detectMac\(\)/g) ?? []).length, 1);
+    assert.match(cpp, /\(v_module\d+_IS_MAC \? "keys\.cmd" : "keys\.ctrl"\)/);
+    assert.match(cpp, /if \(v_module\d+_IS_MAC\)/);
 });

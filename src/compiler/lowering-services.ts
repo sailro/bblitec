@@ -96,6 +96,7 @@ export interface LoweringServices {
     readonly sourceFile: ts.SourceFile;
     readonly program: ts.Program;
     readonly moduleNamespaces: import("./module-namespaces.js").ModuleNamespaces;
+    readonly recordProxies: import("./proxies.js").RecordProxies;
     moduleContainerIsMutated(name: ts.Identifier): boolean;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
@@ -166,6 +167,12 @@ export interface LoweringServices {
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
+    emitUiDatasetProperty(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void;
     emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
@@ -350,6 +357,7 @@ export interface LoweringServices {
     compileRecordGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
+        receiver?: Value,
     ): Value;
     compileRecordSetter(
         owner: Value,
@@ -464,7 +472,11 @@ export interface LoweringServices {
     canShareFunctionBody(body: ts.Node): boolean;
     reachesOnlyClosedEffects(body: ts.Node): boolean;
     reachesOpaqueCallee(body: ts.Node): boolean;
-    emitReusableNativeBody<T>(declaration: ts.Node, emitBody: () => T): T;
+    emitReusableNativeBody<T>(
+        declaration: ts.Node,
+        emitBody: () => T,
+        preserveControlFlow?: boolean,
+    ): T;
     compileSharedMethod(
         declaration: ts.MethodDeclaration,
         call: ts.CallExpression,
@@ -560,6 +572,7 @@ export interface LoweringServices {
         owner: Value,
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
+        receiverType?: DataType<"struct">,
     ): string;
     compilePredicateWithValues(
         declaration:

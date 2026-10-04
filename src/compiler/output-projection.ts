@@ -545,6 +545,7 @@ interface MainCppProjection {
     features: readonly Feature[];
     jsDataReached: boolean;
     deferredCapabilitiesReached?: boolean;
+    windowStorageReached?: boolean;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
     runtimeMeshProfiles?: boolean;
@@ -736,6 +737,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("browser:file")
             ? "#include <bblite/js_file.hpp>\n"
+            : "") +
+        (projection.windowStorageReached
+            ? "#include <bblite/pal_window_objects.hpp>\n"
             : "") +
         (features.includes("profile:source")
             ? "#include <bblite/source_profile.hpp>\n"

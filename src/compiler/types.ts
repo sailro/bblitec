@@ -54,6 +54,8 @@ import type { DeploymentOptions } from "./deployment.js";
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
     tag: string;
+    /** Inline classic script to execute at this parser position. */
+    startupScript?: string;
     /** Text before the children. */
     text?: string;
     attributes?: Record<string, string>;
@@ -111,12 +113,18 @@ export interface PageLoaderProgram {
     specifier: string;
 }
 
+export interface PageStartupScript {
+    fileName: string;
+    source: string;
+}
+
 /** The HTML page that hosts the entry. */
 export interface HostPageProgram {
     path: string;
     /** The site root "/" names; the page's own directory by default. */
     root?: string;
     loader?: PageLoaderModule;
+    startup?: PageStartupScript[];
 }
 
 /** A host file line a refusal points at when no source node does. */
@@ -2012,6 +2020,8 @@ export interface ValueFields {
     uiTag?: string;
     /** Audited host lookup whose native storage is initialized after engine creation. */
     uiHostId?: string;
+    /** ID provenance of a nullable document lookup, without an existence proof. */
+    uiLookupId?: string;
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
     environmentAsset?: CompileAsset;
@@ -2065,6 +2075,8 @@ export interface ValueFields {
     };
     /** Root binding whose static element snapshot this parameter alias shares. */
     staticElementsOwner?: Value;
+    /** Fixed native slot whose scalar facts belong to staticElementsOwner. */
+    staticElementIndex?: number;
     /** Shared by aliases even after their generation-known elements are withdrawn. */
     collectionCardinality?: CollectionCardinality;
     /** Representative metadata for a handle read from a runtime container. */
@@ -2600,6 +2612,8 @@ export interface ValueFields {
     staticJson?: unknown;
     tupleElements?: readonly Value[];
     recordProperties?: Readonly<Record<string, Value>>;
+    /** Mutable creation order for a compile-time record's data and accessor keys. */
+    recordPropertyOrder?: readonly string[];
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /** Module namespace exports are live bindings and cannot be written through this record. */
@@ -3045,6 +3059,8 @@ export interface WorkerCompilation {
 }
 
 export interface ResolvedCompileOptions extends DeploymentOptions {
+    /** An authored page replaces the default host, including its implicit canvas. */
+    hostPage?: HostPageProgram;
     deferredCapabilities?: "runtime-throw";
     workers?: WorkerCompilation;
     /** Reached query mutation requires native identities throughout this realm. */
@@ -3056,6 +3072,7 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     fileName: string;
     /** The page's inline module script in the program, and the import of the entry it ends with. */
     pageLoader?: PageLoaderProgram;
+    pageStartup?: readonly ts.SourceFile[];
     title: string;
     width: number;
     height: number;

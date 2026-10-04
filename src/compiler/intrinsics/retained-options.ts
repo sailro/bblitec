@@ -53,19 +53,53 @@ export function retainedOptions(
         site,
     );
     const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
-    return context.dataTypes.structFields(type.name, site).map((field) => ({
-        name: field.sourceName,
-        cpp: `${owner.cpp}${access}${field.name}`,
-        type: field.type,
-        ...(field.optionalProperty ? { optionalProperty: true as const } : {}),
-        ...(field.optionalProperty &&
-        field.type.kind === "struct" &&
-        context.dataTypes.isReferenceStruct(field.type.name)
-            ? {
-                  present: `static_cast<bool>(${owner.cpp}${access}${field.name})`,
-              }
-            : {}),
-    }));
+    return context.dataTypes
+        .structFields(type.name, site)
+        .filter(
+            (field) =>
+                !field.optionalProperty ||
+                !owner.recordOwnKeys ||
+                owner.recordOwnKeys.includes(field.sourceName),
+        )
+        .map((field) => {
+            const cpp = `${owner.cpp}${access}${field.name}`;
+            const fact =
+                !field.optionalProperty ||
+                owner.recordOwnKeys?.includes(field.sourceName)
+                    ? owner.recordProperties?.[field.sourceName]
+                    : undefined;
+            return {
+                name: field.sourceName,
+                cpp,
+                type: field.type,
+                // Facts select generation-time programs; runtime reads still use the
+                // retained owner, including collections whose contents may have changed.
+                value: {
+                    kind: "data",
+                    cpp,
+                    dataType: field.type,
+                    ...(fact?.staticString !== undefined
+                        ? { staticString: fact.staticString }
+                        : {}),
+                    ...(fact?.staticNumber !== undefined
+                        ? { staticNumber: fact.staticNumber }
+                        : {}),
+                    ...(fact?.staticBoolean !== undefined
+                        ? { staticBoolean: fact.staticBoolean }
+                        : {}),
+                },
+                ...(field.optionalProperty
+                    ? { optionalProperty: true as const }
+                    : {}),
+                ...(field.optionalProperty &&
+                field.type.kind === "struct" &&
+                context.dataTypes.isReferenceStruct(field.type.name)
+                    ? {
+                          present: `static_cast<bool>(${cpp})`,
+                      }
+                    : {}),
+            };
+        });
 }
 
 /** Preserve absence so the source factory owns default application. */
@@ -82,7 +116,20 @@ export function emitPresentOption(
         type = type.inner;
     }
     if (guard) context.emit({ kind: "open", code: `if (${guard}) {` });
-    emit({ ...member, cpp, ...(type ? { type } : {}) });
+    emit({
+        ...member,
+        cpp,
+        ...(type ? { type } : {}),
+        ...(member.value
+            ? {
+                  value: {
+                      ...member.value,
+                      cpp,
+                      ...(type ? { dataType: type } : {}),
+                  },
+              }
+            : {}),
+    });
     if (guard) context.emit({ kind: "close", code: "}" });
 }
 

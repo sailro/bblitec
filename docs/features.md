@@ -52,22 +52,26 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 owned argument/result representations. Their reached sites appear in `manifest.deferredCapabilities`;
 runtime calls throw or reject according to each descriptor. Later source still compiles normally.
 Registered audio graph operations retain typed failures; engine/source option variants reject only for present options, preserving the existing absent-options adapters.
+Registered media stream, recording, streamed-audio and script-element operations throw or reject at their typed boundary. Recorder and BlobEvent values have owned nominal storage; no unavailable producer returns a dummy object.
+Session storage access, idle scheduling/cancellation, dynamic surface pixel-ratio reads/writes and application-realm device recovery have typed throwing boundaries. Idle callbacks retain owned signatures; scene-only recovery keeps its supported path.
 Unregistered APIs, unsupported type/ownership forms and dynamic argument spreads still refuse.
 The default mode retains strict admission and existing capability-absence guards.
 AbortController/AbortSignal use distinct opaque storage with no successful native producer. Their registered constructor, state reads, abort operations and signal-backed listener lifetimes throw when reached; an undefined listener signal uses ordinary native dispatch.
 
 | Area | Supported | Limits/adaptations |
 | --- | --- | --- |
-| Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization; literal dynamic imports of evaluated modules or primitive literal/function definitions retain asynchronous settlement, namespace identity and live exports; authored entry calls preserve surrounding startup work | Runtime-selected modules; lazy modules requiring runtime initialization; callable namespace `then` exports; unrepresented mutable initializer dependencies |
+| Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization and side-effect dependencies; literal dynamic imports retain asynchronous settlement, once-only initialization, namespace identity, live exports, cyclic lexical bindings and cached failures; authored entry calls preserve surrounding startup work | Runtime-selected modules; callable namespace `then` exports; lazy top-level await, namespace/class/enum runtime initialization, `var`, destructured/uninitialized bindings, dependencies on the entry, or bindings without owned storage; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, suspending catch/finally with return and loop-exit completion | Arbitrary cleanup across `startEngine` |
-| Functions | Typed/generic functions, defaults, omitted optional parameters, rest parameters, destructuring, supported recursion, contextual optional callback results, stored values shared or adapted across sink signatures, owned generic/unknown-parameter methods specialized at reached calls, stored unknown-rest callbacks packed into owned arrays of their reached argument types; unmapped rest-function Arguments objects retain length, indexed reads, identity and captures; type parameters narrowed past null inside generic bodies or bound through a discriminated union member | Unresolved type arguments; unbounded resource specialization; stored generic `this`, new recursive signatures, signature-family conversions and `Function.call/bind`; Arguments mutation, reflection, optional/defaulted parameters and unconstrained argument queues; arguments/results without owned representations; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach |
-| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`); methods recursing through stored instances | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; an uninitialized `let c: C \| undefined`; unsupported field storage |
+| Functions | Typed/generic functions, defaults, omitted optional parameters, rest parameters, destructuring, supported recursion, contextual optional callback results, stored values shared or adapted across sink signatures, owned generic/unknown-parameter methods specialized at reached calls, stored unknown-rest callbacks packed into owned arrays of their reached argument types; unmapped rest-function Arguments objects retain length, indexed reads, identity and captures; type parameters narrowed past null inside generic bodies or bound through a discriminated union member | Unresolved type arguments; unbounded resource specialization; stored generic `this`, new recursive signatures, signature-family conversions and `Function.call/apply/bind`; Arguments mutation, reflection, optional/defaulted parameters and unconstrained argument queues; arguments/results without owned representations; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach |
+| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; authored subclasses of builtin Errors with owned payloads and catch identity; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`); methods recursing through stored instances | Other non-local bases; Error reflection; authored Error payloads in builtin cause or AggregateError storage refuse at construction; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, also for callbacks kept by repository functions, methods or record members; function identity across repeated factory calls, optional calls, escaping recursive groups, named self-scheduling expressions, deferred cycles through owned function bindings, reassigned function locals; stored closures preserve the temporal dead zone of later bindings, including reads through reached functions/callbacks; native callbacks may materialize pure initializers ahead | Captures need owned representations; borrowed input events, and closures reading a binding that holds one, cannot escape dispatch; a stored closure reading a later binding without an owned data type refuses; a native callback initializes it ahead for direct reads and leaves it unbound through a reached function; the callback is registered at the declaring block's level |
-| Data | Typed/nullable records with required and optional `undefined` fields, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON; unknown arrays with finite source-written layouts, including owned Arguments queues across concrete callback signatures; checked recursive dynamic callback signatures and retained native class views; stored records with `get`/`set` accessors (literal, or a class's for an `implements`ed type); optional fields retain represented own-key presence | An empty `?` property that also admits `null` refuses at run time; type shapes sharing a struct that disagree on a property's presence refuse; accessor records: spreads, enumeration, narrowing conversion, worker cloning; dynamic class views with unrepresented fields; required `void` fields without a proven undefined completion; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
+| Data | Typed/nullable records with required and optional `undefined` fields, unions selected by literal tags or required non-nullable keys, mixed unions, arrays, tuples, dictionaries, Map/Set, JSON; unknown arrays with finite source-written layouts, including owned Arguments queues across concrete callback signatures; checked recursive dynamic callback signatures and retained native class views; stored records with `get`/`set` accessors (literal, or a class's for an `implements`ed type); optional fields retain represented own-key presence | An empty `?` property that also admits `null` refuses at run time; type shapes sharing a struct that disagree on a property's presence refuse; accessor records: enumeration, narrowing conversion, worker cloning; stored accessor spreads; dynamic class views with unrepresented fields; required `void` fields without a proven undefined completion; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks; value-promise `catch`, stored or timer/frame-settled constructed promises, suspending callbacks (application realm); `Promise.resolve` takes the expected result type | Custom thenables |
 | Generators | Lazy synchronous/asynchronous bodies, stored callbacks, shared iterator position, zero-argument `next`/`return`, `for...of`, `for await` over asynchronous iterators, IteratorClose and awaited cleanup | `yield*`, empty/consumed yields, inbound `next` values, `throw`, final return payloads, yields in finally, stored-generator parameter defaults, `for await` over synchronous iterables; retained closures cannot capture opaque generator storage |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
+
+Opaque native objects refuse retention as structural records without a represented shared identity.
 
 Local JavaScript implementations take precedence over companion declarations. Type-only imports do not
 run initializers. `declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
@@ -77,6 +81,8 @@ Generation-known positions (option records, shader lists) read through `const` l
 conditionals and spreads, and parameterless module functions whose body returns a literal. Shader text
 and static iterations run a module `const` they cannot fold at generation; a run reaching the host, the
 clock, `Math.random`, the host locale or a constant the program writes through refuses.
+Dense literal arrays of scalar-field records can supply per-element resource arguments while retaining
+native identity. Mutation, escaping aliases and untracked extraction withdraw those generation facts.
 
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,
 `SSR=false`. `BASE_URL` follows deployment. Custom string fields use `--env NAME=value` or
@@ -145,12 +151,12 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | --- | --- | --- |
 | Numbers | Reached Math operations, non-coercing Number predicates/constants, the predicates as function values (`every(Number.isFinite)`), JS coercions and rounding, numeric callbacks | Native double transcendental functions; deterministic random; bounded rest signatures |
 | Variadic Math | `min`, `max`, `hypot`, numeric tails and array spreads | Native `hypot` approximation; NaN/signed-zero rules retained for min/max |
-| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting (any function comparator), indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array, mutating methods on an array literal (`[a, b].pop()`), truncating `length` writes | Closed flatten depth; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array; sparse `length` growth refuses at run time; record conversion follows [fidelity](fidelity.md#semantic-contract) |
+| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, typed `Array.from` mapper results, Object identity mappers, sorting (any function comparator), indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array, mutating methods on an array literal (`[a, b].pop()`), truncating `length` writes | Closed flatten depth; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array; sparse `length` growth refuses at run time; record conversion follows [fidelity](fidelity.md#semantic-contract) |
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring; a number array asserted as a tuple stays that array | Sparse length growth and ambiguous null/undefined defaults refuse; an asserted array of another length refuses at run time |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach`; stored `ReadonlyMap`/`ReadonlySet` views preserve identity | An iterator value of a nullable reference type reads as present |
 | WeakMap | Empty construction with erased object or DOM-target keys, get/set/has/delete, owned values | Each erased key must have represented record or DOM identity; other key views and initialized erased-key constructors refuse |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | General authored `Symbol.iterator` objects refuse |
-| Strings | UTF-16 indexing/length, substring/repeat/concat, padding, trimming of JavaScript white space, replacement strings/callbacks, `+=` on locals, fields and elements; an absent value in concatenation, a template or `String()` spells `undefined` or `null` from its represented tag or type, including scalar reads past an array's end | A concatenated operand is built before it is appended; unrepresented mixed absence states refuse in text |
+| Strings | UTF-16 indexing/length, substring/repeat/concat, padding, trimming of JavaScript white space, replacement strings/callbacks, `encodeURIComponent` with UTF-16 surrogate validation, `+=` on locals, fields and elements; an absent value in concatenation, a template or `String()` spells `undefined` or `null` from its represented tag or type, including scalar reads past an array's end | A concatenated operand is built before it is appended; unrepresented mixed absence states refuse in text |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options; `toLocaleLowerCase`/`toLocaleUpperCase` with default, string or string-array locales | Option getters and non-string locale entries refuse |
 | Text encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`) decoding an ArrayBuffer or view; `TextEncoder.encode` | Other encodings, streaming decode, `encodeInto` and codec properties refuse |
@@ -159,14 +165,18 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone; Collator(locales, options) and `compare`, as `localeCompare`; number `toLocaleString(locales, options)`: decimal/percent, digit, grouping and locale-matcher options, `nu` extension | No DateTimeFormat locale/options, formatting or broader fields; Collator `resolvedOptions` and a detached `compare` refuse; `Intl.NumberFormat`, currency/unit styles and other number options refuse (a struct's absent option field is checked at run time); CLDR data is the platform ICU's |
 | URLSearchParams | String constructor, get/has/set/toString, duplicate order, decoding and form encoding; mutation retains object identity and invalidates deployment-query folds | Append/delete/sort, iteration and other constructors refuse |
-| Binary data | ArrayBuffer, DataView getters/setters, Int8/Uint8/Int16/Uint16/Int32/Uint32/Float32/Float64 arrays; typed-array `of`, `from` (optional mapper) over arrays, numeric tuples and typed arrays; `ArrayBuffer \| ArrayBufferView` unions, narrowed by `instanceof`; array methods `some`/`every`/`find`/`findIndex`/`forEach`/`reduce`/`indexOf`/`includes`/`lastIndexOf`/`at`/`join`/`sort`, `map`/`filter` keep the kind | Unrepresented element/storage consumers refuse; `from` over other sources (ArrayBuffer, number, Set, string) refuses; `instanceof` a view class over an `ArrayBufferView` member refuses; a callback naming the array parameter, `reverse`, iterators and `toString` refuse |
+| Binary data | ArrayBuffer and `ArrayBuffer.isView`, DataView getters/setters, Int8/Uint8/Int16/Uint16/Int32/Uint32/Float32/Float64 arrays; typed-array `of`, `from` (optional mapper) over arrays, numeric tuples and typed arrays; `ArrayBuffer \| ArrayBufferView` unions, narrowed by `instanceof`; array methods `some`/`every`/`find`/`findIndex`/`forEach`/`reduce`/`indexOf`/`includes`/`lastIndexOf`/`at`/`join`/`sort`, `map`/`filter` keep the kind | Unrepresented element/storage consumers refuse; `from` over other sources (ArrayBuffer, number, Set, string) refuses; `instanceof` a view class over an `ArrayBufferView` member refuses; a callback naming the array parameter, `reverse`, iterators and `toString` refuse |
 
 Typed-array buffer views retain bytes, offset, length and identity. Constructors check ToIndex,
 alignment and bounds; set/slice/subarray/fill/copyWithin preserve overlap rules. Raw contiguous
 consumers and some iteration paths refuse views. `ArrayBufferView` retains typed arrays and DataView.
 Numeric index-signature writes preserve element conversion and grow ordinary arrays.
 
-Proxy, Symbol and FinalizationRegistry values refuse. Array/object aliases retain identity, except that
+Finite record Proxies support literal get/set traps, optional-key deletion and value-only definitions
+of existing data properties; Reflect.get preserves represented getter receivers. Empty/class targets,
+dynamic-this methods, other traps, descriptor-inspecting traps and definitions requiring new
+property attributes refuse. Symbol and FinalizationRegistry values refuse.
+Array/object aliases retain identity, except that
 a plain record passed to a stored callback with an optional, default-initialized parameter can be copied
 into a returned closure, so later caller mutations are not observed. Spreads copy own scalar fields and
 share nested objects.
@@ -189,6 +199,7 @@ Async `fetch(url, options)` (application realm) uses absolute HTTP(S) URLs with 
 a static cache mode (only-if-cached refuses). Known asset fetches without options or with
 only a cache mode use packaged responses. Responses expose ok/status/url/bodyUsed and
 text/json/arrayBuffer reads; bodies consume once. HTTP errors fulfill; transport/missing-file errors reject.
+Response headers are unavailable; deferred mode gives `Response.headers` and `Headers.get` typed throwing boundaries.
 Descriptor arrays and typed helpers retain closed local URL selections; filename patterns package only
 matching files in an authored directory. URL expressions run once, and keys outside the package reject.
 Request objects, streaming and wider options/methods refuse. Transport limits are in [fidelity](fidelity.md).
@@ -210,11 +221,14 @@ uncompressed fallback refuse. Basis/KTX2 uses the pinned browser transcoder; upl
 `splatsData` and `updateData(ArrayBuffer)` share owned rows. Equal-count replacement preserves old
 aliases and refreshes rendering/picking. Borrowed buffers and writes to the getter-only property refuse.
 Multiple fragment sets and broader buffer-view methods remain limited.
+Shader fragment descriptors require known keys/strings and source-proven stable ownership;
+mutable or escaping descriptors and lists without complete evaluated metadata refuse.
 
 ### Environment compilation
 
 HDR uses pinned GGX prefiltering; DDS preserves specular mips; `.env` uploads decoded cubes. The BRDF LUT
 is baked. Static box/sphere local environments and blended probe sets support setup before registration.
+Retained probe geometry requires source-proven stable ownership through device recovery.
 Live probe rebuilding/ORM rebinding refuse; direct intensity remains live.
 
 Procedural sky environments support packaged BRDF textures, GPU cube generation/mips and live
@@ -278,7 +292,9 @@ render and post-process tasks of builds with temporal anti-aliasing.
 Same-engine canvases have independent targets, cameras, rectangles and input ownership.
 
 Compute tasks retain identity, writable names/execution gates and replaceable disposers.
-Stored functions admit `bind(thisArg)` without partial arguments or dynamic `this` rebinding.
+Stored functions admit `call` and `apply` over owned argument arrays and tuples, and
+`bind(thisArg)` without dynamic `this` rebinding. Map/Set lookup and mutation methods
+admit receiver binding with represented partial arguments; other partial binding refuses.
 Compute uniform layouts require generation-known field names/types and retain source packing,
 validation and distinct object identity. Uniform buffers and task-owned arenas retain padded staging,
 aligned slots and disposal. Typed writers admit f32/u32/i32 scalars and numeric vector/matrix arrays;
@@ -445,6 +461,7 @@ including skinned assets without animation clips.
 ## Sprites
 
 Sprite2D, billboards, atlases, animation, offscreen/depth targets, custom fragments and Y-sort are bounded.
+Sprite clear colors retain live numeric channels; accessor channels and owned colors with reference fields refuse.
 Transparent billboards and meshes share the pinned distance/order sort; mixed exact depth/order ties
 and mixed draws without a camera refuse because native lists lack the source's stable binding order.
 Custom cutout billboard order, alpha-to-coverage changes to a cutout system a registered

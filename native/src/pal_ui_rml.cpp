@@ -5783,7 +5783,10 @@ struct UiRmlRuntime {
                 authored.emplace(element, index);
         for (std::uint32_t index = 0; index < projected_elements.size(); ++index) {
             auto* element = projected_elements[index].element;
-            if (!element || !reachable[index])
+            // Markup nodes remain under their parsed parent; their retained
+            // owner names the whole fragment, not their immediate Rml parent.
+            if (!element || !reachable[index] ||
+                engine.ui_elements[index].markup_owner.value != invalid_handle)
                 continue;
             auto* parent = element->GetParentNode();
             std::uint32_t previous = invalid_handle;

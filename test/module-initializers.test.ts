@@ -3,7 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import test from "node:test";
-import { planImportedModuleInitializers } from "../src/compiler/module-initializers.js";
+import {
+    planEntryModuleState,
+    planImportedModuleInitializers,
+} from "../src/compiler/module-initializers.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
 import { compileSource } from "../src/compiler.js";
@@ -11,6 +14,372 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+
+test("pinned composition inputs stay static while pinned writers retain module owners", (t) => {
+    const directory = resolve("artifacts/module-pinned-call-effects");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "composition.ts"),
+        `export const names=["hip"];`,
+    );
+    writeFileSync(
+        join(directory, "writer.ts"),
+        `import {normalizeVec3ToRef,scaleVec3ToRef} from "@babylonjs/lite";
+         const input={x:3,y:0,z:4};
+         export const output={x:0,y:0,z:0};
+         const alias=output;
+         export function normalize():void {normalizeVec3ToRef(input,alias);}
+         export function grow():void {scaleVec3ToRef(alias,2,alias);}`,
+    );
+    const source = `
+        import {createAnimationGroupMask} from "@babylonjs/lite";
+        import {names} from "./composition.js";
+        import {output,normalize,grow} from "./writer.js";
+        const localNames=["child"];
+        function main():void {
+            const importedMask=createAnimationGroupMask(names);
+            const localMask=createAnimationGroupMask(localNames);
+            if(names[0]!=="hip"||localNames[0]!=="child")throw new Error("composition input");
+            const saved=output;
+            normalize();
+            if(output!==saved||Math.abs(saved.x-0.6)>1e-12||Math.abs(saved.z-0.8)>1e-12)
+                throw new Error("pinned writer owner");
+            grow();
+            if(Math.abs(output.x-1.2)>1e-12||Math.abs(output.z-1.6)>1e-12)
+                throw new Error("pinned writer alias");
+        }
+        main();
+    `;
+    const fileName = join(directory, "entry.ts");
+    const { program, sourceFile, checker } = createCompilerProgram(
+        source,
+        fileName,
+    );
+    const symbols = new CompilerSymbols(checker);
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            symbols,
+        ).map((file) => basename(file.fileName)),
+        ["writer.ts"],
+    );
+    assert.deepEqual(
+        planEntryModuleState(program, sourceFile, checker, symbols),
+        [],
+    );
+    const result = compileSource(source, { fileName });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "module-pinned-call-effects", result.cpp);
+});
+
+test("unresolved pinned calls and destructured writers retain conservative module owners", () => {
+    const directory = resolve("artifacts/module-pinned-call-unknown");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `export const caster={worldMatrixVersion:0};
+         export const output={value:0};`,
+    );
+    const { program, sourceFile, checker } = createCompilerProgram(
+        `import type {CsmRefitGate} from "@babylonjs/lite";
+         import {caster,output} from "./dependency.js";
+         declare const gate:CsmRefitGate<{worldMatrixVersion:number}>;
+         const localCaster={worldMatrixVersion:0};
+         function write({out}:{out:{value:number}}):void {out.value=7;}
+         gate.markDynamic(caster);
+         gate.markDynamic(localCaster);
+         write({out:output});`,
+        join(directory, "entry.ts"),
+    );
+    const symbols = new CompilerSymbols(checker);
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            symbols,
+        ).map((file) => basename(file.fileName)),
+        ["dependency.ts"],
+    );
+    assert.deepEqual(
+        planEntryModuleState(program, sourceFile, checker, symbols).map(
+            (statement) => statement.getText(),
+        ),
+        ["const localCaster={worldMatrixVersion:0};"],
+    );
+});
+
+test("argument ownership excludes scalar projections but retains reference and nested call writes", (t) => {
+    const directory = resolve("artifacts/module-argument-projections");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "input.ts"), `export const input={value:3};`);
+    writeFileSync(
+        join(directory, "output.ts"),
+        `export const output={value:1};`,
+    );
+    writeFileSync(
+        join(directory, "effect.ts"),
+        `export const effect={value:4};`,
+    );
+    const source = `
+        import {input} from "./input.js";
+        import {output} from "./output.js";
+        import {effect} from "./effect.js";
+        const localInput={value:5};
+        function advance(target:{value:number}):number {return ++target.value;}
+        function write(options:{scalar:number; out:{value:number}}):void {
+            options.out.value=options.scalar;
+            options.scalar=99;
+        }
+        function main():void {
+            write({scalar:input.value+localInput.value+advance(effect),out:output});
+            if(input.value!==3||localInput.value!==5||effect.value!==5||output.value!==13)
+                throw new Error("argument ownership");
+        }
+        main();
+    `;
+    const fileName = join(directory, "entry.ts");
+    const { program, sourceFile, checker } = createCompilerProgram(
+        source,
+        fileName,
+    );
+    const symbols = new CompilerSymbols(checker);
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            symbols,
+        ).map((file) => basename(file.fileName)),
+        ["output.ts", "effect.ts"],
+    );
+    assert.deepEqual(
+        planEntryModuleState(program, sourceFile, checker, symbols),
+        [],
+    );
+    const result = compileSource(source, { fileName });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "module-argument-projections", result.cpp);
+});
+
+test("imported scratch records retain writes through call arguments and aliases", (t) => {
+    const directory = resolve("artifacts/module-call-mutations");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        type Hit = { point: [number, number, number]; distance: number };
+        const scratch: Hit = { point: [0, 0, 0], distance: 0 };
+        const alias = scratch;
+        const indirect: Hit = { point: [0, 0, 0], distance: 0 };
+        const firstAlias = indirect;
+        const secondAlias = firstAlias;
+        function write(out: Hit, value: number): void {
+            out.point[0] = value;
+            out.distance += value;
+        }
+        function writeWrapped(wrapper: { out: Hit }, value: number): void {
+            wrapper.out.point[1] = value;
+        }
+        export function viaAliases(value: number): number {
+            write(secondAlias, value);
+            return indirect.point[0] + indirect.distance;
+        }
+        export function sample(value: number): number {
+            write(alias, value);
+            writeWrapped({out: scratch}, value + 1);
+            Object.assign(scratch, {distance: scratch.distance + 1});
+            return scratch.point[0] + scratch.point[1] + scratch.distance;
+        }
+    `,
+    );
+    const result = compileSource(
+        `
+        import {sample, viaAliases} from "./dependency.js";
+        if (sample(2) !== 8 || sample(5) !== 20) throw new Error("module call mutation lost");
+        if (viaAliases(2) !== 4 || viaAliases(5) !== 12) throw new Error("module alias mutation lost");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-call-mutations", result.cpp, {
+        timeoutMs: 5000,
+    });
+});
+
+test("read-only call arguments leave immutable imported records on the static path", () => {
+    const directory = resolve("artifacts/module-read-only-call");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        const source = { value: 7 };
+        function read(input: { value: number }): number { return input.value; }
+        export function sample(): number { return read(source) + Object.keys(source).length; }
+    `,
+    );
+    const { program, sourceFile, checker } = createCompilerProgram(
+        'import {sample} from "./dependency.js"; if (sample() !== 8) throw new Error("read");',
+        join(directory, "entry.ts"),
+    );
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            new CompilerSymbols(checker),
+        ),
+        [],
+    );
+});
+
+test("initializer planning preserves throwing container and accessor operations", () => {
+    const directory = resolve("artifacts/module-abrupt-initializers");
+    mkdirSync(directory, { recursive: true });
+    for (const source of [
+        "const ignored = new Array(-1);",
+        "const ignored = new Float32Array(-1);",
+        "const ignored = new Map(1 as unknown as []);",
+        "const ignored = new Set(1 as unknown as []);",
+        "const ignored = new WeakMap([[1 as unknown as object, 2]]);",
+        "const ignored = new WeakSet([1 as unknown as object]);",
+        "const values = new WeakMap<object,number>(); values.set(1 as unknown as object,2);",
+        "const ignored = ([] as number[]).reduce((a,b)=>a+b);",
+        "const target={set value(value:number) {throw new Error(String(value));}}; Object.assign(target,{value:7});",
+        "const source={get value():number {throw new Error('getter');return 0;}}; Object.assign({},source);",
+    ]) {
+        writeFileSync(join(directory, "dependency.ts"), source);
+        const { program, sourceFile, checker } = createCompilerProgram(
+            'import "./dependency.js";',
+            join(directory, "entry.ts"),
+        );
+        assert.deepEqual(
+            planImportedModuleInitializers(
+                program,
+                sourceFile,
+                checker,
+                new CompilerSymbols(checker),
+            ).map((file) => basename(file.fileName)),
+            ["dependency.ts"],
+            source,
+        );
+    }
+});
+
+test("host initialization retains effects beside immutable data definitions", (t) => {
+    const directory = resolve("artifacts/module-definition-effects");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        export enum Direction { Left = 3, Right = 7 }
+        export const table = [{key:"left", value:-Direction.Left}, {key:"right", value:Direction.Right}] as const;
+        let calls = 0;
+        const probe = { get value():number { calls++; return Date.now() >= 0 ? 5 : 0; } };
+        const first = probe.value;
+        const second = [2].map((value) => { calls += value; return first + value; });
+        export function verify(): void {
+            if (calls !== 3 || first !== 5 || second[0] !== 7)
+                throw new Error("initializer lifetime");
+        }
+        const label = "definition"; export default label;
+    `,
+    );
+    const result = compileSource(
+        `
+        import label, {table,verify} from "./dependency.js";
+        verify(); verify();
+        if (label !== "definition" || table[0].key !== "left" || table[0].value !== -3 || table[1].value !== 7)
+            throw new Error("static sibling definition");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /v_module\d+_table/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-definition-effects", result.cpp);
+});
+
+for (const [label, work] of [
+    [
+        "source throw",
+        'function effect():number { throw new Error("dependency executed"); } const ignored=effect();',
+    ],
+    [
+        "getter",
+        'const source={get value():number { if(Date.now()>=0) throw new Error("dependency executed"); return 0; }}; const ignored=source.value;',
+    ],
+    [
+        "callback",
+        'const ignored=[1].map(() => { throw new Error("dependency executed"); return 0; });',
+    ],
+] as const)
+    test(`ignored module ${label} cannot disappear`, (t) => {
+        const directory = resolve(
+            `artifacts/module-ignored-${label.replaceAll(" ", "-")}`,
+        );
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "dependency.ts"), work);
+        const result = compileSource(
+            'import "./dependency.js"; if(Date.now()>=0) throw new Error("entry executed");',
+            { fileName: join(directory, "entry.ts") },
+        );
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        assert.throws(
+            () =>
+                runGeneratedProgram(
+                    tools,
+                    `module-ignored-${label.replaceAll(" ", "-")}`,
+                    result.cpp,
+                ),
+            /dependency executed/,
+        );
+    });
+
+for (const declaration of [false, true])
+    test(`side-effect-only dependencies retain ${declaration ? "ignored initializers" : "statements"} without observed bindings`, (t) => {
+        const directory = resolve("artifacts/module-host-side-effects");
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+            join(directory, "dependency.ts"),
+            declaration
+                ? 'function effect():number { if(Date.now()>=0) throw new Error("dependency executed"); return 1; } const ignored=effect();'
+                : 'if(Date.now()>=0) throw new Error("dependency executed");',
+        );
+        const result = compileSource(
+            'import "./dependency.js"; if(Date.now()>=0) throw new Error("entry executed");',
+            { fileName: join(directory, "entry.ts") },
+        );
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        assert.throws(
+            () =>
+                runGeneratedProgram(
+                    tools,
+                    "module-host-side-effects",
+                    result.cpp,
+                ),
+            /dependency executed/,
+        );
+    });
 
 for (const [entry, invocation] of [
     ["implicit", ""],
@@ -84,7 +453,7 @@ test("authored entry preserves destructured module bindings across rebinding", (
     runGeneratedProgram(tools, "module-destructured-entry", result.cpp);
 });
 
-test("initializer planning retains every alias origin across eager calls and recursive helpers", () => {
+test("initializer planning retains alias origins without executing dormant helpers", (t) => {
     const directory = mkdtempSync(join(tmpdir(), "bbl-module-plan-"));
     try {
         const files = {
@@ -116,16 +485,20 @@ test("initializer planning retains every alias origin across eager calls and rec
         };
         for (const [name, source] of Object.entries(files))
             writeFileSync(join(directory, name), source);
-        const { program, sourceFile, checker } = createCompilerProgram(
-            `
+        const source = `
             import "./register.js";
             import { values as first } from "./first.js";
             import { values as second } from "./second.js";
             import { values as unused } from "./unused.js";
             import { value } from "./scalar.js";
             const result = first[0] + second[0] + unused.length + value;
-        `,
-            join(directory, "entry.ts"),
+            if(result!==10||first.length!==1||second.length!==1||unused.length!==0)
+                throw new Error("initializer effects and dormant helper");
+        `;
+        const fileName = join(directory, "entry.ts");
+        const { program, sourceFile, checker } = createCompilerProgram(
+            source,
+            fileName,
         );
         const planned = planImportedModuleInitializers(
             program,
@@ -135,7 +508,14 @@ test("initializer planning retains every alias origin across eager calls and rec
         );
         assert.deepEqual(
             planned.map((file) => basename(file.fileName)),
-            ["first.ts", "second.ts", "register.ts"],
+            ["first.ts", "second.ts", "unused.ts", "register.ts"],
+        );
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) return t.skip("Native fixture compiler unavailable.");
+        runGeneratedProgram(
+            tools,
+            "module-alias-initializer-effects",
+            compileSource(source, { fileName }).cpp,
         );
     } finally {
         rmSync(directory, { recursive: true, force: true });

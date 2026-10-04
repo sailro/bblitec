@@ -54,6 +54,7 @@ import {
 } from "./syntax.js";
 import {
     caughtErrorValue,
+    authoredErrorValue,
     compileErrorConstruction,
     errorConstructor,
     errorValue,
@@ -66,7 +67,11 @@ import {
     staticStringValue,
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
-import { enclosingLoopControl, firstReturn } from "./loop-control.js";
+import {
+    emitReachableStatements,
+    enclosingLoopControl,
+    firstReturn,
+} from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -77,6 +82,7 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
+import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -500,6 +506,20 @@ export class StatementLowerer {
     public terminatesAfterLowering(statement: ts.Statement): boolean {
         return terminatesFlow(statement, (node) =>
             this.loweredTerminators.has(node),
+        );
+    }
+
+    private emitReachableBody(
+        context: StatementLoweringContext,
+        statements: readonly ts.Statement[],
+    ): boolean {
+        return emitReachableStatements(
+            {
+                emitStatement: (nested) => this.emit(context, nested),
+                statementTerminatesAfterLowering: (nested) =>
+                    this.terminatesAfterLowering(nested),
+            },
+            statements,
         );
     }
 
@@ -1177,26 +1197,19 @@ export class StatementLowerer {
         // Alias invalidation is path-sensitive: a branch that always
         // leaves the iteration cannot invalidate anything for the code
         // that follows the `if`, so its effects are rolled back.
-        const beforeThen = terminatesFlow(statement.thenStatement)
-            ? context.dataLowerer.snapshotAliasState()
-            : undefined;
-        this.inRuntimeControlFlow(context, () =>
-            this.emitScopedBody(context, statement.thenStatement),
-        );
-        if (beforeThen) {
-            context.dataLowerer.restoreAliasState(beforeThen);
-        }
+        const emitBranch = (branch: ts.Statement): void => {
+            const emit = (): void =>
+                this.inRuntimeControlFlow(context, () =>
+                    this.emitScopedBody(context, branch),
+                );
+            if (terminatesFlow(branch))
+                context.dataLowerer.withPreservedAliasState(emit);
+            else emit();
+        };
+        emitBranch(statement.thenStatement);
         if (statement.elseStatement) {
             context.emit({ kind: "branch", code: "} else {" });
-            const beforeElse = terminatesFlow(statement.elseStatement)
-                ? context.dataLowerer.snapshotAliasState()
-                : undefined;
-            this.inRuntimeControlFlow(context, () =>
-                this.emitScopedBody(context, statement.elseStatement!),
-            );
-            if (beforeElse) {
-                context.dataLowerer.restoreAliasState(beforeElse);
-            }
+            emitBranch(statement.elseStatement);
         }
         context.emit({ kind: "close", code: "}" });
     }
@@ -1802,10 +1815,11 @@ export class StatementLowerer {
                   context.libraryGlobal(callee),
               )
             : undefined;
-        const error =
+        const sourceError =
             ts.isNewExpression(thrown) && errorName !== undefined
                 ? compileErrorConstruction(context, thrown, errorName, "thrown")
                 : context.compileValue(thrown);
+        const error = authoredErrorValue(context, sourceError) ?? sourceError;
         if (error.dataType?.kind === "error") {
             context.reachThrow();
             context.emitNativeThrow(error.cpp, statement, true);
@@ -1976,41 +1990,65 @@ export class StatementLowerer {
                             ? integerLoopStepCpp(counter, counterCpp)
                             : "";
                     if (statement.incrementor && !counter) {
-                        const lines = this.inRuntimeControlFlow(context, () =>
-                            context.captureEmittedLines(() => {
+                        const emitted = this.inRuntimeControlFlow(context, () =>
+                            context.captureEmittedStatements(() => {
                                 this.emitExpression(
                                     context,
                                     statement.incrementor!,
                                 );
                             }),
                         );
-                        if (lines.length !== 1 || !lines[0]!.endsWith(";")) {
+                        const lines = emitted.map(renderNativeEmission);
+                        if (
+                            lines.length === 0 ||
+                            lines.some((line) => !line.endsWith(";")) ||
+                            (lines.length > 1 &&
+                                emitted.some(
+                                    (item) =>
+                                        item.statement.kind !== "expression",
+                                ))
+                        ) {
                             context.fail(
                                 statement.incrementor,
-                                "Loop incrementors must lower to one native statement.",
+                                "Loop incrementors must lower to native expressions.",
                             );
                         }
-                        header = lines[0]!.slice(0, -1);
+                        header = lines
+                            .map((line) => line.slice(0, -1))
+                            .join(", ");
                     }
+                    let terminates = false;
+                    const body = context.captureEmittedStatements(() => {
+                        context.bindings.pushScope(
+                            context.allocateBlockPrefix(),
+                        );
+                        try {
+                            this.inRuntimeControlFlow(context, () => {
+                                terminates = this.emitReachableBody(
+                                    context,
+                                    bodyStatements(statement),
+                                );
+                            });
+                        } finally {
+                            context.bindings.popScope();
+                        }
+                    });
+                    // A specialized body may always leave the loop. A continue
+                    // still reaches the incrementor, including inside a switch.
+                    if (
+                        terminates &&
+                        !enclosingLoopControl(statement.statement, {
+                            breaks: false,
+                        })
+                    )
+                        header = "";
                     context.emit({
                         kind: "open",
                         code: `for (; ${condition}; ${header}) {`,
                         iteration: true,
                     });
                     context.increaseIndent();
-                    context.bindings.pushScope(context.allocateBlockPrefix());
-                    try {
-                        const statements = ts.isBlock(statement.statement)
-                            ? statement.statement.statements
-                            : [statement.statement];
-                        this.inRuntimeControlFlow(context, () => {
-                            for (const nested of statements) {
-                                this.emit(context, nested);
-                            }
-                        });
-                    } finally {
-                        context.bindings.popScope();
-                    }
+                    context.emitCapturedStatements(body);
                     context.decreaseIndent();
                     context.emit({ kind: "close", code: "}" });
                 },
@@ -2382,7 +2420,17 @@ export class StatementLowerer {
             // Keep this object's identity: later iterations observe field
             // deletions, while rebinding the source must not change its owner.
             context.dataTypes.markStoredObjectReferences(dataType);
-            const fields = context.dataTypes.structFields(dataType.name, node);
+            const fields = context.dataTypes.structFields(
+                dataType.name,
+                node,
+                "accessors",
+            );
+            if (
+                fields.some(
+                    (field) => field.accessor && !field.accessorReceiver,
+                )
+            )
+                context.dataTypes.structFields(dataType.name, node);
             const access = context.dataTypes.isReferenceStruct(dataType.name)
                 ? "->"
                 : ".";
@@ -2539,6 +2587,22 @@ export class StatementLowerer {
                 "for...of bindings cannot carry initializers.",
             );
         }
+        // A retained callback can run after another closure registers members.
+        // Its initial empty cardinality is not a proof that its loop is empty.
+        const subject = context.unwrap(statement.expression);
+        const containerType = ts.isIdentifier(subject)
+            ? (context.bindings.lookupOptional(subject)?.dataType ??
+              context.dataLowerer.dataTypeAt(subject))
+            : undefined;
+        const liveElement =
+            containerType && "element" in containerType
+                ? containerType.element
+                : undefined;
+        if (
+            liveElement?.kind === "function" &&
+            this.emitRuntimeForOf(context, statement, declaration)
+        )
+            return;
         const runtimeCardinality = context.runtimeCollectionCardinality(
             statement.expression,
         );
@@ -2581,25 +2645,6 @@ export class StatementLowerer {
             return;
         }
         if (this.emitHandleCollectionForOf(context, statement, declaration)) {
-            return;
-        }
-        // A callback list is a live subscription set, even if its generation
-        // snapshot is an empty tuple before another stored closure adds to it.
-        const subject = context.unwrap(statement.expression);
-        const containerType = ts.isIdentifier(subject)
-            ? (context.bindings.lookupOptional(subject)?.dataType ??
-              context.dataLowerer.dataTypeAt(subject))
-            : undefined;
-        // Inspect the type before asking for storage: resolving an unrelated
-        // tuple here would materialize its records and lose static options.
-        const liveElement =
-            containerType && "element" in containerType
-                ? containerType.element
-                : undefined;
-        if (
-            liveElement?.kind === "function" &&
-            this.emitRuntimeForOf(context, statement, declaration)
-        ) {
             return;
         }
         if (
@@ -3356,8 +3401,10 @@ export class StatementLowerer {
                         loopContext,
                         () => {
                             this.inRuntimeControlFlow(loopContext, () => {
-                                for (const nested of bodyStatements(statement))
-                                    this.emit(loopContext, nested);
+                                this.emitReachableBody(
+                                    loopContext,
+                                    bodyStatements(statement),
+                                );
                             });
                         },
                         statement,
@@ -3546,9 +3593,7 @@ export class StatementLowerer {
                     context,
                     () => {
                         this.inRuntimeControlFlow(context, () => {
-                            for (const nested of statements) {
-                                this.emit(context, nested);
-                            }
+                            this.emitReachableBody(context, statements);
                         });
                     },
                     statement,
@@ -3633,12 +3678,12 @@ export class StatementLowerer {
             });
             context.increaseIndent();
         }
-        context.emitCapturedStatements(lines);
         if (!storedIterator)
             context.emit({
                 kind: "expression",
                 code: `static_cast<void>(${item});`,
             });
+        context.emitCapturedStatements(lines);
         context.decreaseIndent();
         context.emit({ kind: "close", code: "}" });
         if (storedIterator) {
@@ -3703,6 +3748,13 @@ export class StatementLowerer {
         }
         if (context.asyncActivations.emitAwaitExpression(expression)) return;
         const unwrapped = context.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+            if (this.emitExpression(context, unwrapped.left)) return true;
+            return this.emitExpression(context, unwrapped.right);
+        }
         if (ts.isVoidExpression(unwrapped)) {
             const operand = context.unwrap(unwrapped.expression);
             if (
@@ -3905,11 +3957,12 @@ export class StatementLowerer {
                     unwrapped.operator === ts.SyntaxKind.PlusPlusToken
                         ? "++"
                         : "--";
-                context.emit(
-                    ts.isPrefixUnaryExpression(unwrapped)
+                context.emit({
+                    kind: "expression",
+                    code: ts.isPrefixUnaryExpression(unwrapped)
                         ? `${operator}${target.cpp};`
                         : `${target.cpp}${operator};`,
-                );
+                });
                 return;
             }
             if (

@@ -18,8 +18,44 @@ import {
 } from "../src/compiler/deployment.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("effectful module tables retain their native entry owners during dynamic lookup", (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-table-owners-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "definitions.ts"),
+        `export interface Definition { value: number; }
+        export let calls = 0;
+        function definition(value: number): Definition {
+            calls++;
+            return {value};
+        }
+        export const DEFINITIONS: Record<number, Definition> = {
+            1: definition(3), 2: definition(7),
+        };`,
+    );
+    const result = compileSource(
+        `import {DEFINITIONS, calls} from "./definitions.js";
+        function read(id: number): number { return DEFINITIONS[id]!.value; }
+        const keys: number[] = [1, 2];
+        let sum = 0;
+        for (const id of keys) sum += read(id);
+        if (sum !== 10 || calls !== 2) throw new Error("module table initialization");
+        DEFINITIONS[1]!.value = 11;
+        if (read(keys[0]!) !== 11 || calls !== 2)
+            throw new Error("module table identity");`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(native, "module-table-native-owners", result.cpp);
+});
 
 test("module namespace records enumerate value exports and retain live bindings", (t) => {
     const native = optionalNativeFixtureTools(false);

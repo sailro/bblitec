@@ -145,3 +145,45 @@ test("an unused catch binding stays erased when a nested function shadows its na
     `),
     );
 });
+
+test("opaque calls do not prove parameter field writes or scalar rebinding", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        interface Options { enabled: boolean; }
+        declare function opaque(options: Options): void;
+        declare function scalar(value: number): void;
+        function possible(value: Options) { opaque(value); }
+        function written(value: Options) { const alias = value; alias.enabled = true; }
+        function copied(value: number) { scalar(value); }
+        function primitiveFields(value: { text: string; count: number; enabled: boolean }) {
+            return value.text.startsWith("a") && value.count.toFixed(1) !== "" && value.enabled.valueOf();
+        }
+        function customReceiver(value: { text: { startsWith(search: string): boolean } }) {
+            return value.text.startsWith("a");
+        }
+        function callbackWrite(value: { text: string }) {
+            return value.text.replace("a", () => { value.text = "changed"; return "b"; });
+        }
+        `,
+        "test/analysis-parameter-writes.ts",
+    );
+    const facts = sourceFile.statements
+        .filter(ts.isFunctionDeclaration)
+        .filter((fn) => fn.body)
+        .map((fn) => {
+            const parameter = fn.parameters[0]?.name;
+            assert.ok(parameter && ts.isIdentifier(parameter));
+            return [
+                parameterIsReadOnly(checker, fn, parameter),
+                parameterIsMutated(checker, fn, parameter),
+            ];
+        });
+    assert.deepEqual(facts, [
+        [false, false],
+        [false, true],
+        [true, false],
+        [true, false],
+        [false, true],
+        [false, true],
+    ]);
+});

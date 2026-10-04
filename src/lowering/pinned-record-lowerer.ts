@@ -4636,7 +4636,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     /** Native reference handles encode absence themselves; value lookups use js::Nullable. */
     private collectionResult(value: string, element: RecordShape): string {
         return this.model.representations.nullable(element)
-            ? `${value}.value_or(${this.cpp(element)}{})`
+            ? `bbl::pinned::nullish<${this.cpp(element)}>(${value}, [] { return ${this.cpp(element)}{}; })`
             : value;
     }
 

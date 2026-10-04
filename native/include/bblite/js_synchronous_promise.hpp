@@ -43,11 +43,13 @@ inline void end_abandoned_activation() noexcept { detail::activation_abandoned_f
 
 template <typename T> class SynchronousPromise {
     struct State {
-        std::variant<std::monostate, T, std::exception_ptr> outcome;
+        std::variant<std::monostate, T, Error> outcome;
         bool abandoned = false;
         void gc_trace(const TraceVisitor& visitor) const {
-            if (const auto* value = std::get_if<T>(&outcome))
+            if (const auto* value = std::get_if<1>(&outcome))
                 visitor(*value);
+            if (const auto* error = std::get_if<2>(&outcome))
+                visitor(*error);
         }
     };
 
@@ -64,9 +66,9 @@ public:
 
     /** The awaited result: the value, the rejection rethrown, or the activation abandoned. */
     [[nodiscard]] T await_result() const {
-        if (const auto* value = std::get_if<T>(&state_->outcome))
+        if (const auto* value = std::get_if<1>(&state_->outcome))
             return *value;
-        if (const auto* error = std::get_if<std::exception_ptr>(&state_->outcome))
+        if (const auto* error = std::get_if<2>(&state_->outcome))
             std::rethrow_exception(*error);
         state_->abandoned = true;
         detail::activation_abandoned_flag() = true;

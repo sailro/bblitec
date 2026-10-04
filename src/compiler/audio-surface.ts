@@ -366,6 +366,9 @@ function compileAudioReceiverMethod(
     receiver: Value,
 ): Value | undefined {
     const method = callee.name.text;
+    // Stored and deferred-produced handles can reach operations without
+    // a context constructor in this translation unit.
+    context.reachFeature("audio:engine", call);
     if (
         receiver.kind === "audio-context" &&
         method === "decodeAudioData" &&
@@ -432,11 +435,7 @@ function compileAudioReceiverMethod(
                     call,
                     `AudioContext.${method} takes no arguments.`,
                 );
-            if (!context.options.workers)
-                context.fail(
-                    call,
-                    "AudioContext lifecycle promises require an asynchronous application realm.",
-                );
+            if (!context.options.workers) throw new ApplicationRealmRequired();
             const action =
                 method === "resume"
                     ? "Resume"
@@ -565,10 +564,7 @@ function compileAudioReceiverMethod(
             case "removeEventListener": {
                 context.expectArgumentCount(call, 2, 3);
                 if (!context.options.workers)
-                    context.fail(
-                        call,
-                        "Audio event listeners require an asynchronous application realm.",
-                    );
+                    throw new ApplicationRealmRequired();
                 const selected = { ...receiver };
                 delete selected.nativeBinding;
                 const target = context.bindings.pinValueToTemporary(
@@ -779,6 +775,7 @@ export function emitAudioPropertyAssignment(
             "Compound assignment is not supported for a Web Audio property.",
         );
     }
+    context.reachFeature("audio:engine", expression);
 
     if (owner.kind === "audio-param" && property === "value") {
         context.emit({

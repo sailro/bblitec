@@ -170,7 +170,10 @@ export class StorageDemandPlanner {
         StorageRequest & { kind: "dynamic" }
     >();
     /** @unjournaled Discovery deduplicates requests discarded by emission. */
-    private readonly records = new Set<NativeRecordStorageDemand["identity"]>();
+    private readonly records = new Map<
+        NativeRecordStorageDemand["identity"],
+        StorageRequest & { kind: "record" }
+    >();
     /** @unjournaled Discovery deduplicates requests discarded by emission. */
     private readonly generic = new GenericFunctionStorage();
     /** @unjournaled Bounds the discarded attempt, independently of rollback. */
@@ -273,8 +276,12 @@ export class StorageDemandPlanner {
             }
             this.dynamic.set(request.declaration, request);
         } else if (request.kind === "record") {
-            if (this.records.has(request.demand.identity)) return;
-            this.records.add(request.demand.identity);
+            const existing = this.records.get(request.demand.identity);
+            if (existing) {
+                if (request.demand.proxy) existing.demand = request.demand;
+                return;
+            }
+            this.records.set(request.demand.identity, request);
         } else if (!this.generic.add(request.demand)) return;
         this.demands.push(request);
         statistics.collected++;

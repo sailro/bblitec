@@ -370,6 +370,7 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
         property,
         value: "audio-param" as const,
         helper: "bbl::pal::audio_node_param",
+        feature: "audio:engine",
         helperArgument: `bbl::pal::AudioParamName::${enumerator}`,
     }),
 );
@@ -730,6 +731,7 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "number",
         helper: "bbl::pal::audio_current_time",
         helperOwnerField: "context",
+        feature: "audio:engine",
         // The audio clock advances on the audio thread; two reads are two
         // instants. A scene binding it to a `const` means one.
         impure: true,
@@ -740,6 +742,7 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "data",
         helper: "bbl::pal::audio_state",
         helperOwnerField: "context",
+        feature: "audio:engine",
         dataType: { kind: "string" },
         impure: true,
     },
@@ -760,6 +763,7 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "currentTime",
         value: "number",
         helper: "bbl::pal::audio_current_time",
+        feature: "audio:engine",
         // The audio clock advances on the audio thread; two reads are two
         // instants. A scene binding it to a `const` means one.
         impure: true,
@@ -769,6 +773,7 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "sampleRate",
         value: "number",
         helper: "bbl::pal::audio_sample_rate",
+        feature: "audio:engine",
     },
     {
         owner: "audio-context",
@@ -776,12 +781,14 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "data",
         helper: "bbl::pal::audio_state",
         dataType: { kind: "string" },
+        feature: "audio:engine",
     },
     {
         owner: "audio-context",
         property: "destination",
         value: "audio-node",
         helper: "bbl::pal::audio_destination",
+        feature: "audio:engine",
     },
     ...AUDIO_PARAM_RULES,
     ...(
@@ -817,6 +824,7 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "value",
         value: "number",
         helper: "bbl::pal::audio_param_value",
+        feature: "audio:engine",
     },
     {
         // Device generation is observable by recovery. Queue uploads still
@@ -2500,6 +2508,11 @@ export class PropertyAccessLowerer {
             // Field reads resolve through the instance record the
             // constructor built.
             const instance = this.context.compileValue(ownerExpression);
+            const native = this.context.dataLowerer.compilePropertyFromValue(
+                instance,
+                expression,
+            );
+            if (native) return native;
             const field = instance.recordProperties?.[expression.name.text];
             if (!field) {
                 const accessor = instance.recordGetters?.[expression.name.text];
@@ -2697,7 +2710,6 @@ export class PropertyAccessLowerer {
             };
         }
         if (owner.kind === "engine" && property === "drawCallCount") {
-            this.context.reachFeature("engine:device-recovery", expression);
             // A JavaScript number read of the native counter.
             return {
                 kind: "number",
@@ -2705,7 +2717,12 @@ export class PropertyAccessLowerer {
             };
         }
         if (owner.kind === "ui-element" && property === "dataset") {
-            return { ...owner, uiDataset: true };
+            const tag = this.context.ui.declaredUiTag(owner, ownerExpression);
+            return {
+                ...owner,
+                ...(tag === undefined ? {} : { uiTag: tag }),
+                uiDataset: true,
+            };
         }
         if (owner.kind === "ui-element" && property === "style") {
             return { ...owner, uiStyle: true };

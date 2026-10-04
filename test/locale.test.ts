@@ -154,6 +154,12 @@ test("native Unicode normalization and collation match JavaScript", (t) => {
         try { new Intl.Collator("en", {sensitivity:"invalid"}); } catch { rejected++; }
         try { Intl.Collator("en_US"); } catch { rejected++; }
         if (rejected !== 2) throw new Error("collator construction");
+        function compareOptional(options?: Intl.CollatorOptions): number {
+            return new Intl.Collator("en", options).compare("item2", "item10");
+        }
+        const comparisons: Array<typeof compareOptional> = [compareOptional];
+        if (comparisons[0]!() <= 0 || comparisons[0]!({numeric:true}) >= 0)
+            throw new Error("optional retained collation options");
     `,
         { fileName: "test/locale-entry.ts" },
     );
@@ -247,6 +253,15 @@ test("native number formatting matches JavaScript", (t) => {
         }
         if (formatNumber(0.5, "en", { style: "percent", maximumFractionDigits: 0 }) !== "50%") throw new Error("struct options");
         if (formatNumber(1234.5, "en") !== "1,234.5") throw new Error("absent struct options");
+        const formats: Array<typeof formatNumber> = [formatNumber];
+        let optionCalls = 0;
+        function nextOptions(): Intl.NumberFormatOptions | undefined {
+            optionCalls++;
+            return optionCalls === 1 ? undefined : {useGrouping:false};
+        }
+        if (formats[0]!(1234.5, "en", nextOptions()) !== "1,234.5" ||
+            formats[0]!(1234.5, "en", nextOptions()) !== "1234.5" || optionCalls !== 2)
+            throw new Error("optional retained number options");
         let unsupported = 0;
         try { formatNumber(1, "en", { currency: "EUR" }); } catch { unsupported++; }
         if (unsupported !== 1) throw new Error("unsupported struct option");

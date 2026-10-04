@@ -109,7 +109,6 @@ test(
             { kind: "number" },
             { kind: "boolean" },
             { kind: "string" },
-            { kind: "error" },
             { kind: "event-target" },
             { kind: "arraybuffer" },
             { kind: "dataview" },
@@ -161,6 +160,34 @@ test(
             `/I${join(nativeFixtureVcpkgRoot, "include")}`,
             source,
         ]);
+    },
+);
+test(
+    "authored Error payloads trace retained cause arrays and collect mutual cycles",
+    { skip: !tools },
+    () => {
+        assert.equal(
+            tracedEdgeCondition({ kind: "error" }, () => false),
+            true,
+        );
+        checkGeneratedCycles(
+            "error-cause-edges",
+            `
+        class Failure extends Error { readonly causes: Error[] = []; }
+        function build(): void {
+            const first = new Failure("first");
+            const second = new Failure("second");
+            first.causes.push(second);
+            second.causes.push(first);
+            const held: Error[] = [first];
+            if (held[0] !== first || first.causes[0] !== second || second.causes[0] !== first)
+                throw new Error("Error edge identity");
+        }
+        build();
+    `,
+            0,
+            "static_assert(bbl::js::gc_traceable<bbl::js::Error>);",
+        );
     },
 );
 test(

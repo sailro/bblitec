@@ -4191,9 +4191,9 @@ public:
                     sprite_target.load_op =
                         renderer.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
                     sprite_target.store_op = SDL_GPU_STOREOP_STORE;
+                    const Color4 clear_value = sprite_renderer_clear_value(renderer);
                     sprite_target.clear_color =
-                        SDL_FColor{renderer.clear_value.r, renderer.clear_value.g,
-                                   renderer.clear_value.b, renderer.clear_value.a};
+                        SDL_FColor{clear_value.r, clear_value.g, clear_value.b, clear_value.a};
                     SdlRenderPass sprite_pass{
                         SDL_BeginGPURenderPass(command, &sprite_target, 1, nullptr)};
                     record_sprite_pass(command, sprite_pass, engine,

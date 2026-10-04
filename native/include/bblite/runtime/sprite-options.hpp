@@ -172,4 +172,5 @@ struct SpriteRendererOptions {
     std::vector<Sprite2DLayerHandle> layers;
     bool clear = true;
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
+    js::Callback<Color4()> clear_value_reader{};
 };

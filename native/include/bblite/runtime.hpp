@@ -6924,3 +6924,15 @@ template <> struct std::hash<bbl::PickingInfo> {
         return std::hash<const void*>{}(info.state.get());
     }
 };
+
+template <> struct std::hash<bbl::FileTexture> {
+    [[nodiscard]] std::size_t operator()(const bbl::FileTexture& texture) const noexcept {
+        return std::hash<std::uint64_t>{}(texture.identity);
+    }
+};
+
+template <> struct std::hash<bbl::PixelsTexture> {
+    [[nodiscard]] std::size_t operator()(const bbl::PixelsTexture& texture) const noexcept {
+        return std::hash<std::uint64_t>{}(texture.identity);
+    }
+};

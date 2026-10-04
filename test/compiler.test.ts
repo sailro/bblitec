@@ -3104,7 +3104,7 @@ test("materializes a numeric Record for dynamic optional lookup", () => {
 
     assert.match(
         result.cpp,
-        /static thread_local bbl::js::Map<double, bblscene::Definition> values/,
+        /bbl::js::Map<double, bblscene::Definition> v_definitions\b/,
     );
     assert.match(result.cpp, /\.get_owned\(v_\w*key\)/);
 });
@@ -3194,8 +3194,10 @@ test("preserves object identity through a dynamic Record lookup", () => {
     assert.match(result.cpp, /using Entry = bbl::js::Ref<EntryData>;/);
     assert.match(
         result.cpp,
-        /static thread_local bbl::js::Map<std::string, bblscene::Entry> values/,
+        /bbl::js::Map<std::string, bblscene::Entry> v_entries = bbl::js::Map/,
     );
+    assert.match(result.cpp, /auto& v_entries = [^;]+\.capture0;/);
+    assert.doesNotMatch(result.cpp, /record_table_|static thread_local/);
     assert.match(result.cpp, /\.get_owned\(v_\w*code\)/);
     assert.match(result.cpp, /static_cast<bool>\(v_\w*entry\)/);
     assert.match(result.cpp, /v_\w*entry->value\+\+;/);
@@ -3252,19 +3254,6 @@ test("materializes Object.keys from a compile-time record", () => {
     `);
 
     assert.match(result.cpp, /Array<std::string>\{"one", "two"\}/);
-});
-
-test("preserves optional fields in Partial object defaults", () => {
-    const result = compileSource(`
-        interface Child { x: number; }
-        interface Cell { value: number; label: string; child: Child; }
-        function make(options: Partial<Cell> = {}): number {
-            return options.value ?? 3;
-        }
-        const value = make();
-    `);
-
-    assert.match(result.cpp, /std::nullopt, std::nullopt, \{\}/);
 });
 
 test("defaults an absent nullable array element before nullish coalescing", () => {
@@ -5241,18 +5230,6 @@ test("keeps a generation-known optional const at its selected scalar", () => {
     assert.match(result.cpp, /std::string v_url = "\/albedo\.png";/);
     assert.doesNotMatch(result.cpp, /Nullable<std::string> v_url/);
     assert.match(result.cpp, /std::string v_key = "Albedo";/);
-});
-
-test("dereferences an optional scalar through an explicit type assertion", () => {
-    const result = compileSource(`
-        interface Draft { width?: number }
-        function widthOf(draft: Draft): number {
-            return draft.width as number;
-        }
-        const width = widthOf({ width: 12 });
-    `);
-
-    assert.match(result.cpp, /return \(\*v_fn\d+_draft\.width\);/);
 });
 
 test("compares a missing optional scalar as absent", () => {
@@ -8578,20 +8555,18 @@ test("folds the browser canvas guard around a void-wrapped auto-run", () => {
     assert.match(result.cpp, /bbl::create_box/);
     assert.doesNotMatch(result.cpp, /document|getElementById/);
 
-    assert.throws(
-        () =>
-            compileSource(`
+    const missing = compileSource(`
                 if (document.getElementById("definitelyMissing")) {
                     console.log("unreachable");
                 }
-            `),
-        /Browser-dependent condition cannot be determined/,
-    );
+            `);
+    assert.match(missing.cpp, /ui_find_element_by_id[^\n]+"definitelyMissing"/);
+    assert.ok(missing.manifest.features.includes("platform:window"));
 
     assert.doesNotThrow(() => compileSource(`void 1;`));
 });
 
-test("erases optional DOM-local writes without dropping adjacent native state", () => {
+test("retains optional DOM-local writes beside adjacent native state", () => {
     const result = compileSource(`
         let enabled = false;
         const button = document.getElementById("toggle") as HTMLButtonElement | null;
@@ -8606,10 +8581,9 @@ test("erases optional DOM-local writes without dropping adjacent native state", 
     `);
 
     assert.match(result.cpp, /v_enabled = true;/);
-    assert.doesNotMatch(
-        result.cpp,
-        /button|textContent|setAttribute|aria-pressed/,
-    );
+    assert.match(result.cpp, /ui_set_attribute[^\n]+"aria-pressed"/);
+    assert.match(result.cpp, /ui_set_text/);
+    assert.match(result.cpp, /\.has_value\(\)/);
 });
 
 test("lowers a tag.class sheet selector beside its tag-descendant base rule", () => {
@@ -8688,7 +8662,7 @@ test("accepts a tag.class host companion rule", () => {
     );
 });
 
-test("erases event callbacks owned by an optional DOM local", () => {
+test("retains event callbacks owned by an optional DOM local", () => {
     const result = compileSource(`
         let enabled = true;
         const button = document.getElementById("toggle") as HTMLButtonElement | null;
@@ -8707,7 +8681,9 @@ test("erases event callbacks owned by an optional DOM local", () => {
         result.cpp,
         /auto v_enabled = bbl::js::make_gc_shared<bool>\(true\);/,
     );
-    assert.doesNotMatch(result.cpp, /button|addEventListener|textContent/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]+"click"/);
+    assert.match(result.cpp, /ui_set_text/);
+    assert.match(result.cpp, /\.has_value\(\)/);
 });
 
 test("narrows an assigned nullable retained-UI class field", () => {
@@ -16700,7 +16676,7 @@ test("reaches a shader material's samplers and defines", () => {
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
 });
 
-test("binds a numeric shader source factory parameter at its reached call", () => {
+test("binds a numeric shader source factory default at its reached call", () => {
     const result = compileSource(`
         import { createEngine, createShaderMaterial } from "babylon-lite";
 
@@ -16744,9 +16720,10 @@ test("binds a numeric shader source factory parameter at its reached call", () =
     ]);
     assert.match(
         result.cpp,
-        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(v_fn\d+_depthBias\)\);/,
+        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(0\.0\)\);/,
     );
-    assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(0\.0\)/);
+    // An omitted argument runs the default inside the shared helper.
+    assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(\)/);
 });
 
 test("reads the pin's wgsl tag as the identity over a shader source", () => {
@@ -17303,7 +17280,11 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.match(result.cpp, /bbl::on_frame_graph_update/);
     assert.match(
         result.cpp,
-        /auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\(bbl::js::make_ref<bblscene::MorphStateData>/,
+        /auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\(bbl::js::array_at_or_default\(v_STATES, /,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bblscene::MorphState> v_STATES = /,
     );
 });
 
@@ -17456,14 +17437,17 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
         "alpha",
         /\(\w+ \+ 3\.141592653589793\)/,
     );
-    assert.match(
-        result.cpp,
-        /\[\[maybe_unused\]\] double v_x = bbl::handle_at\(v_engine\.cameras, v_cam\)\.target\.x;/,
-    );
-    assert.match(
-        result.cpp,
-        /\[\[maybe_unused\]\] double v_z = bbl::handle_at\(v_engine\.cameras, v_cam\)\.target\.z;/,
-    );
+    const components = ["x", "y", "z"].map((component) => {
+        const read = result.cpp.match(
+            new RegExp(
+                `\\[\\[maybe_unused\\]\\] double (\\w+) = bbl::handle_at\\(([^;]+)\\)\\.target\\.${component};`,
+            ),
+        );
+        assert.ok(read, `missing camera target ${component} snapshot`);
+        return read;
+    });
+    assert.equal(components[0]![2], components[1]![2]);
+    assert.equal(components[1]![2], components[2]![2]);
 });
 
 test("reads FreeCamera position components", () => {

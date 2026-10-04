@@ -16,7 +16,7 @@ inline constexpr std::string_view ui_user_agent_css =
     "details:not([open]) > summary:not(:first-of-type){display:none;}\n"
     "ul,ol{display:block;margin:1em 0;padding-left:40px;}\n"
     "li{display:block;}\n"
-    "[hidden]{display:none;}\n"
+    "[hidden],script{display:none;}\n"
     "h1{display:block;font-size:2em;font-weight:bold;margin:0.67em 0;}\n"
     "h2{display:block;font-size:1.5em;font-weight:bold;margin:0.83em 0;}\n"
     "p{display:block;margin:1em 0;}\n"

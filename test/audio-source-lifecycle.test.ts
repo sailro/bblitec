@@ -29,6 +29,13 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
                 disconnect: node => { node?.disconnect(); }});
             const api = apis.get(1)!;
             const engine = await api.create();
+            let refused = 0;
+            try { await api.create({volume: 0.5}); }
+            catch (error) {
+                if (!error.message.includes("options are not lowered")) throw error;
+                ++refused;
+            }
+            if (refused !== 1) throw new Error("present options require support");
             const input = engine.audioContext.createGain();
             const source = await api.connect(engine, input);
             api.disconnect(null);

@@ -20,6 +20,7 @@ import {
     regularExpressionParts,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { isObjectIdentityFunction } from "./static-evaluator.js";
 import {
     captureArrayReceiver,
     compileArrayValueMethod,
@@ -60,22 +61,22 @@ import {
 } from "./type-facts.js";
 
 /**
- * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
- * every statically typed value is decided at generation time.
+ * Array and binary-view predicates share the same finite data discrimination.
+ * Parsed JSON is dynamic only for Array.isArray.
  */
-export function compileIsArrayOverData(
+export function compileArrayPredicateOverData(
     lowerer: DataLowerer,
     call: ts.CallExpression,
 ): Value | undefined {
     const callee = lowerer.context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "isArray" ||
-        lowerer.context.libraryGlobal(callee.expression) !== "Array" ||
-        call.arguments.length !== 1
-    ) {
+    if (!ts.isPropertyAccessExpression(callee) || call.arguments.length !== 1) {
         return undefined;
     }
+    const global = lowerer.context.libraryGlobal(callee.expression);
+    const binaryView =
+        global === "ArrayBuffer" && callee.name.text === "isView";
+    if (!binaryView && !(global === "Array" && callee.name.text === "isArray"))
+        return undefined;
     const value = lowerer.context.compileValue(argumentAt(call, 0));
     const decided = (answer: boolean): Value => {
         lowerer.context.emitDiscardedValue(value);
@@ -86,7 +87,7 @@ export function compileIsArrayOverData(
             dataType: { kind: "boolean" },
         };
     };
-    if (value.kind === "tuple") return decided(true);
+    if (value.kind === "tuple") return decided(!binaryView);
     if (
         [
             "record",
@@ -95,6 +96,7 @@ export function compileIsArrayOverData(
             "boolean",
             "string",
             "callback",
+            "void",
         ].includes(value.kind)
     )
         return decided(false);
@@ -110,21 +112,27 @@ export function compileIsArrayOverData(
             dataType.members.some((member) => member.kind === "numberindex"))
     )
         return undefined;
-    if (dataType.kind === "json" && !optional)
+    if (dataType.kind === "json" && !optional && !binaryView)
         return {
             kind: "boolean",
             cpp: `${value.cpp}.is_array()`,
             dataType: { kind: "boolean" },
         };
-    const arrayType = (type: DataType): boolean =>
-        ["vector", "span", "tuple", "product", "table"].includes(type.kind);
+    const matchesType = (type: DataType): boolean =>
+        binaryView
+            ? isTypedArrayType(type) ||
+              type.kind === "dataview" ||
+              type.kind === "bufferview"
+            : ["vector", "span", "tuple", "product", "table"].includes(
+                  type.kind,
+              );
     const member = optional ? "(*candidate)" : "candidate";
     const predicate =
-        dataType.kind === "json"
+        dataType.kind === "json" && !binaryView
             ? `${member}.is_array()`
             : dataType.kind === "union"
-              ? `std::array<bool, ${dataType.members.length}>{${dataType.members.map(arrayType).join(", ")}}[${member}.index()]`
-              : arrayType(dataType)
+              ? `std::array<bool, ${dataType.members.length}>{${dataType.members.map(matchesType).join(", ")}}[${member}.index()]`
+              : matchesType(dataType)
                 ? "true"
                 : "false";
     if (predicate === "false" || (predicate === "true" && !optional))
@@ -436,6 +444,13 @@ export function compileDataMethodCall(
                     ts.isTemplateExpression(ownerExpression)
                   ? lowerer.context.compileValue(ownerExpression)
                   : undefined;
+    if (dynamicOwner && !ts.isOptionalChain(callee)) {
+        dynamicOwner = lowerer.narrowOptional(
+            dynamicOwner,
+            callee.expression,
+            true,
+        );
+    }
     // A query bag the fold answered stays a browser value until a read it
     // cannot answer arrives here; that read parses the deployment query.
     if (
@@ -675,7 +690,30 @@ export function compileDataMethodCall(
             return folded;
         }
     }
-    if (tupleOwnerElements && dynamicOwner && method === "map") {
+    const snapshotOwner = dynamicOwner?.staticElementsOwner ?? dynamicOwner;
+    const nativeRecordElements =
+        method === "map" &&
+        dynamicOwner?.dataType?.kind === "vector" &&
+        dynamicOwner.dataType.element.kind === "struct" &&
+        snapshotOwner?.staticElements?.every(
+            (element, index) =>
+                element.staticElementsOwner === snapshotOwner &&
+                element.staticElementIndex === index &&
+                element.recordProperties !== undefined,
+        )
+            ? snapshotOwner.staticElements
+            : undefined;
+    const requiresStaticMap =
+        method === "map" &&
+        (tupleOwnerElements !== undefined ||
+            nativeRecordElements !== undefined) &&
+        call.arguments.length === 1 &&
+        lowerer.context.requiresStaticDataIteration(call.arguments[0]!);
+    if (
+        (tupleOwnerElements || (requiresStaticMap && nativeRecordElements)) &&
+        dynamicOwner &&
+        method === "map"
+    ) {
         if (call.arguments.length !== 1) {
             lowerer.context.fail(
                 call,
@@ -693,15 +731,19 @@ export function compileDataMethodCall(
                 "Tuple Array.map requires a local function or function literal callback.",
             );
         }
-        const storedCallback = lowerer.context.requiresStaticDataIteration(
-            callback,
-        )
+        const storedCallback = requiresStaticMap
             ? undefined
             : lowerer.prepareCallbackValue(callback, "tuple_map");
-        return {
-            kind: "tuple",
-            cpp: "",
-            tupleElements: tupleOwnerElements.map((element, index) => {
+        const elements = tupleOwnerElements ?? nativeRecordElements!;
+        const elementCount = elements.length;
+        const snapshotIntact = (): boolean =>
+            !nativeRecordElements ||
+            (snapshotOwner?.staticElements === nativeRecordElements &&
+                nativeRecordElements.length === elementCount);
+        const compile = (): Value | undefined => {
+            const mapped: Value[] = [];
+            for (const [index, element] of elements.entries()) {
+                if (!snapshotIntact()) return undefined;
                 const arguments_: Value[] = [
                     element,
                     {
@@ -712,28 +754,39 @@ export function compileDataMethodCall(
                     },
                     dynamicOwner,
                 ];
-                return storedCallback
-                    ? lowerer.context.bindings.pinValueToTemporary(
-                          lowerer.compileFunctionValueCall(
-                              storedCallback,
-                              arguments_,
-                              call,
-                          ),
-                          "mapped_result",
-                          callback,
-                      )
-                    : lowerer.context.asyncActivations.withStaticCollectionCallback(
-                          call,
-                          callback,
-                          () =>
-                              lowerer.context.compileCallbackWithValues(
-                                  callback,
+                mapped.push(
+                    storedCallback
+                        ? lowerer.context.bindings.pinValueToTemporary(
+                              lowerer.compileFunctionValueCall(
+                                  storedCallback,
                                   arguments_,
                                   call,
                               ),
-                      );
-            }),
+                              "mapped_result",
+                              callback,
+                          )
+                        : lowerer.context.asyncActivations.withStaticCollectionCallback(
+                              call,
+                              callback,
+                              () =>
+                                  lowerer.context.compileCallbackWithValues(
+                                      callback,
+                                      arguments_,
+                                      call,
+                                  ),
+                          ),
+                );
+                if (!snapshotIntact()) return undefined;
+            }
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: mapped,
+            };
         };
+        if (!nativeRecordElements) return compile();
+        const result = lowerer.context.probeEmission(compile);
+        if (result) return result;
     }
     // A constructor receiver was already evaluated above. Recompiling it as
     // a data path would repeat its argument effects; naming the result also
@@ -916,7 +969,7 @@ function compileKnownDataMethod(
         const field = lowerer.context.dataTypes
             .structFields(recordType.name, callee.name, "accessors")
             .find((candidate) => candidate.sourceName === method);
-        const functionType = field?.accessor ? undefined : field?.type;
+        const functionType = field?.type;
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
@@ -938,7 +991,7 @@ function compileKnownDataMethod(
                   : undefined;
             return lowerer.compileStoredCall(
                 call,
-                `${record}${member}${field!.name}`,
+                `${record}${member}${field!.name}${field!.accessor ? ".get()" : ""}`,
                 functionType,
                 present,
             );
@@ -1259,6 +1312,7 @@ function compileArrayMethodTail(
     method: string,
 ): Value | undefined {
     const { lowerer, call, narrowed, dataType } = state;
+    lowerer.invalidateRecordArrayFacts(narrowed);
     if (method === "indexOf" || method === "includes")
         return lowerer.compileArraySearch(
             call,
@@ -2131,9 +2185,22 @@ function compileArrayMap(
 ): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
+    const callback = call.arguments[0]
+        ? lowerer.context.unwrap(call.arguments[0])
+        : undefined;
+    const identity =
+        method === "map" &&
+        callback &&
+        isObjectIdentityFunction(callback, (expression) =>
+            lowerer.context.libraryGlobal(expression),
+        );
     const requested: DataType<"vector"> | undefined = state.typedResult
         ? { kind: "vector", element: { kind: "number" } }
-        : (state.expectedResult ?? arrayResultType(lowerer, call));
+        : (state.expectedResult ??
+          arrayResultType(lowerer, call) ??
+          (identity
+              ? { kind: "vector", element: dataType.element }
+              : undefined));
     if (requested?.kind !== "vector") {
         lowerer.context.fail(
             call,
@@ -2141,9 +2208,6 @@ function compileArrayMap(
         );
     }
     let mappedType = requested;
-    const callback = call.arguments[0]
-        ? lowerer.context.unwrap(call.arguments[0])
-        : undefined;
     if (
         method === "map" &&
         call.arguments.length === 1 &&
@@ -2846,38 +2910,15 @@ function compileMapDataMethod(
                 ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
-        if (
-            dataType.value.kind === "struct" &&
-            lowerer.context.dataTypes.isReferenceStruct(dataType.value.name)
-        ) {
-            // Shared object handles carry absence themselves. Do
-            // not wrap and immediately dereference Map.get: a miss
-            // must remain an empty handle for the source guard.
-            return {
-                ...lowerer.leafValue(
-                    `${narrowed.cpp}.get(${key})`,
-                    dataType.value,
-                ),
-                ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
-                nativeLvalue: true,
-                ...(slotFoundCpp ? { slotFoundCpp } : {}),
-            };
-        }
         return {
-            kind: "data",
-            cpp: `${narrowed.cpp}.get(${key})`,
-            ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
+            // Map.get declares its absence, so source guards may narrow it.
+            ...lowerer.mapPropertyValue(
+                narrowed.cpp,
+                key,
+                dataType.value,
+                false,
+            ),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
-            // TypeScript flattens `(T | null) | undefined` to one
-            // nullable union. Preserve that shape so a single
-            // source guard narrows a Map whose value is nullable.
-            dataType:
-                dataType.value.kind === "optional"
-                    ? dataType.value
-                    : {
-                          kind: "optional",
-                          inner: dataType.value,
-                      },
         };
     }
     if (method === "set") {

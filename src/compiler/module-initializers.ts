@@ -4,18 +4,32 @@ import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
+import { libraryArgumentIsReadOnly } from "./library-call-effects.js";
+import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import {
+    callArgumentIsReadOnly,
+    isSupportedFunction,
+    parameterIsReadOnly,
+} from "./user-functions.js";
+import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     accessedPropertySymbol,
     aliasTarget,
     declaredSymbol,
     type CompilerSymbols,
 } from "./symbols.js";
-import { classHasStaticState, classMemberTable } from "./class-members.js";
+import {
+    ClassHierarchy,
+    classHasStaticState,
+    classMemberTable,
+} from "./class-members.js";
+import { EvaluationOrder } from "./evaluation-order.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
+    propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
 
@@ -40,6 +54,51 @@ export function moduleContainerSymbol(
             return moduleContainerSymbol(current.expression, checker, symbols);
     }
     return symbol?.declarations?.some(ts.isSourceFile) ? undefined : symbol;
+}
+
+/** Checked-source references are immutable across storage-demand replays. */
+const moduleContainerFiles = new WeakMap<
+    ts.Program,
+    ReadonlyMap<ts.Symbol, readonly ts.SourceFile[]>
+>();
+
+/**
+ * Files whose alias analysis can start from this binding. A file with no
+ * occurrence of the original symbol cannot grow that analysis's alias set.
+ * Keep its full traversal policy, including function bodies and type nodes.
+ */
+export function moduleContainerReferenceFiles(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+    symbol: ts.Symbol,
+): readonly ts.SourceFile[] {
+    let indexed = moduleContainerFiles.get(program);
+    if (!indexed) {
+        const files = new Map<ts.Symbol, ts.SourceFile[]>();
+        for (const file of program.getSourceFiles()) {
+            if (file.isDeclarationFile) continue;
+            const referenced = new Set<ts.Symbol>();
+            forEachAnalysisNode(file, (node) => {
+                if (
+                    !ts.isIdentifier(node) &&
+                    !ts.isPropertyAccessExpression(node) &&
+                    !ts.isElementAccessExpression(node)
+                )
+                    return;
+                const owner = moduleContainerSymbol(node, checker, symbols);
+                if (owner) referenced.add(owner);
+            });
+            for (const owner of referenced) {
+                const references = files.get(owner);
+                if (references) references.push(file);
+                else files.set(owner, [file]);
+            }
+        }
+        indexed = files;
+        moduleContainerFiles.set(program, indexed);
+    }
+    return indexed.get(symbol) ?? [];
 }
 
 /** Immutable runtime edges in source order, excluding type-only dependencies. */
@@ -81,16 +140,6 @@ export function isModuleInitializerStatement(
         ts.isTypeAliasDeclaration(statement) ||
         ts.isEnumDeclaration(statement) ||
         ts.isModuleDeclaration(statement)
-    );
-}
-
-/** A top-level class whose `static { ... }` block runs at module evaluation. */
-function declaresClassStaticBlock(
-    statement: ts.Statement,
-): statement is ts.ClassDeclaration {
-    return (
-        ts.isClassDeclaration(statement) &&
-        statement.members.some(ts.isClassStaticBlockDeclaration)
     );
 }
 
@@ -183,6 +232,35 @@ function isMutatedContainer(
     );
 }
 
+function pinnedCallArgumentIsReadOnly(
+    declaration: ts.Declaration | undefined,
+    index: number,
+): boolean {
+    if (!declaration || !isEngineDeclaration(declaration)) return false;
+    const engine = engineBodies();
+    const bodies = engine.bodies(declaration);
+    // A missing mutation proof is not a read-only proof: interface members
+    // and unsupported parameter bindings retain conservative storage.
+    return (
+        bodies !== undefined &&
+        bodies.length > 0 &&
+        bodies.every((body) => {
+            const parameter = body.parameters[index];
+            return (
+                isSupportedFunction(body) &&
+                parameter !== undefined &&
+                !parameter.dotDotDotToken &&
+                ts.isIdentifier(parameter.name) &&
+                parameterIsReadOnly(
+                    engine.checkerFor(body),
+                    body,
+                    parameter.name,
+                )
+            );
+        })
+    );
+}
+
 /**
  * Every name whose container `sourceFile` writes INTO -- a field store, an
  * element store, an increment through it, a `delete`, or a mutating
@@ -196,6 +274,7 @@ function collectMutatedContainerSymbols(
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
     const mutated = new EmissionSet<ts.Symbol>();
+    const aliases = new Map<ts.Symbol, ts.Symbol>();
     const record = (target: ts.Expression): void => {
         const symbol = moduleContainerSymbol(target, checker, symbols);
         if (symbol) mutated.add(symbol);
@@ -210,6 +289,137 @@ function collectMutatedContainerSymbols(
             record(current.expression);
     };
     forEachAnalysisNode(sourceFile, (node) => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer &&
+            typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
+        ) {
+            const alias = symbols.valueSymbol(node.name);
+            const origin = moduleContainerSymbol(
+                node.initializer,
+                checker,
+                symbols,
+            );
+            if (alias && origin) aliases.set(alias, origin);
+        }
+        if (ts.isCallExpression(node)) {
+            const called = checker.getResolvedSignature(node)?.declaration;
+            node.arguments.forEach((argument, index) => {
+                if (
+                    !typeCanCarryReference(
+                        checker.getTypeAtLocation(argument),
+                    ) ||
+                    libraryArgumentIsReadOnly(checker, node, index) ||
+                    pinnedCallArgumentIsReadOnly(called, index) ||
+                    callArgumentIsReadOnly(checker, node, index)
+                )
+                    return;
+                const visit = (
+                    value: ts.Expression,
+                    path: readonly string[],
+                    consumer: ts.CallExpression = node,
+                    parameterIndex = index,
+                ): void => {
+                    if (
+                        !typeCanCarryReference(checker.getTypeAtLocation(value))
+                    )
+                        return;
+                    if (
+                        callArgumentProjectionIsReadOnly(
+                            checker,
+                            consumer,
+                            parameterIndex,
+                            path,
+                        )
+                    )
+                        return;
+                    const current = unwrapExpression(value);
+                    if (
+                        ts.isObjectLiteralExpression(current) &&
+                        current.properties.every(
+                            (property) =>
+                                (ts.isPropertyAssignment(property) ||
+                                    ts.isShorthandPropertyAssignment(
+                                        property,
+                                    )) &&
+                                (ts.isIdentifier(property.name) ||
+                                    ts.isStringLiteralLike(property.name) ||
+                                    ts.isNumericLiteral(property.name)),
+                        )
+                    ) {
+                        for (const property of current.properties) {
+                            if (
+                                ts.isPropertyAssignment(property) ||
+                                ts.isShorthandPropertyAssignment(property)
+                            )
+                                visit(
+                                    ts.isPropertyAssignment(property)
+                                        ? property.initializer
+                                        : property.name,
+                                    [...path, propertyNameText(property.name)!],
+                                    consumer,
+                                    parameterIndex,
+                                );
+                        }
+                        return;
+                    }
+                    if (
+                        ts.isArrayLiteralExpression(current) &&
+                        !current.elements.some(ts.isSpreadElement)
+                    ) {
+                        current.elements.forEach((element, i) => {
+                            if (!ts.isOmittedExpression(element))
+                                visit(
+                                    element,
+                                    [...path, String(i)],
+                                    consumer,
+                                    parameterIndex,
+                                );
+                        });
+                        return;
+                    }
+                    const collect = (part: ts.Node): "skip" | undefined => {
+                        // A copied scalar cannot carry its containing object's
+                        // identity. Nested calls still receive their own analysis.
+                        if (
+                            ts.isExpression(part) &&
+                            !typeCanCarryReference(
+                                checker.getTypeAtLocation(part),
+                            )
+                        )
+                            return "skip";
+                        if (ts.isCallExpression(part)) {
+                            // The outer consumer receives this call's result, not
+                            // every reference used to compute it. Only inputs the
+                            // nested call can retain propagate to that result.
+                            part.arguments.forEach((argument, argumentIndex) =>
+                                visit(argument, [], part, argumentIndex),
+                            );
+                            forEachAnalysisNode(part.expression, collect, {
+                                functions: "skip",
+                            });
+                            return "skip";
+                        }
+                        if (
+                            ts.isIdentifier(part) ||
+                            ts.isPropertyAccessExpression(part) ||
+                            ts.isElementAccessExpression(part)
+                        ) {
+                            const symbol = moduleContainerSymbol(
+                                part,
+                                checker,
+                                symbols,
+                            );
+                            if (symbol) mutated.add(symbol);
+                        }
+                        return undefined;
+                    };
+                    forEachAnalysisNode(value, collect, { functions: "skip" });
+                };
+                visit(argument, []);
+            });
+        }
         if (isAssignmentExpression(node)) {
             assignmentTargets(node.left).forEach(recordThrough);
         } else if (isUpdateExpression(node)) {
@@ -223,6 +433,10 @@ function collectMutatedContainerSymbols(
             if (target) record(target);
         }
     });
+    for (const symbol of mutated) {
+        const origin = aliases.get(symbol);
+        if (origin) mutated.add(origin);
+    }
     return mutated;
 }
 
@@ -250,22 +464,32 @@ export function planImportedModuleState(
     sourceFile: ts.SourceFile,
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
-): { modules: ts.SourceFile[]; mutatedContainers: ReadonlySet<ts.Symbol> } {
+    evaluationOrder = new EvaluationOrder(
+        checker,
+        new ClassHierarchy(checker, program),
+    ),
+    retainedDeclarations: Iterable<ts.VariableDeclaration> = [],
+): {
+    modules: ts.SourceFile[];
+    mutatedContainers: ReadonlySet<ts.Symbol>;
+} {
     const planner = new ModuleInitializerPlanner(
         program,
         sourceFile,
         checker,
         symbols,
+        evaluationOrder,
     );
+    const modules = planner.plan(retainedDeclarations);
     return {
-        modules: planner.plan(),
+        modules,
         mutatedContainers: planner.mutatedContainerSymbols(),
     };
 }
 
 /**
- * The entry module's own mutable state: its top-level `let`/`var`
- * declarations that the file rebinds.
+ * The entry module's shared state, including containers whose reached uses
+ * request retained identity through storage replay.
  *
  * An implicit main body needs storage for names its functions share.
  * Authored module entries emit their own declarations and skip this plan's
@@ -276,13 +500,14 @@ export function planEntryModuleState(
     sourceFile: ts.SourceFile,
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
+    retainedDeclarations: Iterable<ts.VariableDeclaration> = [],
 ): readonly ts.Statement[] {
     return new ModuleInitializerPlanner(
         program,
         sourceFile,
         checker,
         symbols,
-    ).planEntryState();
+    ).planEntryState(retainedDeclarations);
 }
 
 class ModuleInitializerPlanner {
@@ -291,9 +516,24 @@ class ModuleInitializerPlanner {
         private readonly sourceFile: ts.SourceFile,
         private readonly checker: ts.TypeChecker,
         private readonly symbols: CompilerSymbols,
+        private readonly evaluationOrder = new EvaluationOrder(
+            checker,
+            new ClassHierarchy(checker, program),
+        ),
     ) {}
 
-    public plan(): ts.SourceFile[] {
+    public plan(
+        retainedDeclarations: Iterable<ts.VariableDeclaration> = [],
+    ): ts.SourceFile[] {
+        const retainedModules = new Set(
+            [...retainedDeclarations]
+                .filter(
+                    (declaration) =>
+                        ts.isVariableStatement(declaration.parent.parent) &&
+                        ts.isSourceFile(declaration.parent.parent.parent),
+                )
+                .map((declaration) => declaration.getSourceFile()),
+        );
         const projectModules = this.runtimeModules().filter(
             (file) => file !== this.sourceFile,
         );
@@ -320,7 +560,11 @@ class ModuleInitializerPlanner {
                 this.moduleHasObservedMutableState(file, observedState),
             ),
         );
-        if (mutatingModules.size === 0 && mutableStateModules.size === 0) {
+        if (
+            mutatingModules.size === 0 &&
+            mutableStateModules.size === 0 &&
+            retainedModules.size === 0
+        ) {
             return [];
         }
 
@@ -337,6 +581,7 @@ class ModuleInitializerPlanner {
             (file) =>
                 mutatingModules.has(file) ||
                 mutableStateModules.has(file) ||
+                retainedModules.has(file) ||
                 [...(stateByModule.get(file) ?? [])].some((symbol) =>
                     mutatedState.has(symbol),
                 ),
@@ -367,7 +612,7 @@ class ModuleInitializerPlanner {
     }
 
     /**
-     * Entry-file top-level `let`/`var` statements the file rebinds.
+     * Entry-file declarations requiring shared native storage.
      *
      * Not `moduleHasObservableInitializer`, which asks a different question
      * for a different file: there the subject is an IMPORTED module and the
@@ -377,13 +622,13 @@ class ModuleInitializerPlanner {
      * being emitted, and one write anywhere in the file is enough to make the
      * name storage rather than a folded constant.
      *
-     * Rebinding is the whole rule. A write THROUGH the name -- a property
-     * assignment or a mutating method on an object it holds -- leaves the
-     * binding pointing at the same object, so the declaration's own
-     * initializer still describes it and the data lowerer keeps owning that
-     * representation.
+     * Container representation belongs to the data lowerer; its explicit
+     * storage demands retain the original declaration here too.
      */
-    public planEntryState(): readonly ts.Statement[] {
+    public planEntryState(
+        retainedDeclarations: Iterable<ts.VariableDeclaration>,
+    ): readonly ts.Statement[] {
+        const retained = new Set(retainedDeclarations);
         // `true`: at module scope an incremented name is storage too.
         const rebound = collectReboundSymbols(
             this.sourceFile,
@@ -413,6 +658,7 @@ class ModuleInitializerPlanner {
                 (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
             const selected = statement.declarationList.declarations.some(
                 (declaration) => {
+                    if (retained.has(declaration)) return true;
                     if (!ts.isIdentifier(declaration.name)) return false;
                     const symbol = this.symbols.valueSymbol(declaration.name);
                     if (symbol === undefined) return false;
@@ -684,14 +930,46 @@ class ModuleInitializerPlanner {
         return dependencies;
     }
 
+    /** @unjournaled Potential host effects depend only on the checked source. */
+    private readonly hostInitializerEffects = new Map<ts.SourceFile, boolean>();
+
+    private initializerHasHostEffects(expression: ts.Expression): boolean {
+        return this.evaluationOrder.hasModuleEffects(
+            this.symbols.pinnedWgslTemplate(expression) ?? expression,
+        );
+    }
+
     private moduleHasObservableInitializer(
         file: ts.SourceFile,
         moduleState: ReadonlySet<ts.Symbol>,
     ): boolean {
-        // A static block runs when the module evaluates, whatever it
-        // touches, so the module's initializer is emitted -- where the class
-        // lowering refuses the block rather than dropping it.
-        if (file.statements.some(declaresClassStaticBlock)) return true;
+        // Authored statements run even when their effects target host state
+        // instead of a module variable. This also retains static class work,
+        // where unsupported forms must be refused by class lowering.
+        let hostEffects = this.hostInitializerEffects.get(file);
+        if (hostEffects === undefined) {
+            hostEffects = file.statements.some((statement) => {
+                if (!isModuleInitializerStatement(statement, this.checker))
+                    return false;
+                if (ts.isClassDeclaration(statement)) return true;
+                if (ts.isVariableStatement(statement))
+                    return statement.declarationList.declarations.some(
+                        (declaration) =>
+                            declaration.initializer &&
+                            this.initializerHasHostEffects(
+                                declaration.initializer,
+                            ),
+                    );
+                if (ts.isExportAssignment(statement))
+                    return this.initializerHasHostEffects(statement.expression);
+                return (
+                    !ts.isEmptyStatement(statement) &&
+                    this.evaluationOrder.hasModuleEffects(statement)
+                );
+            });
+            this.hostInitializerEffects.set(file, hostEffects);
+        }
+        if (hostEffects) return true;
         if (moduleState.size === 0) return false;
         for (const symbol of this.moduleInitializerMutations(file)) {
             if (moduleState.has(symbol)) return true;
@@ -803,10 +1081,7 @@ class ModuleInitializerPlanner {
                             record(target),
                         );
                     }
-                    if (
-                        ts.isPostfixUnaryExpression(current) ||
-                        ts.isPrefixUnaryExpression(current)
-                    ) {
+                    if (isUpdateExpression(current)) {
                         record(current.operand);
                     }
                     if (ts.isDeleteExpression(current)) {

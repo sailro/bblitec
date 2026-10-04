@@ -125,7 +125,7 @@ test("survey and coverage publish only fresh strict attempts after planning refu
         state.read(()=>3);
         state.read(()=>"text");
         state.read(()=>true);
-        new Proxy({},{});
+        new FinalizationRegistry(() => {});
     `;
     const baselineCoverage = new SourceCoverage();
     const plannedCoverage = new SourceCoverage();

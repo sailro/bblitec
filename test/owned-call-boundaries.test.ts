@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
@@ -57,6 +59,196 @@ namespace bbl::pal {
         });
     });
 }
+
+check(
+    "preserves optional fields in Partial object defaults",
+    `
+    interface Child { x: number; }
+    interface Cell { value: number; label: string; child: Child; }
+    function make(options: Partial<Cell> = {}): number {
+        return options.value ?? 3;
+    }
+    const value = make();
+    if(value !== 3) throw new Error('static default');
+    const calls:Array<(options?:Partial<Cell>)=>number>=[make];
+    const child:Child={x:2};
+    const inputs:Partial<Cell>[]=[{}, {value:0}, {value:7,label:'named',child}];
+    if(calls[0]!() !== 3 || calls[0]!(undefined) !== 3)
+        throw new Error('stored default');
+    const results:number[]=[];
+    for(const input of inputs) results.push(calls[0]!(input));
+    if(results.join(',') !== '3,0,7') throw new Error('optional value');
+    if(inputs[0]!.label !== undefined || inputs[0]!.child !== undefined ||
+       inputs[1]!.label !== undefined || inputs[1]!.child !== undefined)
+        throw new Error('absent optional fields');
+    child.x=9;
+    if(inputs[2]!.label !== 'named' || inputs[2]!.child !== child ||
+       inputs[2]!.child!.x !== 9)
+        throw new Error('present optional fields');
+`,
+);
+
+check(
+    "dereferences an optional scalar through an explicit type assertion",
+    `
+    interface Draft { width?: number }
+    function widthOf(draft: Draft): number {
+        return draft.width as number;
+    }
+    const width = widthOf({ width: 12 });
+    if(width !== 12) throw new Error('static asserted value');
+    const reads:Array<(draft:Draft)=>number>=[widthOf];
+    const drafts:Draft[]=[{width:4},{},{width:0}];
+    drafts[0]!.width=9;
+    const widths:number[]=[];
+    for(const draft of drafts) {
+        if(draft.width !== undefined) widths.push(reads[0]!(draft));
+    }
+    if(widths.join(',') !== '9,0' || drafts[1]!.width !== undefined)
+        throw new Error('represented asserted values');
+`,
+);
+
+check(
+    "retained readonly array initializers own their projected storage",
+    `
+    interface Child {value:number;}
+    interface Entry {name:string;child:Child;}
+    let calls=0;
+    function build(child:Child):{name:'left'|'right';child:Child}[] {
+        calls++;
+        return [{name:'left',child},{name:'right',child}];
+    }
+    function retain(child:Child):()=>string {
+        const entries:readonly Entry[]=build(child);
+        return ()=> {
+            if(entries[0]!.child !== child || entries[1]!.child !== child)
+                throw new Error('retained child identity');
+            return entries.map(entry=>entry.name+entry.child.value).join(',');
+        };
+    }
+    const child:Child={value:1};
+    const read=retain(child);
+    child.value=7;
+    if(calls !== 1 || read() !== 'left7,right7')
+        throw new Error('retained readonly order and lifetime');
+`,
+);
+
+test("retaining an existing borrowed readonly array still refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Item {value:number;}
+            const saved:Array<readonly Item[]>=[];
+            const stores:Array<(items:readonly Item[])=>void>=[items=>saved.push(items)];
+            stores[0]!([{value:1}]);
+        `),
+        /A borrowed array view cannot retain JavaScript array identity in owning storage/,
+    );
+});
+
+check(
+    "dynamic-record-lookups-retain-the-declaration-owner",
+    `
+interface Entry { value:number }
+const entries:Record<string,Entry>={one:{value:1}};
+const alias=entries;
+function mutate(key:string):Entry|undefined {
+ const entry=alias[key];if(entry)entry.value++;return entry;
+}
+let key='one';
+const first=mutate(key),second=mutate(key);
+if(!first||first!==second||first!==entries.one||entries.one!.value!==3)throw new Error('shared entry');
+if(mutate('absent')!==undefined)throw new Error('missing entry');
+function make(seed:number):(key:string)=>Entry|undefined {
+ const table:Record<string,Entry>={one:{value:seed}};
+ return key=>{const entry=table[key];if(entry)entry.value++;return entry;};
+}
+const left=make(10),right=make(20);
+const leftFirst=left(key),leftAgain=left(key),rightFirst=right(key);
+if(!leftFirst||leftFirst!==leftAgain||leftFirst.value!==12||!rightFirst||rightFirst===leftFirst||rightFirst.value!==21)throw new Error('retained factory owner');
+`,
+);
+
+test("dynamic imported record lookups retain one module owner and static siblings", (t) => {
+    const directory = resolve("artifacts/dynamic-record-module-owner");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `
+        export interface Entry {value:number}
+        export const entries:Record<string,Entry>={one:{value:1}};
+        export const alias=entries;
+        export const immutable={answer:7};
+    `,
+    );
+    const result = compileSource(
+        `
+        import {entries,alias,immutable} from './dependency.js';
+        function read(key:string){return alias[key];}
+        let key='one';const a=read(key),b=read(key);
+        if(!a||a!==b||a!==entries.one)throw new Error('imported identity');
+        a.value++;
+        if(entries.one!.value!==2||read(key)!.value!==2||immutable.answer!==7)throw new Error('imported mutation');
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /\b\w+_immutable\s*=/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "dynamic-record-module-owner", result.cpp, {
+        timeoutMs: 10000,
+    });
+});
+
+check(
+    "selected-optional-records-retain-caller-identity",
+    `
+interface Bounds { low:number; high:number }
+let created=0;
+function fresh():Bounds { created++; return {low:0,high:0}; }
+function update(low:number, out?:Bounds):Bounds {
+ const result=out??fresh(); result.low=low; result.high=low+3; return result;
+}
+const first=update(2);
+const reusable:Bounds={low:0,high:0};
+const second=update(7,reusable);
+if(second!==reusable||reusable.low!==7||reusable.high!==10||first.low!==2||created!==1)throw new Error('optional record alias');
+second.high++;if(reusable.high!==11)throw new Error('returned record alias');
+`,
+);
+
+check(
+    "guarded-tuple-entries-retain-presence-and-aliases",
+    `
+function merge(input:readonly [number,number][]):[number,number][] {
+ const merged:[number,number][]=[];
+ for(const item of input){
+  const last=merged[merged.length-1];
+  if(last&&item[0]<=last[1])last[1]=Math.max(last[1],item[1]);
+  else merged.push([item[0],item[1]]);
+ }
+ return merged;
+}
+const merged=merge([[1,3],[2,5],[8,9]]);
+if(merged.length!==2||merged[0]![1]!==5||merged[1]![0]!==8)throw new Error('tuple entry merge');
+const pairs:[number,number][]=[];
+let reads=0;function index():number {reads++;return 0;}
+const missing=pairs[index()];pairs.push([4,6]);
+if(missing||reads!==1)throw new Error('missing tuple snapshot');
+const retained=pairs[0];pairs.length=0;
+if(!retained||retained[1]!==6)throw new Error('retained tuple snapshot');
+const mixed:[number,string][]=[];
+const absent=mixed[0];mixed.push([1,'before']);
+if(absent)throw new Error('missing mixed tuple');
+const present=mixed[0];if(present)present[1]='after';
+if(mixed[0]![1]!=='after')throw new Error('mixed tuple alias');
+`,
+);
 
 check(
     "optional-promise-adoption-and-required-formals",

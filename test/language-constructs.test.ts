@@ -111,6 +111,26 @@ check(
 );
 
 check(
+    "destructured-parameter-readonly-and-writable-facts",
+    `
+    const entries = Object.entries({left: 1, right: "saved", callback: () => 3});
+    const selected = entries.find(([name]) => name === "right");
+    if (!selected || selected[1] !== "saved") throw new Error("destructured readonly key");
+    function update([text, amount, enabled]: [string, number, boolean]): string {
+        text = "after";
+        amount += 2;
+        enabled = !enabled;
+        return text + ":" + amount + ":" + enabled;
+    }
+    if (update(["before", 3, false]) !== "after:5:true") throw new Error("destructured writable scalars");
+    function increment([record]: [{value: number}]): void { record.value++; }
+    const record = {value: 5};
+    increment([record]);
+    if (record.value !== 6) throw new Error("destructured mutable record");
+`,
+);
+
+check(
     "partial-record-declared-array-and-phase",
     `
     function choose<T>(value: T): T { return value; }
@@ -119,22 +139,26 @@ check(
         phase: "loading" | "ready";
         cancel: () => void;
         charge: {value: number} | null;
+        pending: {value: number} | undefined;
         readonly cleanup: Array<() => void>;
     }
     let oldCalls = 0;
-    const state: State = {select: choose, phase: "loading", cancel: () => {oldCalls++;}, charge: null, cleanup: []};
+    const state: State = {select: choose, phase: "loading", cancel: () => {oldCalls++;}, charge: null, pending: undefined, cleanup: []};
     const alias = state;
     let calls = 0;
     state.cleanup.push(() => {calls++; alias.phase = "ready";});
     alias.cleanup.push(choose(() => {calls += 2;}));
     const previous = state.cancel;
-    function install(target: State): void { target.cancel = () => {calls += 4; target.charge = {value: 9};}; }
+    function install(target: State): void { target.cancel = () => {calls += 4; target.charge = {value: 9}; target.pending = target.charge;}; }
     install(alias);
     state.cancel(); previous();
     if (!state.charge) throw new Error("nullable record initialized");
     const saved = state.charge;
+    const kept = state.pending;
     alias.charge = null;
+    alias.pending = undefined;
     if (saved.value !== 9 || state.charge !== null) throw new Error("nullable record alias");
+    if (kept !== saved || kept?.value !== 9 || state.pending !== undefined) throw new Error("optional record alias");
     for (const callback of state.cleanup) callback();
     if (String(state.phase) !== "ready" || calls !== 7 || oldCalls !== 1 || alias.cleanup !== state.cleanup) throw new Error("partial record storage");
 `,
@@ -4298,9 +4322,9 @@ test("class inheritance and static state refuse what one record or struct cannot
             /Field 'tag' has a different native type in class 'C'/,
         ],
         [
-            `class Failure extends Error { constructor() { super("x"); } }
-            const failure = new Failure(); const unused = failure.message;`,
-            /extends 'Error', which is not a local class with a body/,
+            `class Clock extends Date { constructor() { super(0); } }
+            const clock = new Clock(); const unused = clock.getTime();`,
+            /extends 'Date', which is not a local class with a body/,
         ],
         [
             `class A { #x = 1; readA(): number { return this.#x; } }

@@ -33,9 +33,12 @@ test("deferred calls retain all source sites and later compiler diagnostics", ()
     }
     assert.throws(
         () =>
-            compileSource(`atob("first"); new Proxy({}, {});`, {
-                deferredCapabilities,
-            }),
+            compileSource(
+                `atob("first"); new FinalizationRegistry(() => {});`,
+                {
+                    deferredCapabilities,
+                },
+            ),
         /Unsupported constructor/,
     );
     const ordinary = `let x=1; x+=2; if(x!==3)throw new Error("ordinary");`;

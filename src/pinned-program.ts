@@ -605,6 +605,11 @@ class SingleFileNames implements PinnedNames {
 const owners = new WeakMap<ts.SourceFile, () => PinnedProgram>();
 const singleFiles = new WeakMap<ts.SourceFile, SingleFileNames>();
 
+/** Whether an upstream store parsed this exact source file. */
+export function isPinnedSource(file: ts.SourceFile): boolean {
+    return owners.has(file);
+}
+
 /** Record that `program` (built on demand) owns a file its store parsed. */
 export function registerPinnedSource(
     file: ts.SourceFile,

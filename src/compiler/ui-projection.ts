@@ -82,17 +82,24 @@ import {
     eventHandlerResult,
     pinDetached,
 } from "./dom-listeners.js";
-import { elementInterfaceTag } from "./dom-targets.js";
+import {
+    elementInterfaceTag,
+    eventTargetCpp,
+    isDocumentReceiver,
+    isDomReceiver,
+} from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
 import {
     canvasContextIds,
     engineCanvasIds,
+    isImplicitPrimaryCanvasLookup,
     primaryCanvasIds,
 } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol } from "./symbols.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import { argumentAt } from "./syntax.js";
+import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
@@ -197,6 +204,7 @@ interface UiProjectionContext extends Pick<
     | "compileValue"
     | "cppString"
     | "dataLowerer"
+    | "dataTypes"
     | "defaultEngine"
     | "deferredCapabilities"
     | "emit"
@@ -312,6 +320,32 @@ export class UiProjection {
         );
     }
 
+    /** Calls through stored Documents retain the selected owner before arguments run. */
+    public documentReceiverEngine(
+        expression: ts.Expression,
+        prepared?: Value,
+    ): string {
+        if (this.context.libraryGlobal(expression) === "document")
+            return this.documentEngine(expression);
+        const value = prepared ?? this.context.compileValue(expression);
+        const target = pinDetached(
+            this.context,
+            {
+                kind: "data",
+                cpp: eventTargetCpp(this.context, value, expression),
+                dataType: { kind: "event-target" },
+            },
+            "document_receiver",
+            expression,
+        );
+        const engine = this.context.allocateTemporaryCppName("document_owner");
+        this.context.emit({
+            kind: "expression",
+            code: `auto& ${engine} = bbl::dom_document_owner(${target.cpp});`,
+        });
+        return engine;
+    }
+
     private documentRootTag(expression: ts.Expression): string | undefined {
         const owner = this.context.unwrap(expression);
         if (
@@ -407,15 +441,30 @@ export class UiProjection {
                 element: Value<"ui-element">,
             ): Value<"ui-element"> => {
                 const uiTag =
-                    element.uiTag === undefined ? tracked.tag : undefined;
+                    element.uiTag === undefined
+                        ? (tracked.tag ??
+                          this.declaredUiTag(element, expression))
+                        : undefined;
                 const uiStaticId =
                     element.uiStaticId === undefined
                         ? tracked.staticId
                         : undefined;
-                return uiTag === undefined && uiStaticId === undefined
+                const lookupId = element.uiHostId ?? element.uiLookupId;
+                const canvas =
+                    lookupId !== undefined && !element.uiCanvas
+                        ? this.hostCanvas(
+                              lookupId,
+                              element.uiTag ?? uiTag,
+                              expression,
+                          )
+                        : {};
+                return uiTag === undefined &&
+                    uiStaticId === undefined &&
+                    !canvas.uiCanvas
                     ? element
                     : {
                           ...element,
+                          ...canvas,
                           ...(uiTag === undefined ? {} : { uiTag }),
                           ...(uiStaticId === undefined ? {} : { uiStaticId }),
                       };
@@ -623,7 +672,10 @@ export class UiProjection {
         expression: ts.Expression,
     ): Value | undefined {
         const known = this.uiElementValue(expression);
-        if (known) return known;
+        if (known)
+            return known.engineCpp
+                ? known
+                : { ...known, engineCpp: this.documentEngine(expression) };
         if (!ts.isCallExpression(this.context.unwrap(expression)))
             return undefined;
         const type = this.context.dataLowerer.dataTypeAt(expression);
@@ -710,10 +762,11 @@ export class UiProjection {
         call: ts.CallExpression,
         callee: ts.PropertyAccessExpression,
     ): boolean {
+        if (isDocumentReceiver(this.context, callee.expression))
+            return this.isNativeHostUiLookup(call);
         return (
             callee.name.text === "querySelector" ||
-            callee.name.text === "closest" ||
-            this.isNativeHostUiLookup(call)
+            callee.name.text === "closest"
         );
     }
 
@@ -761,6 +814,8 @@ export class UiProjection {
     public uiCreatedElementTag(expression: ts.Expression): string | undefined {
         const direct = this.uiElementMetadata(expression)?.tag;
         if (direct) return direct;
+        if (isDomReceiver(this.context, expression, "HTMLStyleElement"))
+            return "style";
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return undefined;
         const declaration =
@@ -833,7 +888,7 @@ export class UiProjection {
             ts.isPropertyAccessExpression(callee) &&
             (callee.name.text === "createElement" ||
                 callee.name.text === "createElementNS") &&
-            this.context.libraryGlobal(callee.expression) === "document" &&
+            isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
             (ts.isStringLiteral(value.arguments[0]) ||
                 ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
@@ -3830,7 +3885,7 @@ export class UiProjection {
             }
             if (token.startsWith("/")) {
                 const tag = token.slice(1).trim().toLowerCase();
-                if (!/^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag)) {
+                if (!/^(?:div|span|h1|h2|p|button|b|strong|a|svg)$/.test(tag)) {
                     fail(`does not support closing tag '</${tag}>'.`);
                 }
                 const current = stack.pop();
@@ -3873,7 +3928,9 @@ export class UiProjection {
                       : undefined;
             if (
                 (!insideSvg &&
-                    !/^(?:div|span|h1|h2|p|button|b|a|img|svg)$/.test(tag)) ||
+                    !/^(?:div|span|h1|h2|p|button|b|strong|a|img|svg)$/.test(
+                        tag,
+                    )) ||
                 (insideSvg && !/^(?:path|rect)$/.test(tag))
             ) {
                 fail(`tag '<${tag}>' is outside the bounded HTML/SVG subset.`);
@@ -3885,7 +3942,7 @@ export class UiProjection {
                 fail(`<${tag}> must use the self-closing form.`);
             }
             if (
-                /^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag) &&
+                /^(?:div|span|h1|h2|p|button|b|strong|a|svg)$/.test(tag) &&
                 selfClosing
             ) {
                 fail(`<${tag}> must have an explicit closing tag.`);
@@ -3897,14 +3954,21 @@ export class UiProjection {
                 attributeText = attributeText.trimStart();
                 const attribute =
                     attributeText.match(
-                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(["'])([\s\S]*?)\2/,
+                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)(?:\s*=\s*(["'])([\s\S]*?)\2|(?=\s|$))/,
                     ) ??
+                    fail(
+                        `tag '<${tag}>' has an invalid or unquoted attribute.`,
+                    );
+                if (
+                    attribute[3] === undefined &&
+                    !/^(?:hidden|disabled)$/i.test(attribute[1]!)
+                )
                     fail(
                         `tag '<${tag}>' has an invalid or unquoted attribute.`,
                     );
                 attributes.push({
                     name: attribute[1]!,
-                    value: attribute[3]!,
+                    value: attribute[3] ?? "",
                 });
                 attributeText = attributeText.slice(attribute[0].length);
             }
@@ -3960,13 +4024,19 @@ export class UiProjection {
                         "class",
                         "style",
                         "id",
-                        ...(tag === "button" ? ["type", "data-action"] : []),
+                        "role",
+                        "hidden",
+                        "draggable",
+                        ...(tag === "button" ? ["type", "disabled"] : []),
                         ...(tag === "a" ? ["href", "target", "rel"] : []),
                         ...(tag === "img"
-                            ? ["src", "alt", "width", "height"]
+                            ? ["src", "alt", "width", "height", "fetchpriority"]
                             : []),
                     ]);
-                    if (!allowed.has(lowerName)) {
+                    const metadata =
+                        /^(?:aria|data)-[a-z][a-z0-9_.-]*$/.test(lowerName) &&
+                        !lowerName.startsWith("data-bbl-");
+                    if (!allowed.has(lowerName) && !metadata) {
                         fail(
                             `attribute '${name}' is not supported on <${tag}>.`,
                         );
@@ -3990,6 +4060,24 @@ export class UiProjection {
                             }
                             classes.add(className);
                         }
+                    } else if (lowerName === "hidden") {
+                        attributeValue = this.lowerUiAttributeLiteral(
+                            lowerName,
+                            attributeValue,
+                            site,
+                        );
+                    } else if (
+                        lowerName === "draggable" &&
+                        attributeValue.toLowerCase() !== "false"
+                    ) {
+                        fail(
+                            "draggable supports only 'false'; authored drags are unavailable.",
+                        );
+                    } else if (
+                        lowerName === "fetchpriority" &&
+                        !/^(?:auto|high|low)$/i.test(attributeValue)
+                    ) {
+                        fail("<img> fetchpriority requires auto, high or low.");
                     } else if (lowerName === "style") {
                         attributeValue = this.lowerUiAttributeLiteral(
                             "style",
@@ -4077,7 +4165,7 @@ export class UiProjection {
                     svgPaint[lowerName] = attribute.value.trim().toLowerCase();
                 }
                 loweredAttributes.push({
-                    name: lowerName === "viewbox" ? "viewBox" : name,
+                    name: lowerName === "viewbox" ? "viewBox" : lowerName,
                     value: attributeValue,
                 });
             }
@@ -4571,8 +4659,40 @@ export class UiProjection {
         return undefined;
     }
 
+    public emitUiDatasetProperty(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        if (property === "ready" && element.uiTag === "canvas")
+            this.windowCanvasReadyGate = true;
+        const name = `data-${property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+        this.context.reachJsData();
+        const text =
+            isStringValue(value) && !value.slotFoundCpp
+                ? value.cpp
+                : `bbl::js::concat(${stringConcatPart(this.context, value, site)})`;
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::ui_set_attribute(${this.context.requireEngine(element, site)}, ${element.cpp}, ${this.context.cppString(name)}, ${text});`,
+        });
+    }
+
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
+        if (
+            this.context.options.workers &&
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(globalLeft) &&
+            ts.isPropertyAccessExpression(globalLeft.expression) &&
+            globalLeft.expression.name.text === "dataset" &&
+            this.compileUiElementReceiver(globalLeft.expression.expression)
+        )
+            this.context.fail(
+                expression,
+                "Compound retained dataset assignments require a represented attribute update.",
+            );
         if (
             expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
             ts.isPropertyAccessExpression(globalLeft) &&
@@ -4627,16 +4747,12 @@ export class UiProjection {
         ) {
             const element = this.compileUiElementReceiver(dataset.expression);
             if (element) {
-                if (
-                    property === "ready" &&
-                    this.context.isCanvasElement(dataset.expression)
-                )
-                    this.windowCanvasReadyGate = true;
-                const name = `data-${property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_attribute(${this.context.requireEngine(element, dataset)}, ${element.cpp}, ${this.context.cppString(name)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
-                });
+                this.emitUiDatasetProperty(
+                    element,
+                    property,
+                    this.context.compileValue(expression.right),
+                    expression.right,
+                );
                 return true;
             }
         }
@@ -5188,33 +5304,36 @@ export class UiProjection {
         return tags;
     }
 
-    /**
-     * A Window realm owns the whole retained document. Other entries require
-     * an id declared by their host companion, including represented canvases.
-     */
+    /** Checked Document queries reach their retained owner, activating a Window realm when needed. */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
             !(
                 callee.name.text === "getElementById" ||
-                ((this.context.options.workers ||
-                    this.context.options.nativeHostUi) &&
-                    (callee.name.text === "querySelector" ||
-                        callee.name.text === "querySelectorAll"))
+                callee.name.text === "querySelector" ||
+                callee.name.text === "querySelectorAll"
             ) ||
-            this.context.libraryGlobal(callee.expression) !== "document" ||
+            !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
         ) {
             return false;
         }
-        if (this.context.options.workers) return true;
-        // A lookup by id, in either spelling, finds a companion element;
-        // any other selector is a retained-DOM query.
-        const id = this.lookupElementId(call);
-        return id === undefined
-            ? callee.name.text !== "getElementById"
-            : this.nativeHostUiTags().has(id);
+        // The primary presentation canvas already belongs to its scene or
+        // standalone Canvas2D host. A lookup cannot activate another owner
+        // before that host is constructed. Explicit companion elements and
+        // application realms still use the retained document representation.
+        if (!this.context.options.workers) {
+            if (isImplicitPrimaryCanvasLookup(this.context, call)) return false;
+            const id = this.lookupElementId(call);
+            if (
+                id !== undefined &&
+                primaryCanvasIds(this.context).has(id) &&
+                !this.nativeHostUiTags().has(id)
+            )
+                return false;
+        }
+        return true;
     }
 
     /**
@@ -5291,7 +5410,7 @@ export class UiProjection {
         return reached;
     }
 
-    public compileHostUi(): string[] {
+    public compileHostUi(startup?: (fileName: string) => string[]): string[] {
         const hostUi = this.context.options.nativeHostUi;
         const primaryIds =
             this.context.options.workers &&
@@ -5559,14 +5678,27 @@ export class UiProjection {
                         `${indent}bbl::ui_canvas_set_${name}(${engine}, ${handle}, ${doubleLiteral(Number(size))});`,
                     );
             }
+            const attach = parent
+                ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
+                : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`;
+            if (startup) emitted.push(attach);
             for (const child of element.children ?? []) {
                 appendElement(child, handle);
             }
-            emitted.push(
-                parent
-                    ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
-                    : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`,
-            );
+            if (!startup) emitted.push(attach);
+            if (element.startupScript) {
+                if (!startup)
+                    this.context.failAtFile(
+                        "A host script requires a checked page startup program.",
+                    );
+                emitted.push(
+                    `${indent}bbl::pal::EventLoop::current().dispatch_callback([&] {`,
+                    ...startup(element.startupScript).map(
+                        (line) => indent + "    " + line,
+                    ),
+                    `${indent}});`,
+                );
+            }
         };
         for (const element of hostUi?.elements ?? []) {
             appendElement(element);

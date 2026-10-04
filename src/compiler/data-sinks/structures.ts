@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
+    isOpaqueReference,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -9,10 +10,12 @@ import {
     isStringValue,
     optionalPresentCpp,
     optionalValueCpp,
+    presenceCpp,
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
+import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -131,6 +134,7 @@ function expressionStruct(
         if (
             known.kind === "data" &&
             (known.dataType?.kind === "struct" ||
+                known.dataType?.kind === "error" ||
                 known.dataType?.kind === "map")
         ) {
             lowerer.markEscaped(known);
@@ -210,18 +214,33 @@ function valueStruct(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    value = lowerer.context.classLowerer.errorView(value, node) ?? value;
+    const wrapped = value.dataType?.kind === "optional";
+    const sourceType =
+        value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : value.dataType;
+    const flattened =
+        sourceType?.kind === "struct" &&
+        sourceType.name !== dataType.name &&
+        lowerer.context.dataTypes.isReferenceStruct(sourceType.name) &&
+        presenceCpp(value) !== "true";
     if (
-        value.dataType?.kind === "optional" &&
+        sourceType &&
+        (wrapped || flattened) &&
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)
     ) {
         const source = lowerer.context.allocateTemporaryCppName(
             "optional_record_source",
         );
         const target = lowerer.context.dataTypes.cppType(dataType);
-        const present = lowerer.leafValue(
-            optionalValueCpp(source),
-            value.dataType.inner,
-        );
+        const present = {
+            ...lowerer.leafValue(
+                wrapped ? optionalValueCpp(source) : source,
+                sourceType,
+            ),
+            ...(!wrapped ? { optionalFoundCpp: "true" } : {}),
+        };
         let converted = "";
         const lines = lowerer.context.captureEmittedLines(() => {
             converted = lowerer.compileKnownValueForSink(
@@ -233,7 +252,7 @@ function valueStruct(
         return (
             `([&]() -> ${target} {\n` +
             `    const auto& ${source} = ${value.cpp};\n` +
-            `    if (!${optionalPresentCpp(source)}) return {};\n` +
+            `    if (!${wrapped ? optionalPresentCpp(source) : source}) return {};\n` +
             lines.map((line) => `    ${line}\n`).join("") +
             `    return ${converted};\n}())`
         );
@@ -278,12 +297,42 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
-        lowerer.context.dataTypes.cppType(dataType);
+        if (
+            isOpaqueReference(value.dataType) &&
+            lowerer.context.dataTypes.isReferenceStruct(dataType.name)
+        )
+            lowerer.context.fail(
+                node,
+                "A native object cannot be retained as a structural record without preserving its identity.",
+                "static-value-required",
+            );
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
             "accessors",
         );
+        // A speculative native return must first admit its accessor layout.
+        // Otherwise replay would force an unsupported source owner into storage
+        // before the shared-call probe can retain the inline accessor path.
+        for (const field of fields)
+            if (
+                value.recordGetters?.[field.sourceName] ||
+                value.recordSetters?.[field.sourceName]
+            )
+                accessorGetter(lowerer, field, value, node);
+        if (
+            lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
+            !lowerer.context.bindings.containsPlatformEvent(value) &&
+            ts.isExpression(node)
+        ) {
+            const declaration = lowerer.context.bindings.recordDeclaration(
+                value,
+                node,
+            );
+            if (declaration)
+                throw new DynamicBindingStorageRequired(declaration, "source");
+        }
+        lowerer.context.dataTypes.cppType(dataType);
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const getter = value.recordGetters?.[field.sourceName];
@@ -299,16 +348,30 @@ function valueStruct(
                             node,
                         );
                     if (method) {
-                        return lowerer.context.compileStoredDataFunction(
+                        lowerer.context.recordProxies.requireIndependentFunction(
+                            field,
                             method,
-                            field.type,
-                            value,
-                            ts.isMethodDeclaration(method) &&
-                                ts.isClassDeclaration(method.parent),
+                        );
+                        const callback =
+                            lowerer.context.compileStoredDataFunction(
+                                method,
+                                field.type,
+                                value,
+                                ts.isMethodDeclaration(method) &&
+                                    ts.isClassDeclaration(method.parent),
+                            );
+                        return lowerer.context.dataTypes.structFieldInitializerCpp(
+                            field,
+                            callback,
                         );
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
+                if (property?.callbackDeclaration)
+                    lowerer.context.recordProxies.requireIndependentFunction(
+                        field,
+                        property.callbackDeclaration,
+                    );
                 const stored = property
                     ? lowerer.compileKnownValueForSink(
                           property,
@@ -428,15 +491,13 @@ function valueStruct(
     return undefined;
 }
 
-/** A record's accessor property: its getter and setter in the field's accessor slot. */
-function accessorSlot(
+function accessorGetter(
     lowerer: DataSinkHost,
     field: DataStructField,
     record: Value,
     node: ts.Node,
-): string {
+): ts.GetAccessorDeclaration {
     const getter = record.recordGetters?.[field.sourceName];
-    const setter = record.recordSetters?.[field.sourceName];
     if (!getter)
         lowerer.context.fail(
             node,
@@ -447,10 +508,36 @@ function accessorSlot(
             node,
             `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
         );
+    return getter;
+}
+
+/** A record's accessor property: its getter and setter in the field's accessor slot. */
+function accessorSlot(
+    lowerer: DataSinkHost,
+    field: DataStructField,
+    record: Value,
+    node: ts.Node,
+): string {
+    const getter = accessorGetter(lowerer, field, record, node);
+    const setter = record.recordSetters?.[field.sourceName];
     const set = setter
-        ? lowerer.context.compileStoredAccessor(record, setter, field.type)
+        ? lowerer.context.compileStoredAccessor(
+              record,
+              setter,
+              field.type,
+              field.accessorReceiver
+                  ? { kind: "struct", name: field.accessorReceiver }
+                  : undefined,
+          )
         : "{}";
-    return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(record, getter, field.type)}, ${set})`;
+    return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(
+        record,
+        getter,
+        field.type,
+        field.accessorReceiver
+            ? { kind: "struct", name: field.accessorReceiver }
+            : undefined,
+    )}, ${set})`;
 }
 
 function valueEnummap(

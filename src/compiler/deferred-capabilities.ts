@@ -4,6 +4,7 @@ import { sceneRelativeSourceLabel } from "../source-location.js";
 import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
+import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     declarationOrigin,
@@ -14,6 +15,9 @@ import { presenceCpp, type Value } from "./types.js";
 import { isNullable } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
+import { nativeFunctionValue } from "./native-function-values.js";
+import { nativeWindowMember } from "./window-properties.js";
+import { isDomReceiver } from "./dom-targets.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -52,6 +56,12 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "confirm",
         "prompt",
         "structuredClone",
+        "requestIdleCallback",
+        "cancelIdleCallback",
+        "Window.requestIdleCallback",
+        "Window.cancelIdleCallback",
+        "IdleDeadline.didTimeout",
+        "IdleDeadline.timeRemaining",
         "Window.atob",
         "Window.btoa",
         "Window.alert",
@@ -74,6 +84,39 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "AbortSignal.aborted",
         "HTMLOrSVGElement.tabIndex",
         "EventTarget.addEventListener.signal",
+        "MediaStream.constructor",
+        "MediaStream.getTracks",
+        "MediaStream.getAudioTracks",
+        "MediaStream.addTrack",
+        "MediaStreamTrack.stop",
+        "MediaStreamTrack.clone",
+        "MediaRecorder.constructor",
+        "MediaRecorder.isTypeSupported",
+        "MediaRecorder.start",
+        "MediaRecorder.stop",
+        "MediaRecorder.state",
+        "MediaRecorder.addEventListener",
+        "BlobEvent.data",
+        "Response.headers",
+        "Headers.get",
+        "HTMLCanvasElement.captureStream",
+        "AudioContext.createMediaStreamSource",
+        "AudioContext.createMediaStreamDestination",
+        "AudioContext.createMediaElementSource",
+        "MediaStreamAudioDestinationNode.stream",
+        "AudioNode.disconnect",
+        "Audio.constructor",
+        "HTMLMediaElement.pause",
+        "HTMLMediaElement.load",
+        "HTMLMediaElement.preload",
+        "HTMLMediaElement.loop",
+        "HTMLMediaElement.duration",
+        "HTMLMediaElement.currentTime",
+        "HTMLAudioElement.addEventListener",
+        "HTMLScriptElement.src",
+        "HTMLScriptElement.async",
+        "HTMLScriptElement.addEventListener",
+        "HTMLScriptElement.removeEventListener",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "throw" })),
     ...[
         "Document.exitFullscreen",
@@ -81,6 +124,7 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Blob.text",
         "Blob.arrayBuffer",
         "Blob.bytes",
+        "HTMLMediaElement.play",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
     ...[
         "createAudioEngineAsync.options",
@@ -93,6 +137,7 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "reject" })),
     ...[
         "enableSpatial",
+        "SurfaceContext.maxDevicePixelRatio",
         "enableStereo",
         "enableAnalyzer",
         "createUnmuteUI",
@@ -152,6 +197,12 @@ function declarationApi(
     const name = declaration.name;
     if (!name || !ts.isIdentifier(name)) return undefined;
     const parent = declaration.parent;
+    if (
+        ts.isTypeLiteralNode(parent) &&
+        ts.isVariableDeclaration(parent.parent) &&
+        ts.isIdentifier(parent.parent.name)
+    )
+        return `${parent.parent.name.text}.${name.text}`;
     return ts.isInterfaceDeclaration(parent) || ts.isClassDeclaration(parent)
         ? `${parent.name?.text}.${name.text}`
         : name.text;
@@ -172,13 +223,39 @@ export function deferredPropertyDescriptor(
     node: ts.PropertyAccessExpression,
 ): Descriptor | undefined {
     const symbol = resolvedSymbol(checker, node);
-    if (!declaredInDomLibrary(symbol)) return undefined;
     const declaration = symbol?.declarations?.find(ts.isPropertySignature);
     if (!declaration || !ts.isInterfaceDeclaration(declaration.parent))
         return undefined;
     return descriptors.get(
-        `dom:${declaration.parent.name.text}.${symbol!.name}`,
+        `${declarationOrigin(declaration)}:${declaration.parent.name.text}.${symbol!.name}`,
     );
+}
+
+export function deferredWindowFunctionSymbol(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+): ts.Symbol | undefined {
+    const symbol = ts.isPropertyAccessExpression(node)
+        ? nativeWindowMember(checker, node)
+        : resolvedSymbol(checker, node);
+    if (!(
+        symbol &&
+        ["requestIdleCallback", "cancelIdleCallback"].includes(symbol.name) &&
+        declaredInDomLibrary(symbol)
+    ))
+        return undefined;
+    const window = checker.resolveName(
+        "Window",
+        undefined,
+        ts.SymbolFlags.Type,
+        false,
+    );
+    return window
+        ? checker.getPropertyOfType(
+              checker.getDeclaredTypeOfSymbol(window),
+              symbol.name,
+          )
+        : undefined;
 }
 
 type Context = Pick<
@@ -199,6 +276,7 @@ type Context = Pick<
     | "symbols"
     | "probeEmission"
     | "captureEmittedLines"
+    | "callbackIdentity"
 >;
 
 export class DeferredCapabilities {
@@ -213,12 +291,89 @@ export class DeferredCapabilities {
         return [...this.reached.values()];
     }
 
+    /** Known Window functions retain their typed callable surface through aliases. */
+    functionValue(node: ts.Expression): Value | undefined {
+        const context = this.context;
+        if (!context.options.deferredCapabilities) return undefined;
+        const property = ts.isPropertyAccessExpression(node) ? node : undefined;
+        const name = property?.name.text ?? context.libraryGlobal(node);
+        if (name !== "requestIdleCallback" && name !== "cancelIdleCallback")
+            return undefined;
+        const symbol = deferredWindowFunctionSymbol(context.checker, node);
+        if (!symbol) return undefined;
+        if (property) {
+            const owner = context.probeEmission(() => {
+                const value = context.compileValue(property.expression);
+                return value.domEventTargetCpp ===
+                    "bbl::DomEventTarget::window()" ||
+                    value.dataType?.kind === "event-target"
+                    ? value
+                    : undefined;
+            });
+            if (!owner) return undefined;
+            if (!this.windowReceiver(owner, property.expression))
+                return context.fail(
+                    property.expression,
+                    `Deferred Window member '${name}' requires a proven Window receiver.`,
+                );
+            context.emitDiscardedValue(
+                pinDetached(context, owner, "idle_owner", property.expression),
+            );
+        }
+        let sourceType = context.checker.getNonNullableType(
+            context.checker.getTypeAtLocation(node),
+        );
+        const signatures = sourceType.getCallSignatures();
+        const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+        if (
+            sourceType.isIntersection() &&
+            signatures.length > 0 &&
+            declaration &&
+            signatures.every(
+                (signature) =>
+                    context.checker.signatureToString(signature) ===
+                    context.checker.signatureToString(signatures[0]!),
+            )
+        )
+            sourceType = context.checker.getTypeAtLocation(declaration);
+        const type = context.dataTypes.fromStoredTsType(sourceType, node);
+        if (type?.kind !== "function")
+            return context.fail(
+                node,
+                "Idle callback functions require an owned callable signature.",
+            );
+        const deferred = this.emitKnown(
+            node,
+            {
+                id: `dom:Window.${name}`,
+                origin: "dom",
+                operation: "call",
+                timing: "throw",
+                signature: context.checker.typeToString(
+                    context.checker.getTypeAtLocation(node),
+                    node,
+                    ts.TypeFormatFlags.NoTruncation,
+                ),
+            },
+            type.result,
+        )!;
+        const discarded = type.parameters
+            .map((_, index) => `static_cast<void>(argument_${index});`)
+            .join(" ");
+        return nativeFunctionValue(
+            context,
+            node,
+            { ...type, identity: true },
+            `${discarded} return ${deferred.cpp};`,
+            declaration,
+        );
+    }
+
     compileConstructor(node: ts.NewExpression): Value | undefined {
         const context = this.context;
-        if (
-            !context.options.deferredCapabilities ||
-            context.libraryGlobal(node.expression) !== "AbortController"
-        )
+        if (!context.options.deferredCapabilities) return undefined;
+        const name = context.libraryGlobal(node.expression);
+        if (!name || !descriptors.has(`dom:${name}.constructor`))
             return undefined;
         const signature = context.checker.getResolvedSignature(node);
         if (
@@ -226,11 +381,26 @@ export class DeferredCapabilities {
             declarationOrigin(signature.declaration) !== "dom"
         )
             return undefined;
-        this.arguments(node, signature, "AbortController.constructor");
+        const type = context.dataTypes.fromTsType(
+            context.checker.getTypeAtLocation(node),
+            node,
+        );
+        if (!type)
+            return context.fail(
+                node,
+                `Deferred constructor '${name}' requires an owned result.`,
+            );
+        if (
+            type.kind === "handle" &&
+            type.handle === "ui-element" &&
+            !context.options.workers
+        )
+            throw new ApplicationRealmRequired();
+        this.arguments(node, signature, `${name}.constructor`);
         return this.emitKnown(
             node,
             {
-                id: "dom:AbortController.constructor",
+                id: `dom:${name}.constructor`,
                 origin: "dom",
                 operation: "construct",
                 timing: "throw",
@@ -240,7 +410,7 @@ export class DeferredCapabilities {
                     ts.TypeFormatFlags.NoTruncation,
                 ),
             },
-            { kind: "deferred-dom-object", name: "AbortController" },
+            type,
         );
     }
 
@@ -250,32 +420,32 @@ export class DeferredCapabilities {
         rhs?: ts.Expression,
     ): Value | undefined {
         const context = this.context;
+        if (!context.options.deferredCapabilities) return undefined;
+        const descriptor = deferredPropertyDescriptor(context.checker, node);
+        if (!descriptor) return undefined;
+        const api = descriptor.api;
+        if (!this.receiverMatches(api, owner, node.expression))
+            return undefined;
+        const declaration = resolvedSymbol(
+            context.checker,
+            node,
+        )?.declarations?.find(ts.isPropertySignature);
         if (
-            !context.options.deferredCapabilities ||
-            !deferredPropertyDescriptor(context.checker, node)
+            rhs &&
+            declaration?.modifiers?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+            )
         )
             return undefined;
-        const type = owner.dataType;
-        const api =
-            type?.kind === "deferred-dom-object"
-                ? type.name === "AbortController" && node.name.text === "signal"
-                    ? "AbortController.signal"
-                    : type.name === "AbortSignal" &&
-                        node.name.text === "aborted"
-                      ? "AbortSignal.aborted"
-                      : undefined
-                : owner.kind === "ui-element" && node.name.text === "tabIndex"
-                  ? "HTMLOrSVGElement.tabIndex"
-                  : undefined;
-        if (!api || (rhs && api !== "HTMLOrSVGElement.tabIndex"))
-            return undefined;
-        const result: DataType =
-            api === "AbortController.signal"
-                ? { kind: "deferred-dom-object", name: "AbortSignal" }
-                : {
-                      kind:
-                          api === "AbortSignal.aborted" ? "boolean" : "number",
-                  };
+        const result = context.dataTypes.fromTsType(
+            context.checker.getTypeAtLocation(node),
+            node,
+        );
+        if (!result)
+            return context.fail(
+                node,
+                `Deferred property '${api}' requires an owned representation.`,
+            );
         context.emitDiscardedValue(
             pinDetached(context, owner, "deferred_receiver", node.expression),
         );
@@ -287,14 +457,86 @@ export class DeferredCapabilities {
         return this.emitKnown(
             rhs ? node.parent : node,
             {
-                id: `dom:${api}`,
-                origin: "dom",
+                id: `${descriptor.origin}:${api}`,
+                origin: descriptor.origin,
                 operation: rhs ? "write" : "read",
                 timing: "throw",
                 signature: `${api}: ${context.checker.typeToString(context.checker.getTypeAtLocation(node), node, ts.TypeFormatFlags.NoTruncation)}`,
             },
-            rhs ? undefined : result,
+            result,
         );
+    }
+
+    assignment(expression: ts.BinaryExpression): Value | undefined {
+        const context = this.context;
+        const left = context.unwrap(expression.left);
+        if (
+            !context.options.deferredCapabilities ||
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isPropertyAccessExpression(left) ||
+            !deferredPropertyDescriptor(context.checker, left)
+        )
+            return undefined;
+        return context.probeEmission(() =>
+            this.property(
+                left,
+                context.compileValue(left.expression),
+                expression.right,
+            ),
+        );
+    }
+
+    private windowReceiver(value: Value, node: ts.Expression): boolean {
+        const context = this.context;
+        const receiver = context.unwrap(node);
+        const global = context.libraryGlobal(receiver);
+        return (
+            value.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
+            global === "window" ||
+            global === "globalThis" ||
+            isDomReceiver(context, receiver, "Window")
+        );
+    }
+
+    private receiverMatches(
+        api: string,
+        value: Value,
+        node: ts.Expression,
+    ): boolean {
+        const owner = api.split(".")[0];
+        if (owner === "Window") return this.windowReceiver(value, node);
+        const type = value.dataType;
+        if (DEFERRED_DOM_OBJECTS.some((name) => name === owner))
+            return type?.kind === "deferred-dom-object" && type.name === owner;
+        const handle = type?.kind === "handle" ? type.handle : value.kind;
+        if (owner === "SurfaceContext") return value.kind === "engine";
+        if (owner === "Response")
+            return (
+                type?.kind === "http-response" ||
+                value.kind === "static-fetch-response"
+            );
+        if (owner === "MediaStream") return handle === "media-stream";
+        if (owner === "MediaStreamTrack")
+            return handle === "media-stream-track";
+        if (owner === "AudioContext") return handle === "audio-context";
+        if (
+            owner === "AudioNode" ||
+            owner === "MediaStreamAudioDestinationNode"
+        )
+            return handle === "audio-node";
+        if (owner === "Blob")
+            return [value.kind, type?.kind].some(
+                (kind) => kind === "blob" || kind === "file",
+            );
+        if (owner === "Event")
+            return (
+                value.kind === "platform-mouse-event" ||
+                value.kind === "platform-keyboard-event" ||
+                type?.kind === "borrowed-platform-event" ||
+                (type?.kind === "handle" &&
+                    ["dom-event", "custom-event"].includes(type.handle))
+            );
+        return value.kind === "ui-element" || type?.kind === "event-target";
     }
 
     /** Opaque capabilities retain arguments without projecting object properties. */
@@ -470,6 +712,11 @@ export class DeferredCapabilities {
         if (!context.options.deferredCapabilities) return undefined;
         const descriptor = deferredCapabilityDescriptor(context.checker, call);
         if (!descriptor) return undefined;
+        if (
+            descriptor.api === "AudioNode.disconnect" &&
+            call.arguments.length === 0
+        )
+            return undefined;
         const target = context.unwrap(call.expression);
         if (
             descriptor.origin === "dom" &&
@@ -565,32 +812,22 @@ export class DeferredCapabilities {
             descriptor.api.includes(".") &&
             ts.isPropertyAccessExpression(target)
         ) {
+            if (
+                context.libraryGlobal(target.expression) ===
+                descriptor.api.split(".")[0]
+            )
+                return invoke();
             return context.probeEmission(() => {
                 const owner = context.compileValue(target.expression);
                 const run = (value: Value): Value | undefined => {
-                    const ownerType = descriptor.api.split(".")[0];
-                    const valid =
-                        ownerType === "AbortController" ||
-                        ownerType === "AbortSignal"
-                            ? value.dataType?.kind === "deferred-dom-object" &&
-                              value.dataType.name === ownerType
-                            : ownerType === "Blob"
-                              ? value.kind === "blob" ||
-                                value.kind === "file" ||
-                                value.dataType?.kind === "blob" ||
-                                value.dataType?.kind === "file"
-                              : ownerType === "Event"
-                                ? value.kind === "platform-mouse-event" ||
-                                  value.kind === "platform-keyboard-event" ||
-                                  value.dataType?.kind ===
-                                      "borrowed-platform-event" ||
-                                  (value.dataType?.kind === "handle" &&
-                                      ["dom-event", "custom-event"].includes(
-                                          value.dataType.handle,
-                                      ))
-                                : value.kind === "ui-element" ||
-                                  value.dataType?.kind === "event-target";
-                    if (!valid) return undefined;
+                    if (
+                        !this.receiverMatches(
+                            descriptor.api,
+                            value,
+                            target.expression,
+                        )
+                    )
+                        return undefined;
                     context.emitDiscardedValue(
                         context.bindings.pinValueToTemporary(
                             value,

@@ -1,6 +1,7 @@
 import {
     deferredCapabilityDescriptor,
     deferredPropertyDescriptor,
+    deferredWindowFunctionSymbol,
 } from "./deferred-capabilities.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import {
@@ -43,6 +44,7 @@ import {
 } from "./window-events.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
+import { nativeHostUiElements } from "../native-host-ui.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -192,12 +194,17 @@ const HOST_PRIMARY_CANVAS_ID = "renderCanvas";
  */
 const primaryCanvasIdsByEntry = new WeakMap<
     ts.SourceFile,
-    ReadonlySet<string>
+    { ids: ReadonlySet<string>; implicit: ReadonlySet<ts.CallExpression> }
 >();
 
 type PrimaryCanvasContext = Pick<
     LoweringServices,
-    "sourceFile" | "sourceFiles" | "symbols" | "unwrap" | "libraryGlobal"
+    | "sourceFile"
+    | "sourceFiles"
+    | "symbols"
+    | "unwrap"
+    | "libraryGlobal"
+    | "options"
 >;
 
 /**
@@ -223,6 +230,8 @@ export function primaryCanvasIds(
 function documentIdsReaching(
     context: PrimaryCanvasContext,
     pick: (call: ts.CallExpression) => ts.Expression | undefined,
+    lookup: (value: ts.Expression) => string | undefined = (value) =>
+        elementIdLookup(context, value),
 ): Set<string> {
     const calls: ts.CallExpression[] = [];
     for (const file of context.sourceFiles()) {
@@ -237,7 +246,7 @@ function documentIdsReaching(
         const value = context.unwrap(expression);
         if (seen.has(value)) return;
         seen.add(value);
-        const id = elementIdLookup(context, value);
+        const id = lookup(value);
         if (id !== undefined) {
             ids.add(id);
             return;
@@ -279,19 +288,64 @@ function documentIdsReaching(
     return ids;
 }
 
-/** Explicit document IDs flowing into reached engine-creation syntax, without a host default. */
+function engineCanvasLookups(context: PrimaryCanvasContext) {
+    const cached = primaryCanvasIdsByEntry.get(context.sourceFile);
+    if (cached) return cached;
+    const implicit = new Set<ts.CallExpression>();
+    const ids = documentIdsReaching(
+        context,
+        (call) =>
+            context.symbols.importedName(call.expression) === "createEngine"
+                ? call.arguments[0]
+                : undefined,
+        (value) => {
+            if (ts.isCallExpression(value)) {
+                const callee = context.unwrap(value.expression);
+                if (
+                    ts.isPropertyAccessExpression(callee) &&
+                    callee.name.text === "querySelector" &&
+                    context.libraryGlobal(callee.expression) === "document" &&
+                    value.arguments.length === 1 &&
+                    lookupText(context, argumentAt(value, 0)) === "canvas"
+                )
+                    implicit.add(value);
+            }
+            return elementIdLookup(context, value);
+        },
+    );
+    const result = { ids, implicit };
+    primaryCanvasIdsByEntry.set(context.sourceFile, result);
+    return result;
+}
+
+function hasImplicitCanvasHost(context: PrimaryCanvasContext): boolean {
+    if (context.options.hostPage) return false;
+    for (const element of nativeHostUiElements(
+        context.options.nativeHostUi?.elements ?? [],
+    ))
+        if (element.tag.toLowerCase() === "canvas") return false;
+    return true;
+}
+
+/** A bare canvas query reaching createEngine selects the implicit host canvas only without an authored canvas. */
+export function isImplicitPrimaryCanvasLookup(
+    context: PrimaryCanvasContext,
+    call: ts.CallExpression,
+): boolean {
+    return (
+        engineCanvasLookups(context).implicit.has(call) &&
+        hasImplicitCanvasHost(context)
+    );
+}
+
+/** Engine canvas IDs, including the host's default for a proven bare canvas lookup. */
 export function engineCanvasIds(
     context: PrimaryCanvasContext,
 ): ReadonlySet<string> {
-    const cached = primaryCanvasIdsByEntry.get(context.sourceFile);
-    if (cached) return cached;
-    const ids = documentIdsReaching(context, (call) =>
-        context.symbols.importedName(call.expression) === "createEngine"
-            ? call.arguments[0]
-            : undefined,
-    );
-    primaryCanvasIdsByEntry.set(context.sourceFile, ids);
-    return ids;
+    const { ids, implicit } = engineCanvasLookups(context);
+    return implicit.size > 0 && hasImplicitCanvasHost(context)
+        ? new Set([...ids, HOST_PRIMARY_CANVAS_ID])
+        : ids;
 }
 
 const canvasContextIdsByEntry = new WeakMap<
@@ -349,13 +403,17 @@ function elementIdLookup(
     context: PrimaryCanvasContext,
     expression: ts.Expression,
 ): string | undefined {
-    return documentLookupCallId(context, expression, (argument) => {
-        const value = context.unwrap(argument);
-        const literal = ts.isIdentifier(value)
-            ? constInitializer(context, value)
-            : value;
-        return literal && stringLiteralText(literal);
-    });
+    return documentLookupCallId(context, expression, (argument) =>
+        lookupText(context, argument),
+    );
+}
+
+function lookupText(context: PrimaryCanvasContext, argument: ts.Expression) {
+    const value = context.unwrap(argument);
+    const literal = ts.isIdentifier(value)
+        ? constInitializer(context, value)
+        : value;
+    return literal && stringLiteralText(literal);
 }
 
 /**
@@ -1057,7 +1115,11 @@ export class BrowserErasure {
      */
     private isWebStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
-        if (this.context.libraryGlobal(unwrapped) === "localStorage") {
+        if (
+            this.context.libraryGlobal(unwrapped) === "localStorage" ||
+            (this.context.options.deferredCapabilities &&
+                this.context.libraryGlobal(unwrapped) === "sessionStorage")
+        ) {
             return true;
         }
         if (
@@ -1143,8 +1205,12 @@ export class BrowserErasure {
         const unwrapped = this.context.unwrap(expression);
         if (
             this.context.options.deferredCapabilities &&
-            ts.isPropertyAccessExpression(unwrapped) &&
-            deferredPropertyDescriptor(this.context.checker, unwrapped)
+            (deferredWindowFunctionSymbol(this.context.checker, unwrapped) ||
+                (ts.isPropertyAccessExpression(unwrapped) &&
+                    deferredPropertyDescriptor(
+                        this.context.checker,
+                        unwrapped,
+                    )))
         )
             return false;
         if (devicePixelRatioValue(this.context, unwrapped)) return false;
@@ -1952,8 +2018,9 @@ export class BrowserErasure {
                     },
                 );
                 if (
-                    elementId !== undefined &&
-                    primaryCanvasIds(this.context).has(elementId)
+                    (elementId !== undefined &&
+                        primaryCanvasIds(this.context).has(elementId)) ||
+                    isImplicitPrimaryCanvasLookup(this.context, unwrapped)
                 ) {
                     // The generated native executable is launched with the
                     // canvas its scene entry point expects. The browser page's

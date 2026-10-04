@@ -6,6 +6,8 @@ import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { refuseErrorReflection } from "./error-values.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -33,12 +35,44 @@ type ObjectStaticContext = Pick<
     | "unwrap"
     | "libraryGlobal"
     | "fail"
+    | "emitUiDatasetProperty"
 >;
 
 type OwnObjectContext = Pick<
     ObjectStaticContext,
     "dataTypes" | "dataLowerer" | "fail" | "moduleNamespaces"
 >;
+
+/** Raw descriptor order, with JavaScript's integer keys first. */
+export function recordPropertyKeys(owner: Value): string[] {
+    const keys = owner.recordPropertyOrder ?? [
+        ...Object.keys(owner.recordProperties ?? {}),
+        ...Object.keys(owner.recordMethods ?? {}),
+        ...Object.keys(owner.recordGetters ?? {}),
+        ...Object.keys(owner.recordSetters ?? {}),
+    ];
+    return Object.keys(Object.fromEntries(keys.map((key) => [key, undefined])));
+}
+
+/** Change a raw data property without replacing the alias-shared tables. */
+export function setRecordProperty(
+    owner: Value,
+    key: string,
+    value: Value,
+): void {
+    if (owner.recordPropertyOrder && !owner.recordPropertyOrder.includes(key))
+        writable(owner.recordPropertyOrder).push(key);
+    writable((writable(owner).recordProperties ??= {}))[key] = value;
+}
+
+export function deleteRecordProperty(owner: Value, key: string): void {
+    if (owner.recordProperties) delete writable(owner.recordProperties)[key];
+    if (owner.recordMethods) delete writable(owner.recordMethods)[key];
+    if (owner.recordGetters) delete writable(owner.recordGetters)[key];
+    if (owner.recordSetters) delete writable(owner.recordSetters)[key];
+    const index = owner.recordPropertyOrder?.indexOf(key) ?? -1;
+    if (index !== -1) writable(owner.recordPropertyOrder!).splice(index, 1);
+}
 
 /** A string-typed value's native text, static or data. */
 function stringCpp(
@@ -71,18 +105,29 @@ export function structOwnEntries(
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
 ): StructOwnEntry[] {
+    refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.isReferenceStruct(dataType.name)
         ? "->"
         : ".";
     const fields = owner.recordOwnKeys
         ? owner.recordOwnKeys.map((key) =>
-              context.dataTypes.structField(dataType.name, key, node),
+              context.dataTypes.structField(
+                  dataType.name,
+                  key,
+                  node,
+                  "accessors",
+              ),
           )
-        : context.dataTypes.structFields(dataType.name, node);
+        : context.dataTypes.structFields(dataType.name, node, "accessors");
+    if (fields.some((field) => field.accessor && !field.accessorReceiver))
+        context.dataTypes.structFields(dataType.name, node);
     return fields.map((field) => {
         const key = field.sourceName;
         const slot = `${owner.cpp}${access}${field.name}`;
-        const value = context.dataLowerer.leafValue(slot, field.type);
+        const value = context.dataLowerer.leafValue(
+            `${slot}${field.accessor ? ".get()" : ""}`,
+            field.type,
+        );
         const presentCpp = owner.recordOwnKeys
             ? undefined
             : context.dataTypes.ownPropertyPresentCpp(
@@ -100,7 +145,9 @@ export function structOwnEntries(
         return {
             key,
             value: {
-                ...(definitelyPresent && field.type.kind === "optional"
+                ...(!field.accessorReceiver &&
+                definitelyPresent &&
+                field.type.kind === "optional"
                     ? context.dataLowerer.leafValue(
                           `(*${value.cpp})`,
                           field.type.inner,
@@ -196,6 +243,7 @@ export function ownObjectEntries(
     owner: Value,
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
+    refuseErrorReflection(context, owner, node);
     const namespace = context.moduleNamespaces.entries(owner, node);
     if (namespace) return namespace;
     if (owner.kind === "record")
@@ -515,12 +563,15 @@ function compileObjectAssign(
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
     const target =
-        context.resolveRecordValue(targetExpression) ??
-        context.compileValue(targetExpression);
+        context.probeEmission(() =>
+            context.resolveRecordValue(targetExpression),
+        ) ?? context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
     const fresh = ts.isObjectLiteralExpression(targetExpression);
-    const readPairs = (source: ts.Expression): Array<[string, Value]> => {
-        const value = context.compileValue(source);
+    const readPairs = (
+        source: ts.Expression,
+        value = context.compileValue(source),
+    ): Array<[string, Value]> => {
         if (value.kind === "record") {
             if (
                 Object.keys(value.recordMethods ?? {}).length > 0 ||
@@ -553,6 +604,42 @@ function compileObjectAssign(
                 );
         return pairs;
     };
+    if (target.kind === "ui-element" && target.uiDataset) {
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "dataset_target",
+            targetExpression,
+        );
+        // Call arguments are evaluated before Object.assign starts writing.
+        // Pin their values, then read each source's fields in copy order.
+        const values = sources.map((source) => {
+            const value = context.compileValue(source);
+            if (value.kind === "record") {
+                readPairs(source, value);
+                // A later argument can mutate an earlier source. Retain that
+                // source's identity rather than snapshotting its scalar fields.
+                const declaration = context.bindings.recordDeclaration(
+                    value,
+                    source,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+            }
+            return context.bindings.pinValueToTemporary(
+                value,
+                "dataset_source",
+                source,
+            );
+        });
+        sources.forEach((source, index) => {
+            for (const [key, value] of readPairs(source, values[index]))
+                context.emitUiDatasetProperty(owner, key, value, source);
+        });
+        return owner;
+    }
     if (target.kind === "record") {
         if (target.moduleNamespace)
             context.fail(call, "Module namespace properties are read-only.");
@@ -562,9 +649,20 @@ function compileObjectAssign(
                 "A compile-time record cannot be populated from runtime control flow.",
             );
         }
-        const properties = fresh
-            ? { ...target.recordProperties }
-            : (writable(target).recordProperties ??= {});
+        const result = fresh
+            ? {
+                  ...target,
+                  recordProperties: { ...target.recordProperties },
+                  ...(target.recordPropertyOrder
+                      ? {
+                            recordPropertyOrder: [
+                                ...target.recordPropertyOrder,
+                            ],
+                        }
+                      : {}),
+              }
+            : target;
+        const properties = (writable(result).recordProperties ??= {});
         for (const source of sources) {
             for (const [key, value] of sourcePairs(source)) {
                 const existing = properties[key];
@@ -595,10 +693,10 @@ function compileObjectAssign(
                     };
                     continue;
                 }
-                writable(properties)[key] = value;
+                setRecordProperty(result, key, value);
             }
         }
-        return fresh ? { ...target, recordProperties: properties } : target;
+        return result;
     }
     if (target.kind === "data" && target.dataType?.kind === "struct") {
         const structType = target.dataType;

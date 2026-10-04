@@ -9,6 +9,7 @@ import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
@@ -68,7 +69,7 @@ test("surface render targets retain sampled depth and validate descriptor owners
         const target = createSurfaceRenderTargetTexture(engine, {format: engine.format, dFormat: "depth32float", samples: 1, size: {surface: engine, scale: 0.5}}, withSampledDepthTexture);
         if (!target.depthTexture) throw new Error("missing depth");
         } void main();`);
-    assert.match(result.cpp, /options\.sampled_depth = true/);
+    assert.match(result.cpp, /render_target_options_\d+\.sampled_depth = true/);
     assert.match(
         result.cpp,
         /options\.depth_format = bbl::DepthTextureFormat::depth32_float/,
@@ -103,6 +104,73 @@ test("surface render targets retain sampled depth and validate descriptor owners
                 `${setup} createSurfaceRenderTargetTexture(engine, {format: engine.format, dFormat: "depth32float", samples: 4, size: engine}, withSampledDepthTexture); } void main();`,
             ),
         /single-sample depth attachment/,
+    );
+});
+
+test("optional depth providers preserve conditional selection and argument effects", () => {
+    const source = `
+        import {createEngine,createRenderTargetTexture,withSampledDepthTexture} from "@babylonjs/lite";
+        async function main() {
+            const engine=await createEngine({});
+            const alias=withSampledDepthTexture;
+            let width=4, selected=0, absent=0;
+            function provider(){selected++;width=9;return alias;}
+            function none():undefined{absent++;return undefined;}
+            const sampled=createRenderTargetTexture(engine,{format:"rgba8unorm",dFormat:"depth32float",samples:1,size:{width:width,height:8}},Math.random()<2?provider():none());
+            if(!sampled.depthTexture||selected!==1||absent!==0)throw new Error("selected provider");
+            const plain=createRenderTargetTexture(engine,{format:"rgba8unorm",samples:4,size:{width:width,height:8}},Math.random()>2?provider():none());
+            if(plain.depthTexture||selected!==1||absent!==1)throw new Error("absent provider");
+            const explicit=createRenderTargetTexture(engine,{format:"rgba8unorm",samples:4,size:{width:8,height:8}},undefined);
+            if(explicit.depthTexture)throw new Error("explicit undefined");
+            const settled=createRenderTargetTexture(engine,{format:"rgba8unorm",dFormat:"depth32float",samples:1,size:{width:8,height:8}},true?alias:undefined);
+            if(!settled.depthTexture)throw new Error("settled alias");
+        }
+        void main();
+    `;
+    const result = compileSource(source);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "optional-depth-provider",
+        `
+        #define main generated_main
+        ${result.cpp}
+        #undef main
+        #include <cassert>
+        namespace { unsigned int created=0; }
+        namespace bbl {
+            Engine create_engine(EngineOptions) {return {};}
+            std::uint32_t render_target_dimension(double value){assert(value>0);return static_cast<std::uint32_t>(value);}
+            RenderTargetTexture create_render_target_texture(Engine&,RenderTargetOptions options,bool surface_sized){
+                assert(!surface_sized);
+                ++created;
+                assert(options.width==(created==1?4u:created==2?9u:8u));
+                assert(options.sampled_depth==(created==1||created==4));
+                RenderTargetHandle target{created};
+                RenderTextureRef color; color.target=target;
+                RenderTextureRef depth; if(options.sampled_depth){depth.target=target;depth.depth_only=true;}
+                return {target,color,depth};
+            }
+        }
+        int main(){assert(generated_main()==0);assert(created==4);}
+    `,
+        { expectedOutput: "" },
+    );
+    const surface = compileSource(`${setup}
+        createSurfaceRenderTargetTexture(engine,{format:engine.format,dFormat:"depth32float",samples:1,size:engine},Math.random()<0.5?withSampledDepthTexture:undefined);
+        } void main();`);
+    assert.match(
+        surface.cpp,
+        /render_target_options_\d+\.sampled_depth = .*\?/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${setup}
+        function withSampledDepthTexture(){throw new Error("authored provider");}
+        createRenderTargetTexture(engine,{format:engine.format,samples:1,size:{width:8,height:8}},withSampledDepthTexture);
+        } void main();`),
+        /requires withSampledDepthTexture or an absent provider/,
     );
 });
 

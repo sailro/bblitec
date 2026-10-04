@@ -28,7 +28,7 @@ test("audio option capabilities retain strict refusals and supported defaults", 
     assert.throws(
         () =>
             compileSource(
-                `${imports}createAudioEngineAsync({volume:1}).then(()=>{new Proxy({},{});});`,
+                `${imports}createAudioEngineAsync({volume:1}).then(()=>{new FinalizationRegistry(() => {});});`,
                 { deferredCapabilities },
             ),
         /Unsupported constructor/,

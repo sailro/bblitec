@@ -16,6 +16,11 @@ import {
 } from "../../pinned-address-modes.js";
 import { compileDynamicPackagedAsset } from "../static-fetch.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
+import {
+    knownDescriptorElements,
+    knownDescriptorProperties,
+    requireStableRetainedDescriptor,
+} from "../retained-descriptor.js";
 import { externalGltfResourceUri } from "../../gltf-document.js";
 import {
     validateObjectProperties,
@@ -40,6 +45,7 @@ export interface AssetIntrinsicContext
             LoweringServices,
             | "options"
             | "checker"
+            | "symbols"
             | "dataLowerer"
             | "dataTypes"
             | "expectObjectLiteral"
@@ -79,69 +85,64 @@ function compileSplatFragments(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
 ): SplatFragmentManifest[] {
-    const list = context.expectStaticArrayLiteral(argumentAt(call, 2));
-    return list.elements.map((element) => {
-        const unwrapped = context.unwrap(element);
-        if (ts.isIdentifier(unwrapped)) {
-            const value = context.compileValue(unwrapped);
-            if (value.kind === "splat-fragment" && value.splatFragment) {
-                return value.splatFragment;
-            }
-        }
-        const object = context.expectObjectLiteral(
-            context.resolveStaticExpression(element),
+    const site = argumentAt(call, 2);
+    const list = context.compileValue(site);
+    const elements = knownDescriptorElements(list);
+    if (!elements)
+        return context.fail(
+            site,
+            "Splat fragments require a generation-known list.",
         );
-        return sceneSplatFragment(context, object);
+    requireStableRetainedDescriptor(
+        context,
+        list,
+        site,
+        call,
+        (value) => value.kind === "splat-fragment" && !!value.splatFragment,
+    );
+    return elements.map((value) => {
+        if (value.kind === "splat-fragment" && value.splatFragment) {
+            return value.splatFragment;
+        }
+        return sceneSplatFragment(context, value, site);
     });
 }
 
 /** One `{ id, helperFunctions?, fragmentSlots }` a scene declared. */
 function sceneSplatFragment(
     context: AssetIntrinsicContext,
-    object: ts.ObjectLiteralExpression,
+    value: Value,
+    site: ts.Expression,
 ): SplatFragmentManifest {
-    validateObjectProperties(
-        context,
-        object,
-        ["id", "helperFunctions", "fragmentSlots"],
-        "A reached GsShaderFragment carries id, helperFunctions and " +
-            "fragmentSlots only.",
-    );
-    const idExpression = context.objectProperty(object, "id");
-    const slotsExpression = context.objectProperty(object, "fragmentSlots");
-    if (!idExpression || !slotsExpression) {
-        context.fail(
-            object,
-            "A GsShaderFragment requires id and fragmentSlots.",
-        );
-    }
-    const helpers = context.objectProperty(object, "helperFunctions");
-    const slots = context.expectObjectLiteral(slotsExpression);
+    const fields = knownDescriptorProperties(context, value, site);
+    for (const name of Object.keys(fields))
+        if (!["id", "helperFunctions", "fragmentSlots"].includes(name))
+            context.fail(
+                site,
+                "A reached GsShaderFragment carries id, helperFunctions and fragmentSlots only.",
+            );
+    const string = (value: Value | undefined): string => {
+        if (value?.staticString === undefined)
+            return context.fail(
+                site,
+                "Splat fragments require generation-known strings.",
+            );
+        return value.staticString;
+    };
+    const slots = fields.fragmentSlots;
+    if (!slots)
+        context.fail(site, "A GsShaderFragment requires id and fragmentSlots.");
+    const helper = fields.helperFunctions;
+    const hasHelper =
+        helper &&
+        !(helper.kind === "json-null" && helper.cpp === "std::nullopt");
     return {
         kind: "scene",
-        id: context.compileStringLiteral(idExpression),
-        ...(helpers
-            ? { helperFunctions: context.compileStringLiteral(helpers) }
-            : {}),
-        fragmentSlots: slots.properties.map((property) => {
-            if (!ts.isPropertyAssignment(property)) {
-                context.fail(
-                    property,
-                    "A GsShaderFragment's slots are plain properties.",
-                );
-            }
-            const slot = context.propertyName(property.name);
-            if (!slot) {
-                context.fail(
-                    property,
-                    "A GsShaderFragment's slot names are plain identifiers.",
-                );
-            }
-            return {
-                slot,
-                code: context.compileStringLiteral(property.initializer),
-            };
-        }),
+        id: string(fields.id),
+        ...(hasHelper ? { helperFunctions: string(helper) } : {}),
+        fragmentSlots: Object.entries(
+            knownDescriptorProperties(context, slots, site),
+        ).map(([slot, code]) => ({ slot, code: string(code) })),
     };
 }
 

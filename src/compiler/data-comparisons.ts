@@ -43,11 +43,16 @@ export function dataUnionEquality(
                     lowerer.context.dataTypes.isReferenceStruct(type.name)));
     const storageType = (expression: ts.Expression): DataType | undefined => {
         const node = lowerer.context.unwrap(expression);
-        if (ts.isIdentifier(node))
-            return (
-                lowerer.context.bindings.lookupOptional(node)?.dataType ??
-                lowerer.dataTypeAt(node)
-            );
+        if (ts.isIdentifier(node)) {
+            const bound = lowerer.context.bindings.lookupOptional(node);
+            if (
+                bound?.kind === "number" ||
+                bound?.kind === "boolean" ||
+                bound?.kind === "string"
+            )
+                return { kind: bound.kind };
+            return bound?.dataType ?? lowerer.dataTypeAt(node);
+        }
         if (ts.isElementAccessExpression(node)) {
             let owner = lowerer.dataTypeAt(node.expression);
             if (owner?.kind === "optional") owner = owner.inner;
@@ -71,10 +76,16 @@ export function dataUnionEquality(
         !supported(rightType)
     )
         return undefined;
+    const compileOperand = (node: ts.Expression) =>
+        lowerer.compileDataPath(node, "read") ??
+        lowerer.context.compileValue(node);
+    if (distinctScalars) {
+        lowerer.context.emitDiscardedValue(compileOperand(left));
+        lowerer.context.emitDiscardedValue(compileOperand(right));
+        return negated ? "true" : "false";
+    }
     const snapshot = (node: ts.Expression): Operand => {
-        const value =
-            lowerer.compileDataPath(node, "read") ??
-            lowerer.context.compileValue(node);
+        const value = compileOperand(node);
         const type: DataType | undefined =
             value.kind === "string" ||
             value.kind === "number" ||

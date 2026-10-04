@@ -8,8 +8,70 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+for (const [label, expression, expectedEffects] of [
+    ["empty", "Promise.resolve()", 0],
+    ["undefined", "Promise.resolve(undefined)", 0],
+    ["void-effect", "Promise.resolve(effect())", 1],
+] as const) {
+    test(`void promise resolution activates queued ownership for ${label}`, async (t) => {
+        const source = `
+            let effects=0;
+            function effect():void { effects++; }
+            const seed:Promise<void>=${expression};
+            const alias=Promise.resolve(seed);
+            if(alias!==seed || effects!==${expectedEffects}) throw new Error("resolve identity/effects");
+            let order="sync";
+            const first=seed.then(()=>{order+="A";});
+            const second=seed.then(()=>{order+="B";});
+            if(order!=="sync") throw new Error("synchronous reaction");
+            let tail=seed;
+            const owner={count:0};
+            for(let i=0;i<3;i++) tail=tail.then(()=>{owner.count++;});
+            void (async()=>{
+                await first;await second;await tail;
+                if(order!=="syncAB" || owner.count!==3) throw new Error("reaction order/lifetime");
+                let cleaned=false;
+                await seed.finally(()=>Promise.resolve().then(()=>{cleaned=true;}));
+                if(!cleaned) throw new Error("cleanup adoption");
+                let rejected=false;
+                await seed.then(()=>{throw new Error("reaction");}).catch(error=>{rejected=error.message==="reaction";});
+                if(!rejected) throw new Error("reaction rejection");
+                globalThis.close();
+            })();
+        `;
+        let completed!: () => void;
+        const completion = new Promise<void>((resolve) => {
+            completed = resolve;
+        });
+        runInNewContext(
+            ts.transpile(source, { target: ts.ScriptTarget.ES2022 }),
+            { close: completed },
+        );
+        await completion;
+        const result = compileSource(source);
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        runGeneratedProgram(
+            tools,
+            `promise-construction/resolve-${label}`,
+            `#define main generated_main\n${result.cpp}\n#undef main\n` +
+                `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();` +
+                `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("void promise ownership leak");return result;}\n`,
+            {
+                defines: ["BBLITE_WORKERS=1"],
+                timeoutMs: 10000,
+                expectedOutput: "",
+            },
+        );
+    });
+}
 
 test("promise constructors own escaping resolvers and races preserve settlement order", async (t) => {
     const directory = resolve("artifacts/promise-construction");

@@ -3,11 +3,63 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { ClassHierarchy } from "../src/compiler/class-members.js";
+import { DataTypeRegistry } from "../src/compiler/data-types.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("readonly tuple storage preserves heterogeneous lanes and own-key distinctions", () => {
+    const frontend = createCompilerProgram(
+        `type Mixed = readonly [number, {value:number}, string];
+         type Distinct = readonly [{left:number}, {right:string}];
+         type Empty = readonly [{left:null}, {right:string}];`,
+        resolve("readonly-tuple-storage.ts"),
+    );
+    const registry = new DataTypeRegistry(
+        frontend.checker,
+        (_node, message) => {
+            throw new Error(message);
+        },
+        new ClassHierarchy(frontend.checker, frontend.program),
+    );
+    const mapped = frontend.sourceFile.statements.map((node) => {
+        assert.ok(ts.isTypeAliasDeclaration(node));
+        return registry.fromStoredTsType(
+            frontend.checker.getTypeAtLocation(node.name),
+            node,
+        );
+    });
+    const [mixed, distinct, empty] = mapped;
+    assert.ok(mixed?.kind === "vector");
+    assert.ok(mixed.element.kind === "optional");
+    assert.ok(mixed.element.inner.kind === "union");
+    assert.deepEqual(
+        mixed.element.inner.members.map((member) => member.kind).sort(),
+        ["number", "string", "struct"],
+    );
+    assert.ok(distinct?.kind === "vector");
+    assert.ok(distinct.element.kind === "struct");
+    const fields = registry.structFields(
+        distinct.element.name,
+        frontend.sourceFile,
+        "accessors",
+    );
+    assert.deepEqual(
+        fields.map((field) => field.sourceName),
+        ["left", "right"],
+    );
+    for (const field of fields)
+        assert.equal(
+            registry.ownPropertyPresence(distinct.element.name, field),
+            "stored",
+        );
+    assert.equal(empty, undefined);
+});
 
 test("readonly record tuple searches retain nullable fields and short-circuiting", (t) => {
     const result = compileSource(`

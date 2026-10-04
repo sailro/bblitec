@@ -52,6 +52,21 @@ inline std::string encode(std::string_view input) {
 }
 } // namespace search_params_detail
 
+/** ECMAScript component encoding uses UTF-8 and rejects unpaired UTF-16 surrogates. */
+inline std::string encode_uri_component(std::string_view input) {
+    const auto text = scalar_string(input, true);
+    std::string output;
+    for (const unsigned char byte : text) {
+        if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+            (byte >= '0' && byte <= '9') ||
+            std::string_view("-_.!~*'()").find(byte) != std::string_view::npos)
+            output.push_back(static_cast<char>(byte));
+        else
+            search_params_detail::append_percent_encoded(output, byte);
+    }
+    return output;
+}
+
 /** String-initialized URLSearchParams retain the ordered query list across aliases. */
 class SearchParams {
     using Entries = std::vector<std::pair<std::string, std::string>>;

@@ -21,6 +21,7 @@ interface WebStorageContext extends Pick<
     | "emit"
     | "probeEmission"
     | "checker"
+    | "deferredCapabilities"
 > {}
 
 const stringType: DataType = { kind: "string" };
@@ -41,11 +42,26 @@ export function compileWebStorageValue(
     context: WebStorageContext,
     expression: ts.Expression,
 ): Value | undefined {
-    if (!isLocalStorage(context, expression)) return undefined;
+    const session = context.libraryGlobal(expression) === "sessionStorage";
+    if (!session && !isLocalStorage(context, expression)) return undefined;
+    const deferred = session
+        ? context.deferredCapabilities.emitKnown(
+              expression,
+              {
+                  id: "dom:Window.sessionStorage",
+                  origin: "dom",
+                  operation: "read",
+                  timing: "throw",
+                  signature: "Window.sessionStorage: Storage",
+              },
+              { kind: "storage" },
+          )
+        : undefined;
+    if (session && !deferred) return undefined;
     context.reachLocalStorage();
     context.reachFeature("storage:local", expression);
     context.reachJsData();
-    return storageValue("bbl::js::local_storage_object()");
+    return storageValue(deferred?.cpp ?? "bbl::js::local_storage_object()");
 }
 
 /** Stored references expose the same native object and method surface. */

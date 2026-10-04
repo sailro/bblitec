@@ -1,0 +1,86 @@
+#pragma once
+
+#include <bblite/runtime.hpp>
+
+namespace bbl::pal {
+
+enum class PointerPrecision { None, Coarse, Fine };
+struct InputCapabilities {
+    PointerPrecision pointer = PointerPrecision::None;
+    bool hover = false;
+    bool operator==(const InputCapabilities&) const = default;
+};
+class ResizeObserver {
+public:
+    using Callback = js::Callback<void()>;
+    explicit ResizeObserver(Callback callback) : callback_(std::move(callback)) {}
+    void observe(UiElementHandle element);
+    void unobserve(UiElementHandle element);
+    void disconnect();
+    void deliver();
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback_); }
+
+private:
+    friend std::shared_ptr<ResizeObserver> create_resize_observer(Callback callback);
+    // Managed aliases are allocated inside a GC block, so std::enable_shared_from_this
+    // cannot discover their control block. The factory supplies this weak identity.
+    std::weak_ptr<ResizeObserver> self_;
+    Callback callback_;
+    std::unordered_map<std::uint32_t, UiClientRect> observed_;
+};
+
+class MediaQueryList {
+public:
+    MediaQueryList(std::string query, double (*read_pixel_ratio)(),
+                   bool (*read_motion_preference)(),
+                   InputCapabilities (*read_input_capabilities)() = nullptr);
+    [[nodiscard]] bool matches() const;
+    [[nodiscard]] const std::string& media() const noexcept { return media_; }
+    void add_change_listener(js::Callback<void()> callback);
+    void add_change_listener(std::size_t identity, js::Callback<void()> callback);
+    void remove_change_listener(std::size_t identity);
+    void deliver();
+    /**
+     * Whether the document must keep this list alive on the script's
+     * behalf: a `matchMedia` result that registered a change listener stays
+     * reachable through the window, as it does in a browser, while one the
+     * script dropped without listening is retired at the next tick.
+     */
+    [[nodiscard]] bool retained() const noexcept { return !listeners_.empty(); }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(listeners_); }
+
+private:
+    enum class Feature { Resolution, ReducedMotion, Input };
+    Feature feature_ = Feature::Resolution;
+    std::string media_;
+    double resolution_ = 0;
+    bool reduce_ = false;
+    double (*read_pixel_ratio_)();
+    bool (*read_motion_preference_)();
+    InputCapabilities (*read_input_capabilities_)();
+    std::vector<std::variant<PointerPrecision, bool>> input_conditions_;
+    bool matches_ = false;
+    PlatformEventListeners<void()> listeners_;
+};
+
+std::shared_ptr<ResizeObserver> create_resize_observer(ResizeObserver::Callback callback);
+class MutationObserver {
+public:
+    using Callback = js::Callback<void()>;
+    explicit MutationObserver(Callback callback) : callback_(std::move(callback)) {}
+    void observe(UiElementHandle element, std::optional<std::vector<std::string>> filter);
+    void disconnect();
+    void notify(UiElementHandle element, const std::string& attribute);
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback_); }
+
+private:
+    friend std::shared_ptr<MutationObserver> create_mutation_observer(Callback callback);
+    std::weak_ptr<MutationObserver> self_;
+    Callback callback_;
+    std::unordered_map<std::uint32_t, std::optional<std::vector<std::string>>> observed_;
+    bool pending_ = false;
+};
+std::shared_ptr<MutationObserver> create_mutation_observer(MutationObserver::Callback callback);
+std::shared_ptr<MediaQueryList> create_media_query(std::string query);
+
+} // namespace bbl::pal

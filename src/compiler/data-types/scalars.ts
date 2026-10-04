@@ -64,7 +64,7 @@ export const scalarKinds: DataKindOperations<
     },
     undefined: leaf("bbl::js::Undefined", "undefined"),
     "weak-key": leaf("bbl::js::WeakIdentity", "weak-key"),
-    error: leaf("bbl::js::Error", "error"),
+    error: leaf("bbl::js::Error", "error", false, true),
     file: {
         ...leaf("bbl::BrowserFileHandle", "file", true),
         opaqueReference: true,

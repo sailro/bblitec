@@ -198,8 +198,8 @@ function valueVector(
             `[&]() { auto ${source} = ${value.cpp}; ` +
             `${destinationCpp} ${result}; ` +
             `${result}.reserve(${source}.size()); ` +
-            `for (const auto& ${item} : ${source}) ` +
-            `${result}.push_back(${projected}); ` +
+            `for (const auto& ${item} : ${source}) { ` +
+            `${result}.push_back(${projected}); } ` +
             `return ${result}; }()`
         );
     }

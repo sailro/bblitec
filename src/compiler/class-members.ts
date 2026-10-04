@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import { ERROR_CONSTRUCTORS } from "./error-values.js";
 
 /** Instance fields include the properties declared by constructor parameters. */
 export function classInstanceProperties(
@@ -46,6 +47,7 @@ export interface ClassMemberTable {
     readonly base: ClassMemberTable | undefined;
     /** An `extends` clause naming something other than a local class. */
     readonly unsupportedHeritage: ts.ExpressionWithTypeArguments | undefined;
+    readonly errorBase: string | undefined;
     /** The constructor implementation, or its only declaration. */
     readonly constructorDeclaration: ts.ConstructorDeclaration | undefined;
     readonly methods: ReadonlyMap<string, ts.MethodDeclaration>;
@@ -111,14 +113,20 @@ function resolveHeritage(
 ):
     | { base: ts.ClassDeclaration }
     | { unsupported: ts.ExpressionWithTypeArguments }
+    | { errorBase: string }
     | undefined {
     const heritage = declaration.heritageClauses?.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
     )?.types[0];
     if (!heritage) return undefined;
-    const base = resolvedSymbol(checker, heritage.expression)
-        ?.getDeclarations()
-        ?.find(ts.isClassDeclaration);
+    const symbol = resolvedSymbol(checker, heritage.expression);
+    if (
+        symbol &&
+        declaredInDefaultLibrary(symbol) &&
+        ERROR_CONSTRUCTORS.has(symbol.name)
+    )
+        return { errorBase: symbol.name };
+    const base = symbol?.getDeclarations()?.find(ts.isClassDeclaration);
     return base &&
         !base.getSourceFile().isDeclarationFile &&
         (ts.getCombinedModifierFlags(base) & ts.ModifierFlags.Ambient) === 0
@@ -197,6 +205,10 @@ export function classMemberTable(
             heritage && "unsupported" in heritage
                 ? heritage.unsupported
                 : undefined,
+        errorBase:
+            heritage && "errorBase" in heritage
+                ? heritage.errorBase
+                : undefined,
         constructorDeclaration,
         methods,
         staticMethods,
@@ -213,6 +225,12 @@ export function classMemberTable(
     };
     classMemberTables.set(declaration, table);
     return table;
+}
+
+export function classErrorBase(table: ClassMemberTable): string | undefined {
+    return (
+        table.errorBase ?? (table.base ? classErrorBase(table.base) : undefined)
+    );
 }
 
 /**
