@@ -69,6 +69,38 @@
     {
       "summary": "Guard structural record projection through the existing optional conversion path.",
       "applied": true
+    },
+    {
+      "summary": "Validate accessor storage before requesting speculative source-owner replay.",
+      "applied": true
+    },
+    {
+      "summary": "Use checked primitive receiver types in shared mutation analyses.",
+      "applied": true
+    },
+    {
+      "summary": "Require resolved pinned-body readonly proofs without redundant mutation scans.",
+      "applied": true
+    },
+    {
+      "summary": "Preserve declaration and array-element ownership through existing replay and presence metadata.",
+      "applied": true
+    },
+    {
+      "summary": "Share retained dataset writes and preserve source identity across argument evaluation.",
+      "applied": true
+    },
+    {
+      "summary": "Keep nullable lookup provenance separate from guaranteed host presence.",
+      "applied": true
+    },
+    {
+      "summary": "Prune copied scalar argument subtrees from reference-owner mutation discovery.",
+      "applied": true
+    },
+    {
+      "summary": "Preserve exported graph documents separately from factory invocations.",
+      "applied": true
     }
   ]
 }
