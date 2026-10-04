@@ -274,7 +274,6 @@ function collectMutatedContainerSymbols(
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
     const mutated = new EmissionSet<ts.Symbol>();
-    const argumentWrites = new Set<ts.Symbol>();
     const aliases = new Map<ts.Symbol, ts.Symbol>();
     const record = (target: ts.Expression): void => {
         const symbol = moduleContainerSymbol(target, checker, symbols);
@@ -412,7 +411,7 @@ function collectMutatedContainerSymbols(
                                 checker,
                                 symbols,
                             );
-                            if (symbol) argumentWrites.add(symbol);
+                            if (symbol) mutated.add(symbol);
                         }
                         return undefined;
                     };
@@ -434,7 +433,6 @@ function collectMutatedContainerSymbols(
             if (target) record(target);
         }
     });
-    for (const symbol of argumentWrites) mutated.add(symbol);
     for (const symbol of mutated) {
         const origin = aliases.get(symbol);
         if (origin) mutated.add(origin);
