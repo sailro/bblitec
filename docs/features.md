@@ -81,6 +81,8 @@ Generation-known positions (option records, shader lists) read through `const` l
 conditionals and spreads, and parameterless module functions whose body returns a literal. Shader text
 and static iterations run a module `const` they cannot fold at generation; a run reaching the host, the
 clock, `Math.random`, the host locale or a constant the program writes through refuses.
+Dense literal arrays of scalar-field records can supply per-element resource arguments while retaining
+native identity. Mutation, escaping aliases and untracked extraction withdraw those generation facts.
 
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,
 `SSR=false`. `BASE_URL` follows deployment. Custom string fields use `--env NAME=value` or
