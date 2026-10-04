@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
@@ -216,23 +217,25 @@ test("stores a class an array element demands as a shared object", () => {
     assert.match(result.cpp, /bbl::js::Array<bblscene::Part>/);
 });
 
-test("inlines a method on an instance read back out of a container", () => {
+test("inlines a method on an instance read back out of a container", (t) => {
     const result = compileSource(`
         ${workspaceOverParts}
         const renderer = new Renderer();
         const workspace = new Workspace();
         new Part(renderer, workspace, false);
         const total = workspace.total();
-        const unused = total + 1;
+        if (total !== 2) throw new Error("stored instance method result");
     `);
 
     // The loop variable is a `Ref`, and both the getter (`destroyed`) and
     // the method (`volume`) read through it rather than through a local.
     assert.match(
         result.cpp,
-        /for \(auto&& (v_\w+) : v_\w+\) \{\s*if \(!\(\(static_cast<bool>\(\1\) && \1->_destroyed\)\)\)/,
+        /for \(auto&& (v_\w+) : v_\w+\) \{\s*static_cast<void>\(\1\);\s*if \(!\(\(static_cast<bool>\(\1\) && \1->_destroyed\)\)\)/,
     );
     assert.match(result.cpp, /\w+->_size\[bbl::js::array_index\(0\.0\)\]/);
+    if (!nativeTools) return t.skip("native compiler unavailable");
+    runGeneratedProgram(nativeTools, "stored-instance-method", result.cpp);
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
@@ -377,26 +380,33 @@ test(
     },
 );
 
-test("keeps object identity and null on stored instances", () => {
+test("keeps object identity and null on stored instances", (t) => {
     const result = compileSource(`
         ${workspaceOverParts}
         const renderer = new Renderer();
         const workspace = new Workspace();
         const first = new Part(renderer, workspace, false);
         workspace.select(first);
+        if (workspace.selected !== first) throw new Error("selected instance identity");
         workspace.remove(first);
-        const unused = workspace.parts.length;
+        if (workspace.selected !== null || workspace.parts.length !== 0)
+            throw new Error("removed instance presence");
     `);
 
     // `includes`, `indexOf` and `===` are all the Ref's own identity.
     assert.match(result.cpp, /bbl::js::array_index_of\(/);
-    assert.match(result.cpp, /(?:\.get\(\)|v_\w+) == /);
+    assert.match(
+        result.cpp,
+        /static_cast<const void\*>\([^;]+\.get\(\)\) == static_cast<const void\*>\(/,
+    );
     // A null instance is the empty reference, not a second state beside it.
     assert.match(
         result.cpp,
         /auto v_\w+ = bbl::js::make_gc_shared<bblscene::Part>\(bblscene::Part\{\}\);/,
     );
     assert.doesNotMatch(result.cpp, /Nullable<bblscene::Part>/);
+    if (!nativeTools) return t.skip("native compiler unavailable");
+    runGeneratedProgram(nativeTools, "stored-instance-identity", result.cpp);
 });
 
 test("clones a stored instance into a second shared object", () => {

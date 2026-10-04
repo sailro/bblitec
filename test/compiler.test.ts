@@ -3104,7 +3104,7 @@ test("materializes a numeric Record for dynamic optional lookup", () => {
 
     assert.match(
         result.cpp,
-        /static thread_local bbl::js::Map<double, bblscene::Definition> values/,
+        /bbl::js::Map<double, bblscene::Definition> v_definitions\b/,
     );
     assert.match(result.cpp, /\.get_owned\(v_\w*key\)/);
 });

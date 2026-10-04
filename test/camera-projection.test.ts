@@ -232,7 +232,7 @@ test("a guarded scene camera emits its matrix sources without a constructor", ()
     );
 });
 
-test("projection intrinsic keeps f32 lanes and widens ArrayLike calls once", () => {
+test("projection intrinsic keeps f32 storage across ArrayLike calls", () => {
     const result = compileSource(`
         import {
             addToScene,
@@ -288,10 +288,15 @@ test("projection intrinsic keeps f32 lanes and widens ArrayLike calls once", () 
         result.cpp,
         /static_cast<double>\(bbl::js::array_index_checked\(v_vp, 15\.0,/,
     );
-    assert.match(
-        result.cpp,
-        /const bbl::js::F64Array v_[A-Za-z0-9_]*array_like_numbers[A-Za-z0-9_]*\(v_vp\.begin\(\), v_vp\.end\(\)\);/,
-    );
+    assert.match(result.cpp, /const bbl::js::F32Array& \w+recursive_arg_0/);
+    for (const index of [0, 15])
+        assert.match(
+            result.cpp,
+            new RegExp(
+                `static_cast<double>\\(bbl::js::array_index_checked\\(v_\\w*matrix, ${index}\\.0,`,
+            ),
+        );
+    assert.doesNotMatch(result.cpp, /bbl::js::F64Array[^;]*v_vp\.begin\(\)/);
     assert.match(
         result.cpp,
         /#include <bblite\/upstream\/camera_math\.hpp>[\s\S]*#include <bblite\/upstream\/renderer_plan\.hpp>/,

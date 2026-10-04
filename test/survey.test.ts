@@ -97,12 +97,13 @@ test("a survey records every refusal it reaches and continues past each", () => 
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
     // `handle` is never bound: its member calls name it, not a gap of their own.
+    // FinalizationRegistry is deliberately outside the supported runtime.
     const { report } = surveySource(
         `
         let total = 0;
         function create(name: string): { ready: number; add(value: number): void } {
-            const raw = document.getElementById(name);
-            return { ready: raw !== null ? 1 : 0, add(value: number): void { total += value; } };
+            const raw = { name };
+            return { ready: new FinalizationRegistry<string>(() => {}).unregister(raw) ? 1 : 0, add(value: number): void { total += value; } };
         }
         const handle = create("mode");
         handle.add(2);
@@ -130,8 +131,8 @@ test("a refused value return is the calling statement's refusal", () => {
     const { report } = surveySource(
         `
         function pick(name: string): number {
-            const raw = document.getElementById(name);
-            return raw !== null ? 1 : 0;
+            const raw = { name };
+            return new FinalizationRegistry<string>(() => {}).unregister(raw) ? 1 : 0;
         }
         const chosen = pick("mode");
         const other = pick("other");
@@ -150,7 +151,8 @@ test("a refused value return is the calling statement's refusal", () => {
     assert.equal(declaration.occurrences, 4);
     assert.equal(declaration.statements, 4);
     assert.equal(declaration.cascade, undefined);
-    assert.deepEqual(report.statements, { attempted: 4, refused: 4 });
+    // Each calling statement also visits the successful local declaration.
+    assert.deepEqual(report.statements, { attempted: 8, refused: 4 });
 });
 
 test("a survey names a class member's refusal by its qualified name", () => {
