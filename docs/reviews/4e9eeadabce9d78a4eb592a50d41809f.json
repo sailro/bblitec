@@ -101,6 +101,38 @@
     {
       "summary": "Preserve exported graph documents separately from factory invocations.",
       "applied": true
+    },
+    {
+      "summary": "Use shared opaque-reference admission before structural ownership replay.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse field-sensitive parameter proofs and immutable retained-descriptor analysis.",
+      "applied": true
+    },
+    {
+      "summary": "Keep authored class field storage under the existing class owner.",
+      "applied": true
+    },
+    {
+      "summary": "Share evaluated tuple components across numeric vector sinks.",
+      "applied": true
+    },
+    {
+      "summary": "Withdraw journaled record-array facts through the original native owner and shared maps.",
+      "applied": true
+    },
+    {
+      "summary": "Use constant-time element membership and preserve native dependencies on projected leaves.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse declared array storage and read-only projections for contextual record arguments.",
+      "applied": true
+    },
+    {
+      "summary": "Select the existing dictionary sink when runtime spreads require contextual dictionary storage.",
+      "applied": true
     }
   ]
 }
