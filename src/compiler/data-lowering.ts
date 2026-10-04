@@ -1247,7 +1247,9 @@ export class DataLowerer {
                     kind: "declaration",
                     type: "const auto",
                     name: temporary,
-                    initializer: owner.cpp,
+                    initializer: presenceFlagCpp(owner)
+                        ? `(${presenceFlagCpp(owner)} ? ${owner.cpp} : ${this.context.dataTypes.cppType(owner.dataType)}{})`
+                        : owner.cpp,
                     attributes: "[[maybe_unused]] ",
                 });
                 owner = withNativeMetadata(
@@ -1313,7 +1315,7 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
-            if (unwrapped.questionDotToken) {
+            if (ts.isOptionalChain(unwrapped)) {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
             }
@@ -1831,7 +1833,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const resultType: DataType =
             selectedType.kind === "optional"
                 ? selectedType
-                : checkerType?.kind === "optional"
+                : checkerType?.kind === "optional" &&
+                    !(
+                        selectedType.kind === "vector" &&
+                        checkerType.inner.kind === "span"
+                    )
                   ? checkerType
                   : nullableType;
         const selectedCpp =
@@ -4682,16 +4688,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
     ): Value | undefined {
-        if (
-            ts.isOptionalChain(access) ||
-            this.namesHandleCollection(access.expression)
-        )
-            return undefined;
+        if (ts.isOptionalChain(access)) return undefined;
         // Resolving a computed owner can emit code. A declined guard must
         // discard that work before the ordinary element reader evaluates it.
         return this.context.probeEmission(() => {
             let owner = this.compileDataPath(access.expression, "read");
             if (!owner) {
+                if (this.namesHandleCollection(access.expression))
+                    return undefined;
                 const declared = this.dataTypeAt(access.expression);
                 const type =
                     declared?.kind === "optional" ? declared.inner : declared;
@@ -4752,8 +4756,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
-        const element = owner.dataType.element;
+        const ownerType = owner.dataType;
+        const element = ownerType.element;
+        if (
+            element.kind !== "optional" &&
+            ![
+                "event-target",
+                "struct",
+                "date",
+                "date-time-format",
+                "storage",
+                "vector",
+                "tuple",
+                "product",
+                "map",
+                "set",
+                "arraybuffer",
+                "dataview",
+                "bufferview",
+                "numberindex",
+                "function",
+                "handle",
+                "number",
+                "boolean",
+                "string",
+                "enum",
+            ].includes(element.kind) &&
+            !isTypedArrayType(element)
+        ) {
+            return undefined;
+        }
         this.invalidateRecordArrayFacts(owner);
+        // Array presence and element reads share this receiver. Retain it
+        // before the index, which may run code or replace the source binding.
+        owner = this.context.bindings.pinValueToTemporary(
+            owner,
+            "element_owner",
+            access.expression,
+        );
+        const ownerCaptures = this.context.captureNativeDependencies(() =>
+            this.context.useNativeValue(owner),
+        ).nativeCaptures;
         // An array whose element type is already nullable has a native value
         // for JavaScript's out-of-range `undefined`: the empty optional. Read
         // it through the defaulting accessor and let the ordinary optional
@@ -4794,37 +4837,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       }
                     : {}),
                 nativeCaptures: [
-                    ...(owner.nativeCaptures ?? []),
+                    ...ownerCaptures,
                     this.context.registerNativeBinding(indexTemporary),
                 ],
             };
-        }
-        if (
-            ![
-                "event-target",
-                "struct",
-                "date",
-                "date-time-format",
-                "storage",
-                "vector",
-                "tuple",
-                "product",
-                "map",
-                "set",
-                "arraybuffer",
-                "dataview",
-                "bufferview",
-                "numberindex",
-                "function",
-                "handle",
-                "number",
-                "boolean",
-                "string",
-                "enum",
-            ].includes(element.kind) &&
-            !isTypedArrayType(element)
-        ) {
-            return undefined;
         }
         const index = this.context.compileNumber(
             access.argumentExpression,
@@ -4846,7 +4862,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const indexed = `bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`;
         const found = `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`;
         const captures = [
-            ...(owner.nativeCaptures ?? []),
+            ...ownerCaptures,
             this.context.registerNativeBinding(indexTemporary),
         ];
         const leaf = this.leafValue(indexed, element);
@@ -4869,7 +4885,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 element.kind === "boolean" ||
                 element.kind === "string" ||
                 element.kind === "enum") &&
-            !this.indexProvenInBounds(owner, access, owner.dataType);
+            !this.indexProvenInBounds(owner, access, ownerType);
         return {
             ...leaf,
             nativeCaptures: captures,

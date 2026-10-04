@@ -1443,7 +1443,19 @@ export class DeclarationLowerer {
             ...value,
             cpp: boundCpp,
             ...(sharedBinding ? { sharedStorageCpp: cppName } : {}),
-            ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
+            ...(optionalFoundCpp
+                ? {
+                      optionalFoundCpp,
+                      nativeCompanionCaptures: {
+                          ...value.nativeCompanionCaptures,
+                          optionalFoundCpp: [
+                              this.context.registerNativeConstBinding(
+                                  optionalFoundCpp,
+                              ),
+                          ],
+                      },
+                  }
+                : {}),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
             nativeBinding: true,
         };
