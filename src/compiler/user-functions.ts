@@ -2051,6 +2051,21 @@ export class UserFunctionLowerer {
             argument,
         );
         if (
+            value.kind === "record" &&
+            expected &&
+            parameter &&
+            ts.isObjectLiteralExpression(context.unwrap(argument))
+        ) {
+            return context.bindings.materializeDeclaredRecordContainers(
+                value,
+                expected,
+                argument,
+                "argument_container",
+                undefined,
+                parameter,
+            );
+        }
+        if (
             value.kind === "callback" &&
             value.callbackRecordOwner?.repeatedCallbackEvaluation &&
             !(

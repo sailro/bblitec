@@ -1903,10 +1903,13 @@ export class BindingScopes {
         node: ts.Expression,
         label: string,
         field?: ts.Symbol,
+        parameter?: ts.ParameterDeclaration,
+        path: readonly string[] = [],
     ): Value {
         const present = this.context.checker.getNonNullableType(type);
         if (
             field &&
+            !parameter &&
             value.kind === "record" &&
             !value.sceneNodeVector &&
             !value.cameraVector &&
@@ -1933,7 +1936,12 @@ export class BindingScopes {
                 );
             }
         }
-        if (field && value.kind === "json-null" && present !== type) {
+        if (
+            field &&
+            !parameter &&
+            value.kind === "json-null" &&
+            present !== type
+        ) {
             const mapped = this.context.dataTypes.fromStoredTsType(type, node);
             if (
                 mapped?.kind === "optional" ||
@@ -1949,6 +1957,19 @@ export class BindingScopes {
             }
         }
         if (field && value.kind === "tuple" && present.getProperty("push")) {
+            // Contextual arguments keep their record fields in the existing
+            // parameter owner. Only written or retained collections need the
+            // declaration's array storage; read-only composition stays static.
+            if (
+                parameter &&
+                parameterProjectionIsReadOnly(
+                    this.context.checker,
+                    parameter.parent,
+                    parameter.parent.parameters.indexOf(parameter),
+                    path,
+                )
+            )
+                return value;
             const dataType = this.context.dataTypes.fromStoredTsType(
                 present,
                 node,
@@ -1990,6 +2011,8 @@ export class BindingScopes {
                     node,
                     `${label}_${name}`,
                     symbol,
+                    parameter,
+                    parameter ? [...path, name] : path,
                 );
         }
         return value;
