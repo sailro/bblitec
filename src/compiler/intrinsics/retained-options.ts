@@ -116,7 +116,20 @@ export function emitPresentOption(
         type = type.inner;
     }
     if (guard) context.emit({ kind: "open", code: `if (${guard}) {` });
-    emit({ ...member, cpp, ...(type ? { type } : {}) });
+    emit({
+        ...member,
+        cpp,
+        ...(type ? { type } : {}),
+        ...(member.value
+            ? {
+                  value: {
+                      ...member.value,
+                      cpp,
+                      ...(type ? { dataType: type } : {}),
+                  },
+              }
+            : {}),
+    });
     if (guard) context.emit({ kind: "close", code: "}" });
 }
 

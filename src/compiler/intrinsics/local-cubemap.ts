@@ -11,6 +11,11 @@ import {
     type LocalCubemapPlan,
 } from "../../pinned-local-cubemap.js";
 import { recordAt } from "../record-access.js";
+import {
+    knownDescriptorElements,
+    knownDescriptorProperties,
+    requireStableRetainedDescriptor,
+} from "../retained-descriptor.js";
 
 export interface LocalCubemapIntrinsicContext
     extends
@@ -18,6 +23,8 @@ export interface LocalCubemapIntrinsicContext
         Pick<
             LoweringServices,
             | "options"
+            | "checker"
+            | "symbols"
             | "localCubemapState"
             | "sceneManifest"
             | "assetRegistry"
@@ -44,28 +51,25 @@ function optionsJson(
         writable(environments).push(value);
         return environments.length - 1;
     }
-    if (
-        value.kind === "number" &&
-        value.staticNumber !== undefined &&
-        Number.isFinite(value.staticNumber)
-    )
+    if (value.staticNumber !== undefined && Number.isFinite(value.staticNumber))
         return value.staticNumber;
-    if (value.kind === "string" && value.staticString !== undefined)
-        return value.staticString;
-    if (value.kind === "boolean" && value.staticBoolean !== undefined)
-        return value.staticBoolean;
+    if (value.staticString !== undefined) return value.staticString;
+    if (value.staticBoolean !== undefined) return value.staticBoolean;
     if (value.kind === "browser" && value.browserValue?.kind === "boolean")
         return value.browserValue.value;
-    if (value.kind === "tuple" && value.tupleElements)
-        return value.tupleElements.map((element) =>
+    const elements = knownDescriptorElements(value);
+    if (elements)
+        return elements.map((element) =>
             optionsJson(context, element, node, environments),
         );
     if (value.recordProperties)
         return Object.fromEntries(
-            Object.entries(value.recordProperties).map(([key, member]) => [
-                key,
-                optionsJson(context, member, node, environments),
-            ]),
+            Object.entries(knownDescriptorProperties(context, value, node)).map(
+                ([key, member]) => [
+                    key,
+                    optionsJson(context, member, node, environments),
+                ],
+            ),
         );
     return context.fail(
         node,
@@ -246,12 +250,18 @@ export function compileLocalCubemapIntrinsic(
         environments.push(environment);
     }
     if (optionArgument) {
-        const value = optionsJson(
-            context,
-            context.compileValue(optionArgument),
-            optionArgument,
-            environments,
-        );
+        const input = context.compileValue(optionArgument);
+        if (name === "createPbrLocalEnvironmentProbeSet")
+            requireStableRetainedDescriptor(
+                context,
+                input,
+                optionArgument,
+                call,
+                (value) =>
+                    value.kind === "environment-textures" &&
+                    value.environmentAsset !== undefined,
+            );
+        const value = optionsJson(context, input, optionArgument, environments);
         if (!value || typeof value !== "object" || Array.isArray(value))
             context.fail(
                 optionArgument,

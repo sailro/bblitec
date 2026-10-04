@@ -219,11 +219,14 @@ uncompressed fallback refuse. Basis/KTX2 uses the pinned browser transcoder; upl
 `splatsData` and `updateData(ArrayBuffer)` share owned rows. Equal-count replacement preserves old
 aliases and refreshes rendering/picking. Borrowed buffers and writes to the getter-only property refuse.
 Multiple fragment sets and broader buffer-view methods remain limited.
+Shader fragment descriptors require known keys/strings and source-proven stable ownership;
+mutable or escaping descriptors and lists without complete evaluated metadata refuse.
 
 ### Environment compilation
 
 HDR uses pinned GGX prefiltering; DDS preserves specular mips; `.env` uploads decoded cubes. The BRDF LUT
 is baked. Static box/sphere local environments and blended probe sets support setup before registration.
+Retained probe geometry requires source-proven stable ownership through device recovery.
 Live probe rebuilding/ORM rebinding refuse; direct intensity remains live.
 
 Procedural sky environments support packaged BRDF textures, GPU cube generation/mips and live
