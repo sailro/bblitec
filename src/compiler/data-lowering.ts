@@ -3232,7 +3232,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner.cpp,
                 this.context.cppString(property),
                 dataType.value,
-                this.context.dataTypes.nullableType(dataType.value),
             );
         }
         if (
@@ -4921,7 +4920,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         owner: string,
         key: string,
         type: DataType,
-        lookupType = this.context.dataTypes.nullableType(type),
+        preserveUncheckedLookup = true,
     ): Value {
         this.context.reachJsData();
         const lookup = `${owner}.get(${key})`;
@@ -4930,10 +4929,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return this.leafValue(`bbl::js::json_value(${lookup})`, type);
         }
         return {
-            ...this.leafValue(lookup, lookupType),
+            ...this.leafValue(
+                lookup,
+                this.context.dataTypes.nullableType(type),
+            ),
             ownedCpp: `${owner}.get_owned(${key})`,
             nativeLvalue: true,
-            preserveUncheckedLookup: true,
+            ...(preserveUncheckedLookup
+                ? { preserveUncheckedLookup: true as const }
+                : {}),
         };
     }
 

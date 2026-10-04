@@ -2911,7 +2911,13 @@ function compileMapDataMethod(
             };
         }
         return {
-            ...lowerer.mapPropertyValue(narrowed.cpp, key, dataType.value),
+            // Map.get declares its absence, so source guards may narrow it.
+            ...lowerer.mapPropertyValue(
+                narrowed.cpp,
+                key,
+                dataType.value,
+                false,
+            ),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
         };
     }
