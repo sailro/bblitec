@@ -195,7 +195,7 @@ test("pinned line builders preserve copied geometry without exempting retained p
         `export const position=[1,2,3] as const;`,
     );
     const source = `
-        import {createLineSystem,updateLineSystem,createPbrLocalEnvironmentProbeSet} from "@babylonjs/lite";
+        import {addToScene,createLineSystem,updateLineSystem,createPbrLocalEnvironmentProbeSet} from "@babylonjs/lite";
         import type {EngineContext,Mesh,SceneNode,LineMaterial,SceneContext,EnvironmentTextures} from "@babylonjs/lite";
         import {lines} from "./geometry.js";
         import {position} from "./probe.js";
@@ -210,6 +210,7 @@ test("pinned line builders preserve copied geometry without exempting retained p
         function handleAccessor(options:{lines:readonly unknown[];material:LineMaterial}):number {return options.material.projectionFlag;}
         function handleRetain(options:{lines:readonly unknown[];material:LineMaterial}):LineMaterial {return options.material;}
         createLineSystem(engine,{lines,material});
+        addToScene(scene,createLineSystem(engine,{lines,material}));
         updateLineSystem(engine,mesh,{lines});
         createPbrLocalEnvironmentProbeSet(scene,{probes:[{environment,influencePosition:position}]});
     `;

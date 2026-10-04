@@ -319,6 +319,8 @@ function collectMutatedContainerSymbols(
                 const visit = (
                     value: ts.Expression,
                     path: readonly string[],
+                    consumer: ts.CallExpression = node,
+                    parameterIndex = index,
                 ): void => {
                     if (
                         !typeCanCarryReference(checker.getTypeAtLocation(value))
@@ -327,8 +329,8 @@ function collectMutatedContainerSymbols(
                     if (
                         callArgumentProjectionIsReadOnly(
                             checker,
-                            node,
-                            index,
+                            consumer,
+                            parameterIndex,
                             path,
                         )
                     )
@@ -357,6 +359,8 @@ function collectMutatedContainerSymbols(
                                         ? property.initializer
                                         : property.name,
                                     [...path, propertyNameText(property.name)!],
+                                    consumer,
+                                    parameterIndex,
                                 );
                         }
                         return;
@@ -367,37 +371,52 @@ function collectMutatedContainerSymbols(
                     ) {
                         current.elements.forEach((element, i) => {
                             if (!ts.isOmittedExpression(element))
-                                visit(element, [...path, String(i)]);
+                                visit(
+                                    element,
+                                    [...path, String(i)],
+                                    consumer,
+                                    parameterIndex,
+                                );
                         });
                         return;
                     }
-                    forEachAnalysisNode(
-                        value,
-                        (part) => {
-                            // A copied scalar cannot carry its containing object's
-                            // identity. Nested calls still receive their own analysis.
-                            if (
-                                ts.isExpression(part) &&
-                                !typeCanCarryReference(
-                                    checker.getTypeAtLocation(part),
-                                )
+                    const collect = (part: ts.Node): "skip" | undefined => {
+                        // A copied scalar cannot carry its containing object's
+                        // identity. Nested calls still receive their own analysis.
+                        if (
+                            ts.isExpression(part) &&
+                            !typeCanCarryReference(
+                                checker.getTypeAtLocation(part),
                             )
-                                return "skip";
-                            if (
-                                ts.isIdentifier(part) ||
-                                ts.isPropertyAccessExpression(part) ||
-                                ts.isElementAccessExpression(part)
-                            ) {
-                                const symbol = moduleContainerSymbol(
-                                    part,
-                                    checker,
-                                    symbols,
-                                );
-                                if (symbol) argumentWrites.add(symbol);
-                            }
-                        },
-                        { functions: "skip" },
-                    );
+                        )
+                            return "skip";
+                        if (ts.isCallExpression(part)) {
+                            // The outer consumer receives this call's result, not
+                            // every reference used to compute it. Only inputs the
+                            // nested call can retain propagate to that result.
+                            part.arguments.forEach((argument, argumentIndex) =>
+                                visit(argument, [], part, argumentIndex),
+                            );
+                            forEachAnalysisNode(part.expression, collect, {
+                                functions: "skip",
+                            });
+                            return "skip";
+                        }
+                        if (
+                            ts.isIdentifier(part) ||
+                            ts.isPropertyAccessExpression(part) ||
+                            ts.isElementAccessExpression(part)
+                        ) {
+                            const symbol = moduleContainerSymbol(
+                                part,
+                                checker,
+                                symbols,
+                            );
+                            if (symbol) argumentWrites.add(symbol);
+                        }
+                        return undefined;
+                    };
+                    forEachAnalysisNode(value, collect, { functions: "skip" });
                 };
                 visit(argument, []);
             });
@@ -415,10 +434,10 @@ function collectMutatedContainerSymbols(
             if (target) record(target);
         }
     });
-    for (const symbol of argumentWrites) {
-        mutated.add(symbol);
+    for (const symbol of argumentWrites) mutated.add(symbol);
+    for (const symbol of mutated) {
         const origin = aliases.get(symbol);
-        if (origin) argumentWrites.add(origin);
+        if (origin) mutated.add(origin);
     }
     return mutated;
 }

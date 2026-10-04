@@ -21,6 +21,11 @@ import {
 } from "../option-helpers.js";
 import { pinnedAgentParamDefaults } from "../../lowering/navigation-lowerer.js";
 import { NAV_MESH_BUILD_PARAM_FIELDS } from "../../lowering/navigation-build-plan.js";
+import {
+    emitPresentOption,
+    emitScalarOption,
+    retainedOptions,
+} from "./retained-options.js";
 
 export interface NavigationIntrinsicContext
     extends
@@ -42,6 +47,11 @@ export interface NavigationIntrinsicContext
             | "emit"
             | "requireEngine"
             | "unwrap"
+            | "bindings"
+            | "dataLowerer"
+            | "dataTypes"
+            | "vec3FromRecord"
+            | "castNumber"
         > {}
 
 /**
@@ -69,22 +79,21 @@ const NAV_MESH_PARAM_NAMES = [
  */
 function emitOffMeshConnections(
     context: NavigationIntrinsicContext,
-    options: ts.ObjectLiteralExpression,
+    value: Value,
+    site: ts.Expression,
     parameters: string,
 ): void {
-    const value = context.objectProperty(options, "offMeshConnections");
-    if (!value) {
-        return;
-    }
-    for (const element of context.expectStaticArrayLiteral(value).elements) {
-        const connection = context.expectObjectLiteral(element);
-        const required = (name: string): ts.Expression => {
-            const found = context.objectProperty(connection, name);
+    const emitConnection = (connection: Value): void => {
+        const members = new Map(
+            retainedOptions(context, connection, site).map((member) => [
+                member.name,
+                member,
+            ]),
+        );
+        const required = (name: string): Value => {
+            const found = members.get(name)?.value;
             if (!found) {
-                context.fail(
-                    connection,
-                    `An off-mesh connection names ${name}.`,
-                );
+                context.fail(site, `An off-mesh connection names ${name}.`);
             }
             return found;
         };
@@ -99,7 +108,7 @@ function emitOffMeshConnections(
                 kind: "declaration",
                 type: "const bbl::Vec3",
                 name: temporary,
-                initializer: context.compileVec3(required(name)),
+                initializer: context.vec3FromRecord(required(name), site),
             });
             return (
                 `bbl::pal::NavVec3{${temporary}.x, ` +
@@ -109,24 +118,65 @@ function emitOffMeshConnections(
         const fields = [
             endpoint("startPosition"),
             endpoint("endPosition"),
-            context.compileNumber(required("radius"), "float"),
-            context.compileBoolean(required("bidirectional")),
+            context.castNumber(required("radius"), "float"),
+            context.dataLowerer.compileKnownValueForSink(
+                required("bidirectional"),
+                { kind: "boolean" },
+                site,
+            ),
         ];
-        for (const optional of ["area", "flags", "userId"]) {
-            const found = context.objectProperty(connection, optional);
-            fields.push(
-                found
-                    ? `std::optional<double>{${context.compileNumber(found, "double")}}`
-                    : "std::nullopt",
-            );
+        const packed = context.allocateTemporaryCppName("nav_connection");
+        context.emit({
+            kind: "declaration",
+            type: "bbl::pal::NavOffMeshConnection",
+            name: packed,
+            initializer: `bbl::pal::NavOffMeshConnection{${fields.join(", ")}, std::nullopt, std::nullopt, std::nullopt}`,
+        });
+        for (const [name, field] of [
+            ["area", "area"],
+            ["flags", "flags"],
+            ["userId", "user_id"],
+        ] as const) {
+            const member = members.get(name);
+            if (member && member.value?.kind !== "json-null")
+                emitPresentOption(context, member, (present) =>
+                    emitScalarOption(
+                        context,
+                        present,
+                        "number",
+                        `${packed}.${field}`,
+                        site,
+                    ),
+                );
         }
         context.emit({
             kind: "expression",
-            code:
-                `${parameters}.off_mesh_connections.push_back(` +
-                `bbl::pal::NavOffMeshConnection{${fields.join(", ")}});`,
+            code: `${parameters}.off_mesh_connections.push_back(${packed});`,
         });
+    };
+    if (value.kind === "tuple" && value.tupleElements) {
+        value.tupleElements.forEach(emitConnection);
+        return;
     }
+    const range = context.dataLowerer.iterationTarget(site, value);
+    const type = range?.container.dataType;
+    if (!range || (type?.kind !== "vector" && type?.kind !== "span"))
+        context.fail(
+            site,
+            "Off-mesh connections require a represented array of records.",
+        );
+    const owner = context.bindings.pinValueToTemporary(
+        range.container,
+        "nav_connections",
+        site,
+    );
+    const element = context.allocateTemporaryCppName("nav_connection_source");
+    context.emit({
+        kind: "open",
+        code: `for (const auto& ${element} : ${owner.cpp}) {`,
+    });
+    emitConnection(context.dataLowerer.leafValue(element, type.element));
+    context.emit({ kind: "close", code: "}" });
 }
 
 export function compileNavigationIntrinsic(
@@ -171,6 +221,13 @@ export function compileNavigationIntrinsic(
             const engine = context.requireEngine(meshes[0]!, call);
             const options = context.expectObjectLiteral(argumentAt(call, 2));
             validateNavMeshParams(context, options);
+            const values = new Map(
+                retainedOptions(
+                    context,
+                    context.compileValue(options),
+                    options,
+                ).map((member) => [member.name, member]),
+            );
             // Which arm this build takes is decided HERE and nowhere else:
             // the feature is what carries it to the emitted dispatch, to
             // the PAL half that gets compiled, and to the third-party
@@ -188,15 +245,28 @@ export function compileNavigationIntrinsic(
                 initialization: "default",
             });
             for (const [name, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
-                const value = context.objectProperty(options, name);
-                if (value) {
-                    context.emit({
-                        kind: "expression",
-                        code: `${parameters}.${field} = ${context.compileNumber(value, "double")};`,
-                    });
-                }
+                const value = values.get(name);
+                if (value)
+                    emitPresentOption(context, value, (present) =>
+                        emitScalarOption(
+                            context,
+                            present,
+                            "number",
+                            `${parameters}.${field}`,
+                            options,
+                        ),
+                    );
             }
-            emitOffMeshConnections(context, options, parameters);
+            const connections = values.get("offMeshConnections");
+            if (connections)
+                emitPresentOption(context, connections, (present) =>
+                    emitOffMeshConnections(
+                        context,
+                        present.value!,
+                        context.objectProperty(options, "offMeshConnections")!,
+                        parameters,
+                    ),
+                );
             return {
                 kind: "void",
                 cpp:
