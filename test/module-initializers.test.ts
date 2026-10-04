@@ -453,7 +453,7 @@ test("authored entry preserves destructured module bindings across rebinding", (
     runGeneratedProgram(tools, "module-destructured-entry", result.cpp);
 });
 
-test("initializer planning retains every alias origin across eager calls and recursive helpers", () => {
+test("initializer planning retains alias origins without executing dormant helpers", (t) => {
     const directory = mkdtempSync(join(tmpdir(), "bbl-module-plan-"));
     try {
         const files = {
@@ -485,16 +485,20 @@ test("initializer planning retains every alias origin across eager calls and rec
         };
         for (const [name, source] of Object.entries(files))
             writeFileSync(join(directory, name), source);
-        const { program, sourceFile, checker } = createCompilerProgram(
-            `
+        const source = `
             import "./register.js";
             import { values as first } from "./first.js";
             import { values as second } from "./second.js";
             import { values as unused } from "./unused.js";
             import { value } from "./scalar.js";
             const result = first[0] + second[0] + unused.length + value;
-        `,
-            join(directory, "entry.ts"),
+            if(result!==10||first.length!==1||second.length!==1||unused.length!==0)
+                throw new Error("initializer effects and dormant helper");
+        `;
+        const fileName = join(directory, "entry.ts");
+        const { program, sourceFile, checker } = createCompilerProgram(
+            source,
+            fileName,
         );
         const planned = planImportedModuleInitializers(
             program,
@@ -504,7 +508,14 @@ test("initializer planning retains every alias origin across eager calls and rec
         );
         assert.deepEqual(
             planned.map((file) => basename(file.fileName)),
-            ["first.ts", "second.ts", "register.ts"],
+            ["first.ts", "second.ts", "unused.ts", "register.ts"],
+        );
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) return t.skip("Native fixture compiler unavailable.");
+        runGeneratedProgram(
+            tools,
+            "module-alias-initializer-effects",
+            compileSource(source, { fileName }).cpp,
         );
     } finally {
         rmSync(directory, { recursive: true, force: true });
