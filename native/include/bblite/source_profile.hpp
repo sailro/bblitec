@@ -7,7 +7,8 @@
  * body. A scope adds its elapsed time to its function's per-frame record,
  * and its time minus the time of named scopes nested in it to the
  * function's self time, so the named functions partition the time they
- * cover. Records are per thread: each frame loop resets and reports its own.
+ * cover. Records are per thread: completed startup scopes are reported before
+ * the first frame resets them, then each frame resets and reports its own.
  * The same build counts the executable's heap allocations
  * (`pal_source_profile.cpp`) and times cycle collection at frame boundaries.
  */
@@ -89,6 +90,7 @@ class SourceScope;
 struct SourceThreadRecords {
     std::vector<SourceFunctionTotals> functions;
     SourceScope* active = nullptr;
+    bool frame_started = false;
 };
 
 [[nodiscard]] inline SourceThreadRecords& source_thread_records() {
@@ -122,7 +124,9 @@ struct SourceThreadRecords {
 class SourceScope {
 public:
     explicit SourceScope(std::size_t function) noexcept
-        : function_(function), parent_(source_thread_records().active), start_(ticks()) {
+        : function_(function), parent_(source_thread_records().active) {
+        static_cast<void>(tick_origin());
+        start_ = ticks();
         source_thread_records().active = this;
     }
     SourceScope(const SourceScope&) = delete;
@@ -144,23 +148,15 @@ public:
 private:
     std::size_t function_;
     SourceScope* parent_;
-    std::uint64_t start_;
+    std::uint64_t start_ = 0;
     std::uint64_t nested_ticks_ = 0;
 };
 
-/** Start this thread's frame: its named-function and allocation records restart at zero. */
-inline void begin_frame() {
-    static_cast<void>(tick_origin());
-    for (SourceFunctionTotals& totals : source_thread_records().functions)
-        totals = {};
-    allocation_totals = {};
-}
-
 /**
- * Print this thread's frame records: one `[cpu][source]` line per named
- * function the frame called, then the `[cpu][alloc]` line.
+ * Print completed scopes and allocations without counting the report itself.
+ * Startup has no frame number; ordinary frame tags retain their existing form.
  */
-inline void report_frame(long frame) {
+inline void report_records(long frame, bool startup) {
     // Read before printing: the report's own work must not count toward the frame.
     const AllocationTotals allocations = allocation_totals;
     const double ms_per_tick = milliseconds_per_tick();
@@ -173,22 +169,44 @@ inline void report_frame(long frame) {
             const SourceFunctionTotals& totals = records.functions[index];
             if (totals.calls == 0)
                 continue;
-            std::fprintf(
-                stderr,
-                "[cpu][source] frame=%ld function=%s calls=%llu self_ms=%.3f total_ms=%.3f\n",
-                frame, names[index].c_str(), static_cast<unsigned long long>(totals.calls),
-                static_cast<double>(totals.self_ticks) * ms_per_tick,
-                static_cast<double>(totals.total_ticks) * ms_per_tick);
+            if (startup)
+                std::fputs("[cpu][source-startup]", stderr);
+            else
+                std::fprintf(stderr, "[cpu][source] frame=%ld", frame);
+            std::fprintf(stderr, " function=%s calls=%llu self_ms=%.3f total_ms=%.3f\n",
+                         names[index].c_str(), static_cast<unsigned long long>(totals.calls),
+                         static_cast<double>(totals.self_ticks) * ms_per_tick,
+                         static_cast<double>(totals.total_ticks) * ms_per_tick);
         }
     }
+    if (startup)
+        std::fputs("[cpu][alloc-startup]", stderr);
+    else
+        std::fprintf(stderr, "[cpu][alloc] frame=%ld", frame);
     std::fprintf(stderr,
-                 "[cpu][alloc] frame=%ld allocations=%llu bytes=%llu frees=%llu "
+                 " allocations=%llu bytes=%llu frees=%llu "
                  "allocation_ms=%.3f collection_ms=%.3f\n",
-                 frame, static_cast<unsigned long long>(allocations.allocations),
+                 static_cast<unsigned long long>(allocations.allocations),
                  static_cast<unsigned long long>(allocations.bytes),
                  static_cast<unsigned long long>(allocations.frees),
                  static_cast<double>(allocations.allocation_ticks) * ms_per_tick,
                  static_cast<double>(allocations.collection_ticks) * ms_per_tick);
 }
+
+/** Start this thread's frame after preserving its completed pre-frame work once. */
+inline void begin_frame() {
+    static_cast<void>(tick_origin());
+    SourceThreadRecords& records = source_thread_records();
+    if (!records.frame_started) {
+        report_records(0, true);
+        records.frame_started = true;
+    }
+    for (SourceFunctionTotals& totals : records.functions)
+        totals = {};
+    allocation_totals = {};
+}
+
+/** Print this thread's current frame records. */
+inline void report_frame(long frame) { report_records(frame, false); }
 
 } // namespace bbl::profile

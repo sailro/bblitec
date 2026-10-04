@@ -4099,6 +4099,26 @@ export class ExpressionLowerer {
                             });
                         }),
                     );
+                const requiresNativeOwner =
+                    entryLines.length !== 0 || nativeCaptures.length !== 0;
+                if (
+                    requiresNativeOwner &&
+                    (ownerDataType?.kind === "map" ||
+                        ownerDataType?.kind === "enummap")
+                ) {
+                    // Factory results may already be native leaves. Their
+                    // captured owners cannot be hoisted, nor reconstructed
+                    // on every lookup of the original dictionary.
+                    const declaration = this.context.bindings.recordDeclaration(
+                        owner,
+                        unwrapped.expression,
+                    );
+                    if (declaration)
+                        throw new DynamicBindingStorageRequired(
+                            declaration,
+                            "source",
+                        );
+                }
                 for (const line of entryLines) this.context.emit(line);
                 this.context.reachJsData();
                 const keyCpp =
@@ -4108,8 +4128,7 @@ export class ExpressionLowerer {
                     owner,
                     mapType,
                     entries,
-                    entryLines.length === 0 &&
-                        nativeCaptures.length === 0 &&
+                    !requiresNativeOwner &&
                         (this.isModuleConstantRecord(unwrapped.expression) ||
                             Object.values(owner.recordProperties ?? {}).every(
                                 (value) => this.canHoistRecordValue(value),

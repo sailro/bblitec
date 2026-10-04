@@ -169,12 +169,15 @@ CPU physics output separates world phases from solver setup, contacts, split imp
 and finish. Solver values sum the participating islands' CPU times, so parallel phases overlap;
 contacts are included in setup and split impulses in iterations.
 
-`BBLITE_SOURCE_PROFILE=<name>,...` attributes a frame's CPU to scene source functions. It is read
+`BBLITE_SOURCE_PROFILE=<name>,...` attributes startup and frame CPU to scene source functions. It is read
 by `process` and `compile`, which pass it to bblitec as `--source-profile` and regenerate the scene
 with a timing scope in each named function: its own name, `Class.method` for a class member, or the
 variable or property an unnamed function is bound to. Generation fails naming every name that times no
 function: a misspelling, an async function or generator, or a function lowered inline at its calls
-(select its caller). With `BBLITE_CPU_PROFILE=1`, each
+(select its caller). Before its first frame, each thread reports completed startup scopes as
+`[cpu][source-startup]` and allocation counters as `[cpu][alloc-startup]`. Select coarse startup
+functions that return before the first frame; scopes spanning startup and rendering are not partitioned.
+With `BBLITE_CPU_PROFILE=1`, each
 `[cpu][frame]` line of a direct renderer is followed by
 `[cpu][source] frame= function= calls= self_ms= total_ms=` for every selected function that ran in
 that frame, and by `[cpu][alloc] frame= allocations= bytes= frees= allocation_ms= collection_ms=`:
