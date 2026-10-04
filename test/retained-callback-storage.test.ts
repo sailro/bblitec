@@ -115,6 +115,30 @@ check(
 );
 
 check(
+    "wrapped map arrays retain identity through clearing and alias mutation",
+    `
+    const original:number[]=[1,2];
+    const alias=original;
+    const entries=new Map<string,number[]>();
+    entries.set('present',original);
+    function retain(value:number[]|undefined):number[] {
+        entries.clear();
+        if(!value)throw new Error('array lookup lost before call');
+        value.push(3);
+        return value;
+    }
+    const saved=retain(entries.get('present'));
+    if(entries.size!==0 || saved!==original || saved!==alias || saved.length!==3)
+        throw new Error('array lookup ownership');
+    alias[0]=7;
+    if(saved[0]!==7)throw new Error('caller mutation');
+    saved[1]=9;
+    if(original[1]!==9)throw new Error('retained mutation');
+    if(entries.get('present')!==undefined)throw new Error('cleared lookup');
+`,
+);
+
+check(
     "mapper writes remain live in returned records",
     `
     function update<T extends {value?:number}>(values:readonly T[],next:number):{items:(T & {value:number})[];next:number} {
