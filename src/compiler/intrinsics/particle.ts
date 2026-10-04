@@ -94,8 +94,8 @@ const builders: Readonly<Record<string, NodeParticleBuilder>> = {
  * particle graph both ways too: a module exporting the document outright is
  * read as data (the fold, and a literal cannot drift), while a module that
  * BUILDS its document at load -- `structuredClone`, `Math.max` over ids,
- * arrays it pushes into -- is code this compiler does not lower, so the
- * driver imports and calls it.
+ * arrays it pushes into -- is evaluated by the driver through its exported
+ * document or the authored factory call.
  */
 function graphSource(
     context: ParticleIntrinsicContext,
@@ -107,7 +107,7 @@ function graphSource(
         "node-particle",
         // A module that BUILDS its document at load -- `structuredClone`,
         // `Math.max` over ids, arrays it pushes into -- is code this
-        // compiler does not lower, so the driver calls it.
+        // compiler does not lower, so the driver evaluates its module export.
         "factory",
     );
     if (document.kind === "literal") {
@@ -138,7 +138,7 @@ function graphSource(
         kind: "module",
         module: document.module,
         exportName: document.exportName,
-        args,
+        ...(document.call ? { args } : {}),
         ...(urlArguments.length > 0 ? { urlArguments } : {}),
     };
 }

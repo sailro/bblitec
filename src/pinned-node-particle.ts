@@ -74,8 +74,8 @@ export type NodeParticleGraphSource =
           kind: "module";
           module: string;
           exportName: string;
-          /** The factory's own arguments, as the static JSON they are. */
-          args: readonly unknown[];
+          /** Factory arguments; absent when the export itself is the document. */
+          args?: readonly unknown[];
           /**
            * Arguments that are URLs a sibling module function produced
            * from a canvas it drew (`createNpeSprite2DGraph(flareUrl)`).
@@ -440,13 +440,14 @@ interface NodeParticleBake {
 /** The pinned package path the served driver imports. */
 const pinnedPackage = pinnedBrowserEntryUrl;
 
-function graphExpression(
+export function nodeParticleGraphExpression(
     graph: NodeParticleGraphSource,
     setIndex: number,
 ): string {
     if (graph.kind === "literal") {
         return JSON.stringify(graph.graph);
     }
+    if (graph.args === undefined) return graph.exportName;
     const args = graph.args
         .map((value, index) => {
             const url = graph.urlArguments?.find(
@@ -636,7 +637,7 @@ function graphArgument(
     graph: NodeParticleGraphSource,
     setIndex: number,
 ): string {
-    const parsed = `parseNodeParticleSource(${graphExpression(graph, setIndex)})`;
+    const parsed = `parseNodeParticleSource(${nodeParticleGraphExpression(graph, setIndex)})`;
     return graph.normalized
         ? `await normalizeNodeParticleGraph(${parsed})`
         : parsed;

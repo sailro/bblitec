@@ -112,6 +112,60 @@ test("unresolved pinned calls and destructured writers retain conservative modul
     );
 });
 
+test("argument ownership excludes scalar projections but retains reference and nested call writes", (t) => {
+    const directory = resolve("artifacts/module-argument-projections");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "input.ts"), `export const input={value:3};`);
+    writeFileSync(
+        join(directory, "output.ts"),
+        `export const output={value:1};`,
+    );
+    writeFileSync(
+        join(directory, "effect.ts"),
+        `export const effect={value:4};`,
+    );
+    const source = `
+        import {input} from "./input.js";
+        import {output} from "./output.js";
+        import {effect} from "./effect.js";
+        const localInput={value:5};
+        function advance(target:{value:number}):number {return ++target.value;}
+        function write(options:{scalar:number; out:{value:number}}):void {
+            options.out.value=options.scalar;
+            options.scalar=99;
+        }
+        function main():void {
+            write({scalar:input.value+localInput.value+advance(effect),out:output});
+            if(input.value!==3||localInput.value!==5||effect.value!==5||output.value!==13)
+                throw new Error("argument ownership");
+        }
+        main();
+    `;
+    const fileName = join(directory, "entry.ts");
+    const { program, sourceFile, checker } = createCompilerProgram(
+        source,
+        fileName,
+    );
+    const symbols = new CompilerSymbols(checker);
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            symbols,
+        ).map((file) => basename(file.fileName)),
+        ["output.ts", "effect.ts"],
+    );
+    assert.deepEqual(
+        planEntryModuleState(program, sourceFile, checker, symbols),
+        [],
+    );
+    const result = compileSource(source, { fileName });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "module-argument-projections", result.cpp);
+});
+
 test("imported scratch records retain writes through call arguments and aliases", (t) => {
     const directory = resolve("artifacts/module-call-mutations");
     mkdirSync(directory, { recursive: true });

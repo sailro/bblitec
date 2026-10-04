@@ -317,6 +317,15 @@ function collectMutatedContainerSymbols(
                 forEachAnalysisNode(
                     argument,
                     (part) => {
+                        // A copied scalar cannot carry its containing object's
+                        // identity. Nested calls still receive their own analysis.
+                        if (
+                            ts.isExpression(part) &&
+                            !typeCanCarryReference(
+                                checker.getTypeAtLocation(part),
+                            )
+                        )
+                            return "skip";
                         if (
                             ts.isIdentifier(part) ||
                             ts.isPropertyAccessExpression(part) ||
