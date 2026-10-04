@@ -1,4 +1,8 @@
-import { cppFunction } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 import assert from "node:assert/strict";
 import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
 import { babylonPackages, isBabylonModule } from "../src/compiler/symbols.js";
@@ -6,6 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
     readUpstreamPin,
     UpstreamSourceStore,
@@ -1737,8 +1742,8 @@ test("guards emitted right-hand work in logical conditions", () => {
     );
 });
 
-test("rematerializes runtime record tables across guarded expression scopes", () => {
-    const result = compileSource(`
+test("retains callback record owners across guarded expression scopes", async (t) => {
+    const source = `
         import { createEngine } from "@babylonjs/lite";
         interface Handlers {
             go(): void;
@@ -1759,21 +1764,107 @@ test("rematerializes runtime record tables across guarded expression scopes", ()
         async function main() {
             await createEngine({});
             let started = false;
-            install({
-                go: () => { started = true; },
-                stop: () => { started = false; },
+            let calls = 0;
+            const handlers: Handlers = {
+                go: () => { started = true; calls++; },
+                stop: () => { started = false; calls++; },
+            };
+            install(handlers);
+            handlers.go = () => { throw new Error("replaced callback"); };
+            window.addEventListener("keyup", (event) => {
+                if (event.code !== (started ? "on:" : "off:") + calls)
+                    throw new Error("guarded callback state");
+                event.preventDefault();
             });
         }
-    `);
-
-    const used = [...result.cpp.matchAll(/v_bblite_record_table_\d+/g)].map(
-        (match) => match[0],
+    `;
+    interface TestEvent {
+        code: string;
+        preventDefault(): void;
+    }
+    const listeners = new Map<string, Array<(event: TestEvent) => void>>();
+    await runInNewContext(
+        transpileCommonJs(`${source}\nmain();`, "guarded-callback-table.ts"),
+        {
+            exports: {},
+            require(name: string) {
+                assert.equal(name, "@babylonjs/lite");
+                return { createEngine: async () => ({}) };
+            },
+            window: {
+                addEventListener(
+                    type: string,
+                    callback: (event: TestEvent) => void,
+                ) {
+                    const entries = listeners.get(type) ?? [];
+                    entries.push(callback);
+                    listeners.set(type, entries);
+                },
+            },
+        },
     );
-    const declared = [
-        ...result.cpp.matchAll(/Map<[^;]+> (v_bblite_record_table_\d+)\{/g),
-    ].map((match) => match[1]!);
-    assert.ok(used.length > 0);
-    assert.deepEqual([...new Set(used)].sort(), [...new Set(declared)].sort());
+    const steps = [
+        ["", "off:0"],
+        ["missing", "off:0"],
+        ["go", "on:1"],
+        ["missing", "on:1"],
+        ["stop", "off:2"],
+        ["go", "on:3"],
+        ["go", "on:4"],
+        ["stop", "off:5"],
+        ["", "off:5"],
+    ] as const;
+    assert.equal(listeners.get("keydown")?.length, 1);
+    assert.equal(listeners.get("keyup")?.length, 1);
+    for (const [action, expected] of steps) {
+        let prevented = false;
+        for (const callback of listeners.get("keydown")!)
+            callback({ code: action, preventDefault() {} });
+        for (const callback of listeners.get("keyup")!)
+            callback({
+                code: expected,
+                preventDefault() {
+                    prevented = true;
+                },
+            });
+        assert.equal(prevented, true);
+    }
+
+    const result = compileSource(source);
+    const nativeTools = optionalNativeFixtureTools();
+    if (!nativeTools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        nativeTools,
+        "guarded-callback-table",
+        `
+#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+namespace { std::shared_ptr<bbl::DomInput> registry_input; }
+namespace bbl {
+Engine create_engine(EngineOptions) {
+    Engine engine;
+    engine.dom_input = std::make_shared<DomInput>();
+    registry_input = engine.dom_input;
+    return engine;
+}
+}
+int main() {
+    assert(generated_main() == 0);
+    assert(registry_input);
+    const auto dispatch = [](const char* type, const char* code) {
+        auto event = bbl::dom_event(bbl::PlatformKeyboardEvent{.code=code}, type,
+            {bbl::DomEventTarget::window()});
+        registry_input->keyboard.dispatch(event);
+        return event.default_prevented;
+    };
+    ${steps.map(([action, expected]) => `dispatch("keydown", ${JSON.stringify(action)});\n    assert(dispatch("keyup", ${JSON.stringify(expected)}));`).join("\n    ")}
+    registry_input.reset();
+}
+`,
+        { timeoutMs: 10000, expectedOutput: "" },
+    );
 });
 
 test("self-referential struct callbacks capture the initialized binding", () => {
