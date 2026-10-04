@@ -3256,19 +3256,6 @@ test("materializes Object.keys from a compile-time record", () => {
     assert.match(result.cpp, /Array<std::string>\{"one", "two"\}/);
 });
 
-test("preserves optional fields in Partial object defaults", () => {
-    const result = compileSource(`
-        interface Child { x: number; }
-        interface Cell { value: number; label: string; child: Child; }
-        function make(options: Partial<Cell> = {}): number {
-            return options.value ?? 3;
-        }
-        const value = make();
-    `);
-
-    assert.match(result.cpp, /std::nullopt, std::nullopt, \{\}/);
-});
-
 test("defaults an absent nullable array element before nullish coalescing", () => {
     const result = compileSource(`
         import { createEngine, startEngine } from "babylon-lite";
@@ -5243,18 +5230,6 @@ test("keeps a generation-known optional const at its selected scalar", () => {
     assert.match(result.cpp, /std::string v_url = "\/albedo\.png";/);
     assert.doesNotMatch(result.cpp, /Nullable<std::string> v_url/);
     assert.match(result.cpp, /std::string v_key = "Albedo";/);
-});
-
-test("dereferences an optional scalar through an explicit type assertion", () => {
-    const result = compileSource(`
-        interface Draft { width?: number }
-        function widthOf(draft: Draft): number {
-            return draft.width as number;
-        }
-        const width = widthOf({ width: 12 });
-    `);
-
-    assert.match(result.cpp, /return \(\*v_fn\d+_draft\.width\);/);
 });
 
 test("compares a missing optional scalar as absent", () => {

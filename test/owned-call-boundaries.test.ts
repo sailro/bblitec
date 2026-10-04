@@ -61,6 +61,94 @@ namespace bbl::pal {
 }
 
 check(
+    "preserves optional fields in Partial object defaults",
+    `
+    interface Child { x: number; }
+    interface Cell { value: number; label: string; child: Child; }
+    function make(options: Partial<Cell> = {}): number {
+        return options.value ?? 3;
+    }
+    const value = make();
+    if(value !== 3) throw new Error('static default');
+    const calls:Array<(options?:Partial<Cell>)=>number>=[make];
+    const child:Child={x:2};
+    const inputs:Partial<Cell>[]=[{}, {value:0}, {value:7,label:'named',child}];
+    if(calls[0]!() !== 3 || calls[0]!(undefined) !== 3)
+        throw new Error('stored default');
+    const results:number[]=[];
+    for(const input of inputs) results.push(calls[0]!(input));
+    if(results.join(',') !== '3,0,7') throw new Error('optional value');
+    if(inputs[0]!.label !== undefined || inputs[0]!.child !== undefined ||
+       inputs[1]!.label !== undefined || inputs[1]!.child !== undefined)
+        throw new Error('absent optional fields');
+    child.x=9;
+    if(inputs[2]!.label !== 'named' || inputs[2]!.child !== child ||
+       inputs[2]!.child!.x !== 9)
+        throw new Error('present optional fields');
+`,
+);
+
+check(
+    "dereferences an optional scalar through an explicit type assertion",
+    `
+    interface Draft { width?: number }
+    function widthOf(draft: Draft): number {
+        return draft.width as number;
+    }
+    const width = widthOf({ width: 12 });
+    if(width !== 12) throw new Error('static asserted value');
+    const reads:Array<(draft:Draft)=>number>=[widthOf];
+    const drafts:Draft[]=[{width:4},{},{width:0}];
+    drafts[0]!.width=9;
+    const widths:number[]=[];
+    for(const draft of drafts) {
+        if(draft.width !== undefined) widths.push(reads[0]!(draft));
+    }
+    if(widths.join(',') !== '9,0' || drafts[1]!.width !== undefined)
+        throw new Error('represented asserted values');
+`,
+);
+
+check(
+    "retained readonly array initializers own their projected storage",
+    `
+    interface Child {value:number;}
+    interface Entry {name:string;child:Child;}
+    let calls=0;
+    function build(child:Child):{name:'left'|'right';child:Child}[] {
+        calls++;
+        return [{name:'left',child},{name:'right',child}];
+    }
+    function retain(child:Child):()=>string {
+        const entries:readonly Entry[]=build(child);
+        return ()=> {
+            if(entries[0]!.child !== child || entries[1]!.child !== child)
+                throw new Error('retained child identity');
+            return entries.map(entry=>entry.name+entry.child.value).join(',');
+        };
+    }
+    const child:Child={value:1};
+    const read=retain(child);
+    child.value=7;
+    if(calls !== 1 || read() !== 'left7,right7')
+        throw new Error('retained readonly order and lifetime');
+`,
+);
+
+test("retaining an existing borrowed readonly array still refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Item {value:number;}
+            const saved:Array<readonly Item[]>=[];
+            const stores:Array<(items:readonly Item[])=>void>=[items=>saved.push(items)];
+            stores[0]!([{value:1}]);
+        `),
+        /A borrowed array view cannot retain JavaScript array identity in owning storage/,
+    );
+});
+
+check(
     "dynamic-record-lookups-retain-the-declaration-owner",
     `
 interface Entry { value:number }

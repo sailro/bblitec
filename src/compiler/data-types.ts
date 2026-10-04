@@ -3039,16 +3039,16 @@ export class DataTypeRegistry {
         if (elements.length === 0) {
             return undefined;
         }
-        const mapped = elements.map((element) =>
-            this.fromStoredTsType(element, node),
-        );
-        if (mapped.some((element) => !element)) {
-            return undefined;
-        }
-        const complete = mapped as DataType[];
-        // A tuple of records is also an array whose callback element is the
-        // checker's object union. Keep that shared layout in its storage.
-        if (complete.every((element) => element.kind === "struct")) {
+        // The shared element layout can represent fields such as null in one
+        // arm even when that arm has no useful standalone record storage.
+        if (
+            elements.every(
+                (element) =>
+                    (this.resolveTypeParameter(element).flags &
+                        ts.TypeFlags.Object) !==
+                    0,
+            )
+        ) {
             const indexed = this.checker.getIndexTypeOfType(
                 reference,
                 ts.IndexKind.Number,
@@ -3060,6 +3060,13 @@ export class DataTypeRegistry {
                     element: this.markStoredObjectReferences(element),
                 };
         }
+        const mapped = elements.map((element) =>
+            this.fromStoredTsType(element, node),
+        );
+        if (mapped.some((element) => !element)) {
+            return undefined;
+        }
+        const complete = mapped as DataType[];
         return this.tupleStorage(complete);
     }
 

@@ -2318,6 +2318,9 @@ export class DeclarationLowerer {
                         declaration,
                         "Demanded binding no longer has a native storage representation.",
                     );
+                // Retained readonly arrays own their initializer just like
+                // returned arrays; a span would outlive a temporary projection.
+                type = this.context.dataTypes.ownReturnedArray(type);
                 this.context.reachJsData();
                 const literal = this.context.unwrap(declaration.initializer);
                 const arraySnapshot =
