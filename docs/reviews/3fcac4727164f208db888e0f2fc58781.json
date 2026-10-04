@@ -165,6 +165,10 @@
     {
       "summary": "Retain each native Error payload in its matching constructor branch, avoiding a redundant exception pointer store and reset.",
       "applied": true
+    },
+    {
+      "summary": "Derive implicit canvas initialization from shared host ownership without extra construction-order state.",
+      "applied": true
     }
   ]
 }
