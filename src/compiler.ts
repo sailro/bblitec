@@ -2409,6 +2409,15 @@ class Compiler implements LoweringServices {
         return this.ui.emitUiPropertyAssignment(expression);
     }
 
+    public emitUiDatasetProperty(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        this.ui.emitUiDatasetProperty(element, property, value, site);
+    }
+
     public emitWindowLogicalAssignment(
         expression: ts.BinaryExpression,
     ): boolean {

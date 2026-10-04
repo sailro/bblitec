@@ -2710,7 +2710,6 @@ export class PropertyAccessLowerer {
             };
         }
         if (owner.kind === "engine" && property === "drawCallCount") {
-            this.context.reachFeature("engine:device-recovery", expression);
             // A JavaScript number read of the native counter.
             return {
                 kind: "number",
@@ -2718,7 +2717,12 @@ export class PropertyAccessLowerer {
             };
         }
         if (owner.kind === "ui-element" && property === "dataset") {
-            return { ...owner, uiDataset: true };
+            const tag = this.context.ui.declaredUiTag(owner, ownerExpression);
+            return {
+                ...owner,
+                ...(tag === undefined ? {} : { uiTag: tag }),
+                uiDataset: true,
+            };
         }
         if (owner.kind === "ui-element" && property === "style") {
             return { ...owner, uiStyle: true };

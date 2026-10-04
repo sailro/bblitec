@@ -225,6 +225,7 @@ export interface ExpressionContext
             | "unwrap"
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
+            | "emitUiDatasetProperty"
             | "refuseBorrowedPlatformEventEscape"
             | "resolveRecordValue"
             | "expectKind"
@@ -843,9 +844,8 @@ export class ExpressionLowerer {
             if (canvasSize) {
                 return canvasSize;
             }
-            const data = this.context.dataLowerer.compileDataPath(
-                unwrapped,
-                "read",
+            const data = this.context.probeEmission(() =>
+                this.context.dataLowerer.compileDataPath(unwrapped, "read"),
             );
             const property =
                 data ??

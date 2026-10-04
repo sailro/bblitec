@@ -7,6 +7,7 @@ import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -34,6 +35,7 @@ type ObjectStaticContext = Pick<
     | "unwrap"
     | "libraryGlobal"
     | "fail"
+    | "emitUiDatasetProperty"
 >;
 
 type OwnObjectContext = Pick<
@@ -530,12 +532,15 @@ function compileObjectAssign(
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
     const target =
-        context.resolveRecordValue(targetExpression) ??
-        context.compileValue(targetExpression);
+        context.probeEmission(() =>
+            context.resolveRecordValue(targetExpression),
+        ) ?? context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
     const fresh = ts.isObjectLiteralExpression(targetExpression);
-    const readPairs = (source: ts.Expression): Array<[string, Value]> => {
-        const value = context.compileValue(source);
+    const readPairs = (
+        source: ts.Expression,
+        value = context.compileValue(source),
+    ): Array<[string, Value]> => {
         if (value.kind === "record") {
             if (
                 Object.keys(value.recordMethods ?? {}).length > 0 ||
@@ -568,6 +573,42 @@ function compileObjectAssign(
                 );
         return pairs;
     };
+    if (target.kind === "ui-element" && target.uiDataset) {
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "dataset_target",
+            targetExpression,
+        );
+        // Call arguments are evaluated before Object.assign starts writing.
+        // Pin their values, then read each source's fields in copy order.
+        const values = sources.map((source) => {
+            const value = context.compileValue(source);
+            if (value.kind === "record") {
+                readPairs(source, value);
+                // A later argument can mutate an earlier source. Retain that
+                // source's identity rather than snapshotting its scalar fields.
+                const declaration = context.bindings.recordDeclaration(
+                    value,
+                    source,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+            }
+            return context.bindings.pinValueToTemporary(
+                value,
+                "dataset_source",
+                source,
+            );
+        });
+        sources.forEach((source, index) => {
+            for (const [key, value] of readPairs(source, values[index]))
+                context.emitUiDatasetProperty(owner, key, value, source);
+        });
+        return owner;
+    }
     if (target.kind === "record") {
         if (target.moduleNamespace)
             context.fail(call, "Module namespace properties are read-only.");

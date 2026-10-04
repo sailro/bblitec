@@ -8580,20 +8580,18 @@ test("folds the browser canvas guard around a void-wrapped auto-run", () => {
     assert.match(result.cpp, /bbl::create_box/);
     assert.doesNotMatch(result.cpp, /document|getElementById/);
 
-    assert.throws(
-        () =>
-            compileSource(`
+    const missing = compileSource(`
                 if (document.getElementById("definitelyMissing")) {
                     console.log("unreachable");
                 }
-            `),
-        /Browser-dependent condition cannot be determined/,
-    );
+            `);
+    assert.match(missing.cpp, /ui_find_element_by_id[^\n]+"definitelyMissing"/);
+    assert.ok(missing.manifest.features.includes("platform:window"));
 
     assert.doesNotThrow(() => compileSource(`void 1;`));
 });
 
-test("erases optional DOM-local writes without dropping adjacent native state", () => {
+test("retains optional DOM-local writes beside adjacent native state", () => {
     const result = compileSource(`
         let enabled = false;
         const button = document.getElementById("toggle") as HTMLButtonElement | null;
@@ -8608,10 +8606,9 @@ test("erases optional DOM-local writes without dropping adjacent native state", 
     `);
 
     assert.match(result.cpp, /v_enabled = true;/);
-    assert.doesNotMatch(
-        result.cpp,
-        /button|textContent|setAttribute|aria-pressed/,
-    );
+    assert.match(result.cpp, /ui_set_attribute[^\n]+"aria-pressed"/);
+    assert.match(result.cpp, /ui_set_text/);
+    assert.match(result.cpp, /\.has_value\(\)/);
 });
 
 test("lowers a tag.class sheet selector beside its tag-descendant base rule", () => {
@@ -8690,7 +8687,7 @@ test("accepts a tag.class host companion rule", () => {
     );
 });
 
-test("erases event callbacks owned by an optional DOM local", () => {
+test("retains event callbacks owned by an optional DOM local", () => {
     const result = compileSource(`
         let enabled = true;
         const button = document.getElementById("toggle") as HTMLButtonElement | null;
@@ -8709,7 +8706,9 @@ test("erases event callbacks owned by an optional DOM local", () => {
         result.cpp,
         /auto v_enabled = bbl::js::make_gc_shared<bool>\(true\);/,
     );
-    assert.doesNotMatch(result.cpp, /button|addEventListener|textContent/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]+"click"/);
+    assert.match(result.cpp, /ui_set_text/);
+    assert.match(result.cpp, /\.has_value\(\)/);
 });
 
 test("narrows an assigned nullable retained-UI class field", () => {

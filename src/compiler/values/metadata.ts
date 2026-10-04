@@ -18,6 +18,7 @@ const resourceMetadataFields = {
     "ui-element": [
         "uiTag",
         "uiHostId",
+        "uiLookupId",
         "uiDataset",
         "uiStaticId",
         "uiRoot",

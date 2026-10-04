@@ -22,7 +22,14 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;
     WorkerRealm realm(loop);
+    std::exception_ptr failure;
+    loop.on_error([&](std::exception_ptr error) {
+        failure = error;
+        loop.close();
+    });
     loop.run([&] { initialize(realm); });
+    if (failure)
+        std::rethrow_exception(failure);
     return 0;
 }
 } // namespace bbl::pal
@@ -53,12 +60,18 @@ int run() {
         expect(emphasis->GetComputedValues().color() == Rml::Colourb(255, 0, 0, 255));
         auto* inactive = runtime.document->GetElementById("inactive");
         expect(inactive && inactive->HasAttribute("disabled"));
+        auto* interactive = runtime.document->GetElementById("interactive");
+        expect(interactive && interactive->GetAttribute<Rml::String>("aria-pressed", "") == "true");
         expect(inactive->GetParentNode() == metadata);
         auto* concealed = runtime.document->GetElementById("concealed");
         expect(concealed && concealed->GetDisplay() == Rml::Style::Display::None);
         auto* hint = runtime.document->GetElementById("hint");
         expect(hint && hint->GetAttribute<Rml::String>("draggable", "") == "false");
         expect(hint->GetAttribute<Rml::String>("fetchpriority", "") == "high");
+        auto* panel = runtime.document->GetElementById("metadata-root");
+        expect(panel && panel->GetAttribute<Rml::String>("data-count", "") == "12");
+        expect(panel->GetAttribute<Rml::String>("data-phase-name", "") == "ready");
+        expect(!panel->HasAttribute("data-after-failure"));
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

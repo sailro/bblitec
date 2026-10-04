@@ -107,13 +107,16 @@ test("an ID-selector query finds a host companion element as its id lookup does"
 });
 
 test("a selector that is not one ID selector does not name the primary canvas", () => {
-    for (const selector of ["canvas#app", "#app canvas", "#\\61pp"]) {
-        assert.throws(
-            () => compileFound(() => bySelector(selector)),
-            /Browser-dependent condition cannot be determined/,
-            selector,
-        );
+    for (const selector of ["canvas#app", "#app canvas"]) {
+        const result = compileFound(() => bySelector(selector));
+        assert.match(result.cpp, /ui_query_element/);
+        assert.doesNotMatch(result.cpp, /ui_primary_canvas/);
+        assert.ok(result.manifest.features.includes("platform:window"));
     }
+    assert.throws(
+        () => compileFound(() => bySelector("#\\61pp")),
+        /Retained DOM query selector .* is not lowered/,
+    );
 });
 
 test("another id is not the primary canvas once the program names its own", () => {
@@ -121,4 +124,6 @@ test("another id is not the primary canvas once the program names its own", () =
         fileName: "other-canvas.ts",
     });
     assert.doesNotMatch(result.cpp, /ui_primary_canvas/);
+    assert.match(result.cpp, /ui_find_element_by_id[^\n]+"renderCanvas"/);
+    assert.match(result.cpp, /ui_canvas_fill_rect/);
 });

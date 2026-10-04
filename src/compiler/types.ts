@@ -2020,6 +2020,8 @@ export interface ValueFields {
     uiTag?: string;
     /** Audited host lookup whose native storage is initialized after engine creation. */
     uiHostId?: string;
+    /** ID provenance of a nullable document lookup, without an existence proof. */
+    uiLookupId?: string;
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
     environmentAsset?: CompileAsset;

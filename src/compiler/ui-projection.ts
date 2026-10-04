@@ -98,6 +98,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol } from "./symbols.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import { argumentAt } from "./syntax.js";
+import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
@@ -202,6 +203,7 @@ interface UiProjectionContext extends Pick<
     | "compileValue"
     | "cppString"
     | "dataLowerer"
+    | "dataTypes"
     | "defaultEngine"
     | "deferredCapabilities"
     | "emit"
@@ -438,15 +440,30 @@ export class UiProjection {
                 element: Value<"ui-element">,
             ): Value<"ui-element"> => {
                 const uiTag =
-                    element.uiTag === undefined ? tracked.tag : undefined;
+                    element.uiTag === undefined
+                        ? (tracked.tag ??
+                          this.declaredUiTag(element, expression))
+                        : undefined;
                 const uiStaticId =
                     element.uiStaticId === undefined
                         ? tracked.staticId
                         : undefined;
-                return uiTag === undefined && uiStaticId === undefined
+                const lookupId = element.uiHostId ?? element.uiLookupId;
+                const canvas =
+                    lookupId !== undefined && !element.uiCanvas
+                        ? this.hostCanvas(
+                              lookupId,
+                              element.uiTag ?? uiTag,
+                              expression,
+                          )
+                        : {};
+                return uiTag === undefined &&
+                    uiStaticId === undefined &&
+                    !canvas.uiCanvas
                     ? element
                     : {
                           ...element,
+                          ...canvas,
                           ...(uiTag === undefined ? {} : { uiTag }),
                           ...(uiStaticId === undefined ? {} : { uiStaticId }),
                       };
@@ -4641,6 +4658,26 @@ export class UiProjection {
         return undefined;
     }
 
+    public emitUiDatasetProperty(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        if (property === "ready" && element.uiTag === "canvas")
+            this.windowCanvasReadyGate = true;
+        const name = `data-${property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+        this.context.reachJsData();
+        const text =
+            isStringValue(value) && !value.slotFoundCpp
+                ? value.cpp
+                : `bbl::js::concat(${stringConcatPart(this.context, value, site)})`;
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::ui_set_attribute(${this.context.requireEngine(element, site)}, ${element.cpp}, ${this.context.cppString(name)}, ${text});`,
+        });
+    }
+
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
         if (
@@ -4709,16 +4746,12 @@ export class UiProjection {
         ) {
             const element = this.compileUiElementReceiver(dataset.expression);
             if (element) {
-                if (
-                    property === "ready" &&
-                    this.context.isCanvasElement(dataset.expression)
-                )
-                    this.windowCanvasReadyGate = true;
-                const name = `data-${property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_attribute(${this.context.requireEngine(element, dataset)}, ${element.cpp}, ${this.context.cppString(name)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
-                });
+                this.emitUiDatasetProperty(
+                    element,
+                    property,
+                    this.context.compileValue(expression.right),
+                    expression.right,
+                );
                 return true;
             }
         }

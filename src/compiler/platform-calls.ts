@@ -1150,6 +1150,7 @@ export class PlatformCalls {
                         inner: { kind: "handle", handle: "ui-element" },
                     },
                     engineCpp: engine,
+                    ...(id === undefined ? {} : { uiLookupId: id }),
                 };
             return {
                 kind: "ui-element",
