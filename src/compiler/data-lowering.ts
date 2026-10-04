@@ -5133,11 +5133,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const scalarElements = ["number", "boolean", "string", "enum"].includes(
             element.kind,
         );
-        if (!scalarElements && bound) {
+        if (!scalarElements) {
             // Prove constant storage before requesting lexical replay. A
             // resource view can have a nominal data type without retaining
             // the native identity and metadata its specialized reads need.
             if (
+                bound &&
                 !bound.tupleElements!.every((entry) =>
                     this.knownValueFitsSink(entry, element, unwrapped, true),
                 )
@@ -5155,7 +5156,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 declaration.initializer
             )
                 throw new DynamicBindingStorageRequired(declaration, "array");
-            return this.materializeKnownTuple(unwrapped, bound);
+            if (bound) return this.materializeKnownTuple(unwrapped, bound);
         }
         const elements = this.context.probeEmission(
             () => {
@@ -5179,11 +5180,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     )
                 )
                     return undefined;
-                return entries.map((entry) =>
+                return entries.map((entry, index) =>
                     this.compileKnownValueForSink(
                         this.constantInitializerValue(entry),
                         element,
-                        unwrapped,
+                        literal?.elements[index] ?? unwrapped,
                     ),
                 );
             },

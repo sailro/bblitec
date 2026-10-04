@@ -2316,10 +2316,19 @@ export class DeclarationLowerer {
                         sharedClosureStorage ? `(*${cppName})` : cppName,
                         type,
                     ),
+                    ...(type.kind === "struct" &&
+                    ts.isObjectLiteralExpression(
+                        this.context.unwrap(declaration.initializer),
+                    ) &&
+                    !this.context.sharedClosures.identifierIsRebound(name)
+                        ? { optionalFoundCpp: "true" }
+                        : {}),
                     ...(sharedClosureStorage
                         ? { sharedStorageCpp: cppName }
                         : {}),
                 });
+                const symbol = this.context.symbols.valueSymbol(name);
+                if (symbol) this.context.staticConstants.delete(symbol);
                 return true;
             }
             return this.emitDynamicDataBinding(
@@ -2850,6 +2859,11 @@ export class DeclarationLowerer {
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
+            ...(annotated.kind === "struct"
+                ? nativeDataMetadata(
+                      this.context.dataLowerer.leafValue(boundCpp, annotated),
+                  )
+                : {}),
             ...(initializerSnapshot?.packagedBodySource
                 ? { packagedBodySource: initializerSnapshot.packagedBodySource }
                 : {}),
@@ -2880,7 +2894,8 @@ export class DeclarationLowerer {
                     }
                   : {}),
             // Shared storage does not change a selected object's presence.
-            ...(ts.isConditionalExpression(initializer) &&
+            ...((ts.isConditionalExpression(initializer) ||
+                ts.isObjectLiteralExpression(initializer)) &&
             settledPresence !== undefined &&
             !this.context.sharedClosures.identifierIsRebound(name)
                 ? { optionalFoundCpp: settledPresence }

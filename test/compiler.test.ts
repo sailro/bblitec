@@ -17306,7 +17306,11 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.match(result.cpp, /bbl::on_frame_graph_update/);
     assert.match(
         result.cpp,
-        /auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\(bbl::js::make_ref<bblscene::MorphStateData>/,
+        /auto v_from = bbl::js::make_gc_shared<bblscene::MorphState>\(bbl::js::array_at_or_default\(v_STATES, /,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bblscene::MorphState> v_STATES = /,
     );
 });
 

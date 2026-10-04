@@ -1534,6 +1534,7 @@ class Compiler implements LoweringServices {
             this.sourceFile,
             this.checker,
             this.symbols,
+            this.dynamicBindings.keys(),
         )) {
             if (!emitted.has(statement)) this.emitStatement(statement);
         }
@@ -1643,6 +1644,7 @@ class Compiler implements LoweringServices {
                     this.sourceFile,
                     this.checker,
                     this.symbols,
+                    this.dynamicBindings.keys(),
                 ),
             );
             // Immutable literals retain the static evaluator's source shape;

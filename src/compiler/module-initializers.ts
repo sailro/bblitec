@@ -403,8 +403,8 @@ export function planImportedModuleState(
 }
 
 /**
- * The entry module's own mutable state: its top-level `let`/`var`
- * declarations that the file rebinds.
+ * The entry module's shared state, including containers whose reached uses
+ * request retained identity through storage replay.
  *
  * An implicit main body needs storage for names its functions share.
  * Authored module entries emit their own declarations and skip this plan's
@@ -415,13 +415,14 @@ export function planEntryModuleState(
     sourceFile: ts.SourceFile,
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
+    retainedDeclarations: Iterable<ts.VariableDeclaration> = [],
 ): readonly ts.Statement[] {
     return new ModuleInitializerPlanner(
         program,
         sourceFile,
         checker,
         symbols,
-    ).planEntryState();
+    ).planEntryState(retainedDeclarations);
 }
 
 class ModuleInitializerPlanner {
@@ -526,7 +527,7 @@ class ModuleInitializerPlanner {
     }
 
     /**
-     * Entry-file top-level `let`/`var` statements the file rebinds.
+     * Entry-file declarations requiring shared native storage.
      *
      * Not `moduleHasObservableInitializer`, which asks a different question
      * for a different file: there the subject is an IMPORTED module and the
@@ -536,13 +537,13 @@ class ModuleInitializerPlanner {
      * being emitted, and one write anywhere in the file is enough to make the
      * name storage rather than a folded constant.
      *
-     * Rebinding is the whole rule. A write THROUGH the name -- a property
-     * assignment or a mutating method on an object it holds -- leaves the
-     * binding pointing at the same object, so the declaration's own
-     * initializer still describes it and the data lowerer keeps owning that
-     * representation.
+     * Container representation belongs to the data lowerer; its explicit
+     * storage demands retain the original declaration here too.
      */
-    public planEntryState(): readonly ts.Statement[] {
+    public planEntryState(
+        retainedDeclarations: Iterable<ts.VariableDeclaration>,
+    ): readonly ts.Statement[] {
+        const retained = new Set(retainedDeclarations);
         // `true`: at module scope an incremented name is storage too.
         const rebound = collectReboundSymbols(
             this.sourceFile,
@@ -572,6 +573,7 @@ class ModuleInitializerPlanner {
                 (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
             const selected = statement.declarationList.declarations.some(
                 (declaration) => {
+                    if (retained.has(declaration)) return true;
                     if (!ts.isIdentifier(declaration.name)) return false;
                     const symbol = this.symbols.valueSymbol(declaration.name);
                     if (symbol === undefined) return false;
