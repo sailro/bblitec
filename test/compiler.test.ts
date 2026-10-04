@@ -16702,7 +16702,7 @@ test("reaches a shader material's samplers and defines", () => {
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
 });
 
-test("binds a numeric shader source factory parameter at its reached call", () => {
+test("binds a numeric shader source factory default at its reached call", () => {
     const result = compileSource(`
         import { createEngine, createShaderMaterial } from "babylon-lite";
 
@@ -16746,9 +16746,10 @@ test("binds a numeric shader source factory parameter at its reached call", () =
     ]);
     assert.match(
         result.cpp,
-        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(v_fn\d+_depthBias\)\);/,
+        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(0\.0\)\);/,
     );
-    assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(0\.0\)/);
+    // An omitted argument runs the default inside the shared helper.
+    assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(\)/);
 });
 
 test("reads the pin's wgsl tag as the identity over a shader source", () => {
