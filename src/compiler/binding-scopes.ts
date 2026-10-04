@@ -1089,14 +1089,17 @@ export class BindingScopes {
         this.context.useNativeValue(value);
         // A parameter the function never rebinds keeps its argument as the
         // binding; a private name is never a parameter.
+        const parameterDeclaration =
+            parameter && ts.isIdentifier(identifier)
+                ? ts.findAncestor(identifier, ts.isParameter)
+                : undefined;
         const readOnlyParameter =
-            parameter &&
+            parameterDeclaration !== undefined &&
             ts.isIdentifier(identifier) &&
-            ts.isParameter(identifier.parent) &&
-            isSupportedFunction(identifier.parent.parent) &&
+            isSupportedFunction(parameterDeclaration.parent) &&
             parameterIsReadOnly(
                 this.context.checker,
-                identifier.parent.parent,
+                parameterDeclaration.parent,
                 identifier,
             );
         if (
@@ -1105,11 +1108,11 @@ export class BindingScopes {
             value.kind === "record" &&
             !this.containsPlatformEvent(value) &&
             ts.isIdentifier(identifier) &&
-            ts.isParameter(identifier.parent) &&
-            isSupportedFunction(identifier.parent.parent) &&
+            parameterDeclaration !== undefined &&
+            isSupportedFunction(parameterDeclaration.parent) &&
             parameterIsMutated(
                 this.context.checker,
-                identifier.parent.parent,
+                parameterDeclaration.parent,
                 identifier,
             )
         )
@@ -1858,7 +1861,11 @@ export class BindingScopes {
         }
         if (field && value.kind === "json-null" && present !== type) {
             const mapped = this.context.dataTypes.fromStoredTsType(type, node);
-            if (mapped?.kind === "optional") {
+            if (
+                mapped?.kind === "optional" ||
+                (mapped?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(mapped.name))
+            ) {
                 return this.materializeRecordFieldCell(
                     value,
                     mapped,
