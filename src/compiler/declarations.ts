@@ -1021,11 +1021,22 @@ export class DeclarationLowerer {
             );
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
+            const accessors = [
+                ...Object.values(value.recordGetters ?? {}),
+                ...Object.values(value.recordSetters ?? {}),
+            ];
+            const accessorWrites = accessors.length
+                ? this.context.evaluationOrder.bodyAccess(accessors).writes
+                : undefined;
             if (
                 value.kind === "record" &&
                 !aliasesRecord &&
-                this.inferredObjectIsMutated(declaration.name)
+                (accessorWrites?.heap ||
+                    accessorWrites?.any ||
+                    this.inferredObjectIsMutated(declaration.name))
             ) {
+                // Accessor bodies can mutate their receiver even when a caller
+                // only consumes a scalar result through a structural view.
                 value = this.context.bindings.materializeRecordScalars(
                     value,
                     `${sourceName}_fields`,

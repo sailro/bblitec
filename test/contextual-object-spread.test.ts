@@ -141,7 +141,8 @@ test("raw record additions retain the runtime-control-flow refusal", () => {
         function add(value:number|null):void {
             if(value!==null)extra.value=value;
         }
-        add(7);
+        const callbacks:Array<(value:number|null)=>void>=[add];
+        callbacks[0]!(7);
     `),
         /A compile-time record cannot be populated from runtime control flow/,
     );

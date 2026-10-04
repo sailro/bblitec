@@ -8719,12 +8719,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.fail(
                         target.argumentExpression,
                         "Deleting a compile-time record property requires a static key.",
+                        "static-value-required",
                     );
                 }
                 if (this.context.isInRuntimeControlFlow()) {
                     this.context.fail(
                         expression,
                         "A compile-time record cannot be edited from runtime control flow.",
+                        "static-value-required",
                     );
                 }
                 deleteRecordProperty(recordOwner, key.staticString);
@@ -8764,6 +8766,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.fail(
                         expression,
                         "A compile-time record cannot be edited from runtime control flow.",
+                        "static-value-required",
                     );
                 }
                 deleteRecordProperty(recordOwner, target.name.text);
@@ -9743,12 +9746,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.fail(
                         left.argumentExpression,
                         "A compile-time record assignment requires a static string key.",
+                        "static-value-required",
                     );
                 }
                 if (this.context.isInRuntimeControlFlow()) {
                     this.context.fail(
                         expression,
                         "A compile-time record cannot be populated from runtime control flow.",
+                        "static-value-required",
                     );
                 }
                 const assigned = this.context.compileValue(expression.right);

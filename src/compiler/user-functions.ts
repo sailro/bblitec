@@ -510,6 +510,19 @@ const parameterMutationCache = new EmissionWeakMap<
     WeakMap<ts.Symbol, boolean>
 >();
 
+/** Scalar results copy their value rather than retaining a referenced owner. */
+function containsReferenceTo(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+    names: (node: ts.Node) => boolean,
+): boolean {
+    return someAnalysisNode(node, names, {
+        skip: (candidate) =>
+            ts.isExpression(candidate) &&
+            !typeCanCarryReference(checker.getTypeAtLocation(candidate)),
+    });
+}
+
 /** Whether a supported function actually writes through one parameter. */
 export function parameterIsMutated(
     checker: ts.TypeChecker,
@@ -535,9 +548,17 @@ export function parameterIsMutated(
         {
             aliasingInitializer: (initializer, scan) => {
                 const root = rootIdentifier(unwrapExpression(initializer));
-                return root !== undefined && scan.namesAlias(root);
+                return (
+                    root !== undefined &&
+                    scan.namesAlias(root) &&
+                    typeCanCarryReference(
+                        checker.getTypeAtLocation(initializer),
+                    )
+                );
             },
             mutates: (node, scan) => {
+                const containsReference = (expression: ts.Node): boolean =>
+                    containsReferenceTo(checker, expression, scan.namesAlias);
                 const rootNamesAlias = (expression: ts.Expression): boolean => {
                     const root = rootIdentifier(unwrapExpression(expression));
                     return root !== undefined && scan.namesAlias(root);
@@ -555,13 +576,13 @@ export function parameterIsMutated(
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                     (ts.isPropertyAccessExpression(node.left) ||
                         ts.isElementAccessExpression(node.left)) &&
-                    scan.containsAlias(node.right)
+                    containsReference(node.right)
                 ) {
                     return true;
                 }
                 if (
                     (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
-                    node.arguments?.some(scan.containsAlias) &&
+                    node.arguments?.some(containsReference) &&
                     isStoringDataCall(node, checker)
                 )
                     return true;
@@ -570,11 +591,11 @@ export function parameterIsMutated(
                 if (!isSupportedFunction(called) || !called.body)
                     return node.arguments.some(
                         (argument, index) =>
-                            scan.containsAlias(argument) &&
+                            containsReference(argument) &&
                             engineCallMutatesArgument(checker, node, index),
                     );
                 for (const [index, argument] of node.arguments.entries()) {
-                    if (!scan.containsAlias(argument)) continue;
+                    if (!containsReference(argument)) continue;
                     const nested = called.parameters[index]?.name;
                     if (
                         nested !== undefined &&
@@ -666,11 +687,7 @@ export function parameterIsReadOnly(
         return root !== undefined && namesParameter(root);
     };
     const containsAliasingParameter = (node: ts.Node): boolean =>
-        someAnalysisNode(node, namesParameter, {
-            skip: (candidate) =>
-                ts.isExpression(candidate) &&
-                !typeCanCarryReference(checker.getTypeAtLocation(candidate)),
-        });
+        containsReferenceTo(checker, node, namesParameter);
     const parameterCanAlias = typeCanCarryReference(
         checker.getTypeAtLocation(parameter),
     );

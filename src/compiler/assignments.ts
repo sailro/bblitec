@@ -1436,6 +1436,7 @@ export function emitPropertyAssignment(
                     context.fail(
                         expression,
                         "A compile-time record cannot be populated from runtime control flow.",
+                        "static-value-required",
                     );
                 setRecordProperty(
                     owner,
