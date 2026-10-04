@@ -81,15 +81,15 @@ public:
 class Error {
 public:
     Error() = default;
-    Error(std::exception_ptr value) : value_(value) {
+    Error(std::exception_ptr value) {
         if (!value)
             return;
         try {
             std::rethrow_exception(value);
         } catch (const ObjectError& error) {
             object_ = error.object;
-            value_ = {};
         } catch (...) {
+            value_ = value;
         }
     }
     explicit Error(std::shared_ptr<ErrorObject> value) : object_(std::move(value)) {}
