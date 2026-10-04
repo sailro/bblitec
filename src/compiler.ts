@@ -2477,19 +2477,7 @@ class Compiler implements LoweringServices {
         }
         if (retained.size && !this.nativeStoredValues.has(value))
             writable(value).nativeCaptures = [...retained];
-        if (this.options.workers && value.engineCpp) {
-            if (value.kind === "engine" && value.ownedEngineCpp) {
-                const owner = this.nativeBindings.get(value.ownedEngineCpp);
-                if (owner)
-                    this.realmEngineCaptures.set(value.engineCpp, [owner]);
-            }
-            const owners = this.realmEngineCaptures.get(value.engineCpp);
-            if (owners)
-                writable(value).nativeCompanionCaptures = {
-                    ...value.nativeCompanionCaptures,
-                    engineCpp: owners,
-                };
-        }
+        this.describeEngineCaptures(value);
         this.useNativeValue(value);
         // A generation-known list of strings travels on the value, exactly
         // as one string travels on `staticString`. It has to: an inlined
@@ -5805,7 +5793,22 @@ class Compiler implements LoweringServices {
         return lines;
     }
 
+    private describeEngineCaptures(value: Value): void {
+        if (!this.options.workers || !value.engineCpp) return;
+        if (value.kind === "engine" && value.ownedEngineCpp) {
+            const owner = this.nativeBindings.get(value.ownedEngineCpp);
+            if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
+        }
+        const owners = this.realmEngineCaptures.get(value.engineCpp);
+        if (owners)
+            writable(value).nativeCompanionCaptures = {
+                ...value.nativeCompanionCaptures,
+                engineCpp: owners,
+            };
+    }
+
     public describeNativeValue(value: Value): void {
+        this.describeEngineCaptures(value);
         this.nativeStoredValues.add(value);
         const counter = integerCounterOf(value);
         const storage =
