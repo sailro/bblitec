@@ -498,31 +498,23 @@ export class CompilerSymbols {
         return resolved;
     }
 
-    /**
-     * The file a named import's declaration lives in. Used where a value's
-     * *module* is the thing that matters rather than its name — a drawn
-     * sprite atlas is materialized by running the module that draws it.
-     */
-    public declarationSourcePath(
+    /** A value's defining module and an export of that same resolved symbol. */
+    public moduleExportReference(
         identifier: ts.Identifier,
-    ): string | undefined {
-        const declaration = this.valueSymbol(identifier)?.declarations?.[0];
-        return declaration?.getSourceFile().fileName;
-    }
-
-    /** Whether generation can reach this value through a module import. */
-    public isModuleExport(identifier: ts.Identifier): boolean {
+    ): { modulePath: string; exportName: string } | undefined {
         const value = this.valueSymbol(identifier);
         const declaration = value?.declarations?.[0];
-        if (!value || !declaration) return false;
-        const sourceSymbol = declaredSymbol(
-            this.checker,
-            declaration.getSourceFile(),
-        );
+        if (!value || !declaration) return undefined;
+        const source = declaration.getSourceFile();
+        const sourceSymbol = declaredSymbol(this.checker, source);
         for (const exported of sourceSymbol?.exports?.values() ?? []) {
-            if (aliasTarget(this.checker, exported) === value) return true;
+            if (aliasTarget(this.checker, exported) === value)
+                return {
+                    modulePath: source.fileName,
+                    exportName: exported.name,
+                };
         }
-        return false;
+        return undefined;
     }
 
     /**

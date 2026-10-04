@@ -15549,6 +15549,8 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
 
     assert.deepEqual(result.manifest.features, [
         "core",
+        "platform:workers",
+        "platform:window",
         "backend:sdl",
         "camera:arc-rotate",
         "camera:default",
@@ -15559,20 +15561,26 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
         "light:hemispheric",
         "loader:gltf",
         "renderer:scene",
+        "ui:rml",
     ]);
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
+        "src/pal_window_realm.cpp",
+        "src/pal_media_query.cpp",
         "src/pal_sdl.cpp",
         "src/pal_image.cpp",
         "src/pal_sdl_gpu.cpp",
+        "src/pal_ui_rml.cpp",
     ]);
     assert.deepEqual(
         result.manifest.adaptations.map(({ id }) => id),
         [
-            "entry-main-wrapper-erasure",
-            "browser-setup-erasure",
+            "native-dedicated-worker-realms",
+            "native-window-canvas-host",
             "synchronous-aot-await",
+            "plain-data-value-model",
             "compile-time-asset-materialization",
+            "substituted-ui-runtime",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
             "shared-material-vertex-transport",
@@ -15605,11 +15613,17 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
             },
         ],
     );
-    assert.match(result.cpp, /bbl::load_gltf/);
+    assert.match(result.cpp, /co_await bbl::pal::load_realm_gltf\(/);
     assert.match(result.cpp, /bbl::load_environment/);
     assert.match(result.cpp, /bbl::create_default_camera/);
     assertCameraScalarWrite(result.cpp, "alpha", /1\.77538/);
     assert.doesNotMatch(result.cpp, /Object::assign|drawCallCount/);
+    assert.match(result.cpp, /\.draw_call_count/);
+    for (const attribute of ["data-draw-calls", "data-init-ms", "data-ready"])
+        assert.match(
+            result.cpp,
+            new RegExp(`bbl::ui_set_attribute\\([^\\n]+"${attribute}"`),
+        );
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
@@ -17462,14 +17476,23 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
         "alpha",
         /\(\w+ \+ 3\.141592653589793\)/,
     );
-    assert.match(
-        result.cpp,
-        /\[\[maybe_unused\]\] double v_x = bbl::handle_at\(v_engine\.cameras, v_cam\)\.target\.x;/,
-    );
-    assert.match(
-        result.cpp,
-        /\[\[maybe_unused\]\] double v_z = bbl::handle_at\(v_engine\.cameras, v_cam\)\.target\.z;/,
-    );
+    const components = ["x", "y", "z"].map((component) => {
+        const read = result.cpp.match(
+            new RegExp(
+                `\\[\\[maybe_unused\\]\\] double (\\w+) = bbl::handle_at\\(([^;]+)\\)\\.target\\.${component};`,
+            ),
+        );
+        assert.ok(read, `missing camera target ${component} snapshot`);
+        return read;
+    });
+    assert.equal(components[0]![2], components[1]![2]);
+    assert.equal(components[1]![2], components[2]![2]);
+    const targetWrite = result.cpp
+        .split("\n")
+        .find((line) => line.includes('"data-cam-target"'));
+    assert.ok(targetWrite);
+    for (const read of components)
+        assert.ok(targetWrite.includes(`bbl::js::NumberPart(${read[1]})`));
 });
 
 test("reads FreeCamera position components", () => {

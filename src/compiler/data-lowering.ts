@@ -7935,7 +7935,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "map" },
     ): string {
-        if (literal.properties.some(ts.isSpreadAssignment)) {
+        if (
+            literal.properties.some(
+                (property) =>
+                    ts.isSpreadAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property) ||
+                    (property.name && ts.isComputedPropertyName(property.name)),
+            )
+        ) {
             const result =
                 this.context.allocateTemporaryCppName("record_spread");
             this.context.reachJsData();
