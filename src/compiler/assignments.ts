@@ -501,6 +501,7 @@ export interface AssignmentContext
             | "isInRuntimeControlFlow"
             | "checker"
             | "classLowerer"
+            | "classOf"
             | "dataTypes"
             | "dataLowerer"
             | "sceneManifest"
@@ -1428,6 +1429,7 @@ export function emitPropertyAssignment(
             if (
                 owner.kind === "record" &&
                 !owner.dataType &&
+                !context.classOf(owner) &&
                 !existing &&
                 !existingMethod &&
                 !owner.recordGetters?.[left.name.text]
