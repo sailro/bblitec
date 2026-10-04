@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { CompileError } from "../src/compiler/compile-error.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     createRecordingDevice,
@@ -125,6 +126,43 @@ test("local probes pack proven stable owned tuple metadata and refuse later alia
         () => compileSource(localProbeSource("const alias=point;alias[0]=2;")),
         /retained generation descriptor requires stable/,
     );
+});
+
+test("opaque retained results support their native consumers without exposing source geometry", () => {
+    const source = (after = "") => `${cubemapImports}
+import {createPbrMaterial,setPbrLocalEnvironmentProbeSet,setPbrLocalEnvironmentProbeDebug} from '@babylonjs/lite';
+const point:[number,number,number]=[1,0,0];
+function assign(material:ReturnType<typeof createPbrMaterial>,set:ReturnType<typeof createPbrLocalEnvironmentProbeSet>) {
+    setPbrLocalEnvironmentProbeSet(material,set);
+}
+async function main(){${setup}await enablePbrLocalCubemap({maxCandidates:2});
+const environment=await loadEnvironment(scene,${JSON.stringify(environmentFile)});
+const set=createPbrLocalEnvironmentProbeSet(scene,${probeOptions});
+const alias=set;
+setPbrLocalEnvironmentProbeDebug(alias,true);
+const material=createPbrMaterial({});assign(material,alias);${after}}void main();`;
+    const result = compileSource(source());
+    assert.equal(
+        result.manifest.scenePbrMaterials?.[0]?.localCubemapCandidates,
+        2,
+    );
+    for (const mutation of [
+        "point[0]=2;",
+        "const box={set,point};box.point[0]=2;",
+        "const points=point;function later(){points[0]=2;}later();",
+    ])
+        assert.throws(
+            () => compileSource(source(mutation)),
+            /retained generation descriptor requires stable/,
+        );
+    for (const access of [
+        "const geometry=alias.probes[0]!.projectionPosition;void geometry;",
+        "const view=alias as unknown as {probes:{projectionPosition:number[]}[]};view.probes[0]!.projectionPosition[0]=2;",
+    ])
+        assert.throws(
+            () => compileSource(source(access)),
+            (error: unknown) => error instanceof CompileError,
+        );
 });
 
 test("pinned recovery re-reads retained probe geometry while stable owners keep their values", async () => {

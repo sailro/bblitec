@@ -260,6 +260,7 @@ export function compileLocalCubemapIntrinsic(
                 (value) =>
                     value.kind === "environment-textures" &&
                     value.environmentAsset !== undefined,
+                "opaque",
             );
         const value = optionsJson(context, input, optionArgument, environments);
         if (!value || typeof value !== "object" || Array.isArray(value))

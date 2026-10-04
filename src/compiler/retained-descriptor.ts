@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { accessedPropertySymbol } from "./symbols.js";
@@ -11,6 +12,7 @@ import {
 import { typeCanCarryReference } from "./type-facts.js";
 import type { Value } from "./types.js";
 import {
+    type AliasedMutationScan,
     aliasedMutationScan,
     writesThroughTrackedRoot,
 } from "./user-functions.js";
@@ -20,7 +22,10 @@ type DescriptorContext = Pick<LoweringServices, "checker" | "symbols" | "fail">;
 // Source-only proof, separated by the exact call allowed to retain the owner.
 const stabilityByConsumer = new WeakMap<
     ts.TypeChecker,
-    WeakMap<ts.CallExpression, WeakMap<ts.Symbol, boolean>>
+    WeakMap<
+        ts.CallExpression,
+        WeakMap<ts.Symbol, Partial<Record<"aliased" | "opaque", boolean>>>
+    >
 >();
 
 /** Read evaluated descriptor metadata; never reconstruct an initializer's values. */
@@ -62,6 +67,7 @@ export function requireStableRetainedDescriptor(
     expression: ts.Expression,
     consumer: ts.CallExpression,
     opaque: (value: Value) => boolean = () => false,
+    result: "aliased" | "opaque" = "aliased",
 ): void {
     const { checker, symbols } = context;
     const active = new Set<ts.Symbol>();
@@ -84,15 +90,26 @@ export function requireStableRetainedDescriptor(
     }
     const references = (node: ts.Expression): boolean =>
         typeCanCarryReference(checker.getTypeAtLocation(node));
+    // Opaque native results cannot expose descriptor storage. Their supported
+    // consumers own that boundary; property reads or structural erasure refuse.
+    const containsAlias = (
+        node: ts.Node,
+        scan: AliasedMutationScan,
+    ): boolean =>
+        result === "opaque"
+            ? someAnalysisNode(node, scan.namesAlias, {
+                  skip: (candidate) => candidate === consumer,
+              })
+            : scan.containsAlias(node);
     const stable = (identifier: ts.Identifier, symbol: ts.Symbol): boolean => {
-        const previous = stability.get(symbol);
+        const previous = stability.get(symbol)?.[result];
         if (previous !== undefined) return previous;
-        const result = !aliasedMutationScan(
+        const stableResult = !aliasedMutationScan(
             identifier,
             (name) => symbols.valueSymbol(name),
             {
                 aliasingInitializer: (initializer, scan) =>
-                    references(initializer) && scan.containsAlias(initializer),
+                    references(initializer) && containsAlias(initializer, scan),
                 mutates: (node, scan) => {
                     if (node === consumer) return false;
                     const namesRoot = (expression: ts.Expression): boolean => {
@@ -104,13 +121,13 @@ export function requireStableRetainedDescriptor(
                     if (
                         (ts.isExportDeclaration(node) ||
                             ts.isExportAssignment(node)) &&
-                        scan.containsAlias(node)
+                        containsAlias(node, scan)
                     )
                         return true;
                     if (
                         ts.isForOfStatement(node) &&
                         references(node.expression) &&
-                        scan.containsAlias(node.expression)
+                        containsAlias(node.expression, scan)
                     )
                         return true;
                     if (
@@ -128,7 +145,7 @@ export function requireStableRetainedDescriptor(
                         ts.isVariableDeclaration(node) &&
                         node.initializer &&
                         references(node.initializer) &&
-                        scan.containsAlias(node.initializer) &&
+                        containsAlias(node.initializer, scan) &&
                         (!ts.isIdentifier(node.name) ||
                             (ts.getCombinedModifierFlags(node) &
                                 ts.ModifierFlags.Export) !==
@@ -138,7 +155,7 @@ export function requireStableRetainedDescriptor(
                     if (
                         isAssignmentExpression(node) &&
                         references(node.right) &&
-                        scan.containsAlias(node.right) &&
+                        containsAlias(node.right, scan) &&
                         !ts.isIdentifier(node.left)
                     )
                         return true;
@@ -147,14 +164,14 @@ export function requireStableRetainedDescriptor(
                             ts.isThrowStatement(node)) &&
                         node.expression &&
                         references(node.expression) &&
-                        scan.containsAlias(node.expression)
+                        containsAlias(node.expression, scan)
                     )
                         return true;
                     if (
                         ts.isArrowFunction(node) &&
                         !ts.isBlock(node.body) &&
                         references(node.body) &&
-                        scan.containsAlias(node.body)
+                        containsAlias(node.body, scan)
                     )
                         return true;
                     if (
@@ -177,13 +194,13 @@ export function requireStableRetainedDescriptor(
                             node.arguments?.some(
                                 (argument) =>
                                     references(argument) &&
-                                    scan.containsAlias(argument),
+                                    containsAlias(argument, scan),
                             ) ?? false
                         );
                     if (!ts.isCallExpression(node)) return false;
                     return node.arguments.some(
                         (argument, index) =>
-                            scan.containsAlias(argument) &&
+                            containsAlias(argument, scan) &&
                             references(argument) &&
                             !callArgumentProjectionIsReadOnly(
                                 checker,
@@ -195,8 +212,11 @@ export function requireStableRetainedDescriptor(
                 },
             },
         );
-        stability.set(symbol, result);
-        return result;
+        stability.set(symbol, {
+            ...stability.get(symbol),
+            [result]: stableResult,
+        });
+        return stableResult;
     };
     const visit = (value: Value, source: ts.Expression): void => {
         if (opaque(value) || !references(source)) return;
