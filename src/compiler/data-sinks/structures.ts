@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
+    isOpaqueReference,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -296,6 +297,15 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        if (
+            isOpaqueReference(value.dataType) &&
+            lowerer.context.dataTypes.isReferenceStruct(dataType.name)
+        )
+            lowerer.context.fail(
+                node,
+                "A native object cannot be retained as a structural record without preserving its identity.",
+                "static-value-required",
+            );
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,

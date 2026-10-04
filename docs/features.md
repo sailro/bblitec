@@ -71,6 +71,8 @@ AbortController/AbortSignal use distinct opaque storage with no successful nativ
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
+Opaque native objects refuse retention as structural records without a represented shared identity.
+
 Local JavaScript implementations take precedence over companion declarations. Type-only imports do not
 run initializers. `declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
 A module executed at generation may import its relative siblings without an extension.
