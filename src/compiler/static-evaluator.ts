@@ -363,7 +363,10 @@ export class StaticEvaluator {
 
     public compileVec2(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
-        const tuple = this.tupleElements(unwrapped, 2);
+        const resolved = this.vectorValue(expression, unwrapped);
+        const data = this.dataTupleComponents(unwrapped, resolved, "float", 2);
+        if (data) return `bbl::Vec2{${data.join(", ")}}`;
+        const tuple = this.tupleElements(unwrapped, 2, resolved);
         if (tuple) {
             return `bbl::Vec2{${tuple
                 .map((value) => this.numberValue(value, unwrapped))
@@ -382,7 +385,10 @@ export class StaticEvaluator {
 
     public compileVec4(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
-        const tuple = this.tupleElements(unwrapped, 4);
+        const resolved = this.vectorValue(expression, unwrapped);
+        const data = this.dataTupleComponents(unwrapped, resolved, "float", 4);
+        if (data) return `bbl::Vec4{${data.join(", ")}}`;
+        const tuple = this.tupleElements(unwrapped, 4, resolved);
         if (tuple) {
             return `bbl::Vec4{${tuple
                 .map((value) => this.numberValue(value, unwrapped))
@@ -1655,9 +1661,8 @@ export class StaticEvaluator {
         expression: ts.Expression,
         value: Value | undefined,
         precision: "float" | "double" = "float",
+        length = 3,
     ): string[] | undefined {
-        // Both readers (a Vector3 and a Color3) take a three-component tuple.
-        const length = 3;
         if (!value || !isDataTuple(value, length)) {
             return undefined;
         }
