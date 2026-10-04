@@ -6722,13 +6722,18 @@ class Compiler implements LoweringServices {
      * A body emitted once for every caller runs from any control flow, any
      * number of times: its lowering sees runtime control flow and iteration,
      * and it may not record a generation-owned construction.
+     * A call-site reuse probe preserves its original control flow so the proof
+     * cannot turn an unconditional construction into a runtime profile.
      */
     public emitReusableNativeBody<T>(
         declaration: ts.Node,
         emitBody: () => T,
+        preserveControlFlow = false,
     ): T {
-        this.enterRuntimeControlFlow();
-        this.enterRuntimeIteration();
+        if (!preserveControlFlow) {
+            this.enterRuntimeControlFlow();
+            this.enterRuntimeIteration();
+        }
         try {
             const checkpoint = this.checkpointResourceConstruction();
             try {
@@ -6749,8 +6754,10 @@ class Compiler implements LoweringServices {
                 this.resourceConstructionCheckpoints.delete(checkpoint);
             }
         } finally {
-            this.leaveRuntimeIteration();
-            this.leaveRuntimeControlFlow();
+            if (!preserveControlFlow) {
+                this.leaveRuntimeIteration();
+                this.leaveRuntimeControlFlow();
+            }
         }
     }
 

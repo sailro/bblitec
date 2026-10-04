@@ -2758,6 +2758,7 @@ export class UserFunctionLowerer {
         declarations: readonly SupportedFunction[],
         recursive = true,
         pinArguments = true,
+        reuseCallSite = false,
     ): Value {
         // Calls through an existing sibling's storage no longer need a shared
         // recursive group. Recompute the cycle without crossing those bindings,
@@ -2857,6 +2858,32 @@ export class UserFunctionLowerer {
             !recursive &&
             root.declaration.body !== undefined &&
             context.canReplaySharedCallEffects(root.declaration.body);
+        if (callSiteEffects && !reuseCallSite) {
+            // Reached factories do not necessarily record a construction on
+            // every call: a runtime queue may invoke them conditionally. The
+            // existing reusable-body checkpoint proves that distinction and
+            // keeps its native definition in the ordinary specialization cache.
+            try {
+                return context.probeEmission(() =>
+                    this.lowerRecursiveGroup(
+                        context,
+                        root,
+                        call,
+                        rootArguments,
+                        declarations,
+                        recursive,
+                        pinArguments,
+                        true,
+                    ),
+                );
+            } catch (error) {
+                if (
+                    !(error instanceof SharedCallRequiresInline) &&
+                    !(error instanceof CompileError)
+                )
+                    throw error;
+            }
+        }
         // A replayed call records its constructions at this site; one that
         // reaches them through a callback keeps the callback's iteration
         // facts only inline.
@@ -3190,21 +3217,24 @@ export class UserFunctionLowerer {
                   continuation: -1,
               }
             : context.functionEmissionScope();
-        const specialization = callSiteEffects
-            ? undefined
-            : this.emittedRecursiveGroups.key(scope, [
-                  context.dataTypes.captureTypeArguments(),
-                  rootEntry.captured,
-                  declarations.some((declaration) =>
-                      this.readsReceiver(declaration),
-                  )
-                      ? context.activeThis()
-                      : undefined,
-                  functionDependencies(context, declarations),
-                  // A body calling a method whose recursive group is being
-                  // emitted calls that group, which the next group is not.
-                  context.classLowerer.activeRecursion(),
-              ]);
+        const specialization =
+            callSiteEffects && !reuseCallSite
+                ? undefined
+                : this.emittedRecursiveGroups.key(scope, [
+                      context.dataTypes.captureTypeArguments(),
+                      rootEntry.captured,
+                      reuseCallSite ? rootEntry.argumentFacts : undefined,
+                      reuseCallSite,
+                      declarations.some((declaration) =>
+                          this.readsReceiver(declaration),
+                      )
+                          ? context.activeThis()
+                          : undefined,
+                      functionDependencies(context, declarations),
+                      // A body calling a method whose recursive group is being
+                      // emitted calls that group, which the next group is not.
+                      context.classLowerer.activeRecursion(),
+                  ]);
         const previous =
             specialization === undefined
                 ? undefined
@@ -3338,10 +3368,11 @@ export class UserFunctionLowerer {
             };
             context.bindings.pushScope(context.allocateUserFunctionPrefix());
             try {
-                if (sharedBody && !callSiteEffects)
+                if (sharedBody && (!callSiteEffects || reuseCallSite))
                     context.emitReusableNativeBody(
                         root.declaration,
                         emitBodies,
+                        reuseCallSite,
                     );
                 else emitBodies();
             } finally {

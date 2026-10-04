@@ -39,6 +39,31 @@ test("owned literal record arrays retain native identity and evaluate fields onc
     runGeneratedProgram(native, "owned-array-facts", result.cpp);
 });
 
+test("nested native argument storage withdraws shared record-array facts", (t) => {
+    const source = `
+        type Row={score:number};
+        const rows:Row[]=[{score:1},{score:2}];
+        function retain(options:{nested:{rows:Row[]}}):Row[]{return options.nested.rows.slice();}
+        function observe(options:{rows:readonly Row[]}):Row|undefined{return options.rows[0];}
+        const copy=retain({nested:{rows}});
+        const first=observe({rows});
+        if(!first)throw new Error('missing row');
+        copy[0]!.score=8;
+        if(rows[0]!.score!==8||first!==rows[0])throw new Error('nested storage alias');
+        first.score=13;
+        if(copy[0]!.score!==13||rows[0]!.score!==13)throw new Error('readonly reference escape');
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "owned-array-nested-storage", result.cpp);
+});
+
 test("owned resource maps preserve per-element facts but decline mutated and escaping snapshots", () => {
     const directory = resolve("artifacts/owned-array-resource-facts");
     mkdirSync(directory, { recursive: true });

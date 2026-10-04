@@ -896,6 +896,7 @@ export class DataLowerer {
     }
 
     public markEscaped(value: Value): void {
+        this.invalidateRecordArrayFacts(value);
         if (value.kind !== "data" || this.sharesObjectStorage(value.dataType)) {
             return;
         }

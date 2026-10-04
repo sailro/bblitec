@@ -472,7 +472,11 @@ export interface LoweringServices {
     canShareFunctionBody(body: ts.Node): boolean;
     reachesOnlyClosedEffects(body: ts.Node): boolean;
     reachesOpaqueCallee(body: ts.Node): boolean;
-    emitReusableNativeBody<T>(declaration: ts.Node, emitBody: () => T): T;
+    emitReusableNativeBody<T>(
+        declaration: ts.Node,
+        emitBody: () => T,
+        preserveControlFlow?: boolean,
+    ): T;
     compileSharedMethod(
         declaration: ts.MethodDeclaration,
         call: ts.CallExpression,
