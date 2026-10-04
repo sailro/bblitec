@@ -4707,13 +4707,25 @@ export class ExpressionLowerer {
                 this.context.checker.getContextualType(unwrapped);
             const type = this.context.dataTypes.withDynamicJsonTypes(
                 dynamicSpread || optionalKeysSpread,
-                () =>
-                    this.context.dataLowerer.dataTypeAt(unwrapped) ??
-                    (contextual &&
+                () => {
+                    const contextualType =
+                        contextual &&
                         this.context.dataTypes.fromTsType(
                             contextual,
                             unwrapped,
-                        )),
+                        );
+                    // A dictionary spread contributes keys beyond the named
+                    // fields inferred for the object literal.
+                    if (
+                        contextualType?.kind === "map" &&
+                        contextualType.dictionary
+                    )
+                        return contextualType;
+                    return (
+                        this.context.dataLowerer.dataTypeAt(unwrapped) ??
+                        contextualType
+                    );
+                },
             );
             if (type?.kind === "map" || dynamicSpread) {
                 const dictionary: DataType<"map"> =

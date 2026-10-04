@@ -27,6 +27,59 @@ function check(name: string, source: string): void {
 }
 
 check(
+    "contextual dictionary spread retains computed entries and overwrite order",
+    `
+    let trace='';
+    let calls=0;
+    const groups:Record<string,string[]>={warm:['red','orange'],cool:['blue']};
+    const tags=['warm','cool'];
+    function entries():Record<string,string> {
+        calls++; trace+='e';
+        return Object.fromEntries(tags.flatMap(tag=>
+            groups[tag]!.map(value=>[value,tag] as [string,string])));
+    }
+    function mark(label:string):string {trace+=label;return label;}
+    const values:Record<string,string>={
+        first:mark('a'),
+        ...entries(),
+        red:mark('r'),
+        last:mark('z'),
+    };
+    if(calls!==1 || trace!=='aerz' ||
+       Object.keys(values).join(',')!=='first,red,orange,blue,last' ||
+       values.red!=='r' || values.orange!=='warm' || values.blue!=='cool')
+        throw new Error('dictionary keys or evaluation');
+`,
+);
+
+check(
+    "contextual dictionary spread snapshots membership and shares owned values",
+    `
+    interface Item {value:number;}
+    const first:Item={value:1};
+    const last:Item={value:2};
+    const pairs:[string,Item][]=[['shared',first],['middle',first]];
+    const source:Record<string,Item>=Object.fromEntries(pairs);
+    let calls=0;
+    function later():Record<string,Item> {
+        calls++;
+        source.shared=last;
+        source.added=last;
+        first.value=7;
+        return Object.fromEntries([['shared',last],['tail',first]] as [string,Item][]);
+    }
+    function copy():Record<string,Item> {
+        return {prefix:first,...source,...later(),suffix:last};
+    }
+    const copied=copy();
+    if(calls!==1 || Object.keys(copied).join(',')!=='prefix,shared,middle,tail,suffix' ||
+       copied.shared!==last || copied.middle!==first || copied.middle.value!==7 ||
+       copied===source || Object.keys(source).join(',')!=='shared,middle,added')
+        throw new Error('dictionary copy identity');
+`,
+);
+
+check(
     "contextual spread retains wider static fields and shared children",
     `
     interface Narrow { value:number; optional?:number; }
