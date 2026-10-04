@@ -1635,9 +1635,9 @@ export class DataLowerer {
                       return { ...owner, cpp: temporary };
                   })();
             present = optionalPresentCpp(selected.cpp);
-            presentOwner = withNativeMetadata(
-                this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
-                plainOwner,
+            presentOwner = this.presentOptionalValue(
+                { ...plainOwner, cpp: selected.cpp },
+                owner.dataType.inner,
             );
         } else if (ownerFound !== undefined) {
             if (
@@ -2421,16 +2421,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     private presentOptionalValue(value: Value, inner: DataType): Value {
-        const present = withNativeMetadata(
-            this.leafValue(optionalValueCpp(value.cpp), inner),
+        return this.projectedNativeValue(
             value,
+            optionalValueCpp(value.cpp),
+            inner,
         );
+    }
+
+    /** A narrowed payload owns a snapshot of that payload, not its carrier. */
+    private projectedNativeValue(
+        value: Value,
+        cpp: string,
+        type: DataType,
+    ): Value {
+        const present = withNativeMetadata(this.leafValue(cpp, type), value);
         writable(present).nativeLvalue = true;
         if (cppIdentifierPattern.test(value.cpp))
             writable(present).stableOwnerCpp = value.cpp;
         if (value.ownedCpp !== undefined) {
-            writable(present).ownedCpp =
-                `bbl::js::snapshot_value(*(${value.cpp}))`;
+            writable(present).ownedCpp = `bbl::js::snapshot_value(${cpp})`;
         } else {
             delete writable(present).ownedCpp;
         }
@@ -2463,12 +2472,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return index < 0
                 ? value
-                : withNativeMetadata(
-                      this.leafValue(
-                          `std::get<${index}>(${value.cpp})`,
-                          value.dataType.members[index]!,
-                      ),
+                : this.projectedNativeValue(
                       value,
+                      `std::get<${index}>(${value.cpp})`,
+                      value.dataType.members[index]!,
                   );
         }
         if (value.kind !== "data" || value.dataType?.kind !== "optional") {
@@ -7767,12 +7774,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             );
             if (member >= 0)
-                value = withNativeMetadata(
-                    this.leafValue(
-                        `std::get<${member}>(${value.cpp})`,
-                        value.dataType.members[member]!,
-                    ),
+                value = this.projectedNativeValue(
                     value,
+                    `std::get<${member}>(${value.cpp})`,
+                    value.dataType.members[member]!,
                 );
         }
         // A parsed array reaching a fixed or growable numeric sink is the

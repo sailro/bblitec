@@ -139,6 +139,81 @@ check(
 );
 
 check(
+    "optional map array indexing snapshots the selected payload before effects",
+    `
+    const original:number[]=[4];
+    const entries=new Map<string,number[]>();entries.set('present',original);
+    let order=0;
+    function owner():Map<string,number[]>{order=order*10+1;return entries;}
+    function key():string{order=order*10+2;return 'present';}
+    function index():number{order=order*10+3;entries.clear();entries.set('present',[99]);original[0]=7;return 0;}
+    const found=owner().get(key())?.[index()];
+    if(found!==7 || order!==123 || entries.get('present')?.[0]!==99)
+        throw new Error('selected array before index');
+    entries.clear();order=0;
+    if(owner().get(key())?.[index()]!==undefined || order!==12)
+        throw new Error('absent array suppresses index');
+    entries.set('present',[]);order=0;
+    if(owner().get(key())?.[index()]!==undefined || order!==123)
+        throw new Error('present empty array evaluates index');
+`,
+);
+
+check(
+    "optional weak map array indexing retains a removed payload",
+    `
+    interface Key {id:number;}
+    const present:Key={id:1},missing:Key={id:2};
+    const original:number[]=[4];
+    const entries=new WeakMap<Key,number[]>();entries.set(present,original);
+    let keys=0,indices=0;
+    function key():Key{keys++;return present;}
+    function index():number{indices++;entries.delete(present);original[0]=8;return 0;}
+    if(entries.get(key())?.[index()]!==8 || keys!==1 || indices!==1)
+        throw new Error('weak selected array');
+    if(entries.get(missing)?.[index()]!==undefined || indices!==1)
+        throw new Error('weak absence suppresses index');
+`,
+);
+
+check(
+    "optional dictionary array indexing preserves unchecked absence and order",
+    `
+    const original:number[]=[4];
+    const entries:Record<string,number[]>={present:original};
+    let order=0,selectedKey='present';
+    function owner():Record<string,number[]>{order=order*10+1;return entries;}
+    function key():string{order=order*10+2;return selectedKey;}
+    function index():number{order=order*10+3;entries.present=[99];original[0]=9;return 0;}
+    if(owner()[key()]?.[index()]!==9 || order!==123 || entries.present?.[0]!==99)
+        throw new Error('dictionary selected array');
+    selectedKey='missing';order=0;
+    if(owner()[key()]?.[index()]!==undefined || order!==12)
+        throw new Error('dictionary absence suppresses index');
+`,
+);
+
+check(
+    "narrowed map union payloads reach scalar sinks and retained callbacks",
+    `
+    const entries=new Map<string,string|number>();entries.set('text','before');entries.set('number',7);
+    const numbers:number[]=[],texts:string[]=[];
+    numbers.push(entries.get('number') as number);
+    texts.push(entries.get('text') as string);
+    function retain(key:string):()=>string {
+        const value=entries.get(key);
+        if(typeof value==='number') {numbers.push(value);return ()=>String(value);}
+        if(typeof value==='string') {texts.push(value);return ()=>value;}
+        return ()=>'absent';
+    }
+    const text=retain('text'),number=retain('number'),absent=retain('missing');
+    entries.clear();
+    if(text()!=='before' || number()!=='7' || absent()!=='absent' || texts.length!==2 || numbers.length!==2 || texts[0]!=='before' || numbers[0]!==7 || texts[1]!=='before' || numbers[1]!==7)
+        throw new Error('narrowed owned union payload');
+`,
+);
+
+check(
     "mapper writes remain live in returned records",
     `
     function update<T extends {value?:number}>(values:readonly T[],next:number):{items:(T & {value:number})[];next:number} {
