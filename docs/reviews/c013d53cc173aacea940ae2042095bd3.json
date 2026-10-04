@@ -137,6 +137,22 @@
     {
       "summary": "Propagate module aliases from one mutation set without duplicate argument-write storage.",
       "applied": true
+    },
+    {
+      "summary": "Reuse nullable map lookup and owning snapshots for retained callback values.",
+      "applied": true
+    },
+    {
+      "summary": "Register pinned engine ownership at the shared native value boundary.",
+      "applied": true
+    },
+    {
+      "summary": "Preserve evaluated array owners and local presence captures through optional chains.",
+      "applied": true
+    },
+    {
+      "summary": "Scope multiline record projection loops without changing their conversions.",
+      "applied": true
     }
   ]
 }
