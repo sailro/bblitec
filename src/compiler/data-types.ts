@@ -49,6 +49,7 @@ import {
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import ts from "typescript";
+import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
 import {
     cppIdentifier,
@@ -413,12 +414,31 @@ const booleanType: DataType = { kind: "boolean" };
  * never mistaken for the engine resource type.
  */
 export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
+    return pinnedHandle(type, false);
+}
+
+/** Effect analysis also reads the exact implementation files registered by the pin. */
+export function pinnedSourceHandleKind(type: ts.Type): HandleKind | undefined {
+    return pinnedHandle(type, true);
+}
+
+function pinnedHandle(
+    type: ts.Type,
+    includePinnedSource: boolean,
+): HandleKind | undefined {
     const symbol =
         type.aliasSymbol && pinnedHandleTypes[type.aliasSymbol.name]
             ? type.aliasSymbol
             : type.symbol;
     const kind = symbol ? pinnedHandleTypes[symbol.name] : undefined;
-    return kind && declaredIn(symbol, "babylon") ? kind : undefined;
+    return kind &&
+        (declaredIn(symbol, "babylon") ||
+            (includePinnedSource &&
+                symbol?.declarations?.some((declaration) =>
+                    isPinnedSource(declaration.getSourceFile()),
+                )))
+        ? kind
+        : undefined;
 }
 
 export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {

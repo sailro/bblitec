@@ -5,6 +5,7 @@ import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { libraryArgumentIsReadOnly } from "./library-call-effects.js";
+import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import {
     callArgumentIsReadOnly,
     isSupportedFunction,
@@ -28,6 +29,7 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
+    propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
 
@@ -314,33 +316,90 @@ function collectMutatedContainerSymbols(
                     callArgumentIsReadOnly(checker, node, index)
                 )
                     return;
-                forEachAnalysisNode(
-                    argument,
-                    (part) => {
-                        // A copied scalar cannot carry its containing object's
-                        // identity. Nested calls still receive their own analysis.
-                        if (
-                            ts.isExpression(part) &&
-                            !typeCanCarryReference(
-                                checker.getTypeAtLocation(part),
-                            )
+                const visit = (
+                    value: ts.Expression,
+                    path: readonly string[],
+                ): void => {
+                    if (
+                        !typeCanCarryReference(checker.getTypeAtLocation(value))
+                    )
+                        return;
+                    if (
+                        callArgumentProjectionIsReadOnly(
+                            checker,
+                            node,
+                            index,
+                            path,
                         )
-                            return "skip";
-                        if (
-                            ts.isIdentifier(part) ||
-                            ts.isPropertyAccessExpression(part) ||
-                            ts.isElementAccessExpression(part)
-                        ) {
-                            const symbol = moduleContainerSymbol(
-                                part,
-                                checker,
-                                symbols,
-                            );
-                            if (symbol) argumentWrites.add(symbol);
+                    )
+                        return;
+                    const current = unwrapExpression(value);
+                    if (
+                        ts.isObjectLiteralExpression(current) &&
+                        current.properties.every(
+                            (property) =>
+                                (ts.isPropertyAssignment(property) ||
+                                    ts.isShorthandPropertyAssignment(
+                                        property,
+                                    )) &&
+                                (ts.isIdentifier(property.name) ||
+                                    ts.isStringLiteralLike(property.name) ||
+                                    ts.isNumericLiteral(property.name)),
+                        )
+                    ) {
+                        for (const property of current.properties) {
+                            if (
+                                ts.isPropertyAssignment(property) ||
+                                ts.isShorthandPropertyAssignment(property)
+                            )
+                                visit(
+                                    ts.isPropertyAssignment(property)
+                                        ? property.initializer
+                                        : property.name,
+                                    [...path, propertyNameText(property.name)!],
+                                );
                         }
-                    },
-                    { functions: "skip" },
-                );
+                        return;
+                    }
+                    if (
+                        ts.isArrayLiteralExpression(current) &&
+                        !current.elements.some(ts.isSpreadElement)
+                    ) {
+                        current.elements.forEach((element, i) => {
+                            if (!ts.isOmittedExpression(element))
+                                visit(element, [...path, String(i)]);
+                        });
+                        return;
+                    }
+                    forEachAnalysisNode(
+                        value,
+                        (part) => {
+                            // A copied scalar cannot carry its containing object's
+                            // identity. Nested calls still receive their own analysis.
+                            if (
+                                ts.isExpression(part) &&
+                                !typeCanCarryReference(
+                                    checker.getTypeAtLocation(part),
+                                )
+                            )
+                                return "skip";
+                            if (
+                                ts.isIdentifier(part) ||
+                                ts.isPropertyAccessExpression(part) ||
+                                ts.isElementAccessExpression(part)
+                            ) {
+                                const symbol = moduleContainerSymbol(
+                                    part,
+                                    checker,
+                                    symbols,
+                                );
+                                if (symbol) argumentWrites.add(symbol);
+                            }
+                        },
+                        { functions: "skip" },
+                    );
+                };
+                visit(argument, []);
             });
         }
         if (isAssignmentExpression(node)) {

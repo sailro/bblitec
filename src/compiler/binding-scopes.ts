@@ -57,6 +57,7 @@ import {
 } from "./user-functions.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -1115,12 +1116,74 @@ export class BindingScopes {
                 parameterDeclaration.parent,
                 identifier,
             )
-        )
+        ) {
+            // Literal scalar-only children cannot contain a backreference to
+            // this owner. Unknown storage, callbacks and accessors cannot
+            // establish that separation from a declared property path alone.
+            const rawOwner = (owner: Value): boolean =>
+                owner.dataType === undefined &&
+                !owner.nativeBinding &&
+                !owner.retainedNativeRecord &&
+                !this.context.classOf(owner);
+            const plainScalar = (member: Value): boolean =>
+                !member.sharedRecordScalar &&
+                !member.nativeBinding &&
+                (member.kind === "number" ||
+                    member.kind === "boolean" ||
+                    isStringValue(member));
+            const independentFields =
+                rawOwner(value) &&
+                Object.keys(value.recordGetters ?? {}).length === 0 &&
+                Object.keys(value.recordSetters ?? {}).length === 0 &&
+                Object.keys(value.recordMethods ?? {}).length === 0 &&
+                Object.values(value.recordProperties ?? {}).every(
+                    (member) =>
+                        plainScalar(member) ||
+                        (member.kind === "tuple" &&
+                            rawOwner(member) &&
+                            member.tupleElements !== undefined &&
+                            member.tupleElements.every(plainScalar)) ||
+                        (member.kind === "record" &&
+                            rawOwner(member) &&
+                            member.recordProperties !== undefined &&
+                            Object.keys(member.recordGetters ?? {}).length ===
+                                0 &&
+                            Object.keys(member.recordSetters ?? {}).length ===
+                                0 &&
+                            Object.keys(member.recordMethods ?? {}).length ===
+                                0 &&
+                            Object.values(member.recordProperties ?? {}).every(
+                                plainScalar,
+                            )),
+                );
+            const unchangedFields = new Set(
+                Object.entries(value.recordProperties ?? {})
+                    .filter(
+                        ([name, member]) =>
+                            (member.kind === "number" ||
+                                member.kind === "boolean" ||
+                                member.staticString !== undefined) &&
+                            parameterProjectionIsReadOnly(
+                                this.context.checker,
+                                parameterDeclaration.parent,
+                                parameterDeclaration.parent.parameters.indexOf(
+                                    parameterDeclaration,
+                                ),
+                                [name],
+                                independentFields,
+                            ),
+                    )
+                    .map(([name]) => name),
+            );
             value = this.materializeRecordScalars(
                 value,
                 `${identifier.text}_parameter`,
                 true,
+                undefined,
+                undefined,
+                unchangedFields,
             );
+        }
         if (value.kind === "void") {
             this.context.fail(
                 identifier,
@@ -2146,6 +2209,7 @@ export class BindingScopes {
         preserveIdentity = false,
         node?: ts.Expression,
         materialized = new Map<object, Value>(),
+        unchangedFields?: ReadonlySet<string>,
     ): Value {
         if (
             record.retainedNativeRecord ||
@@ -2193,7 +2257,8 @@ export class BindingScopes {
         const scalarFields = Object.entries(
             record.recordProperties ?? {},
         ).filter(
-            ([, property]) =>
+            ([name, property]) =>
+                !unchangedFields?.has(name) &&
                 !property.sharedRecordScalar &&
                 !property.sharedRecordContainer &&
                 !(property.readOnly && property.staticString !== undefined) &&
@@ -2215,6 +2280,10 @@ export class BindingScopes {
         for (const [name, property] of Object.entries(
             record.recordProperties ?? {},
         )) {
+            if (unchangedFields?.has(name)) {
+                properties[name] = property;
+                continue;
+            }
             if (property.readOnly && property.staticString !== undefined) {
                 properties[name] = property;
                 continue;
