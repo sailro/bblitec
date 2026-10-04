@@ -133,6 +133,10 @@
     {
       "summary": "Select the existing dictionary sink when runtime spreads require contextual dictionary storage.",
       "applied": true
+    },
+    {
+      "summary": "Propagate module aliases from one mutation set without duplicate argument-write storage.",
+      "applied": true
     }
   ]
 }
