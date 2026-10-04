@@ -3,11 +3,78 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("destructuring snapshots preserve nullable generic lanes through erased assertions", (t) => {
+    const source = `
+        function exchange<T>(items:T[]):void {
+            [items[0], items[1]] = [items[1]!, items[0]!];
+        }
+        const numbers:(number|null)[]=[3,null];
+        const strings:(string|null)[]=["word",null];
+        const booleans:(boolean|null)[]=[false,null];
+        const missing:(number|undefined)[]=[7,undefined];
+        const object={value:5};
+        const objects:({value:number}|null)[]=[object,null];
+        exchange(numbers);exchange(strings);exchange(booleans);
+        exchange(missing);exchange(objects);
+        if(numbers[0]!==null||numbers[1]!==3||strings[0]!==null||strings[1]!=="word"||
+            booleans[0]!==null||booleans[1]!==false||missing[0]!==undefined||missing[1]!==7||
+            objects[0]!==null||objects[1]!==object)throw new Error("generic nullable snapshots");
+        objects[1]!.value=9;
+        if(object.value!==9)throw new Error("retained object identity");
+        let order="";
+        function index(value:number):number {order+=String(value);return value;}
+        [numbers[index(0)],numbers[index(1)]]=[numbers[index(1)]!,numbers[index(0)]!];
+        if(order!=="1001"||numbers[0]!==3||numbers[1]!==null)
+            throw new Error("snapshot and assignment order");
+        let calls=0;
+        function absent():number|null {calls++;return null;}
+        let first:number|null=1,second:number|null=2;
+        [first,second]=[absent()!,numbers[0]!];
+        if(first!==null||second!==3||calls!==1)throw new Error("asserted call snapshot");
+        let seen=0, owners=0;
+        const target={set value(input:number){seen=input;}};
+        function owner(){owners++;return target;}
+        [owner().value]=[11];
+        if(seen!==11||owners!==1)throw new Error("inline setter receiver");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "destructuring-nullable-snapshots", result.cpp, {
+        timeoutMs: 10000,
+    });
+});
+
+test("retaining a setter-only record keeps its explicit storage refusal", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            let seen=0;
+            const target={set value(input:number){seen=input;}};
+            const stored=new Map<string,typeof target>();
+            stored.set("target",target);
+            if(seen!==0)throw new Error("setter construction");
+        `),
+        /setter without a getter/,
+    );
+});
 
 test("destructuring preserves generic identities, nested storage and lazy assignment order", (t) => {
     const directory = resolve("artifacts/destructuring-assignments");

@@ -4644,13 +4644,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
     ): Value | undefined {
-        if (ts.isOptionalChain(access)) return undefined;
+        if (
+            ts.isOptionalChain(access) ||
+            this.namesHandleCollection(access.expression)
+        )
+            return undefined;
         // Resolving a computed owner can emit code. A declined guard must
         // discard that work before the ordinary element reader evaluates it.
         return this.context.probeEmission(() => {
-            const owner =
-                this.compileDataPath(access.expression, "read") ??
-                this.context.compileValue(access.expression);
+            let owner = this.compileDataPath(access.expression, "read");
+            if (!owner) {
+                const declared = this.dataTypeAt(access.expression);
+                const type =
+                    declared?.kind === "optional" ? declared.inner : declared;
+                if (type?.kind !== "vector" && type?.kind !== "span")
+                    return undefined;
+                owner = this.context.compileValue(access.expression);
+            }
             return this.guardableElementRead(
                 this.narrowOptional(owner, access.expression),
                 access,
@@ -10145,14 +10155,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 tupleElements: right.elements.map((element, index) => {
                     if (ts.isOmittedExpression(element))
                         return { kind: "json-null", cpp: "std::nullopt" };
+                    // Each RHS lane is saved independently before assigning any
+                    // target. Erased assertions cannot narrow that snapshot:
+                    // `T!` can still contain null under the active substitution.
                     let elementType =
-                        type?.kind === "vector"
+                        this.dataTypeAt(this.context.unwrap(element)) ??
+                        (type?.kind === "vector"
                             ? type.element
                             : type?.kind === "tuple"
                               ? { kind: "number" as const }
                               : type?.kind === "product"
                                 ? type.elements[index]
-                                : this.dataTypeAt(element);
+                                : this.dataTypeAt(element));
                     // A generic AST can still say T after its argument has an owned
                     // native representation. Read that value once to obtain its type.
                     const absence = isNullishLiteral(

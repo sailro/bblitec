@@ -296,6 +296,20 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        const fields = lowerer.context.dataTypes.structFields(
+            dataType.name,
+            node,
+            "accessors",
+        );
+        // A speculative native return must first admit its accessor layout.
+        // Otherwise replay would force an unsupported source owner into storage
+        // before the shared-call probe can retain the inline accessor path.
+        for (const field of fields)
+            if (
+                value.recordGetters?.[field.sourceName] ||
+                value.recordSetters?.[field.sourceName]
+            )
+                accessorGetter(lowerer, field, value, node);
         if (
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
             !lowerer.context.bindings.containsPlatformEvent(value) &&
@@ -309,11 +323,6 @@ function valueStruct(
                 throw new DynamicBindingStorageRequired(declaration, "source");
         }
         lowerer.context.dataTypes.cppType(dataType);
-        const fields = lowerer.context.dataTypes.structFields(
-            dataType.name,
-            node,
-            "accessors",
-        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const getter = value.recordGetters?.[field.sourceName];
@@ -472,15 +481,13 @@ function valueStruct(
     return undefined;
 }
 
-/** A record's accessor property: its getter and setter in the field's accessor slot. */
-function accessorSlot(
+function accessorGetter(
     lowerer: DataSinkHost,
     field: DataStructField,
     record: Value,
     node: ts.Node,
-): string {
+): ts.GetAccessorDeclaration {
     const getter = record.recordGetters?.[field.sourceName];
-    const setter = record.recordSetters?.[field.sourceName];
     if (!getter)
         lowerer.context.fail(
             node,
@@ -491,6 +498,18 @@ function accessorSlot(
             node,
             `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
         );
+    return getter;
+}
+
+/** A record's accessor property: its getter and setter in the field's accessor slot. */
+function accessorSlot(
+    lowerer: DataSinkHost,
+    field: DataStructField,
+    record: Value,
+    node: ts.Node,
+): string {
+    const getter = accessorGetter(lowerer, field, record, node);
+    const setter = record.recordSetters?.[field.sourceName];
     const set = setter
         ? lowerer.context.compileStoredAccessor(
               record,
