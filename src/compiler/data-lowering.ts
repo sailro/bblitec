@@ -265,6 +265,7 @@ interface DataLoweringContext extends Pick<
     | "emit"
     | "probeEmission"
     | "captureEmittedLines"
+    | "captureNativeDependencies"
     | "captureEmittedStatements"
     | "emitCapturedStatements"
     | "allocateTemporaryCppName"
@@ -1271,6 +1272,8 @@ export class DataLowerer {
                     unwrapped,
                     `Accessor property '${unwrapped.name.text}' takes a plain assignment through its setter.`,
                 );
+            if (mode === "write" && owner.staticElementsOwner)
+                this.invalidateStaticElements(owner);
             // A call can yield an intrinsic record or engine handle rather
             // than native data. Its owner has already been evaluated, so
             // continue through the shared property reader before declining
@@ -3163,7 +3166,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 writable(value).preserveUncheckedLookup = true;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
-                field.readOnly
+                field.readOnly ||
+                (owner.recordProperties !== undefined &&
+                    owner.staticElementIndex !== undefined &&
+                    owner.staticElementsOwner?.staticElements?.[
+                        owner.staticElementIndex
+                    ]?.recordProperties === owner.recordProperties)
                     ? owner.recordProperties?.[property]
                     : undefined;
             if (staticField?.staticNumber !== undefined) {
@@ -3368,6 +3376,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** Rest binding creates fresh array storage, retaining the identity of its elements. */
     public arrayRestValue(value: Value, index: number, node: ts.Node): Value {
+        this.invalidateRecordArrayFacts(value);
         const sourceType = value.dataType;
         let type: DataType;
         let initializer: string;
@@ -4127,6 +4136,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (owner.runtimeElementTemplate
                         ? [owner.runtimeElementTemplate]
                         : undefined);
+                const snapshotOwner = owner.staticElementsOwner ?? owner;
+                const recordFacts = snapshotOwner.staticElements;
+                if (
+                    dataType.element.kind === "struct" &&
+                    recordFacts?.[0]?.staticElementIndex === 0 &&
+                    recordFacts?.[0]?.staticElementsOwner === snapshotOwner
+                ) {
+                    writable(value).staticElementsOwner = snapshotOwner;
+                    const fixed =
+                        preparedIndex?.staticNumber ??
+                        staticNumberValue(
+                            this.context,
+                            access.argumentExpression,
+                        );
+                    const facts =
+                        fixed !== undefined && Number.isInteger(fixed)
+                            ? recordFacts[fixed]?.recordProperties
+                            : undefined;
+                    if (facts && fixed !== undefined) {
+                        writable(value).recordProperties = facts;
+                        writable(value).staticElementIndex = fixed;
+                    }
+                    if (mode === "write") this.invalidateStaticElements(value);
+                }
                 return mode === "read" &&
                     value.kind === "material" &&
                     candidates?.length
@@ -4682,6 +4715,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         index: number,
         node: ts.Node,
     ): Value {
+        this.invalidateRecordArrayFacts(vector);
         if (vector.kind !== "data" || vector.dataType?.kind !== "vector") {
             this.context.fail(
                 node,
@@ -4718,6 +4752,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         const element = owner.dataType.element;
+        this.invalidateRecordArrayFacts(owner);
         // An array whose element type is already nullable has a native value
         // for JavaScript's out-of-range `undefined`: the empty optional. Read
         // it through the defaulting accessor and let the ordinary optional
@@ -5544,6 +5579,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             const source = this.context.compileValue(argumentAt(call, 0));
+            this.invalidateRecordArrayFacts(source);
             if (
                 source.kind !== "data" ||
                 (source.dataType?.kind !== "vector" &&
@@ -6312,6 +6348,91 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /** Keep scalar facts on views of the native elements, never on copied records. */
+    public retainArrayLiteralFacts(
+        owner: Value,
+        initializer: Value,
+        node: ts.Node,
+    ): void {
+        const type = owner.dataType;
+        if (
+            type?.kind !== "vector" ||
+            type.element.kind !== "struct" ||
+            initializer.kind !== "tuple" ||
+            !initializer.tupleElements
+        )
+            return;
+        const fields = this.context.dataTypes.structFields(
+            type.element.name,
+            node,
+            "accessors",
+        );
+        if (
+            fields.some(
+                (field) =>
+                    field.accessor ||
+                    field.optionalProperty ||
+                    !["number", "boolean", "string"].includes(field.type.kind),
+            )
+        )
+            return;
+        if (
+            !initializer.tupleElements.every(
+                (element) =>
+                    element.kind === "record" &&
+                    element.recordProperties &&
+                    Object.keys(element.recordGetters ?? {}).length === 0 &&
+                    Object.keys(element.recordSetters ?? {}).length === 0 &&
+                    Object.keys(element.recordMethods ?? {}).length === 0 &&
+                    fields.every(
+                        (field) =>
+                            element.recordProperties?.[field.sourceName] !==
+                            undefined,
+                    ),
+            )
+        )
+            return;
+        const captures = this.context.captureNativeDependencies(() =>
+            this.context.useNativeValue(owner),
+        );
+        const elementType = type.element;
+        const reference = this.context.dataTypes.isReferenceStruct(
+            elementType.name,
+        );
+        writable(owner).staticElements = initializer.tupleElements.map(
+            (element, index) => {
+                const cpp = `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`;
+                const recordProperties: Record<string, Value> = {};
+                for (const field of fields) {
+                    const source = element.recordProperties![field.sourceName]!;
+                    recordProperties[field.sourceName] = {
+                        ...this.leafValue(
+                            `${cpp}${reference ? "->" : "."}${field.name}`,
+                            field.type,
+                        ),
+                        nativeCaptures: captures.nativeCaptures,
+                        ...(source.staticNumber !== undefined
+                            ? { staticNumber: source.staticNumber }
+                            : {}),
+                        ...(source.staticString !== undefined
+                            ? { staticString: source.staticString }
+                            : {}),
+                        ...(source.staticBoolean !== undefined
+                            ? { staticBoolean: source.staticBoolean }
+                            : {}),
+                    };
+                }
+                const value = this.leafValue(cpp, elementType);
+                writable(value).nativeCaptures = captures.nativeCaptures;
+                writable(value).optionalFoundCpp = "true";
+                writable(value).staticElementsOwner = owner;
+                writable(value).staticElementIndex = index;
+                writable(value).recordProperties = recordProperties;
+                return value;
+            },
+        );
+    }
+
     /** Clear a complete element snapshot through every compiler alias. */
     public invalidateStaticElements(
         value: Value,
@@ -6332,6 +6453,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return;
         if (cardinality) writable(cardinality).untrackedAliases = true;
         this.invalidateStaticElements(value);
+    }
+
+    /** Runtime iteration or storage may retain any of the linked mutable records. */
+    public invalidateRecordArrayFacts(value: Value): void {
+        const owner =
+            value.staticElementsOwner ??
+            value.staticElements?.[0]?.staticElementsOwner;
+        if (
+            owner &&
+            owner.staticElements?.[0]?.staticElementIndex === 0 &&
+            owner.staticElements[0].staticElementsOwner === owner
+        )
+            this.invalidateEscapingCollection(owner);
     }
 
     /**
@@ -7557,6 +7691,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (value.cameraVector)
             this.context.admissions.noteCameraVectorCopy(value, node);
         this.context.useNativeValue(value);
+        this.invalidateRecordArrayFacts(value);
         // A stored tuple aliases its source. Once that alias leaves the local
         // binding graph, generation cannot retain a snapshot of its contents.
         if (value.dataType?.kind === "tuple")
@@ -7708,6 +7843,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.materializeStaticTable(expression) ??
             this.context.compileValue(expression);
         const value = this.narrowOptional(rawValue, expression);
+        this.invalidateRecordArrayFacts(value);
         if (isJsonValue(value))
             return this.compileKnownValueForSink(value, dataType, expression);
         if (value.dataType?.kind === "tuple")
@@ -12044,6 +12180,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType.kind === "iterator" ||
             dataType.kind === "set"
         ) {
+            this.invalidateRecordArrayFacts(value);
             const elements =
                 value.staticElementsOwner?.staticElements ??
                 value.staticElements;
@@ -12896,6 +13033,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         spread.expression,
                         true,
                     );
+                    this.invalidateRecordArrayFacts(iterable);
                     if (
                         this.context.dataTypes.carriesBorrowedPlatformEvent(
                             dataType.element,

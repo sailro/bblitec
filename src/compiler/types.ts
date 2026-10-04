@@ -2075,6 +2075,8 @@ export interface ValueFields {
     };
     /** Root binding whose static element snapshot this parameter alias shares. */
     staticElementsOwner?: Value;
+    /** Fixed native slot whose scalar facts belong to staticElementsOwner. */
+    staticElementIndex?: number;
     /** Shared by aliases even after their generation-known elements are withdrawn. */
     collectionCardinality?: CollectionCardinality;
     /** Representative metadata for a handle read from a runtime container. */

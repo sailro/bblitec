@@ -1275,6 +1275,17 @@ export class DeclarationLowerer {
                               staticElementsOwner,
                           }
                         : {}),
+                    ...(referenceStruct && narrowed.staticElementsOwner
+                        ? {
+                              staticElementsOwner: narrowed.staticElementsOwner,
+                              ...(narrowed.staticElementIndex !== undefined
+                                  ? {
+                                        staticElementIndex:
+                                            narrowed.staticElementIndex,
+                                    }
+                                  : {}),
+                          }
+                        : {}),
                     ...(!narrowed.freshData && narrowed.collectionCardinality
                         ? {
                               collectionCardinality:
@@ -2308,10 +2319,26 @@ export class DeclarationLowerer {
                         "Demanded binding no longer has a native storage representation.",
                     );
                 this.context.reachJsData();
-                const initializer = this.context.dataLowerer.compileForSink(
-                    declaration.initializer,
-                    type,
-                );
+                const literal = this.context.unwrap(declaration.initializer);
+                const arraySnapshot =
+                    type.kind === "vector" &&
+                    type.element.kind === "struct" &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name) &&
+                    ts.isArrayLiteralExpression(literal) &&
+                    literal.elements.every(ts.isObjectLiteralExpression)
+                        ? this.context.compileValue(literal)
+                        : undefined;
+                const initializer = arraySnapshot
+                    ? this.context.dataLowerer.compileKnownValueForSink(
+                          arraySnapshot,
+                          type,
+                          declaration.initializer,
+                      )
+                    : this.context.dataLowerer.compileForSink(
+                          declaration.initializer,
+                          type,
+                      );
                 this.context.emit({
                     kind: "declaration",
                     type: sharedClosureStorage
@@ -2322,7 +2349,7 @@ export class DeclarationLowerer {
                         ? `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(type)}>(${initializer})`
                         : initializer,
                 });
-                this.context.bindings.defineVariable(name, {
+                const bound: Value = {
                     ...this.context.dataLowerer.leafValue(
                         sharedClosureStorage ? `(*${cppName})` : cppName,
                         type,
@@ -2337,7 +2364,14 @@ export class DeclarationLowerer {
                     ...(sharedClosureStorage
                         ? { sharedStorageCpp: cppName }
                         : {}),
-                });
+                };
+                this.context.bindings.defineVariable(name, bound);
+                if (arraySnapshot)
+                    this.context.dataLowerer.retainArrayLiteralFacts(
+                        bound,
+                        arraySnapshot,
+                        declaration.initializer,
+                    );
                 const symbol = this.context.symbols.valueSymbol(name);
                 if (symbol) this.context.staticConstants.delete(symbol);
                 return true;

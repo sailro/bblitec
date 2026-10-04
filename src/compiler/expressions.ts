@@ -2110,6 +2110,8 @@ export class ExpressionLowerer {
         whenFalse: Value,
         node: ts.Node,
     ): Value {
+        this.context.dataLowerer.invalidateRecordArrayFacts(whenTrue);
+        this.context.dataLowerer.invalidateRecordArrayFacts(whenFalse);
         const selected = this.selectValueInner(
             selection,
             whenTrue,

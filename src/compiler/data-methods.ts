@@ -690,7 +690,30 @@ export function compileDataMethodCall(
             return folded;
         }
     }
-    if (tupleOwnerElements && dynamicOwner && method === "map") {
+    const snapshotOwner = dynamicOwner?.staticElementsOwner ?? dynamicOwner;
+    const nativeRecordElements =
+        method === "map" &&
+        dynamicOwner?.dataType?.kind === "vector" &&
+        dynamicOwner.dataType.element.kind === "struct" &&
+        snapshotOwner?.staticElements?.every(
+            (element, index) =>
+                element.staticElementsOwner === snapshotOwner &&
+                element.staticElementIndex === index &&
+                element.recordProperties !== undefined,
+        )
+            ? snapshotOwner.staticElements
+            : undefined;
+    const requiresStaticMap =
+        method === "map" &&
+        (tupleOwnerElements !== undefined ||
+            nativeRecordElements !== undefined) &&
+        call.arguments.length === 1 &&
+        lowerer.context.requiresStaticDataIteration(call.arguments[0]!);
+    if (
+        (tupleOwnerElements || (requiresStaticMap && nativeRecordElements)) &&
+        dynamicOwner &&
+        method === "map"
+    ) {
         if (call.arguments.length !== 1) {
             lowerer.context.fail(
                 call,
@@ -708,15 +731,19 @@ export function compileDataMethodCall(
                 "Tuple Array.map requires a local function or function literal callback.",
             );
         }
-        const storedCallback = lowerer.context.requiresStaticDataIteration(
-            callback,
-        )
+        const storedCallback = requiresStaticMap
             ? undefined
             : lowerer.prepareCallbackValue(callback, "tuple_map");
-        return {
-            kind: "tuple",
-            cpp: "",
-            tupleElements: tupleOwnerElements.map((element, index) => {
+        const elements = tupleOwnerElements ?? nativeRecordElements!;
+        const elementCount = elements.length;
+        const snapshotIntact = (): boolean =>
+            !nativeRecordElements ||
+            (snapshotOwner?.staticElements === nativeRecordElements &&
+                nativeRecordElements.length === elementCount);
+        const compile = (): Value | undefined => {
+            const mapped: Value[] = [];
+            for (const [index, element] of elements.entries()) {
+                if (!snapshotIntact()) return undefined;
                 const arguments_: Value[] = [
                     element,
                     {
@@ -727,28 +754,39 @@ export function compileDataMethodCall(
                     },
                     dynamicOwner,
                 ];
-                return storedCallback
-                    ? lowerer.context.bindings.pinValueToTemporary(
-                          lowerer.compileFunctionValueCall(
-                              storedCallback,
-                              arguments_,
-                              call,
-                          ),
-                          "mapped_result",
-                          callback,
-                      )
-                    : lowerer.context.asyncActivations.withStaticCollectionCallback(
-                          call,
-                          callback,
-                          () =>
-                              lowerer.context.compileCallbackWithValues(
-                                  callback,
+                mapped.push(
+                    storedCallback
+                        ? lowerer.context.bindings.pinValueToTemporary(
+                              lowerer.compileFunctionValueCall(
+                                  storedCallback,
                                   arguments_,
                                   call,
                               ),
-                      );
-            }),
+                              "mapped_result",
+                              callback,
+                          )
+                        : lowerer.context.asyncActivations.withStaticCollectionCallback(
+                              call,
+                              callback,
+                              () =>
+                                  lowerer.context.compileCallbackWithValues(
+                                      callback,
+                                      arguments_,
+                                      call,
+                                  ),
+                          ),
+                );
+                if (!snapshotIntact()) return undefined;
+            }
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: mapped,
+            };
         };
+        if (!nativeRecordElements) return compile();
+        const result = lowerer.context.probeEmission(compile);
+        if (result) return result;
     }
     // A constructor receiver was already evaluated above. Recompiling it as
     // a data path would repeat its argument effects; naming the result also
@@ -1274,6 +1312,7 @@ function compileArrayMethodTail(
     method: string,
 ): Value | undefined {
     const { lowerer, call, narrowed, dataType } = state;
+    lowerer.invalidateRecordArrayFacts(narrowed);
     if (method === "indexOf" || method === "includes")
         return lowerer.compileArraySearch(
             call,

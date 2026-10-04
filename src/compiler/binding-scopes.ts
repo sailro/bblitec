@@ -1428,6 +1428,13 @@ export class BindingScopes {
     ): void {
         const owner = value.staticElementsOwner ?? value;
         const elements = owner.staticElements ?? value.staticElements;
+        const recordSnapshot =
+            elements?.[0]?.staticElementIndex === 0 &&
+            elements[0].staticElementsOwner === owner;
+        if (recordSnapshot)
+            for (const element of elements ?? [])
+                for (const key of Object.keys(element.recordProperties ?? {}))
+                    delete writable(element.recordProperties!)[key];
         const cardinality =
             owner.collectionCardinality ?? value.collectionCardinality;
         if (cardinality && !preserveCardinality) {
@@ -1444,6 +1451,8 @@ export class BindingScopes {
                 (elements !== undefined &&
                     candidate.staticElements === elements)
             ) {
+                if (recordSnapshot && candidate.staticElementsOwner === owner)
+                    delete writable(candidate).recordProperties;
                 if (owner.runtimeElementTemplate) {
                     writable(candidate).runtimeElementTemplate =
                         owner.runtimeElementTemplate;
@@ -1452,6 +1461,7 @@ export class BindingScopes {
                     writable(candidate).collectionCardinality = cardinality;
                 delete writable(candidate).staticElements;
                 delete writable(candidate).staticElementsOwner;
+                delete writable(candidate).staticElementIndex;
             }
         };
         for (const candidate of this.factIndex.matching([
@@ -1467,6 +1477,7 @@ export class BindingScopes {
 
     /** Invalidate one native map/object snapshot through all shared aliases. */
     public invalidateRecordProperties(value: Value): void {
+        if (value.staticElementsOwner) this.invalidateStaticElements(value);
         const properties = value.recordProperties;
         if (!properties) return;
         const invalidate = (candidate: Value): void => {
