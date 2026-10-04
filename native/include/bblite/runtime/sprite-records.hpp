@@ -178,6 +178,7 @@ struct BillboardSystemRecord {
 struct SpriteRendererRecord {
     std::vector<Sprite2DLayerHandle> layers;
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
+    js::Callback<Color4()> clear_value_reader{};
     bool clear = true;
     // `disposeSpriteRenderer` is idempotent upstream and every entry point
     // it owns checks this first, so the flag is the pin's own state rather
@@ -203,7 +204,13 @@ struct SpriteRendererRecord {
     // -- kept here rather than made fresh each frame, which reuses the
     // capacity after the first one.
     std::vector<std::function<void(double)>> before_update_running;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(clear_value_reader); }
 };
+
+/** The source renderer reads its retained clearColor when recording a pass. */
+inline Color4 sprite_renderer_clear_value(const SpriteRendererRecord& renderer) {
+    return renderer.clear_value_reader ? renderer.clear_value_reader() : renderer.clear_value;
+}
 
 /**
  * A texture an effect samples, under the binding name it was set by.

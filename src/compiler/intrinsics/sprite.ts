@@ -3,6 +3,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
+import { renderClosure } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import { isDataTuple, tupleComponents } from "../data-types.js";
@@ -62,6 +63,8 @@ export interface SpriteIntrinsicContext
             | "compileSpriteAtlas"
             | "sceneManifest"
             | "emit"
+            | "captureManagedClosureLines"
+            | "useNativeValue"
             | "propertyName"
             | "fail"
         > {}
@@ -715,30 +718,115 @@ function rejectDepthHostedStandaloneLayer(
 }
 
 /** `clearValue: { r, g, b, a }`, defaulting to the pinned opaque black. */
-function tupleClearValue(
+function spriteClearValue(
     context: SpriteIntrinsicContext,
     options: Value | undefined,
     call: ts.CallExpression,
-): string {
+): { color: string; reader: string } {
     const value = options?.recordProperties?.clearValue;
     if (!value) {
-        return "bbl::Color4{0.0f, 0.0f, 0.0f, 1.0f}";
+        return { color: "bbl::Color4{0.0f, 0.0f, 0.0f, 1.0f}", reader: "{}" };
+    }
+    const reader = (
+        color: string,
+        owners: readonly Value[],
+    ): { color: string; reader: string } => {
+        const closure = context.captureManagedClosureLines(() => {
+            for (const owner of owners) context.useNativeValue(owner);
+            context.emit({
+                kind: "control",
+                code: `return ${color};`,
+                transfer: "return",
+            });
+        });
+        return {
+            color: "bbl::Color4{}",
+            reader: renderClosure(closure, "", "bbl::Color4"),
+        };
+    };
+    if (value.kind === "data" && value.dataType?.kind === "struct") {
+        const type = value.dataType;
+        const fields = context.dataTypes.structFields(type.name, call);
+        // The Engine owns this callback outside managed cycle tracing. A plain
+        // numeric color cannot introduce a back-edge through an unrelated field.
+        if (
+            fields.some(
+                (field) => field.accessor || field.type.kind !== "number",
+            )
+        )
+            context.fail(
+                call,
+                "Retained sprite clear colors require numeric fields without accessors.",
+            );
+        context.dataTypes.markStoredObjectReferences(type);
+        const owner = context.bindings.pinValueToTemporary(
+            value,
+            "sprite_clear_owner",
+        );
+        const channels = ["r", "g", "b", "a"].map((name) => {
+            const field = fields.find(
+                (candidate) => candidate.sourceName === name,
+            );
+            if (
+                !field ||
+                field.type.kind !== "number" ||
+                field.optionalProperty
+            )
+                context.fail(
+                    call,
+                    "Sprite clear colors require four present numeric channels.",
+                );
+            return `static_cast<float>(${owner.cpp}->${field.name})`;
+        });
+        return reader(`bbl::Color4{${channels.join(", ")}}`, [owner]);
     }
     if (value.kind !== "record") {
         context.fail(
             call,
-            "createSpriteRenderer clearValue must be an object literal.",
+            "createSpriteRenderer clearValue requires a closed numeric record.",
         );
     }
-    const channel = (name: string, fallback: string): string => {
+    if (
+        Object.keys(value.recordGetters ?? {}).length ||
+        Object.keys(value.recordSetters ?? {}).length
+    )
+        context.fail(
+            call,
+            "Retained sprite clear colors require numeric fields without accessors.",
+        );
+    const dynamic = ["r", "g", "b", "a"].some((name) => {
         const component = value.recordProperties?.[name];
+        return (
+            component &&
+            (component.staticNumber === undefined ||
+                component.parameterBinding ||
+                component.sharedRecordScalar)
+        );
+    });
+    const retained = dynamic
+        ? context.bindings.materializeEscapingValue(value, "sprite_clear")
+        : value;
+    const owners: Value[] = [];
+    const channel = (name: string, fallback: string): string => {
+        const component = retained.recordProperties?.[name];
+        if (component) {
+            if (
+                component.kind !== "number" &&
+                component.dataType?.kind !== "number"
+            )
+                context.fail(
+                    call,
+                    "Sprite clear colors require numeric channels.",
+                );
+            owners.push(component);
+        }
         return component ? `static_cast<float>(${component.cpp})` : fallback;
     };
-    return (
+    const color =
         `bbl::Color4{${channel("r", "0.0f")}, ` +
         `${channel("g", "0.0f")}, ${channel("b", "0.0f")}, ` +
-        `${channel("a", "1.0f")}}`
-    );
+        `${channel("a", "1.0f")}}`;
+    return dynamic ? reader(color, owners) : { color, reader: "{}" };
 }
 
 function compilePickSprite2D(
@@ -2106,7 +2194,7 @@ function compileCreateSpriteRenderer(
         context.expectKind(layer, "sprite-layer", argumentAt(call, 1));
         rejectDepthHostedStandaloneLayer(context, layer, argumentAt(call, 1));
     }
-    const clearValue = tupleClearValue(context, options, call);
+    const clearValue = spriteClearValue(context, options, call);
     context.reachFeature("sprite:2d", call);
     context.reachFeature("renderer:sprite", call);
     context.sceneManifest.recordPureSpriteVertex();
@@ -2116,7 +2204,7 @@ function compileCreateSpriteRenderer(
             `bbl::create_sprite_renderer(${surface.cpp}, ` +
             `bbl::SpriteRendererOptions{${dataLayers ? spriteLayerVectorCpp(layers) : `{${(tupleLayers ?? []).map((layer) => layer.cpp).join(", ")}}`}, ` +
             `${property(options, "clear")?.cpp ?? "true"}, ` +
-            `${clearValue}})`,
+            `${clearValue.color}${clearValue.reader === "{}" ? "" : `, ${clearValue.reader}`}})`,
         engineCpp: surface.engineCpp ?? surface.cpp,
     };
 }

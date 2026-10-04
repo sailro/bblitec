@@ -1377,7 +1377,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
         json.field("index", index);
         json.field("registered", registered);
         json.field("clear", renderer.clear);
-        json.field("clearValue", renderer.clear_value);
+        json.field("clearValue", sprite_renderer_clear_value(renderer));
         json.key("layers");
         json.begin_array();
         for (const Sprite2DLayerHandle handle : renderer.layers) {

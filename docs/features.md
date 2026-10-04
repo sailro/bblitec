@@ -454,6 +454,7 @@ including skinned assets without animation clips.
 ## Sprites
 
 Sprite2D, billboards, atlases, animation, offscreen/depth targets, custom fragments and Y-sort are bounded.
+Sprite clear colors retain live numeric channels; accessor channels and owned colors with reference fields refuse.
 Transparent billboards and meshes share the pinned distance/order sort; mixed exact depth/order ties
 and mixed draws without a camera refuse because native lists lack the source's stable binding order.
 Custom cutout billboard order, alpha-to-coverage changes to a cutout system a registered

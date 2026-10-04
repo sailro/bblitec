@@ -4050,9 +4050,9 @@ public:
                                         : surface_view;
                 sprite_attachment.loadOp = renderer.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
                 sprite_attachment.storeOp = WGPUStoreOp_Store;
+                const Color4 clear_value = sprite_renderer_clear_value(renderer);
                 sprite_attachment.clearValue =
-                    WGPUColor{renderer.clear_value.r, renderer.clear_value.g,
-                              renderer.clear_value.b, renderer.clear_value.a};
+                    WGPUColor{clear_value.r, clear_value.g, clear_value.b, clear_value.a};
                 WGPURenderPassDescriptor sprite_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
                 sprite_descriptor.colorAttachmentCount = 1;
                 sprite_descriptor.colorAttachments = &sprite_attachment;
