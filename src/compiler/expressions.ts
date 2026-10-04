@@ -4074,16 +4074,6 @@ export class ExpressionLowerer {
                     closedEnumKey &&
                     indexedType.kind !== "optional" &&
                     !ownerHasOptionalProperties;
-                const resultType = totalClosedKey
-                    ? valueType
-                    : valueType.kind === "optional"
-                      ? valueType
-                      : indexedType.kind === "optional"
-                        ? indexedType
-                        : ({
-                              kind: "optional",
-                              inner: indexedType,
-                          } as const);
                 const valueCpp = this.context.dataTypes.cppType(valueType);
                 let entries: string[] = [];
                 const { value: entryLines, nativeCaptures } =
@@ -4134,9 +4124,12 @@ export class ExpressionLowerer {
                           )
                         : key.cpp;
                 const lookup = `${table}.${totalClosedKey ? "at" : "get"}(${keyExpression})`;
-                const ownedLookup = totalClosedKey
-                    ? `bbl::js::snapshot_value(${lookup})`
-                    : `${table}.get_owned(${keyExpression})`;
+                if (!totalClosedKey)
+                    return this.context.dataLowerer.mapPropertyValue(
+                        table,
+                        keyExpression,
+                        valueType,
+                    );
                 const recordValues = Object.values(
                     owner.recordProperties ?? {},
                 );
@@ -4159,10 +4152,10 @@ export class ExpressionLowerer {
                     )
                         ? recordValues[0]!.engineCpp
                         : undefined;
-                if (resultType.kind === "handle") {
+                if (valueType.kind === "handle") {
                     const value = this.context.dataLowerer.leafValue(
                         lookup,
-                        resultType,
+                        valueType,
                     );
                     if (
                         value.kind === "animation-group" &&
@@ -4176,33 +4169,10 @@ export class ExpressionLowerer {
                         ...(engineCpp ? { engineCpp } : {}),
                     };
                 }
-                if (
-                    valueType.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(valueType.name)
-                ) {
-                    // A shared pointer already carries JavaScript's
-                    // object-or-undefined state. Wrapping it in the
-                    // optional data type would later spell `.has_value()`
-                    // on a pointer, while narrowing it eagerly would lose
-                    // the missing-key guard.
-                    return {
-                        ...this.context.dataLowerer.leafValue(
-                            lookup,
-                            valueType,
-                        ),
-                        ownedCpp: ownedLookup,
-                        nativeLvalue: true,
-                    };
-                }
                 return {
-                    kind: "data",
-                    cpp: lookup,
-                    ownedCpp: ownedLookup,
+                    ...this.context.dataLowerer.leafValue(lookup, valueType),
+                    ownedCpp: `bbl::js::snapshot_value(${lookup})`,
                     nativeLvalue: true,
-                    dataType: resultType,
-                    ...(resultType.kind === "optional"
-                        ? { preserveUncheckedLookup: true as const }
-                        : {}),
                 };
             }
             const value = owner.recordProperties?.[property];

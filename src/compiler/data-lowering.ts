@@ -4901,7 +4901,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
-    private mapPropertyValue(
+    public mapPropertyValue(
         owner: string,
         key: string,
         type: DataType,

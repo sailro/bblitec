@@ -2910,38 +2910,9 @@ function compileMapDataMethod(
                 ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
-        if (
-            dataType.value.kind === "struct" &&
-            lowerer.context.dataTypes.isReferenceStruct(dataType.value.name)
-        ) {
-            // Shared object handles carry absence themselves. Do
-            // not wrap and immediately dereference Map.get: a miss
-            // must remain an empty handle for the source guard.
-            return {
-                ...lowerer.leafValue(
-                    `${narrowed.cpp}.get(${key})`,
-                    dataType.value,
-                ),
-                ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
-                nativeLvalue: true,
-                ...(slotFoundCpp ? { slotFoundCpp } : {}),
-            };
-        }
         return {
-            kind: "data",
-            cpp: `${narrowed.cpp}.get(${key})`,
-            ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
+            ...lowerer.mapPropertyValue(narrowed.cpp, key, dataType.value),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
-            // TypeScript flattens `(T | null) | undefined` to one
-            // nullable union. Preserve that shape so a single
-            // source guard narrows a Map whose value is nullable.
-            dataType:
-                dataType.value.kind === "optional"
-                    ? dataType.value
-                    : {
-                          kind: "optional",
-                          inner: dataType.value,
-                      },
         };
     }
     if (method === "set") {

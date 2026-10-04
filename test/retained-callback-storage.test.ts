@@ -33,6 +33,88 @@ function check(name: string, source: string): void {
 }
 
 check(
+    "dynamic raw callback tables preserve flat absence and dispatch",
+    `
+    function dispatch(key:string,value:number):number {
+        const offset=3;
+        const callbacks:Record<string,(input:number)=>number>={
+            first:input=>input+offset,
+            second:input=>input*2,
+        };
+        if(callbacks[key])return callbacks[key]!(value);
+        return -1;
+    }
+    const roots:Array<typeof dispatch>=[dispatch];
+    if(roots[0]!('first',4)!==7 || roots[0]!('second',4)!==8 || roots[0]!('missing',4)!==-1)
+        throw new Error('dynamic callable table');
+`,
+);
+
+check(
+    "map callback reads snapshot before ordered argument effects",
+    `
+    let order=0;
+    let state=2;
+    const originals:Array<(value:number)=>number>=[value=>value+state];
+    const callback=originals[0]!;
+    const callbacks=new Map<string,(value:number)=>number>();
+    callbacks.set('present',callback);
+    function owner():Map<string,(value:number)=>number>{order=order*10+1;return callbacks;}
+    function key():string{order=order*10+2;return 'present';}
+    function argument():number{order=order*10+3;callbacks.clear();state=7;return 3;}
+    const result=owner().get(key())?.(argument());
+    if(result!==10 || order!==123 || callbacks.size!==0)throw new Error('ordered callback snapshot');
+    const absent=callbacks.get('missing');
+    if(absent!==undefined || absent?.(argument())!==undefined || order!==123)
+        throw new Error('missing callback suppresses arguments');
+    callbacks.set('present',callback);
+    const retained=callbacks.get('present');
+    callbacks.delete('present');
+    if(retained!==callback || !retained || retained(4)!==11)
+        throw new Error('retained callback identity');
+`,
+);
+
+check(
+    "weak map callbacks retain captures after owner removal",
+    `
+    interface Key {id:number;}
+    const key:Key={id:1};
+    const missing:Key={id:2};
+    const state={value:4};
+    function retain():()=>number {
+        const callbacks=new WeakMap<Key,()=>number>();
+        const originals:Array<()=>number>=[()=>state.value];
+        const callback=originals[0]!;
+        callbacks.set(key,callback);
+        const saved=callbacks.get(key);
+        if(callbacks.get(missing)!==undefined || !saved || saved!==callback)
+            throw new Error('weak callback presence');
+        callbacks.delete(key);
+        return saved;
+    }
+    const saved=retain();state.value=9;
+    if(saved()!==9)throw new Error('retained callback capture');
+`,
+);
+
+check(
+    "shared map lookup lowering preserves nullable scalars and record identity",
+    `
+    const numbers=new Map<string,number|null>();
+    numbers.set('zero',0);numbers.set('null',null);
+    if(numbers.get('zero')!==0 || numbers.get('null')!==null || numbers.get('missing')!==undefined)
+        throw new Error('scalar lookup presence');
+    interface Item {value:number;}
+    const item:Item={value:2};
+    const records=new Map<string,Item>();records.set('present',item);
+    const saved=records.get('present');records.clear();item.value=7;
+    if(!saved || saved!==item || saved.value!==7 || records.get('missing')!==undefined)
+        throw new Error('record lookup owner');
+`,
+);
+
+check(
     "mapper writes remain live in returned records",
     `
     function update<T extends {value?:number}>(values:readonly T[],next:number):{items:(T & {value:number})[];next:number} {
