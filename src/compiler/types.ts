@@ -3059,6 +3059,8 @@ export interface WorkerCompilation {
 }
 
 export interface ResolvedCompileOptions extends DeploymentOptions {
+    /** An authored page replaces the default host, including its implicit canvas. */
+    hostPage?: HostPageProgram;
     deferredCapabilities?: "runtime-throw";
     workers?: WorkerCompilation;
     /** Reached query mutation requires native identities throughout this realm. */

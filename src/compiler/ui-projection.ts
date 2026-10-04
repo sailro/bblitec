@@ -92,6 +92,7 @@ import { registerUiImageAsset } from "./assets.js";
 import {
     canvasContextIds,
     engineCanvasIds,
+    isImplicitPrimaryCanvasLookup,
     primaryCanvasIds,
 } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -5323,6 +5324,7 @@ export class UiProjection {
         // before that host is constructed. Explicit companion elements and
         // application realms still use the retained document representation.
         if (!this.context.options.workers) {
+            if (isImplicitPrimaryCanvasLookup(this.context, call)) return false;
             const id = this.lookupElementId(call);
             if (
                 id !== undefined &&

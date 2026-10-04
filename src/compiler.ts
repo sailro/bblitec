@@ -542,6 +542,9 @@ function compileSourceApplication(
                 ? { publicUrl: deploymentPublicUrl(options.publicUrl) }
                 : {}),
             ...(workers ? { workers } : {}),
+            ...(options.hostPage && !workers?.namespace
+                ? { hostPage: options.hostPage }
+                : {}),
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
                 : {}),

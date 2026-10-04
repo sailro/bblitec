@@ -145,12 +145,22 @@ test("document lookup activates retained ownership before construction and prese
 });
 
 test("retained canvas metadata reads the native counter without recovery activation", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {createEngine} from "@babylonjs/lite";
         const canvas = document.querySelector("canvas")!;
         const engine = await createEngine(canvas);
         Object.assign(canvas.dataset, {drawCalls: engine.drawCallCount, ready: true});
-    `);
+    `,
+        {
+            nativeHostUi: {
+                sourcePath: "test/ui-registration-boundaries.test.ts",
+                elements: [
+                    { tag: "canvas", attributes: { id: "renderCanvas" } },
+                ],
+            },
+        },
+    );
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.ok(!result.manifest.features.includes("engine:device-recovery"));
     assert.equal(result.manifest.canvasReadyGate, true);

@@ -473,6 +473,7 @@ export function runRmlUiFixture(
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
         "/nologo",
+        "/bigobj",
         "/std:c++20",
         "/W4",
         "/WX",
