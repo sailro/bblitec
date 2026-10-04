@@ -59,6 +59,7 @@ const resourceMetadataFields = {
         "sharedRecordContainer",
         "retainedNativeRecord",
         "recordProperties",
+        "recordPropertyOrder",
         "recordOwnKeys",
         "moduleNamespace",
         "staticJson",

@@ -1,5 +1,6 @@
 import { EmissionMap, writable } from "./emission-transaction.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
+import { setRecordProperty } from "./object-statics.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -497,6 +498,7 @@ export interface AssignmentContext
             | "libraryGlobal"
             | "admissions"
             | "isRuntimeResourceConstruction"
+            | "isInRuntimeControlFlow"
             | "checker"
             | "classLowerer"
             | "dataTypes"
@@ -1363,9 +1365,7 @@ export function emitPropertyAssignment(
                         assigned,
                     );
                     if (bound) {
-                        writable((writable(owner).recordProperties ??= {}))[
-                            left.name.text
-                        ] = bound;
+                        setRecordProperty(owner, left.name.text, bound);
                         return;
                     }
                 }
@@ -1418,9 +1418,34 @@ export function emitPropertyAssignment(
                             "not stored per instance, so assigning it would " +
                             "change it for every instance.",
                     );
-                writable((writable(owner).recordProperties ??= {}))[
-                    left.name.text
-                ] = context.bindings.settleBuiltValue(assigned);
+                setRecordProperty(
+                    owner,
+                    left.name.text,
+                    context.bindings.settleBuiltValue(assigned),
+                );
+                return;
+            }
+            if (
+                owner.kind === "record" &&
+                !owner.dataType &&
+                !existing &&
+                !existingMethod &&
+                !owner.recordGetters?.[left.name.text]
+            ) {
+                if (context.isInRuntimeControlFlow())
+                    context.fail(
+                        expression,
+                        "A compile-time record cannot be populated from runtime control flow.",
+                    );
+                setRecordProperty(
+                    owner,
+                    left.name.text,
+                    context.bindings.pinValueToTemporary(
+                        assigned ?? context.compileValue(right),
+                        "record_member",
+                        right,
+                    ),
+                );
                 return;
             }
         }

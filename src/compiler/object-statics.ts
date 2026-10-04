@@ -43,6 +43,37 @@ type OwnObjectContext = Pick<
     "dataTypes" | "dataLowerer" | "fail" | "moduleNamespaces"
 >;
 
+/** Raw descriptor order, with JavaScript's integer keys first. */
+export function recordPropertyKeys(owner: Value): string[] {
+    const keys = owner.recordPropertyOrder ?? [
+        ...Object.keys(owner.recordProperties ?? {}),
+        ...Object.keys(owner.recordMethods ?? {}),
+        ...Object.keys(owner.recordGetters ?? {}),
+        ...Object.keys(owner.recordSetters ?? {}),
+    ];
+    return Object.keys(Object.fromEntries(keys.map((key) => [key, undefined])));
+}
+
+/** Change a raw data property without replacing the alias-shared tables. */
+export function setRecordProperty(
+    owner: Value,
+    key: string,
+    value: Value,
+): void {
+    if (owner.recordPropertyOrder && !owner.recordPropertyOrder.includes(key))
+        writable(owner.recordPropertyOrder).push(key);
+    writable((writable(owner).recordProperties ??= {}))[key] = value;
+}
+
+export function deleteRecordProperty(owner: Value, key: string): void {
+    if (owner.recordProperties) delete writable(owner.recordProperties)[key];
+    if (owner.recordMethods) delete writable(owner.recordMethods)[key];
+    if (owner.recordGetters) delete writable(owner.recordGetters)[key];
+    if (owner.recordSetters) delete writable(owner.recordSetters)[key];
+    const index = owner.recordPropertyOrder?.indexOf(key) ?? -1;
+    if (index !== -1) writable(owner.recordPropertyOrder!).splice(index, 1);
+}
+
 /** A string-typed value's native text, static or data. */
 function stringCpp(
     context: ObjectStaticContext,
@@ -618,9 +649,20 @@ function compileObjectAssign(
                 "A compile-time record cannot be populated from runtime control flow.",
             );
         }
-        const properties = fresh
-            ? { ...target.recordProperties }
-            : (writable(target).recordProperties ??= {});
+        const result = fresh
+            ? {
+                  ...target,
+                  recordProperties: { ...target.recordProperties },
+                  ...(target.recordPropertyOrder
+                      ? {
+                            recordPropertyOrder: [
+                                ...target.recordPropertyOrder,
+                            ],
+                        }
+                      : {}),
+              }
+            : target;
+        const properties = (writable(result).recordProperties ??= {});
         for (const source of sources) {
             for (const [key, value] of sourcePairs(source)) {
                 const existing = properties[key];
@@ -651,10 +693,10 @@ function compileObjectAssign(
                     };
                     continue;
                 }
-                writable(properties)[key] = value;
+                setRecordProperty(result, key, value);
             }
         }
-        return fresh ? { ...target, recordProperties: properties } : target;
+        return result;
     }
     if (target.kind === "data" && target.dataType?.kind === "struct") {
         const structType = target.dataType;

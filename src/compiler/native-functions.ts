@@ -872,13 +872,9 @@ export class NativeFunctionLowerer {
             )
         )
             return false;
-        const mutableReference = parameter.byReference && !parameter.readOnly;
-        if (
-            !mutableReference &&
-            !this.context.dataTypes.isReferenceStruct(parameter.type.name)
-        ) {
-            return true;
-        }
+        // Readonly callees still observe the complete object through own-key
+        // queries and returned aliases. A narrower value copy changes that
+        // contract just as a narrower reference copy changes mutation.
         const unwrapped = this.context.unwrap(argument);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return true;

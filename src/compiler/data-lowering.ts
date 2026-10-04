@@ -104,7 +104,11 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { structOwnEntries } from "./object-statics.js";
+import {
+    deleteRecordProperty,
+    setRecordProperty,
+    structOwnEntries,
+} from "./object-statics.js";
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
@@ -8418,7 +8422,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         const targetField = targetFields.get(
                             sourceField.sourceName,
                         );
-                        if (!targetField) continue;
+                        if (!targetField)
+                            this.context.fail(
+                                property,
+                                `Spread property '${sourceField.sourceName}' cannot be retained in the narrower '${dataType.name}' storage.`,
+                            );
                         const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
                         if (sourceField.type.kind === "optional") {
                             this.context.emit({
@@ -8719,10 +8727,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "A compile-time record cannot be edited from runtime control flow.",
                     );
                 }
-                if (recordOwner.recordProperties)
-                    delete writable(recordOwner.recordProperties)[
-                        key.staticString
-                    ];
+                deleteRecordProperty(recordOwner, key.staticString);
                 return;
             }
             const owner = this.compileDataPath(target.expression, "read");
@@ -8761,10 +8766,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "A compile-time record cannot be edited from runtime control flow.",
                     );
                 }
-                if (recordOwner.recordProperties)
-                    delete writable(recordOwner.recordProperties)[
-                        target.name.text
-                    ];
+                deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
             const field = this.compileDataPath(target, "write");
@@ -9755,9 +9757,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression,
                         "Module namespace properties are read-only.",
                     );
-                writable((writable(recordOwner).recordProperties ??= {}))[
-                    key.staticString
-                ] = assigned;
+                setRecordProperty(
+                    recordOwner,
+                    key.staticString,
+                    this.context.bindings.pinValueToTemporary(
+                        assigned,
+                        "record_member",
+                        expression.right,
+                    ),
+                );
                 return true;
             }
             // This first resolution only asks whether the target is a Map.

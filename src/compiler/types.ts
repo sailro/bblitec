@@ -2610,6 +2610,8 @@ export interface ValueFields {
     staticJson?: unknown;
     tupleElements?: readonly Value[];
     recordProperties?: Readonly<Record<string, Value>>;
+    /** Mutable creation order for a compile-time record's data and accessor keys. */
+    recordPropertyOrder?: readonly string[];
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /** Module namespace exports are live bindings and cannot be written through this record. */

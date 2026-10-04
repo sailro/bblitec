@@ -86,6 +86,7 @@ import {
     OBJECT_STATIC_HANDLERS,
     compileObjectPrototypeCall,
     ownObjectEntries,
+    recordPropertyKeys,
     structOwnArray,
     structOwnEntries,
 } from "./object-statics.js";
@@ -281,6 +282,7 @@ export interface ExpressionContext
             | "compileBrowserGeneratedString"
             | "reachFeature"
             | "resolveRecordMember"
+            | "compileRecordGetter"
             | "reachJsData"
             | "reachJsRandom"
             | "admissions"
@@ -4693,24 +4695,25 @@ export class ExpressionLowerer {
             dynamicSpread ||
             optionalKeysSpread
         ) {
+            // The expression creates its own properties. A contextual interface
+            // can be narrower, or open-ended, without changing those properties.
+            const record = this.context.probeEmission(() =>
+                this.compileStaticObjectValue(unwrapped, true),
+            );
+            if (record) return record;
             const contextual =
                 this.context.checker.getContextualType(unwrapped);
-            const type =
-                (contextual &&
-                    this.context.dataTypes.withDynamicJsonTypes(
-                        dynamicSpread || optionalKeysSpread,
-                        () =>
-                            this.context.dataTypes.fromTsType(
-                                contextual,
-                                unwrapped,
-                            ),
-                    )) ??
-                this.context.dataLowerer.dataTypeAt(unwrapped);
+            const type = this.context.dataTypes.withDynamicJsonTypes(
+                dynamicSpread || optionalKeysSpread,
+                () =>
+                    this.context.dataLowerer.dataTypeAt(unwrapped) ??
+                    (contextual &&
+                        this.context.dataTypes.fromTsType(
+                            contextual,
+                            unwrapped,
+                        )),
+            );
             if (type?.kind === "map" || dynamicSpread) {
-                const record = this.context.probeEmission(() =>
-                    this.compileStaticObjectValue(unwrapped, true),
-                );
-                if (record) return record;
                 const dictionary: DataType<"map"> =
                     type?.kind === "map"
                         ? type
@@ -4769,6 +4772,24 @@ export class ExpressionLowerer {
         > = {};
         const getters: Record<string, ts.GetAccessorDeclaration> = {};
         const setters: Record<string, ts.SetAccessorDeclaration> = {};
+        const ownKeys = new Set<string>();
+        const storeProperty = (name: string, value: Value): void => {
+            ownKeys.add(name);
+            properties[name] = value;
+            delete methods[name];
+            delete getters[name];
+            delete setters[name];
+        };
+        const storeMethod = (
+            name: string,
+            method: NonNullable<Value["recordMethods"]>[string],
+        ): void => {
+            ownKeys.add(name);
+            methods[name] = method;
+            delete properties[name];
+            delete getters[name];
+            delete setters[name];
+        };
         // A property value a later one touches the storage of, either
         // one writing it, is evaluated where JavaScript evaluates it (see
         // `evaluation-order.ts`).
@@ -4795,8 +4816,7 @@ export class ExpressionLowerer {
                 // field values; a `?` field's key is decided at run time.
                 if (
                     spread.kind === "data" &&
-                    spread.dataType?.kind === "struct" &&
-                    spread.recordProperties === undefined
+                    spread.dataType?.kind === "struct"
                 ) {
                     const entries = structOwnEntries(
                         this.context,
@@ -4812,10 +4832,9 @@ export class ExpressionLowerer {
                         );
                     }
                     for (const { key, value } of entries)
-                        properties[key] = member(
-                            value,
-                            index,
-                            property.expression,
+                        storeProperty(
+                            key,
+                            member(value, index, property.expression),
                         );
                     continue;
                 }
@@ -4843,10 +4862,31 @@ export class ExpressionLowerer {
                             `(received ${spread.kind}${spread.dataType ? ` ${JSON.stringify(spread.dataType)}` : ""}).`,
                     );
                 }
-                Object.assign(properties, spread.recordProperties ?? {});
-                Object.assign(methods, spread.recordMethods ?? {});
-                Object.assign(getters, spread.recordGetters ?? {});
-                Object.assign(setters, spread.recordSetters ?? {});
+                const readsGetters =
+                    Object.keys(spread.recordGetters ?? {}).length > 0;
+                for (const key of recordPropertyKeys(spread)) {
+                    const getter = spread.recordGetters?.[key];
+                    const method = spread.recordMethods?.[key];
+                    if (method && !getter) {
+                        storeMethod(key, method);
+                        continue;
+                    }
+                    const value = getter
+                        ? this.context.compileRecordGetter(spread, getter)
+                        : (spread.recordProperties?.[key] ?? {
+                              kind: "json-null" as const,
+                              cpp: "std::nullopt",
+                          });
+                    storeProperty(
+                        key,
+                        readsGetters
+                            ? this.context.bindings.pinValueToTemporary(
+                                  value,
+                                  "spread_member",
+                              )
+                            : member(value, index, property.expression),
+                    );
+                }
                 continue;
             }
             if (ts.isGetAccessorDeclaration(property)) {
@@ -4858,6 +4898,9 @@ export class ExpressionLowerer {
                     );
                 }
                 getters[name] = property;
+                ownKeys.add(name);
+                delete properties[name];
+                delete methods[name];
                 continue;
             }
             if (ts.isSetAccessorDeclaration(property)) {
@@ -4869,6 +4912,9 @@ export class ExpressionLowerer {
                     );
                 }
                 setters[name] = property;
+                ownKeys.add(name);
+                delete properties[name];
+                delete methods[name];
                 continue;
             }
             if (ts.isMethodDeclaration(property)) {
@@ -4879,7 +4925,7 @@ export class ExpressionLowerer {
                         "Static record methods require literal names.",
                     );
                 }
-                methods[name] = property;
+                storeMethod(name, property);
                 continue;
             }
             if (ts.isPropertyAssignment(property)) {
@@ -4895,15 +4941,15 @@ export class ExpressionLowerer {
                     ts.isIdentifier(initializer) &&
                     this.context.namesLocalFunction(initializer)
                 ) {
-                    methods[name] = initializer;
+                    storeMethod(name, initializer);
                     continue;
                 }
                 if (ts.isArrowFunction(initializer)) {
-                    properties[name] = this.compileValue(initializer);
+                    storeProperty(name, this.compileValue(initializer));
                     continue;
                 }
                 if (ts.isFunctionExpression(initializer)) {
-                    methods[name] = initializer;
+                    storeMethod(name, initializer);
                     continue;
                 }
                 const value = member(
@@ -4922,20 +4968,21 @@ export class ExpressionLowerer {
                           property.name,
                       )
                     : this.context.checker.getTypeAtLocation(property.name);
-                properties[name] =
+                storeProperty(
+                    name,
                     value.staticString !== undefined &&
-                    propertyType.isStringLiteral()
+                        propertyType.isStringLiteral()
                         ? { ...value, readOnly: true }
-                        : value;
+                        : value,
+                );
             } else if (ts.isShorthandPropertyAssignment(property)) {
                 if (this.context.namesLocalFunction(property.name)) {
-                    methods[property.name.text] = property.name;
+                    storeMethod(property.name.text, property.name);
                     continue;
                 }
-                properties[property.name.text] = member(
-                    this.laneValue(property.name),
-                    index,
-                    property.name,
+                storeProperty(
+                    property.name.text,
+                    member(this.laneValue(property.name), index, property.name),
                 );
             } else {
                 this.context.fail(
@@ -4960,6 +5007,7 @@ export class ExpressionLowerer {
             // plain property already holds a resolved value.
             ...(closes
                 ? {
+                      recordPropertyOrder: [...ownKeys],
                       ...this.context.captureRecordScopes(),
                       ...(this.context.isInRuntimeIteration() ||
                       this.context.isInNativeFunctionBody()

@@ -1898,9 +1898,9 @@ export class DataTypeRegistry {
         // After the symbol-named lookups above, which cost less than an index
         // signature query and never describe a dictionary.
         const dictionary = this.fromIndexSignatureType(type, node);
-        if (dictionary) {
-            return dictionary;
-        }
+        // An open index signature is not a closed record of its named fields.
+        // Leave an unrepresented entry type on the source-specialized path.
+        if (dictionary !== undefined) return dictionary ?? undefined;
         const functionType = this.fromFunctionType(type, node);
         if (functionType) return functionType;
         if (type.getConstructSignatures().length > 0) {
@@ -4192,13 +4192,13 @@ export class DataTypeRegistry {
      * `{ [id: string]: number }`, or an interface declaring named entries
      * of that same type beside the signature -- is a dictionary: a
      * string-keyed map whose declared members are ordinary entries.
-     * (`Record<string, T>` arrives through the alias above.) A member the
-     * signature does not cover keeps the type a struct.
+     * (`Record<string, T>` arrives through the alias above.) A present but
+     * unrepresented signature returns null, preventing closed-record fallback.
      */
     private fromIndexSignatureType(
         type: ts.Type,
         node: ts.Node,
-    ): DataType | undefined {
+    ): DataType | null | undefined {
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
         }
@@ -4225,9 +4225,7 @@ export class DataTypeRegistry {
                     index.type,
                 ),
             );
-        if (!uniform) {
-            return undefined;
-        }
+        if (!uniform) return null;
         const value = this.fromStoredTsType(index.type, node);
         return value
             ? {
@@ -4236,7 +4234,7 @@ export class DataTypeRegistry {
                   dictionary: true,
                   value: this.markStoredObjectReferences(value),
               }
-            : undefined;
+            : null;
     }
 
     private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
