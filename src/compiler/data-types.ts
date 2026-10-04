@@ -2681,6 +2681,9 @@ export class DataTypeRegistry {
         if (
             type.types.some(
                 (member) =>
+                    // Class instances retain their nominal owner; their fields
+                    // alone cannot represent instanceof or private brands.
+                    member.symbol?.declarations?.some(ts.isClassDeclaration) ||
                     member.getCallSignatures().length > 0 ||
                     member.getConstructSignatures().length > 0 ||
                     this.checker.getIndexInfosOfType(member).length > 0,
