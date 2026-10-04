@@ -3,7 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import test from "node:test";
-import { planImportedModuleInitializers } from "../src/compiler/module-initializers.js";
+import {
+    planEntryModuleState,
+    planImportedModuleInitializers,
+} from "../src/compiler/module-initializers.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
 import { compileSource } from "../src/compiler.js";
@@ -11,6 +14,103 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+
+test("pinned composition inputs stay static while pinned writers retain module owners", (t) => {
+    const directory = resolve("artifacts/module-pinned-call-effects");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "composition.ts"),
+        `export const names=["hip"];`,
+    );
+    writeFileSync(
+        join(directory, "writer.ts"),
+        `import {normalizeVec3ToRef,scaleVec3ToRef} from "@babylonjs/lite";
+         const input={x:3,y:0,z:4};
+         export const output={x:0,y:0,z:0};
+         const alias=output;
+         export function normalize():void {normalizeVec3ToRef(input,alias);}
+         export function grow():void {scaleVec3ToRef(alias,2,alias);}`,
+    );
+    const source = `
+        import {createAnimationGroupMask} from "@babylonjs/lite";
+        import {names} from "./composition.js";
+        import {output,normalize,grow} from "./writer.js";
+        const localNames=["child"];
+        function main():void {
+            const importedMask=createAnimationGroupMask(names);
+            const localMask=createAnimationGroupMask(localNames);
+            if(names[0]!=="hip"||localNames[0]!=="child")throw new Error("composition input");
+            const saved=output;
+            normalize();
+            if(output!==saved||Math.abs(saved.x-0.6)>1e-12||Math.abs(saved.z-0.8)>1e-12)
+                throw new Error("pinned writer owner");
+            grow();
+            if(Math.abs(output.x-1.2)>1e-12||Math.abs(output.z-1.6)>1e-12)
+                throw new Error("pinned writer alias");
+        }
+        main();
+    `;
+    const fileName = join(directory, "entry.ts");
+    const { program, sourceFile, checker } = createCompilerProgram(
+        source,
+        fileName,
+    );
+    const symbols = new CompilerSymbols(checker);
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            symbols,
+        ).map((file) => basename(file.fileName)),
+        ["writer.ts"],
+    );
+    assert.deepEqual(
+        planEntryModuleState(program, sourceFile, checker, symbols),
+        [],
+    );
+    const result = compileSource(source, { fileName });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "module-pinned-call-effects", result.cpp);
+});
+
+test("unresolved pinned calls and destructured writers retain conservative module owners", () => {
+    const directory = resolve("artifacts/module-pinned-call-unknown");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "dependency.ts"),
+        `export const caster={worldMatrixVersion:0};
+         export const output={value:0};`,
+    );
+    const { program, sourceFile, checker } = createCompilerProgram(
+        `import type {CsmRefitGate} from "@babylonjs/lite";
+         import {caster,output} from "./dependency.js";
+         declare const gate:CsmRefitGate<{worldMatrixVersion:number}>;
+         const localCaster={worldMatrixVersion:0};
+         function write({out}:{out:{value:number}}):void {out.value=7;}
+         gate.markDynamic(caster);
+         gate.markDynamic(localCaster);
+         write({out:output});`,
+        join(directory, "entry.ts"),
+    );
+    const symbols = new CompilerSymbols(checker);
+    assert.deepEqual(
+        planImportedModuleInitializers(
+            program,
+            sourceFile,
+            checker,
+            symbols,
+        ).map((file) => basename(file.fileName)),
+        ["dependency.ts"],
+    );
+    assert.deepEqual(
+        planEntryModuleState(program, sourceFile, checker, symbols).map(
+            (statement) => statement.getText(),
+        ),
+        ["const localCaster={worldMatrixVersion:0};"],
+    );
+});
 
 test("imported scratch records retain writes through call arguments and aliases", (t) => {
     const directory = resolve("artifacts/module-call-mutations");

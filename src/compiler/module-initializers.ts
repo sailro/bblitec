@@ -5,7 +5,12 @@ import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { libraryArgumentIsReadOnly } from "./library-call-effects.js";
-import { callArgumentIsReadOnly } from "./user-functions.js";
+import {
+    callArgumentIsReadOnly,
+    isSupportedFunction,
+    parameterIsReadOnly,
+} from "./user-functions.js";
+import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     accessedPropertySymbol,
     aliasTarget,
@@ -225,6 +230,35 @@ function isMutatedContainer(
     );
 }
 
+function pinnedCallArgumentIsReadOnly(
+    declaration: ts.Declaration | undefined,
+    index: number,
+): boolean {
+    if (!declaration || !isEngineDeclaration(declaration)) return false;
+    const engine = engineBodies();
+    const bodies = engine.bodies(declaration);
+    // A missing mutation proof is not a read-only proof: interface members
+    // and unsupported parameter bindings retain conservative storage.
+    return (
+        bodies !== undefined &&
+        bodies.length > 0 &&
+        bodies.every((body) => {
+            const parameter = body.parameters[index];
+            return (
+                isSupportedFunction(body) &&
+                parameter !== undefined &&
+                !parameter.dotDotDotToken &&
+                ts.isIdentifier(parameter.name) &&
+                parameterIsReadOnly(
+                    engine.checkerFor(body),
+                    body,
+                    parameter.name,
+                )
+            );
+        })
+    );
+}
+
 /**
  * Every name whose container `sourceFile` writes INTO -- a field store, an
  * element store, an increment through it, a `delete`, or a mutating
@@ -269,12 +303,14 @@ function collectMutatedContainerSymbols(
             if (alias && origin) aliases.set(alias, origin);
         }
         if (ts.isCallExpression(node)) {
+            const called = checker.getResolvedSignature(node)?.declaration;
             node.arguments.forEach((argument, index) => {
                 if (
                     !typeCanCarryReference(
                         checker.getTypeAtLocation(argument),
                     ) ||
                     libraryArgumentIsReadOnly(checker, node, index) ||
+                    pinnedCallArgumentIsReadOnly(called, index) ||
                     callArgumentIsReadOnly(checker, node, index)
                 )
                     return;
