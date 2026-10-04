@@ -153,6 +153,14 @@
     {
       "summary": "Scope multiline record projection loops without changing their conversions.",
       "applied": true
+    },
+    {
+      "summary": "Keep unchecked dictionary presence separate from declared Map lookup absence so source guards retain normal narrowing.",
+      "applied": true
+    },
+    {
+      "summary": "Project owned snapshots with the selected optional or union payload so receiver retention preserves its native type and evaluates lookup once.",
+      "applied": true
     }
   ]
 }
