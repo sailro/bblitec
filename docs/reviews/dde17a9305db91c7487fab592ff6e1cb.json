@@ -161,6 +161,10 @@
     {
       "summary": "Project owned snapshots with the selected optional or union payload so receiver retention preserves its native type and evaluates lookup once.",
       "applied": true
+    },
+    {
+      "summary": "Retain each native Error payload in its matching constructor branch, avoiding a redundant exception pointer store and reset.",
+      "applied": true
     }
   ]
 }
