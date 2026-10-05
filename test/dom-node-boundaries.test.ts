@@ -52,6 +52,10 @@ svg.setAttribute('width', '80'); svg.setAttribute('height', '80');
 if (!svg.toggleAttribute('hidden') || !svg.hasAttribute('hidden') || svg.toggleAttribute('hidden', false)) throw new Error('toggle attribute');
 host.setAttribute('data-value', 'kept');
 if (!host.toggleAttribute('data-value', true) || host.getAttribute('data-value') !== 'kept') throw new Error('forced attribute preserved');
+let invalidAttribute = 0;
+try { host.toggleAttribute('', false); }
+catch(error) { if (!error.message.includes('attribute name cannot be empty')) throw error; invalidAttribute++; }
+if (invalidAttribute !== 1) throw new Error('unchanged attribute validation');
 for (const tag of ['line', 'ellipse', 'polyline', 'polygon'] as const) {
     const shape = document.createElementNS('http://www.w3.org/2000/svg', tag);
     shape.setAttribute('fill', 'none'); shape.setAttribute('stroke', '#ff0000');

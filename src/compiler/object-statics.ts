@@ -110,18 +110,19 @@ export function structOwnEntries(
     const access = context.dataTypes.isReferenceStruct(dataType.name)
         ? "->"
         : ".";
-    const fields = (
-        owner.recordOwnKeys
-            ? owner.recordOwnKeys.map((key) =>
-                  context.dataTypes.structField(
-                      dataType.name,
-                      key,
-                      node,
-                      "accessors",
-                  ),
-              )
-            : context.dataTypes.structFields(dataType.name, node, "accessors")
-    ).filter((field) => !excludedKeys?.has(field.sourceName));
+    const sourceFields = owner.recordOwnKeys
+        ? owner.recordOwnKeys.map((key) =>
+              context.dataTypes.structField(
+                  dataType.name,
+                  key,
+                  node,
+                  "accessors",
+              ),
+          )
+        : context.dataTypes.structFields(dataType.name, node, "accessors");
+    const fields = excludedKeys?.size
+        ? sourceFields.filter((field) => !excludedKeys.has(field.sourceName))
+        : sourceFields;
     const accessor = fields.find(
         (field) => field.accessor && !field.accessorReceiver,
     );

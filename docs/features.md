@@ -273,6 +273,9 @@ and [compiled bindings](backends.md#compiled-binding-contract).
 
 Scene, sprite, effect and scene-less frame-graph drivers share frame orchestration. Immutable engine
 aliases retain identity; multiple engines in one entry and rebinding refuse.
+Stored engine contexts retain their owners through records, collections, callbacks and Promises;
+borrowed entry contexts check their lifetime. Implicit resource constructors require one unambiguous
+scoped engine context. A scene or raw resource handle alone does not supply that context.
 
 Runtime `msaaSamples` selects one sample for numeric 1, four otherwise, evaluated once. Engine reads,
 default scene targets and effect/frame-graph targets share this selection. Explicit numeric constants

@@ -547,13 +547,17 @@ double ui_child_count(Engine& engine, UiElementHandle node, bool elements_only) 
     if (!elements_only)
         static_cast<void>(ui_first_child_node(engine, node));
     const auto& children = ui_traversable(engine, node).children;
+    if (!elements_only)
+        return static_cast<double>(children.size());
     return static_cast<double>(std::count_if(children.begin(), children.end(), [&](auto child) {
-        return !elements_only || ui_element(engine, child).tag != "#text";
+        return ui_element(engine, child).tag != "#text";
     }));
 }
 
 bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string name,
                          std::optional<bool> force) {
+    if (name.empty())
+        throw std::runtime_error("Native UI attribute name cannot be empty.");
     const bool existed = ui_has_attribute(engine, element, name);
     const bool present = force.value_or(!existed);
     if (present != existed)

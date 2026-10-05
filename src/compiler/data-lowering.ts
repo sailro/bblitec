@@ -2492,20 +2492,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataTypesEqual(narrowed, inner)
         )
             return value;
-        const samePayload =
-            narrowed &&
-            narrowed.kind !== "optional" &&
-            (dataTypesEqual(narrowed, inner) ||
-                this.spanCompatible(inner, narrowed) ||
-                (["string", "enum"].includes(inner.kind) &&
-                    ["string", "enum"].includes(narrowed.kind)));
-        const selectedMember =
-            inner.kind === "union" &&
-            this.narrowedUnionMemberIndex(inner, narrowed, expression) >= 0;
         if (
             assertedNonNull ||
             ((!value.preserveUncheckedLookup || inner.kind !== "number") &&
-                (samePayload || selectedMember))
+                ((narrowed &&
+                    narrowed.kind !== "optional" &&
+                    (dataTypesEqual(narrowed, inner) ||
+                        this.spanCompatible(inner, narrowed) ||
+                        (["string", "enum"].includes(inner.kind) &&
+                            ["string", "enum"].includes(narrowed.kind)))) ||
+                    (inner.kind === "union" &&
+                        this.narrowedUnionMemberIndex(
+                            inner,
+                            narrowed,
+                            expression,
+                        ) >= 0)))
         ) {
             return this.narrowOptional(
                 this.presentOptionalValue(value, inner),

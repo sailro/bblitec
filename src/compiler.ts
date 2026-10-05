@@ -5485,52 +5485,68 @@ class Compiler implements LoweringServices {
     private scopedEngineContexts(): { cpp: string; owner: Value }[] {
         const frame = this.returnFrames[0];
         if (!frame) return [];
+        const candidates = new Map<string, Value>();
+        const ancestry = new Set<string>();
+        const seenValues = new Set<Value>();
         const collectType = (
             type: DataType,
             cpp: string,
-            seen: Set<string>,
-        ): string[] => {
-            if (type.kind === "handle" && type.handle === "engine")
-                return [`(*${cpp})`];
-            if (type.kind !== "struct" || seen.has(type.name)) return [];
-            const visited = new Set(seen).add(type.name);
-            const access = this.dataTypes.isReferenceStruct(type.name)
-                ? "->"
-                : ".";
-            return this.dataTypes
-                .structFields(type.name, this.sourceFile, "accessors")
-                .filter((field) => !field.accessor)
-                .flatMap((field) =>
-                    collectType(
-                        field.type,
-                        `${cpp}${access}${field.name}`,
-                        visited,
-                    ),
-                );
+            owner: Value,
+        ): void => {
+            if (type.kind === "handle" && type.handle === "engine") {
+                candidates.set(`(*${cpp})`, owner);
+                return;
+            }
+            if (type.kind !== "struct" || ancestry.has(type.name)) return;
+            ancestry.add(type.name);
+            try {
+                const access = this.dataTypes.isReferenceStruct(type.name)
+                    ? "->"
+                    : ".";
+                for (const field of this.dataTypes.structFields(
+                    type.name,
+                    this.sourceFile,
+                    "accessors",
+                )) {
+                    if (!field.accessor)
+                        collectType(
+                            field.type,
+                            `${cpp}${access}${field.name}`,
+                            owner,
+                        );
+                }
+            } finally {
+                ancestry.delete(type.name);
+            }
         };
-        const collect = (value: Value, seen: Set<Value>): string[] => {
-            if (seen.has(value)) return [];
-            seen.add(value);
-            if (value.kind === "engine") return [value.cpp];
+        const collect = (value: Value, owner: Value): void => {
+            if (seenValues.has(value)) return;
+            seenValues.add(value);
+            if (value.kind === "engine") {
+                candidates.set(value.cpp, owner);
+                return;
+            }
             if (value.dataType)
-                return collectType(value.dataType, value.cpp, new Set());
-            return Object.values(value.recordProperties ?? {}).flatMap(
-                (field) => collect(field, seen),
-            );
+                return collectType(value.dataType, value.cpp, owner);
+            for (const field of Object.values(value.recordProperties ?? {}))
+                collect(field, owner);
         };
         for (
             let index = this.bindings.variableScopes.length - 1;
             index >= frame.engineScopeDepth - 1;
             --index
         ) {
-            const candidates = new Map<string, Value>();
             for (const { value } of this.bindings.variableScopes[
                 index
-            ]!.values())
-                for (const cpp of collect(value, new Set()))
-                    candidates.set(cpp, value);
+            ]!.values()) {
+                seenValues.clear();
+                collect(value, value);
+            }
             if (candidates.size > 0)
-                return [...candidates].map(([cpp, owner]) => ({ cpp, owner }));
+                return Array.from(candidates, ([cpp, owner]) => ({
+                    cpp,
+                    owner,
+                }));
         }
         return [];
     }

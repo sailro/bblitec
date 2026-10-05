@@ -3629,6 +3629,8 @@ export class DeclarationLowerer {
                 cpp: temporary,
             };
             const elementType = value.dataType.element;
+            let defaultType: DataType | undefined;
+            let defaultsWhenEmpty = false;
             bindings.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) {
                     return;
@@ -3645,27 +3647,31 @@ export class DeclarationLowerer {
                     return;
                 }
                 if (element.initializer) {
-                    const indexed = this.context.checker.getIndexTypeOfType(
-                        this.context.checker.getTypeAtLocation(pattern),
-                        ts.IndexKind.Number,
-                    );
-                    const absent = indexed && nullability(indexed);
-                    if (absent?.null && absent.undefined)
-                        this.context.fail(
-                            element,
-                            "Destructuring defaults require distinguishable null and undefined array elements.",
+                    if (!defaultType) {
+                        const indexed = this.context.checker.getIndexTypeOfType(
+                            this.context.checker.getTypeAtLocation(pattern),
+                            ts.IndexKind.Number,
                         );
-                    const defaultsWhenEmpty =
-                        absent?.undefined &&
-                        (elementType.kind === "optional" ||
-                            (elementType.kind === "struct" &&
-                                this.context.dataTypes.isReferenceStruct(
-                                    elementType.name,
-                                )));
-                    const type =
-                        defaultsWhenEmpty && elementType.kind === "optional"
-                            ? elementType.inner
-                            : elementType;
+                        const absent = indexed && nullability(indexed);
+                        if (absent?.null && absent.undefined)
+                            this.context.fail(
+                                element,
+                                "Destructuring defaults require distinguishable null and undefined array elements.",
+                            );
+                        defaultsWhenEmpty = Boolean(
+                            absent?.undefined &&
+                            (elementType.kind === "optional" ||
+                                (elementType.kind === "struct" &&
+                                    this.context.dataTypes.isReferenceStruct(
+                                        elementType.name,
+                                    ))),
+                        );
+                        defaultType =
+                            defaultsWhenEmpty && elementType.kind === "optional"
+                                ? elementType.inner
+                                : elementType;
+                    }
+                    const type = defaultType;
                     const lane = `${temporary}[${index}]`;
                     const present =
                         `${temporary}.size() > ${index}` +
@@ -3889,10 +3895,18 @@ export class DeclarationLowerer {
                                     inner,
                                 ),
                         );
+                        const present =
+                            field.type.kind === "optional"
+                                ? optionalPresentCpp(storedFieldCpp)
+                                : `static_cast<bool>(${storedFieldCpp})`;
+                        const selected =
+                            field.type.kind === "optional"
+                                ? `*${storedFieldCpp}`
+                                : storedFieldCpp;
                         this.bindCopiedDefault(
                             name,
                             inner,
-                            `${field.type.kind === "optional" ? optionalPresentCpp(storedFieldCpp) : `static_cast<bool>(${storedFieldCpp})`} ? ${field.type.kind === "optional" ? `*${storedFieldCpp}` : storedFieldCpp} : ${this.context.dataLowerer.armExpression(element.initializer, fallback.lines, fallback.value, inner)}`,
+                            `${present} ? ${selected} : ${this.context.dataLowerer.armExpression(element.initializer, fallback.lines, fallback.value, inner)}`,
                         );
                         continue;
                     }
