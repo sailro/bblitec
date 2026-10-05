@@ -1,0 +1,21 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Readonly parameter ownership checks skip checker resolution for representations other than borrowed array views.",
+      "applied": true
+    },
+    {
+      "summary": "Unique array-union selection scans members without building filtered result arrays.",
+      "applied": true
+    },
+    {
+      "summary": "Numeric lowering memoizes non-null assertion inspection within each expression.",
+      "applied": true
+    },
+    {
+      "summary": "Optional narrowing names payload compatibility and union selection separately instead of nesting both predicates.",
+      "applied": true
+    }
+  ]
+}
