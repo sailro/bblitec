@@ -129,6 +129,7 @@ export const featureSources: Record<Feature, string[]> = {
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
     "material:shader-storage": [],
+    "material:shader-external-texture": [],
     "material:standard": [],
     "material:standard-diffuse-render-texture": [],
     "material:standard-diffuse-pixels-texture": [],

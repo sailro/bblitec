@@ -117,18 +117,13 @@ export function containsValueNode(
     });
 }
 
-/**
- * A function body that allocates a browser canvas of either spelling,
- * through the DOM library's own `OffscreenCanvas` or `document`.
- */
-export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
+/** A body that creates a `<tag>` element through the DOM library's `document`. */
+export function createsElement(
+    node: ts.Node,
+    checker: ts.TypeChecker,
+    tag: string,
+): boolean {
     return containsValueNode(node, (child) => {
-        if (
-            ts.isNewExpression(child) &&
-            libraryGlobal(checker, child.expression) === "OffscreenCanvas"
-        ) {
-            return true;
-        }
         const firstArgument = ts.isCallExpression(child)
             ? child.arguments[0]
             : undefined;
@@ -140,9 +135,24 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
                 "document" &&
             firstArgument !== undefined &&
             ts.isStringLiteral(firstArgument) &&
-            firstArgument.text === "canvas"
+            firstArgument.text === tag
         );
     });
+}
+
+/**
+ * A function body that allocates a browser canvas of either spelling,
+ * through the DOM library's own `OffscreenCanvas` or `document`.
+ */
+export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
+    return (
+        containsValueNode(
+            node,
+            (child) =>
+                ts.isNewExpression(child) &&
+                libraryGlobal(checker, child.expression) === "OffscreenCanvas",
+        ) || createsElement(node, checker, "canvas")
+    );
 }
 
 /**
@@ -333,22 +343,8 @@ function localFunctionDeclaration(
 function returnShape(
     declaration: ts.FunctionDeclaration,
 ): "value" | "record" | undefined {
-    const returns: ts.ReturnStatement[] = [];
-    forEachAnalysisNode(
-        declaration.body!,
-        (node) => {
-            if (ts.isReturnStatement(node)) returns.push(node);
-        },
-        {
-            includeRoot: false,
-            skip: (node) =>
-                ts.isFunctionDeclaration(node) ||
-                ts.isFunctionExpression(node) ||
-                ts.isArrowFunction(node),
-        },
-    );
-    const returned = returns[0]?.expression;
-    if (returns.length !== 1 || !returned) return undefined;
+    const returned = singleReturnedExpression(declaration);
+    if (!returned) return undefined;
     if (!ts.isObjectLiteralExpression(returned)) return "value";
     return returned.properties.every(
         (property) =>
@@ -357,6 +353,29 @@ function returnShape(
     )
         ? "record"
         : undefined;
+}
+
+/**
+ * What a function's one top-level `return` returns, or undefined when the
+ * body has none, several, or a bare one. Returns inside nested functions,
+ * methods and accessors are theirs. Several returns produce a result that depends on which
+ * arm ran, and one execution cannot say that.
+ */
+export function singleReturnedExpression(
+    declaration: ts.FunctionDeclaration,
+): ts.Expression | undefined {
+    const returns: ts.ReturnStatement[] = [];
+    forEachAnalysisNode(
+        declaration.body!,
+        (node) => {
+            if (ts.isReturnStatement(node)) returns.push(node);
+        },
+        {
+            includeRoot: false,
+            skip: ts.isFunctionLike,
+        },
+    );
+    return returns.length === 1 ? returns[0]!.expression : undefined;
 }
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -392,7 +411,31 @@ export function closureModules(
     return { entry, modules, files };
 }
 
-const browserTextureTargetExport = "__bblBrowserTextureTarget";
+/**
+ * A closure's bake-key inputs: each source file and each transpiled module,
+ * by path, so moving a module is a different closure even when its text is
+ * not.
+ */
+export function closureBakeInputs(
+    graph: Pick<
+        NonNullable<ReturnType<typeof closureModules>>,
+        "files" | "modules"
+    >,
+): Uint8Array[] {
+    return [
+        ...graph.files.flatMap(({ path, source }) => [
+            Buffer.from(`${path}\n`, "utf8"),
+            source,
+        ]),
+        ...Object.values(graph.modules).flatMap((entry) => [
+            Buffer.from(`${entry.key}\n`, "utf8"),
+            Buffer.from(entry.javascript, "utf8"),
+        ]),
+    ];
+}
+
+/** The name `closureModules` exposes the executed function under. */
+export const browserTextureTargetExport = "__bblBrowserTextureTarget";
 
 /**
  * Same-process replay in front of the durable bake cache: a scene calling
@@ -485,16 +528,7 @@ export function bakeBrowserTextureFunction(
     }
     const bake = (): Uint8Array =>
         Buffer.from(run(graph.modules, graph.entry), "utf8");
-    const inputs = [
-        ...graph.files.flatMap(({ path, source }) => [
-            Buffer.from(`${path}\n`, "utf8"),
-            source,
-        ]),
-        ...Object.values(graph.modules).flatMap((entry) => [
-            Buffer.from(`${entry.key}\n`, "utf8"),
-            Buffer.from(entry.javascript, "utf8"),
-        ]),
-    ];
+    const inputs = closureBakeInputs(graph);
     const parameters = {
         module: graph.entry,
         function: shape.name,
@@ -667,10 +701,6 @@ function decodeTextureOptions(
  */
 function browserTextureDriverScript(): string {
     return `
-        const __bblPinnedModules = ${JSON.stringify([...babylonPackages])};
-        const __bblIsPinnedModule = (specifier) =>
-            __bblPinnedModules.some(
-                (name) => specifier === name || specifier.startsWith(name + "/"));
         const textures = [];
         const toBytes = (value) =>
             ArrayBuffer.isView(value)
@@ -739,33 +769,7 @@ function browserTextureDriverScript(): string {
                 },
             },
         );
-        const loaded = new Map();
-        const loadModule = (key) => {
-            const cached = loaded.get(key);
-            if (cached) return cached.exports;
-            const entry = __bblModules[key];
-            if (!entry) {
-                throw new Error(
-                    "Module '" + key + "' is outside the bounded browser texture closure.");
-            }
-            const module = { exports: {} };
-            loaded.set(key, module);
-            const require = (specifier) => {
-                if (__bblIsPinnedModule(specifier)) {
-                    return babylonStub;
-                }
-                const target = entry.resolved[specifier];
-                if (!target) {
-                    throw new Error(
-                        "Import '" + specifier + "' is outside the bounded browser " +
-                            "texture closure.");
-                }
-                return loadModule(target);
-            };
-            new Function("module", "exports", "require", entry.javascript)(
-                module, module.exports, require);
-            return module.exports;
-        };
+        ${closureModuleLoaderScript("browser texture", "babylonStub")}
         const describe = (value) => {
             if (value && typeof value === "object" &&
                 typeof value.__bblTexture === "number") {
@@ -800,6 +804,51 @@ function browserTextureDriverScript(): string {
                         "returned, so its texture is not what the scene binds.");
             }
             return JSON.stringify({ textures, result });
+        };
+    `;
+}
+
+/**
+ * The page-side CommonJS loader over a transpiled closure (`__bblModules`):
+ * `loadModule(key)` evaluates one module, resolving a repository sibling
+ * inside the closure and a pinned import to the JavaScript expression
+ * `pinned`; anything else is outside the closure and throws.
+ */
+export function closureModuleLoaderScript(
+    label: string,
+    pinned: string,
+): string {
+    return `
+        const __bblPinnedModules = ${JSON.stringify([...babylonPackages])};
+        const __bblIsPinnedModule = (specifier) =>
+            __bblPinnedModules.some(
+                (name) => specifier === name || specifier.startsWith(name + "/"));
+        const loaded = new Map();
+        const loadModule = (key) => {
+            const cached = loaded.get(key);
+            if (cached) return cached.exports;
+            const entry = __bblModules[key];
+            if (!entry) {
+                throw new Error(
+                    "Module '" + key + "' is outside the bounded ${label} closure.");
+            }
+            const module = { exports: {} };
+            loaded.set(key, module);
+            const require = (specifier) => {
+                if (__bblIsPinnedModule(specifier)) {
+                    return ${pinned};
+                }
+                const target = entry.resolved[specifier];
+                if (!target) {
+                    throw new Error(
+                        "Import '" + specifier + "' is outside the bounded ${label} " +
+                            "closure.");
+                }
+                return loadModule(target);
+            };
+            new Function("module", "exports", "require", entry.javascript)(
+                module, module.exports, require);
+            return module.exports;
         };
     `;
 }

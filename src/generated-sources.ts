@@ -345,6 +345,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["material:shader"],
     },
     {
+        source: "upstream/src/material_shader_external.cpp",
+        features: ["material:shader-external-texture"],
+    },
+    {
         source: "upstream/src/effect_renderer.cpp",
         features: ["effect:wrapper"],
     },

@@ -126,9 +126,10 @@ test("scene replacement restarts both backends without retaining a dead root", (
     const dispatch = readFileSync("native/src/pal_sdl.cpp", "utf8");
     const backends = [sceneBackendSource("sdl"), sceneBackendSource("dawn")];
     assert.match(runtime, /bool renderer_restart_requested = false;/);
+    // The run ends only without a restart, unloading the page first.
     assert.match(
         dispatch,
-        /if \(!engine\.renderer_restart_requested\)\s+co_return 0;/,
+        /if \(!engine\.renderer_restart_requested\) \{[^}]*dispatch_page_lifecycle\([\s\S]*?co_return 0;/,
     );
     for (const backend of backends) {
         assert.match(

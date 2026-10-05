@@ -48,6 +48,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Camera input | Pinned handlers take SDL relative motion as client-pixel deltas and SDL keyboard state as the held KeyboardEvent.code set |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
 | Skinning | Eight loaded influences reduced to four, for drawing and skeleton shadow bounds |
+| Video external textures | A producer's one video is its frame as Chromium's WebGPU import yields it, baked as RGBA8 and sampled as a 2D texture; a frame or state that moves after the producer returns refuses. Its one method sets the readyState it was measured to leave, and refuses when its body reaches beyond the producer's own objects |
 | Thin-instance culling | Admitted paths may use the pin's all-active fallback |
 | Splats | Synchronous render-thread sorting; draw/sort/picking share cloud identity |
 

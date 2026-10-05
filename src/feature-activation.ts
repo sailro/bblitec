@@ -721,6 +721,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         // program through the compiled program record, not this name.
         consumers: INVENTORY,
     },
+    "material:shader-external-texture": {
+        provenance:
+            "src/material/shader/shader-external-texture.ts + " +
+            "src/texture/external-texture.ts",
+        consumers: CMAKE,
+    },
     "material:node": {
         provenance: "src/material/node/node-material.ts",
         consumers: ["features.cmake", "variant table"],

@@ -833,6 +833,7 @@ export class RendererLowerer {
                 name: program.name,
                 samplers: reflection.samplers,
                 samplerDeclarations: reflection.samplerDeclarations,
+                externalTextures: program.externalTextures?.length ?? 0,
                 storageBuffers: reflection.storageBuffers,
                 topology: program.topology ?? "triangle-list",
                 instanceColors: program.useThinInstanceColors === true,
@@ -899,6 +900,7 @@ export class RendererLowerer {
                     `ShaderStorageBufferInfo{"${buffer.name}", ${buffer.vertex}, ${buffer.fragment}}`,
             )
             .join(", ")}},
+        ${info.externalTextures}u,
     },`,
             )
             .join("\n");
@@ -949,6 +951,7 @@ ${options.standardVertexAlpha ? "#include <bblite/js_data.hpp>\n" : ""}\
 // CameraMatrixScalar: the width the camera's world is kept at, which the
 // view transpose below reads it back in.
 #include <bblite/upstream/camera_math.hpp>
+#include <bblite/features/shader_external_textures.hpp>
 
 #include <array>
 #include <optional>
@@ -1068,6 +1071,9 @@ struct RenderItem {
     bool clockwise_front_face = false;
     bool alpha_to_coverage = false;
     bool transmissive = false;
+    // The pin's direct bucket: a shader material declaring external
+    // textures rebinds them per draw, after the opaque bundle replays.
+    bool direct = false;
     bool skybox_mode = false;
     double order = 0.0;
 };
@@ -1183,17 +1189,26 @@ struct ShaderVariantInfo {
     ShaderVariantStageBlock vertex;
     ShaderVariantStageBlock fragment;
     // The material's declared sampler names, in the order its samplers
-    // option gave them -- which is the order setShaderTexture indexed and
-    // the order the material record stores. The compiled stage may keep
-    // fewer, at its own dense registers, so a backend that binds by
+    // option gave them and then its externalTextures -- which is the order
+    // the setters index and the material record stores. The compiled stage
+    // may keep fewer, at its own dense registers, so a backend that binds by
     // register looks the surviving name up here.
     std::vector<const char*> samplers;
     std::vector<ShaderSamplerShape> sampler_shapes;
     std::vector<ShaderStorageBufferInfo> storage_buffers;
+    // How many trailing samplers are the material's externalTextures: the
+    // slots setShaderExternalTexture fills with a video's frame.
+    std::uint32_t external_textures = 0;
 };
 
 std::uint32_t shader_variant_count();
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant);
+
+#if BBLITE_SHADER_EXTERNAL_TEXTURES
+// The bind-time checks the pin runs whenever a shader packet binds its
+// external textures (material_shader_external.cpp).
+void require_shader_external_textures(const Engine& engine, const RenderPlan& plan);
+#endif
 
 struct PbrUniforms {
     std::array<float, 4> light_direction{};
@@ -1481,6 +1496,8 @@ ${lowerRenderBucket(this.context, options)}
         ? RenderCullMode::none
         : RenderCullMode::back;
     item.shader_variant = material.shader_variant;
+    item.direct = material.shader_material &&
+        shader_variant_info(material.shader_variant).external_textures > 0;
     item.alpha_to_coverage = material.alpha_to_coverage;
     item.transmissive = material.transmission_factor > 0.0f ||
         !material.transmission_texture.bytes.empty();
@@ -1611,8 +1628,9 @@ void append_draw(
     list.commands.push_back(command);
 }
 
-// pin-adopted(opaque-order): buildBindings orders the opaque/direct bucket
-// by renderable.order. Equal defaults preserve the source _renderables walk
+// pin-adopted(opaque-order): buildBindings orders the opaque and direct
+// buckets by renderable.order and the pass draws the direct one after the
+// opaque bundle. Equal defaults preserve the source _renderables walk
 // through stable_sort; an explicit Mesh.renderOrder moves only the draws the
 // source asked it to move.
 void order_draw_lists(RenderDrawLists& lists) {
@@ -1620,6 +1638,7 @@ void order_draw_lists(RenderDrawLists& lists) {
         lists.opaque.commands.begin(),
         lists.opaque.commands.end(),
         [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
+            if (left.item.direct != right.item.direct) return right.item.direct;
             return left.item.order < right.item.order;
         });
 }
@@ -3041,11 +3060,11 @@ ${
      * `render_pipeline_kind` are each paired with the pinned line they
      * transcribe, so a pin retune fails generation at the rule that moved.
      *
-     * The pinned direct bucket (`r._direct`) folds into the native opaque
-     * list: no reached renderable sets it (sprites and thin-instance culling
-     * draw through their own native subsystems), and the fork asserted here
-     * is what makes that fold visible the moment the pin grows a reached
-     * direct renderable. The generated glTF loader's authored winding
+     * The pinned direct bucket (`r._direct`) is the tail of the native
+     * opaque list: `order_draw_lists` sorts direct draws after the others,
+     * as the pass replays the opaque bundle before drawing them. Both shader
+     * renderables set it exactly when the material declares external
+     * textures, asserted below. The generated glTF loader's authored winding
      * baseline still prevents its single-sided mirrored primitives from
      * flipping twice. Separate back-clockwise PBR arms are nevertheless
      * required when the runtime mirrored-mesh watcher observes a procedural
@@ -3122,6 +3141,21 @@ ${
         );
         bucketStore(directFork.thenStatement, "direct.push(binding)");
         bucketStore(directFork.elseStatement, "opaque.push(binding)");
+        // `RenderItem::direct` is the shader material's declared external
+        // textures: the resolver's `active` and the thin-instance slot count
+        // both read that.
+        this.context.expectShapeCount(
+            this.context.sourceFile("src/material/shader/shader-renderable.ts"),
+            "_externalTextureResolver?.active(material) ?? false",
+            "Pinned shader renderable direct flag",
+        );
+        this.context.expectShapeCount(
+            this.context.sourceFile(
+                "src/material/shader/shader-thin-instance.ts",
+            ),
+            "!!material._externalTextureSlots?.size",
+            "Pinned thin-instance shader direct flag",
+        );
         const orderSorts = this.context.findNodes(
             buildBindings,
             (node): node is ts.CallExpression =>

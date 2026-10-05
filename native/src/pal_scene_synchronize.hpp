@@ -8,6 +8,7 @@
 
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
+#include <bblite/features/shader_external_textures.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -183,6 +184,11 @@ Iteration<bool> upload_scene_meshes(const Engine& engine,
     std::vector<const upstream::RenderPlan*> plans{&plan};
     for (const upstream::RenderPlan& overlay : overlays)
         plans.push_back(&overlay);
+#if BBLITE_SHADER_EXTERNAL_TEXTURES
+    // The pin binds a packet's external textures as it builds the packet.
+    for (const upstream::RenderPlan* checked : plans)
+        upstream::require_shader_external_textures(engine, *checked);
+#endif
     auto textures = prepare_scene_textures(engine, std::move(plans), cache, prepare, native);
     while (textures.advance())
         co_yield false;
@@ -537,6 +543,13 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     }
     if (outcome.topology_updated || draw_lists_moved)
         backend.rebuild_task_draw_lists();
+#if BBLITE_SHADER_EXTERNAL_TEXTURES
+    // A shader packet with external textures rebinds them on every refresh,
+    // and the pin checks each slot as it binds.
+    upstream::require_shader_external_textures(engine, sync.render_plan);
+    for (const upstream::RenderPlan& overlay_plan : sync.overlay_plans)
+        upstream::require_shader_external_textures(engine, overlay_plan);
+#endif
     sync.synced_draw_list_epoch = engine.draw_list_epoch;
     // After the rebuild: the previous plan can still list a mesh this frame
     // retired, whose slot a new mesh may already hold.

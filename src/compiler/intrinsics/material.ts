@@ -1,3 +1,8 @@
+import {
+    compileCreateExternalTexture,
+    compileIsExternalTextureReady,
+    compileSetShaderExternalTexture,
+} from "./external-texture.js";
 import { EmissionMap, writable } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
@@ -842,6 +847,14 @@ function compileCreateShaderMaterial(
     );
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
+    // A declared slot binds through the pin's checks whether or not
+    // anything fills it.
+    if (
+        context.sceneManifest.reachedShaderPrograms[variant.id]!
+            .externalTextures
+    ) {
+        context.reachFeature("material:shader-external-texture", call);
+    }
     const creation = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
     let materialCpp = runtimeProfile
         ? creation
@@ -1933,6 +1946,9 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["createLinearDepthMaterial", compileCreateLinearDepthMaterial],
     ["setShaderUniform", compileSetShaderUniform],
     ["setShaderTexture", compileSetShaderTexture],
+    ["createExternalTexture", compileCreateExternalTexture],
+    ["isExternalTextureReady", compileIsExternalTextureReady],
+    ["setShaderExternalTexture", compileSetShaderExternalTexture],
     ["setShaderFloat", compileSetShaderFloat],
     ["setShaderVector3", compileSetShaderVector3],
     ["setPbrEmissive", compileSetPbrEmissive],

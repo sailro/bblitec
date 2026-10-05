@@ -10,6 +10,7 @@
 #include <bblite/js_data.hpp>
 #include <bblite/text_gpu.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_dom_events.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_async_engine.hpp>
 #endif
@@ -378,8 +379,12 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
 #endif
             throw;
         }
-        if (!engine.renderer_restart_requested)
+        if (!engine.renderer_restart_requested) {
+            // The page unloads once its frames end, however they end.
+            dispatch_page_lifecycle(
+                engine, [](auto& callback, const auto& payload) { callback(payload); });
             co_return 0;
+        }
     }
 }
 #endif

@@ -104,6 +104,10 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_DETAILED_PICKING", anyOf: ["picking:detailed"] },
     { macro: "BBLITE_HAS_CLUSTERED_LIGHTS", anyOf: ["light:clustered"] },
     { macro: "BBLITE_SHADOWS_CSM", anyOf: ["shadow:csm"] },
+    {
+        macro: "BBLITE_SHADER_EXTERNAL_TEXTURES",
+        anyOf: ["material:shader-external-texture"],
+    },
     { macro: "BBLITE_SHADOW_MORPH_BOUNDS", anyOf: ["shadow:morph-bounds"] },
     {
         macro: "BBLITE_SHADOW_SKELETON_BOUNDS",

@@ -72,6 +72,11 @@ interface SharedPageEvaluation {
     requirement: string;
     /** Chromium flags; the generation shares one browser per flag set. */
     browserArgs?: readonly string[];
+    /**
+     * Load the served shell first: an un-navigated page is not a secure
+     * context, so it exposes no WebGPU.
+     */
+    navigate?: boolean;
     /** Source text of a page function from `input` to a string. */
     evaluate: string;
     input: string;
@@ -79,8 +84,9 @@ interface SharedPageEvaluation {
 
 /**
  * Run `evaluate(input)` on a fresh page of the generation's shared Chromium
- * and return the string it produced. The page is not navigated: the served
- * shell exists only because the browser ceremony hosts one.
+ * and return the string it produced. Unless `navigate` asks for it, the page
+ * is not navigated: the served shell exists only because the browser
+ * ceremony hosts one.
  */
 export function evaluateInSharedPage(options: SharedPageEvaluation): string {
     const harness = new URL("../browser-harness.js", import.meta.url).href;
@@ -102,7 +108,10 @@ export function evaluateInSharedPage(options: SharedPageEvaluation): string {
                 browserRequirement: ${JSON.stringify(options.requirement)},
                 browserArgs: ${JSON.stringify(options.browserArgs ?? [])},
             },
-            (page) => page.evaluate(${options.evaluate}, input),
+            async (page, origin) => {
+                ${options.navigate ? "await page.goto(origin);" : ""}
+                return page.evaluate(${options.evaluate}, input);
+            },
         );
         if (typeof value !== "string")
             throw new Error(${JSON.stringify(`${options.label} produced no text.`)});

@@ -130,6 +130,7 @@ export interface LoweringServices {
     fileReaderReached: boolean;
     jsRandomReached: boolean;
     readonly browserTextureFunctions: Set<string>;
+    readonly executedVideoFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
@@ -501,6 +502,10 @@ export interface LoweringServices {
         callee: ts.Identifier,
     ): Value | undefined;
     compileExecutedUrlFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
+    compileExecutedVideoFunctionCall(
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined;

@@ -7,6 +7,7 @@ import { renderLoweredSourceUnits } from "./compiler/lowered-source-units.js";
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import { lowerLocalCubemap } from "./lowering/local-cubemap-lowerer.js";
+import { lowerShaderExternalTextures } from "./lowering/shader-external-texture.js";
 import type { ShaderModuleDeclaration } from "./shader-composition.js";
 import {
     reflectWgslBindingStruct,
@@ -1504,6 +1505,9 @@ class GeneratedSourceWriter {
         );
         emitReached("upstream/src/material_shader.cpp", () =>
             factories.lowerShaderMaterialFactory(),
+        );
+        emitReached("upstream/src/material_shader_external.cpp", () =>
+            lowerShaderExternalTextures(context),
         );
         emitReached("upstream/src/material_node.cpp", () =>
             factories.lowerNodeMaterialFactory(),

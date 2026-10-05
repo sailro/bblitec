@@ -3881,6 +3881,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene306",
+        name: "Scene 306 - External Video Texture",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene306.ts",
+        title: "Babylon Lite Native - External Video Texture",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 0, 100% exact: the
+            // baked frame is the browser import's texels, sampled nearest.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [16, 24, 40],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene282",
         name: "Scene 282 - Standard UV Transform",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene282.ts",

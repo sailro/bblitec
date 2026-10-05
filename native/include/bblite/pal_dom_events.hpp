@@ -351,6 +351,22 @@ template <typename Event>
     return event;
 }
 
+/** HTML's beforeunload shares the override; it does not bubble, and native close has no prompt to cancel. */
+[[nodiscard]] inline PlatformMouseEvent window_beforeunload_event() {
+    auto event = dom_event(PlatformMouseEvent{}, "beforeunload", {DomEventTarget::window()}, false);
+    event.dom->target_override = DomEventTarget::document();
+    event.dom->composed = false;
+    return event;
+}
+
+/** HTML unloads a document with beforeunload, then pagehide; `invoke` runs each listener. */
+template <typename Invoke> void dispatch_page_lifecycle(Engine& engine, Invoke&& invoke) {
+    if (!engine.dom_input)
+        return;
+    for (const auto& event : {window_beforeunload_event(), window_pagehide_event()})
+        engine.dom_input->pointer.dispatch(event, invoke, &engine);
+}
+
 template <typename Event> [[nodiscard]] js::Nullable<bool> dom_event_persisted(const Event& event) {
     const auto persisted = dom_event_state(event).persisted;
     if (!persisted.has_value())
