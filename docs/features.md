@@ -90,7 +90,8 @@ native identity. Mutation, escaping aliases and untracked extraction withdraw th
 `CompileOptions.environment`; absent keys are undefined. Built-ins cannot be overridden; dotenv and host
 variables are not loaded implicitly.
 
-Defaults and short-circuit operands evaluate once and lazily. Operands of concatenation, arithmetic,
+Defaults and short-circuit operands evaluate once and lazily. Record-valued `||` supports nested `&&`
+guards and retains the selected record's identity. Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
 call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.

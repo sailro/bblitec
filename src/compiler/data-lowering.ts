@@ -7593,6 +7593,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        if (ts.isBinaryExpression(unwrapped)) {
+            const logical = this.compileRecordLogicalValue(unwrapped, dataType);
+            if (logical)
+                return this.compileKnownValueForSink(
+                    logical,
+                    dataType,
+                    unwrapped,
+                );
+        }
         if (
             dataType.kind === "optional" &&
             dataType.inner.kind === "boolean" &&
@@ -9462,6 +9471,81 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         for (const line of lines) this.context.emit(line);
         this.context.decreaseIndent();
         this.context.emit({ kind: "close", code: "}" });
+    }
+
+    /** Record-valued fallbacks retain only a truthy left value. */
+    public compileRecordLogicalValue(
+        expression: ts.BinaryExpression,
+        sink?: DataType,
+    ): Value | undefined {
+        if (expression.operatorToken.kind !== ts.SyntaxKind.BarBarToken)
+            return undefined;
+        const type = sink ?? this.dataTypeAt(expression);
+        const record = type?.kind === "optional" ? type.inner : type;
+        if (!type || record?.kind !== "struct") return undefined;
+        const result = this.context.allocateTemporaryCppName("logical_record");
+        const selected =
+            this.context.allocateTemporaryCppName("logical_selected");
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: result,
+            initializer: "{}",
+        });
+        this.context.registerNativeBinding(result);
+        this.context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: selected,
+            initializer: "false",
+        });
+        // A falsy guard in `guard && value` cannot be selected by the outer
+        // fallback. Keep the guard's effects and lower its right side lazily.
+        const whenTruthy = (
+            source: ts.Expression,
+            accept: (value: Value, node: ts.Expression) => void,
+        ): void => {
+            const node = this.context.unwrap(source);
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken
+            ) {
+                whenTruthy(node.left, () => whenTruthy(node.right, accept));
+                return;
+            }
+            const value = this.context.bindings.pinValueToTemporary(
+                this.context.compileValue(source),
+                "logical_left",
+                source,
+            );
+            const condition = this.truthinessCondition(value);
+            if (condition === undefined)
+                this.context.fail(
+                    source,
+                    "Logical record selection requires a truth-testable left operand.",
+                );
+            this.emitGuardedStore(condition, () => accept(value, source));
+        };
+        whenTruthy(expression.left, (value, node) => {
+            const cpp = this.compileKnownValueForSink(value, type, node);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${cpp};`,
+            });
+            this.context.emit({
+                kind: "expression",
+                code: `${selected} = true;`,
+            });
+        });
+        this.emitGuardedStore(`!${selected}`, () => {
+            const cpp = this.compileForSink(expression.right, type);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${cpp};`,
+            });
+        });
+        return this.leafValue(result, type);
     }
 
     /** Nullable boolean selection keeps absence distinct from false. */

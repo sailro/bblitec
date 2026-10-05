@@ -27,6 +27,58 @@ function check(name: string, source: string): void {
 }
 
 check(
+    "logical-record-fallbacks",
+    `
+    interface Item {name:string;cell:{value:number}}
+    const found:Item={name:'found',cell:{value:2}};
+    const fallback:Item={name:'fallback',cell:{value:3}};
+    let trace='';
+    function key(value:string|undefined):string|undefined {trace+='k';return value;}
+    function find(value:string):Item|undefined {trace+='f';return value==='found'?found:undefined;}
+    function otherwise():Item {trace+='b';return fallback;}
+    function choose(value:string|undefined):Item {
+        return (key(value) && find(value!)) || otherwise();
+    }
+    const calls:Array<typeof choose>=[choose];
+    if(calls[0]!(undefined)!==fallback || trace!=='kb') throw new Error('undefined guard');
+    trace='';
+    if(calls[0]!('')!==fallback || trace!=='kb') throw new Error('empty guard');
+    trace='';
+    if(calls[0]!('missing')!==fallback || trace!=='kfb') throw new Error('missing item');
+    trace='';
+    const selected=calls[0]!('found');
+    if(selected!==found || trace!=='kf') throw new Error('present identity');
+    selected.cell.value=9;
+    if(found.cell.value!==9) throw new Error('retained alias');
+`,
+);
+
+check(
+    "logical-record-chains-and-nullability",
+    `
+    interface Item {value:number}
+    let trace='';
+    function guard(value:boolean):boolean {trace+='g';return value;}
+    function item(value:Item|null):Item|null {trace+='i';return value;}
+    function fallback(value:Item|null):Item|null {trace+='f';return value;}
+    function choose(enabled:boolean, value:Item|null, other:Item|null):Item|null {
+        const result=(guard(enabled) && guard(enabled) && item(value)) || fallback(other);
+        return result;
+    }
+    const calls:Array<typeof choose>=[choose];
+    const first:Item={value:2};
+    const second:Item={value:3};
+    if(calls[0]!(false,first,second)!==second || trace!=='gf') throw new Error('guard chain');
+    trace='';
+    if(calls[0]!(true,null,second)!==second || trace!=='ggif') throw new Error('nullable left');
+    trace='';
+    if(calls[0]!(true,first,second)!==first || trace!=='ggi') throw new Error('lazy fallback');
+    trace='';
+    if(calls[0]!(true,null,null)!==null || trace!=='ggif') throw new Error('nullable fallback');
+`,
+);
+
+check(
     "asserted-numeric-coercion",
     `
     interface Input {duration?:number}

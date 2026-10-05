@@ -1300,6 +1300,7 @@ export class ExpressionLowerer {
                     ts.SyntaxKind.AmpersandAmpersandToken)
         ) {
             const logical =
+                this.context.dataLowerer.compileRecordLogicalValue(unwrapped) ??
                 this.context.dataLowerer.compileOptionalBooleanLogicalValue(
                     unwrapped,
                 );
