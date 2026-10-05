@@ -1194,7 +1194,10 @@ export class BindingScopes {
             this.defineVariable(identifier, value);
             return;
         }
-        if (value.kind === "engine" && value.ownedEngineCpp) {
+        if (
+            value.kind === "engine" &&
+            (value.ownedEngineCpp || value.dataType?.kind === "handle")
+        ) {
             // Escaping callbacks copy their tuple storage. Retain the owner,
             // then dereference it at each use instead of copying an Engine& alias.
             this.defineVariable(
@@ -1575,6 +1578,41 @@ export class BindingScopes {
         if (this.context.hasStableNativeBinding(value)) {
             this.context.useNativeValue(value);
             return value;
+        }
+        if (value.kind === "engine" && value.dataType?.kind === "handle") {
+            const owner = this.context.allocateTemporaryCppName(
+                `${label}_owner`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const bbl::StoredEngine",
+                name: owner,
+                initializer:
+                    value.storedEngineCpp ??
+                    `bbl::StoredEngine{${value.ownedEngineCpp ?? value.cpp}}`,
+                attributes: "[[maybe_unused]] ",
+            });
+            const binding = this.context.registerNativeConstBinding(owner);
+            this.context.registerNativeBindingType(owner, "bbl::StoredEngine");
+            const cpp = `(*${owner})`;
+            return {
+                ...value,
+                cpp,
+                engineCpp: cpp,
+                storedEngineCpp: owner,
+                ...(value.ownedEngineCpp
+                    ? { ownedEngineCpp: `${owner}.owner()` }
+                    : {}),
+                stableOwnerCpp: owner,
+                nativeBinding: true,
+                nativeCaptures: [binding],
+                nativeCompanionCaptures: {
+                    ...value.nativeCompanionCaptures,
+                    engineCpp: [binding],
+                    ownedEngineCpp: [binding],
+                    storedEngineCpp: [binding],
+                },
+            };
         }
         if (value.kind === "engine" && value.ownedEngineCpp) {
             if (value.stableOwnerCpp === value.ownedEngineCpp) return value;

@@ -4389,6 +4389,37 @@ struct Engine {
     std::vector<FileTexture> render_texture_facades;
 };
 
+/** Engine identity in source data. Realm engines retain their actual owner;
+ * entry engines are borrowed only while their native lifetime is live. */
+class StoredEngine {
+public:
+    StoredEngine() = default;
+    explicit StoredEngine(Engine& engine)
+        : pointer_(&engine), lifetime_(engine.lifetime.token()), owner_(engine.realm_owner.lock()) {
+    }
+    explicit StoredEngine(std::shared_ptr<Engine> engine)
+        : pointer_(engine.get()),
+          lifetime_(engine ? engine->lifetime.token() : std::weak_ptr<const int>{}),
+          owner_(std::move(engine)) {}
+
+    [[nodiscard]] Engine& operator*() const {
+        if (!pointer_ || lifetime_.expired())
+            throw std::runtime_error("Stored engine context is no longer live.");
+        return *pointer_;
+    }
+    [[nodiscard]] const std::shared_ptr<Engine>& owner() const { return owner_; }
+    [[nodiscard]] Engine* identity() const noexcept { return pointer_; }
+    [[nodiscard]] bool operator==(const StoredEngine& other) const noexcept {
+        return pointer_ == other.pointer_;
+    }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(owner_); }
+
+private:
+    Engine* pointer_ = nullptr;
+    std::weak_ptr<const int> lifetime_;
+    std::shared_ptr<Engine> owner_;
+};
+
 /** The node a retained element ascends to: its parent, else a markup node's owner; none at a
  * document root. */
 inline UiElementHandle ui_tree_parent(const UiElementRecord& record) {

@@ -5015,7 +5015,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "engine",
                 cpp: `(*${cpp})`,
                 engineCpp: `(*${cpp})`,
+                storedEngineCpp: cpp,
                 dataType,
+                ...(cppIdentifierPattern.test(cpp)
+                    ? {
+                          nativeCaptures: [
+                              this.context.registerNativeBinding(cpp),
+                          ],
+                      }
+                    : {}),
+                ...(this.context.options.workers
+                    ? { ownedEngineCpp: `(${cpp}).owner()` }
+                    : {}),
             };
         }
         if (dataType.kind === "number") {
@@ -7753,7 +7764,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             value.kind === "engine"
         ) {
             this.context.useNativeValue(value);
-            return `&(${value.cpp})`;
+            return (
+                value.storedEngineCpp ??
+                `bbl::StoredEngine{${value.ownedEngineCpp ?? value.cpp}}`
+            );
         }
         if (value.cameraVector)
             this.context.admissions.noteCameraVectorCopy(value, node);

@@ -794,8 +794,9 @@ class Compiler implements LoweringServices {
               kind: "native";
               type: DataType | "void";
               contextualVoid?: boolean;
+              engineScopeDepth: number;
           } & NativeFunctionBodyOptions)
-        | { kind: "inline"; wrapped: boolean }
+        | { kind: "inline"; wrapped: boolean; engineScopeDepth: number }
     > = emissionArray([]);
     private readonly synchronousCleanupFrames: Array<object | undefined> =
         emissionArray([]);
@@ -5479,6 +5480,61 @@ class Compiler implements LoweringServices {
         return this.defaultEngineCpp;
     }
 
+    /** Explicit engine parameters and their record fields supply a native body's
+     * implicit resource context, without changing the entry's engine binding. */
+    private scopedEngineContexts(): { cpp: string; owner: Value }[] {
+        const frame = this.returnFrames[0];
+        if (!frame) return [];
+        const collectType = (
+            type: DataType,
+            cpp: string,
+            seen: Set<string>,
+        ): string[] => {
+            if (type.kind === "handle" && type.handle === "engine")
+                return [`(*${cpp})`];
+            if (type.kind !== "struct" || seen.has(type.name)) return [];
+            const visited = new Set(seen).add(type.name);
+            const access = this.dataTypes.isReferenceStruct(type.name)
+                ? "->"
+                : ".";
+            return this.dataTypes
+                .structFields(type.name, this.sourceFile, "accessors")
+                .filter((field) => !field.accessor)
+                .flatMap((field) =>
+                    collectType(
+                        field.type,
+                        `${cpp}${access}${field.name}`,
+                        visited,
+                    ),
+                );
+        };
+        const collect = (value: Value, seen: Set<Value>): string[] => {
+            if (seen.has(value)) return [];
+            seen.add(value);
+            if (value.kind === "engine") return [value.cpp];
+            if (value.dataType)
+                return collectType(value.dataType, value.cpp, new Set());
+            return Object.values(value.recordProperties ?? {}).flatMap(
+                (field) => collect(field, seen),
+            );
+        };
+        for (
+            let index = this.bindings.variableScopes.length - 1;
+            index >= frame.engineScopeDepth - 1;
+            --index
+        ) {
+            const candidates = new Map<string, Value>();
+            for (const { value } of this.bindings.variableScopes[
+                index
+            ]!.values())
+                for (const cpp of collect(value, new Set()))
+                    candidates.set(cpp, value);
+            if (candidates.size > 0)
+                return [...candidates].map(([cpp, owner]) => ({ cpp, owner }));
+        }
+        return [];
+    }
+
     public reachJsRandom(): void {
         this.jsRandomReached = true;
     }
@@ -5655,6 +5711,7 @@ class Compiler implements LoweringServices {
         this.returnFrames.push({
             kind: "native",
             type: returnType ?? "void",
+            engineScopeDepth: this.bindings.variableScopes.length,
             ...(contextualVoid ? { contextualVoid: true } : {}),
             ...options,
         });
@@ -6076,6 +6133,7 @@ class Compiler implements LoweringServices {
         this.returnFrames.push({
             kind: "inline",
             wrapped,
+            engineScopeDepth: this.bindings.variableScopes.length,
         });
     }
 
@@ -6518,7 +6576,7 @@ class Compiler implements LoweringServices {
      * declaration and the assignment alike.
      */
     public optionalResourceCpp(value: Value): string {
-        const cpp = value.ownedEngineCpp ?? value.cpp;
+        const cpp = value.storedEngineCpp ?? value.ownedEngineCpp ?? value.cpp;
         const found = presenceFlagCpp(value);
         return found !== undefined && found !== "true"
             ? `(${found} ? std::optional{${cpp}} : std::nullopt)`
@@ -8028,13 +8086,21 @@ class Compiler implements LoweringServices {
     }
 
     public requireDefaultEngine(node: ts.Node): string {
-        if (!this.defaultEngineCpp) {
+        const scoped = this.scopedEngineContexts();
+        if (scoped.length > 1)
+            this.fail(
+                node,
+                "An implicit resource constructor requires one unambiguous engine context.",
+            );
+        const engine = scoped[0]?.cpp ?? this.defaultEngineCpp;
+        if (!engine) {
             this.fail(
                 node,
                 "This intrinsic requires createEngine to run first.",
             );
         }
         if (
+            scoped.length === 0 &&
             this.returnFrames.some(
                 (frame) => frame.kind === "native" && frame.namespaceScope,
             )
@@ -8044,8 +8110,9 @@ class Compiler implements LoweringServices {
                 "A namespace-scope function has no binding for the entry's engine.",
                 "entry-scope-required",
             );
-        this.trackRetainedCaptureName(this.defaultEngineCpp);
-        return this.defaultEngineCpp;
+        if (scoped[0]) this.useNativeValue(scoped[0].owner);
+        else this.trackRetainedCaptureName(engine);
+        return engine;
     }
 
     /**

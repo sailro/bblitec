@@ -446,16 +446,26 @@ export class ConditionLowerer {
                 if (leftError || rightError)
                     return `${leftError?.cpp ?? leftValue.cpp} ${operator} ${rightError?.cpp ?? rightValue.cpp}`;
             }
-            if (leftValue.kind === "texture" && rightValue.kind === "texture") {
+            if (
+                (leftValue.kind === "texture" &&
+                    rightValue.kind === "texture") ||
+                (leftValue.kind === "engine" && rightValue.kind === "engine")
+            ) {
                 if (!equality)
                     this.context.fail(
                         unwrapped,
-                        "Texture2D values support identity comparisons.",
+                        `${leftValue.kind === "engine" ? "EngineContext" : "Texture2D"} values support identity comparisons.`,
                     );
                 const stored = (value: Value, node: ts.Expression) =>
                     this.context.dataLowerer.compileKnownValueForSink(
                         value,
-                        { kind: "handle", handle: "texture" },
+                        {
+                            kind: "handle",
+                            handle:
+                                leftValue.kind === "engine"
+                                    ? "engine"
+                                    : "texture",
+                        },
                         node,
                     );
                 return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;

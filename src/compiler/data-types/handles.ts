@@ -4,7 +4,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "custom-event": "bbl::PlatformCustomEvent",
     "dom-event": "bbl::OwnedDomEvent",
     "dom-event-identity": "std::shared_ptr<bbl::DomEventState>",
-    engine: "bbl::Engine*",
+    engine: "bbl::StoredEngine",
     asset: "bbl::AssetHandle",
     "gpu-device": "bbl::GpuDeviceIdentity",
     "gpu-texture": "bbl::GpuTextureIdentity",
