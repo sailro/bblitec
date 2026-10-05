@@ -27,6 +27,7 @@ import {
     emitDomEventListener,
     hasDeferredListenerSignal,
     compileDeferredListenerOptions,
+    pinDetached,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { isDocumentReceiver } from "./dom-targets.js";
@@ -1165,6 +1166,30 @@ export class PlatformCalls {
             };
         }
         if (
+            callee.name.text === "createTextNode" &&
+            isDocumentReceiver(this.context, callee.expression)
+        ) {
+            this.context.expectArgumentCount(call, 1, 1);
+            const engine = this.ui.documentReceiverEngine(
+                callee.expression,
+                preparedElement,
+            );
+            const text = this.ui.uiStringCpp(
+                argumentAt(call, 0),
+                "Text node data",
+            );
+            this.context.reachFeature("ui:rml", call);
+            const uiStaticId = this.ui.createUiStaticElement("#text");
+            this.ui.uiStaticIdsByCreation.set(call, uiStaticId);
+            return {
+                kind: "ui-element",
+                cpp: `bbl::ui_create_text_node(${engine}, ${text})`,
+                engineCpp: engine,
+                uiTag: "#text",
+                uiStaticId,
+            };
+        }
+        if (
             (callee.name.text === "createElement" ||
                 callee.name.text === "createElementNS") &&
             isDocumentReceiver(this.context, callee.expression)
@@ -1188,10 +1213,22 @@ export class PlatformCalls {
                 argumentAt(call, svg ? 1 : 0),
             );
             const normalizedTag = svg ? tag : tag.toLowerCase();
-            if (svg && !["svg", "path", "rect", "circle"].includes(tag))
+            if (
+                svg &&
+                ![
+                    "svg",
+                    "path",
+                    "rect",
+                    "circle",
+                    "line",
+                    "ellipse",
+                    "polyline",
+                    "polygon",
+                ].includes(tag)
+            )
                 this.context.fail(
                     call,
-                    `Native SVG element '${tag}' is outside the bounded svg/path/rect/circle subset.`,
+                    `Native SVG element '${tag}' is outside the bounded svg/shape subset.`,
                 );
             if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                 this.context.fail(
@@ -1816,6 +1853,33 @@ export class PlatformCalls {
                 },
             };
         }
+        if (element && callee.name.text === "toggleAttribute") {
+            this.context.expectArgumentCount(call, 1, 2);
+            const receiver = pinDetached(
+                this.context,
+                element,
+                "attribute_receiver",
+                callee.expression,
+            );
+            const name = this.context.compileStringLiteral(argumentAt(call, 0));
+            const force = call.arguments[1]
+                ? this.context.compileBoolean(call.arguments[1])
+                : "std::nullopt";
+            if (["class", "id"].includes(name.toLowerCase()))
+                this.ui.recordUiStaticAttribute(
+                    receiver,
+                    name.toLowerCase(),
+                    call,
+                );
+            else if (name.toLowerCase() === "style")
+                this.ui.recordUiUnknownStaticStyle(receiver);
+            return {
+                kind: "boolean",
+                cpp: `bbl::ui_toggle_attribute(${this.context.requireEngine(receiver, call)}, ${receiver.cpp}, ${this.context.cppString(name)}, ${force})`,
+                dataType: { kind: "boolean" },
+                impure: true,
+            };
+        }
         if (element && callee.name.text === "removeAttribute") {
             this.context.expectArgumentCount(call, 1, 1);
             const sourceName = this.context.compileStringLiteral(
@@ -1901,6 +1965,48 @@ export class PlatformCalls {
                     `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
                     `${this.context.cppString(sourceName)}, ` +
                     `${value})`,
+            };
+        }
+        if (element && callee.name.text === "insertBefore") {
+            this.context.expectArgumentCount(call, 2, 2);
+            const receiver = pinDetached(
+                this.context,
+                element,
+                "insert_receiver",
+                callee.expression,
+            );
+            const child = pinDetached(
+                this.context,
+                this.context.compileValue(argumentAt(call, 0)),
+                "insert_child",
+                argumentAt(call, 0),
+            );
+            this.context.expectKind(child, "ui-element", argumentAt(call, 0));
+            const reference = pinDetached(
+                this.context,
+                this.context.compileValue(argumentAt(call, 1)),
+                "insert_reference",
+                argumentAt(call, 1),
+            );
+            const engine = this.context.requireEngine(receiver, call);
+            this.context.expectSameEngine(receiver, child, call);
+            const optional =
+                reference.dataType?.kind === "optional" &&
+                reference.dataType.inner.kind === "handle" &&
+                reference.dataType.inner.handle === "ui-element";
+            if (reference.kind !== "json-null") {
+                if (!optional)
+                    this.context.expectKind(
+                        reference,
+                        "ui-element",
+                        argumentAt(call, 1),
+                    );
+                this.context.expectSameEngine(receiver, reference, call);
+            }
+            this.ui.recordUiStaticAppend(receiver, child, false);
+            return {
+                ...child,
+                cpp: `bbl::ui_insert_child(${engine}, ${receiver.cpp}, ${child.cpp}, ${reference.kind === "json-null" ? "bbl::UiElementHandle{}" : optional ? `${reference.cpp}.value_or(bbl::UiElementHandle{})` : reference.cpp})`,
             };
         }
         if (element && callee.name.text === "appendChild") {

@@ -52,7 +52,13 @@ public:
 
 // T is the authored result type. No successful result is ever constructed.
 template <typename T> T deferred_capability(std::string_view capability, std::string_view site) {
-    throw DeferredCapabilityError(capability, site);
+    // Keep the call opaque: optimizers must not diagnose following authored
+    // statements as unreachable merely because this runtime bridge is deferred.
+    T (*volatile invoke)(std::string_view, std::string_view) =
+        [](std::string_view current_capability, std::string_view current_site) -> T {
+        throw DeferredCapabilityError(current_capability, current_site);
+    };
+    return invoke(capability, site);
 }
 
 } // namespace bbl

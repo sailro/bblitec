@@ -618,6 +618,11 @@ export function isDomElementType(symbol: ts.Symbol): boolean {
     );
 }
 
+/** Text nodes share retained node handles, but are never element interfaces. */
+export function isDomTextType(symbol: ts.Symbol): boolean {
+    return symbol.name === "Text" && declaredInDomLibrary(symbol);
+}
+
 /**
  * Whether a compiled value is a plain-data numeric tuple of `arity`.
  *
@@ -1797,7 +1802,10 @@ export class DataTypeRegistry {
             // storage: audio context/buses, geometry, font, animation or particle plans.
             return undefined;
         }
-        if (type.symbol && isDomElementType(type.symbol)) {
+        if (
+            type.symbol &&
+            (isDomElementType(type.symbol) || isDomTextType(type.symbol))
+        ) {
             return { kind: "handle", handle: "ui-element" };
         }
         if (
