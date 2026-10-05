@@ -10,6 +10,7 @@
     {"summary": "Nullable narrowing short-circuits before unnecessary union scans and checker queries.", "applied": true},
     {"summary": "Array destructuring computes invariant default-storage information once per pattern.", "applied": true},
     {"summary": "Object defaults name the presence check and selected payload separately.", "applied": true},
-    {"summary": "Ordinary and demanded record declarations share the live field projection for readonly engine provenance.", "applied": true}
+    {"summary": "Ordinary and demanded record declarations share the live field projection for readonly engine provenance.", "applied": true},
+    {"summary": "Stable stored engine parameters and materialized record returns reuse their existing owners without duplicate copies.", "applied": true}
   ]
 }
