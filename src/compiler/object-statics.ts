@@ -104,23 +104,29 @@ export function structOwnEntries(
     owner: Value,
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
+    excludedKeys?: ReadonlySet<string>,
 ): StructOwnEntry[] {
     refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.isReferenceStruct(dataType.name)
         ? "->"
         : ".";
-    const fields = owner.recordOwnKeys
-        ? owner.recordOwnKeys.map((key) =>
-              context.dataTypes.structField(
-                  dataType.name,
-                  key,
-                  node,
-                  "accessors",
-              ),
-          )
-        : context.dataTypes.structFields(dataType.name, node, "accessors");
-    if (fields.some((field) => field.accessor && !field.accessorReceiver))
-        context.dataTypes.structFields(dataType.name, node);
+    const fields = (
+        owner.recordOwnKeys
+            ? owner.recordOwnKeys.map((key) =>
+                  context.dataTypes.structField(
+                      dataType.name,
+                      key,
+                      node,
+                      "accessors",
+                  ),
+              )
+            : context.dataTypes.structFields(dataType.name, node, "accessors")
+    ).filter((field) => !excludedKeys?.has(field.sourceName));
+    const accessor = fields.find(
+        (field) => field.accessor && !field.accessorReceiver,
+    );
+    if (accessor)
+        context.dataTypes.structField(dataType.name, accessor.sourceName, node);
     return fields.map((field) => {
         const key = field.sourceName;
         const slot = `${owner.cpp}${access}${field.name}`;

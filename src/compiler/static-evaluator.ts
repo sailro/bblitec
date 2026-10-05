@@ -68,7 +68,7 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { isJsonValue } from "./json-bridge.js";
-import { excludesObjectColour, isNullable } from "./type-facts.js";
+import { absenceKind, excludesObjectColour, isNullable } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -570,11 +570,22 @@ export class StaticEvaluator {
         precision: "float" | "double" = "float",
     ): string {
         traceSourceNode(expression);
+        let nonNullAssertion: boolean | undefined;
+        const isAssertedNonNull = (): boolean =>
+            (nonNullAssertion ??= hasNonNullAssertion(expression));
         const narrowNumeric = (
             value: Value,
             node: ts.Expression,
             assertedNonNull = false,
         ): Value => {
+            // A non-null assertion is erased by JavaScript. Keep represented
+            // absence until numeric coercion instead of asserting presence.
+            if (
+                value.dataType?.kind === "optional" &&
+                value.dataType.inner.kind === "number" &&
+                isAssertedNonNull()
+            )
+                return value;
             // A mutable tuple can hold a number where its declared fixed lane was
             // a string. TypeScript calls the guarded numeric branch never; native
             // storage still has the number member selected by the runtime guard.
@@ -594,12 +605,30 @@ export class StaticEvaluator {
                 value.kind !== "data" ||
                 value.dataType?.kind !== "optional" ||
                 value.dataType.inner.kind !== "number" ||
-                (!value.preserveUncheckedLookup && !uncheckedElement)
+                (!value.preserveUncheckedLookup &&
+                    !uncheckedElement &&
+                    !isAssertedNonNull())
             ) {
                 return undefined;
             }
             this.onJsData();
-            const compiled = `bbl::js::number_from_optional(${value.cpp})`;
+            const absence = absenceKind(
+                this.checker,
+                value,
+                unwrapExpression(expression),
+            );
+            if (absence === "either")
+                this.fail(
+                    expression,
+                    "Numeric coercion requires distinguishable null and undefined storage.",
+                );
+            const fallback =
+                absence === "null"
+                    ? ", 0.0"
+                    : typeof absence === "object"
+                      ? `, (${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
+                      : "";
+            const compiled = `bbl::js::number_from_optional(${value.cpp}${fallback})`;
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -895,7 +924,7 @@ export class StaticEvaluator {
             const value = narrowNumeric(
                 resolved,
                 expression,
-                hasNonNullAssertion(expression),
+                isAssertedNonNull(),
             );
             const optionalNumber = castOptionalNumber(value);
             if (optionalNumber !== undefined) {

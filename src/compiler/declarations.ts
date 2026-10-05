@@ -32,6 +32,7 @@ import {
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
+import { structOwnEntries } from "./object-statics.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -47,6 +48,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    propertyNameText,
 } from "./syntax.js";
 import {
     isCompileTimeOnlyValue,
@@ -98,6 +100,7 @@ interface DeclarationContext
             | "compileStringLiteral"
             | "constArrayLiteral"
             | "defaultEngine"
+            | "refuseBorrowedPlatformEventEscape"
             | "emitDiscardedValue"
             | "callbacks"
             | "emitNativeCallbackStorage"
@@ -3730,16 +3733,36 @@ export class DeclarationLowerer {
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
+            // Retain the selected object before a binding's default can replace
+            // its source slot. Value-layout records still read their live fields.
+            const owner = this.context.dataTypes.isReferenceStruct(
+                value.dataType.name,
+            )
+                ? this.context.bindings.pinValueToTemporary(
+                      value,
+                      "destructure_owner",
+                  )
+                : value;
             const temporary =
                 this.context.allocateTemporaryCppName("destructure");
             this.context.emit({
                 kind: "declaration",
                 type: "auto&&",
                 name: temporary,
-                initializer: value.cpp,
+                initializer: owner.cpp,
             });
+            const consumed = new EmissionSet<string>();
             for (const element of pattern.elements) {
+                if (element.dotDotDotToken) {
+                    this.bindStructRest(
+                        element,
+                        { ...owner, cpp: temporary },
+                        consumed,
+                    );
+                    continue;
+                }
                 const { name, property } = this.bindingProperty(element);
+                consumed.add(property);
                 const field = this.context.dataTypes.structField(
                     value.dataType.name,
                     property,
@@ -3759,18 +3782,42 @@ export class DeclarationLowerer {
                         initializer: `${slotCpp}.get()`,
                     });
                 if (element.initializer && field.type.kind === "optional") {
-                    // The default stands in for an absent optional field; the
-                    // binding is then a value of the field's inner type.
-                    const fallback = this.context.dataLowerer.compileForSink(
-                        element.initializer,
-                        field.type.inner,
-                    );
-                    this.bindCopiedDefault(
-                        name,
-                        field.type.inner,
-                        `${optionalPresentCpp(storedFieldCpp)} ? *${storedFieldCpp} : ${fallback}`,
-                    );
-                    continue;
+                    const sourceProperty =
+                        this.context.checker.getPropertyOfType(
+                            this.context.checker.getTypeAtLocation(pattern),
+                            property,
+                        );
+                    const absent =
+                        sourceProperty &&
+                        nullability(
+                            this.context.checker.getTypeOfSymbolAtLocation(
+                                sourceProperty,
+                                pattern,
+                            ),
+                        );
+                    if (absent?.null && absent.undefined)
+                        this.context.fail(
+                            element,
+                            "Destructuring defaults require distinguishable null and undefined source fields.",
+                        );
+                    if (!absent?.null) {
+                        // The default stands in for an absent optional field; the
+                        // binding is then a value of the field's inner type.
+                        const inner = field.type.inner;
+                        const fallback = this.context.dataLowerer.compileArm(
+                            () =>
+                                this.context.dataLowerer.compileForSink(
+                                    element.initializer!,
+                                    inner,
+                                ),
+                        );
+                        this.bindCopiedDefault(
+                            name,
+                            inner,
+                            `${optionalPresentCpp(storedFieldCpp)} ? *${storedFieldCpp} : ${this.context.dataLowerer.armExpression(element.initializer, fallback.lines, fallback.value, inner)}`,
+                        );
+                        continue;
+                    }
                 }
                 const cppName = this.context.bindings.cppIdentifier(name.text);
                 // A default on a required field never applies: the field is
@@ -3787,12 +3834,15 @@ export class DeclarationLowerer {
                     );
                     continue;
                 }
+                // Owning wrappers copy the selected identity, not the slot that
+                // supplied it. Borrowed layouts keep their existing alias checks.
                 const aliases =
-                    field.type.kind !== "number" &&
-                    field.type.kind !== "boolean" &&
-                    field.type.kind !== "string" &&
-                    field.type.kind !== "enum" &&
-                    field.type.kind !== "handle";
+                    field.type.kind === "span" ||
+                    field.type.kind === "table" ||
+                    (field.type.kind === "struct" &&
+                        !this.context.dataTypes.isReferenceStruct(
+                            field.type.name,
+                        ));
                 this.context.emit({
                     kind: "declaration",
                     type: `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""}`,
@@ -3818,19 +3868,21 @@ export class DeclarationLowerer {
                     writable(fieldValue).staticBoolean =
                         staticField.staticBoolean;
                 }
-                if (aliases && staticField?.staticElements) {
+                if (staticField?.staticElements) {
                     writable(fieldValue).staticElements =
                         staticField.staticElements;
                     writable(fieldValue).staticElementsOwner =
                         staticField.staticElementsOwner ?? staticField;
                 }
-                if (aliases && staticField?.collectionCardinality) {
+                if (staticField?.collectionCardinality) {
                     writable(fieldValue).collectionCardinality =
                         staticField.collectionCardinality;
                 }
                 this.context.bindings.defineVariable(name, fieldValue);
                 if (aliases) {
                     this.context.dataLowerer.registerAlias(cppName, fieldCpp);
+                } else {
+                    this.context.dataLowerer.registerLocal(cppName, "copy");
                 }
             }
             return;
@@ -3923,12 +3975,78 @@ export class DeclarationLowerer {
         }
     }
 
-    /**
-     * The source property a destructuring element reads, with the
-     * binding forms the compiler does not lower rejected first. The
-     * record and render-target paths share this and then diverge on
-     * where the value comes from.
-     */
+    /** Object rest copies remaining own fields into a fresh object. */
+    private bindStructRest(
+        element: ts.BindingElement,
+        source: Value,
+        consumed: ReadonlySet<string>,
+    ): void {
+        if (
+            !ts.isIdentifier(element.name) ||
+            source.dataType?.kind !== "struct"
+        )
+            this.context.fail(
+                element,
+                "A rest binding takes an identifier and represented object storage.",
+            );
+        const type = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(element.name),
+            element.name,
+        );
+        if (type?.kind !== "struct")
+            this.context.fail(
+                element,
+                "Object rest requires a concrete record result type.",
+            );
+        this.context.dataTypes.markStoredObjectReferences(type);
+        const cppName = this.context.bindings.cppIdentifier(element.name.text);
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: cppName,
+            initializer: this.context.dataLowerer.structAggregate(type, []),
+        });
+        for (const { key, value, presentCpp } of structOwnEntries(
+            this.context,
+            source,
+            source.dataType,
+            element,
+            consumed,
+        )) {
+            const field = this.context.dataTypes.structField(
+                type.name,
+                key,
+                element,
+            );
+            if (presentCpp)
+                this.context.emit({
+                    kind: "open",
+                    code: `if (${presentCpp}) {`,
+                });
+            this.context.refuseBorrowedPlatformEventEscape(
+                value,
+                element,
+                "object rest",
+            );
+            const copied = this.context.dataLowerer.compileKnownValueForSink(
+                value,
+                field.type,
+                element,
+            );
+            this.context.emit({
+                kind: "expression",
+                code: `${cppName}->${field.name} = ${copied};`,
+            });
+            if (presentCpp) this.context.emit({ kind: "close", code: "}" });
+        }
+        this.context.bindings.defineVariable(
+            element.name,
+            this.context.dataLowerer.leafValue(cppName, type),
+        );
+        this.context.dataLowerer.registerLocal(cppName, "copy");
+    }
+
+    /** The source property named by an ordinary destructuring binding. */
     private bindingProperty(element: ts.BindingElement): {
         name: ts.Identifier;
         property: string;
@@ -3939,15 +4057,22 @@ export class DeclarationLowerer {
                 "Object destructuring supports identifier properties only.",
             );
         }
-        return {
-            name: element.name,
-            property:
-                element.propertyName &&
-                (ts.isIdentifier(element.propertyName) ||
-                    ts.isStringLiteral(element.propertyName))
-                    ? element.propertyName.text
-                    : element.name.text,
-        };
+        const propertyName = element.propertyName;
+        if (!propertyName)
+            return { name: element.name, property: element.name.text };
+        let property = propertyNameText(propertyName);
+        if (ts.isComputedPropertyName(propertyName)) {
+            const expression = this.context.unwrap(propertyName.expression);
+            if (ts.isStringLiteralLike(expression)) property = expression.text;
+            else if (ts.isNumericLiteral(expression))
+                property = String(Number(expression.text));
+        }
+        if (property === undefined)
+            this.context.fail(
+                propertyName,
+                "Object destructuring requires a literal property key.",
+            );
+        return { name: element.name, property };
     }
 
     private emitRecordBindingDeclaration(

@@ -1614,9 +1614,11 @@ namespace gc {
 template <typename T> struct Traceable<Arguments<T>> : Traceable<T> {};
 } // namespace gc
 
-/** JavaScript arithmetic converts a missing numeric lookup to NaN. */
-[[nodiscard]] inline double number_from_optional(const Nullable<double>& value) {
-    return value.has_value() ? *value : std::numeric_limits<double>::quiet_NaN();
+/** JavaScript arithmetic converts undefined to NaN and null to zero. */
+[[nodiscard]] inline double
+number_from_optional(const Nullable<double>& value,
+                     double absent = std::numeric_limits<double>::quiet_NaN()) {
+    return value.has_value() ? *value : absent;
 }
 
 /**

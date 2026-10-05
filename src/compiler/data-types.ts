@@ -4154,6 +4154,8 @@ export class DataTypeRegistry {
         type: DataType,
         sourceType: ts.Type,
     ): DataType {
+        const inner = type.kind === "optional" ? type.inner : type;
+        if (inner.kind !== "span") return type;
         const concrete = this.checker.getNonNullableType(
             this.resolveTypeParameter(sourceType),
         );

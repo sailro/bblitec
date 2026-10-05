@@ -2469,6 +2469,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const index = this.narrowedUnionMemberIndex(
                 value.dataType,
                 narrowed,
+                expression,
             );
             return index < 0
                 ? value
@@ -2491,17 +2492,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataTypesEqual(narrowed, inner)
         )
             return value;
+        const samePayload =
+            narrowed &&
+            narrowed.kind !== "optional" &&
+            (dataTypesEqual(narrowed, inner) ||
+                this.spanCompatible(inner, narrowed) ||
+                (["string", "enum"].includes(inner.kind) &&
+                    ["string", "enum"].includes(narrowed.kind)));
+        const selectedMember =
+            inner.kind === "union" &&
+            this.narrowedUnionMemberIndex(inner, narrowed, expression) >= 0;
         if (
             assertedNonNull ||
             ((!value.preserveUncheckedLookup || inner.kind !== "number") &&
-                narrowed &&
-                narrowed.kind !== "optional" &&
-                (dataTypesEqual(narrowed, inner) ||
-                    this.spanCompatible(inner, narrowed) ||
-                    (["string", "enum"].includes(inner.kind) &&
-                        ["string", "enum"].includes(narrowed.kind)) ||
-                    (inner.kind === "union" &&
-                        this.narrowedUnionMemberIndex(inner, narrowed) >= 0)))
+                (samePayload || selectedMember))
         ) {
             return this.narrowOptional(
                 this.presentOptionalValue(value, inner),
@@ -2516,14 +2520,40 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private narrowedUnionMemberIndex(
         type: DataType<"union">,
         narrowed: DataType | undefined,
+        expression?: ts.Expression,
     ): number {
-        return type.members.findIndex(
+        const exact = type.members.findIndex(
             (member) =>
                 narrowed &&
                 (dataTypesEqual(member, narrowed) ||
                     this.spanCompatible(member, narrowed) ||
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
+        if (exact >= 0) return exact;
+        // Array.isArray widens readonly arrays to any[] in lib.d.ts. The
+        // represented union still supplies the element type when exactly one
+        // member is an array; several array alternatives require more evidence.
+        if (
+            !expression ||
+            !this.context.checker.isArrayType(
+                this.context.checker.getTypeAtLocation(expression),
+            )
+        )
+            return -1;
+        let candidate = -1;
+        for (const [index, member] of type.members.entries()) {
+            if (
+                member.kind !== "vector" &&
+                member.kind !== "span" &&
+                member.kind !== "tuple" &&
+                member.kind !== "product" &&
+                member.kind !== "table"
+            )
+                continue;
+            if (candidate >= 0) return -1;
+            candidate = index;
+        }
+        return candidate;
     }
 
     /**
