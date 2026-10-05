@@ -73,6 +73,8 @@ test("standalone effect builds decode RGBA images and refuse unavailable or malf
             "/permissive-",
             "/EHsc",
             "/MD",
+            "/O1",
+            "/GL",
             "/DBBLITE_HAS_EFFECT_RENDERER=1",
             "/DBBLITE_HAS_PBR_RENDERER=0",
             "/DBBLITE_HAS_SPRITE_RENDERER=0",
@@ -88,10 +90,13 @@ test("standalone effect builds decode RGBA images and refuse unavailable or malf
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
             "test/fixtures/effect-image-decode-check.cpp",
+            "native/src/pal_image.cpp",
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
             ...(decoder
                 ? [join(nativeFixtureVcpkgRoot, "lib/SDL3_image.lib")]
                 : []),
+            "/link",
+            "/LTCG",
         ]);
         execFileSync(executable, {
             stdio: "pipe",
