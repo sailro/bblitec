@@ -1007,16 +1007,25 @@ export class DataTypeRegistry {
     private readonly proxyRecords = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
+    private readonly unionRecordLayouts = new EmissionMap<
+        NativeRecordStorageDemand["identity"],
+        ts.UnionType
+    >();
 
     /** Register stronger layout demands before any nested record is mapped. */
-    public prepareProxyRecords(
+    public prepareRecordLayouts(
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         for (const demand of demands)
-            if (demand.proxy)
-                this.withRecordDemand(demand, () => {
+            this.withRecordDemand(demand, () => {
+                if (demand.unionStorage)
+                    this.unionRecordLayouts.set(
+                        this.structIdentity(demand.type),
+                        demand.unionStorage,
+                    );
+                if (demand.proxy)
                     this.proxyRecords.add(this.structIdentity(demand.type));
-                });
+            });
     }
 
     /** A proxy and its target retain one field layout but distinct object identities. */
@@ -1301,6 +1310,15 @@ export class DataTypeRegistry {
 
     /** Map a checker type and retain its source for a later ownership demand. */
     public fromTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+        if (
+            this.unionRecordLayouts.size &&
+            (type.flags & ts.TypeFlags.Object) !== 0
+        ) {
+            const layout = this.unionRecordLayouts.get(
+                this.structIdentity(type),
+            );
+            if (layout) return this.fromTsType(layout, node);
+        }
         const mapped = this.mapTsType(type, node);
         if (
             mapped?.kind === "struct" &&
@@ -1316,6 +1334,72 @@ export class DataTypeRegistry {
             });
         }
         return mapped;
+    }
+
+    /** A union view must share the arm's original storage, including its fields. */
+    public requireRecordUnionStorage(
+        sourceType: DataType<"struct">,
+        targetType: DataType<"struct">,
+        node: ts.Node,
+    ): void {
+        const target = this.nativeRecordSources.get(targetType.name);
+        if (!target?.type.isUnion()) return;
+        const source = this.nativeRecordSources.get(sourceType.name);
+        if (source?.type.isUnion())
+            this.fail(
+                node,
+                "A retained record has conflicting union storage layouts.",
+            );
+        const fields = this.structFields(targetType.name, node, "accessors");
+        if (
+            source &&
+            !source.frames.length &&
+            !target.frames.length &&
+            (source.type.flags & ts.TypeFlags.Object) !== 0 &&
+            this.structFields(sourceType.name, node, "accessors").every(
+                (field) => {
+                    const target = fields.find(
+                        (target) => target.sourceName === field.sourceName,
+                    );
+                    return (
+                        target &&
+                        !field.accessor &&
+                        !target.accessor &&
+                        this.sharedUnionFieldStorage(field.type, target.type)
+                    );
+                },
+            )
+        )
+            throw new NativeRecordStorageRequired({
+                ...source,
+                unionStorage: target.type,
+            });
+        this.fail(
+            node,
+            "A retained record union requires one shared layout preserving its original fields and storage kinds.",
+        );
+    }
+
+    private sharedUnionFieldStorage(
+        source: DataType,
+        target: DataType,
+    ): boolean {
+        if (dataTypesEqual(source, target)) return true;
+        if (
+            (source.kind === "string" || source.kind === "enum") &&
+            (target.kind === "string" || target.kind === "enum")
+        )
+            return true;
+        if (source.kind === "tuple" && target.kind === "vector")
+            return target.element.kind === "number";
+        if (
+            (source.kind === "span" || source.kind === "vector") &&
+            target.kind === "vector"
+        )
+            return dataTypesEqual(source.element, target.element);
+        if (source.kind === "optional" && target.kind === "optional")
+            return this.sharedUnionFieldStorage(source.inner, target.inner);
+        return false;
     }
 
     /** A checked object can use its declared layout only when no source field is lost or widened. */
@@ -2514,6 +2598,38 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        // Tuple alternatives with different lengths still share array storage.
+        // Ask the checker for their indexed element union instead of treating
+        // length and the array methods as fields of a common record.
+        if (
+            members.every(
+                (member) =>
+                    this.checker.isTupleType(member) ||
+                    this.checker.isArrayType(member) ||
+                    (declaredInDefaultLibrary(member.symbol) &&
+                        member.symbol?.name === "ReadonlyArray"),
+            )
+        ) {
+            if (this.arrayUnionsInProgress.has(type)) return undefined;
+            this.arrayUnionsInProgress.add(type);
+            try {
+                const indexed = this.checker.getIndexTypeOfType(
+                    type,
+                    ts.IndexKind.Number,
+                );
+                const element = indexed && this.fromStoredTsType(indexed, node);
+                return element
+                    ? {
+                          kind: "vector",
+                          element: markIdentityFunctions(
+                              this.markStoredObjectReferences(element),
+                          ),
+                      }
+                    : undefined;
+            } finally {
+                this.arrayUnionsInProgress.delete(type);
+            }
+        }
         // Library binary classes keep their own storage, which `instanceof`
         // selects; a common-field record would drop `buffer` and the elements.
         if (type.types.every(binaryLibraryClass))
@@ -2539,6 +2655,8 @@ export class DataTypeRegistry {
         if (object === null) return undefined;
         return object ?? this.fromMixedUnion(type, node);
     }
+
+    private readonly arrayUnionsInProgress = new EmissionSet<ts.Type>();
 
     /** Fixed tuple alternatives share lanes where their stored representations agree. */
     private fromTupleUnion(

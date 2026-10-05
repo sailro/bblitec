@@ -66,7 +66,10 @@ import {
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
 import type { DynamicBindingStorage } from "./compiler/dynamic-binding-storage.js";
-import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
+import {
+    mergeNativeRecordStorage,
+    type NativeRecordStorageDemand,
+} from "./compiler/native-record-storage.js";
 import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
 import {
     isStorageDemand,
@@ -607,13 +610,19 @@ function compileSourceApplication(
                         !dynamicBindings.get(request.declaration)))
             ) {
                 dynamicBindings.set(request.declaration, request.storage);
-            } else if (
-                request.kind === "record" &&
-                (!ownedRecords.has(request.demand.identity) ||
-                    (request.demand.proxy &&
-                        !ownedRecords.get(request.demand.identity)?.proxy))
-            ) {
-                ownedRecords.set(request.demand.identity, request.demand);
+            } else if (request.kind === "record") {
+                const previous = ownedRecords.get(request.demand.identity);
+                const merged = mergeNativeRecordStorage(
+                    previous,
+                    request.demand,
+                );
+                if (
+                    previous &&
+                    previous.proxy === merged.proxy &&
+                    previous.unionStorage === merged.unionStorage
+                )
+                    return false;
+                ownedRecords.set(request.demand.identity, merged);
             } else if (
                 request.kind === "generic" &&
                 genericFunctions.add(request.demand)
@@ -1202,7 +1211,7 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
-        this.dataTypes.prepareProxyRecords(this.ownedRecords.values());
+        this.dataTypes.prepareRecordLayouts(this.ownedRecords.values());
         for (const demand of this.ownedRecords.values())
             this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {

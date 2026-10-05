@@ -106,8 +106,8 @@ knows whether the slot existed, so a missing slot (`undefined`) and a stored `nu
 apart. Primitive unions containing both absence values retain distinct tags in dynamic storage;
 other values that may be either without a represented tag refuse strict comparison (`== null` answers
 either). An enum member reads as its constant wherever it is written,
-`Tone["Soft"]` included. Destructuring finishes the source before
-left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
+`Tone["Soft"]` included. Object and array declarations compose nested bindings, rest and lazy defaults.
+Destructuring finishes the source before left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings, plain struct fields and,
 when unrolled, plain or renamed object bindings; other nested/default/renamed struct bindings refuse.
 
@@ -117,6 +117,9 @@ returns. Owned document fields support assignment and numeric updates; array ind
 dense storage. Sparse growth, named array properties and writes through erased native views refuse. Source-backed
 record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
 permit statements before a final return; early returns refuse.
+Finite-key record unions share compatible arm storage, including numeric tuple fields of different
+lengths. Changing a retained arm's layout refuses generic substitutions, conflicting layouts, field
+loss and incompatible mutable field storage.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree;
 a typed record whose methods name its own binding is one shared object. Stored callback fields retain
 function identity and observe replacement through record aliases. Structural views of native services
