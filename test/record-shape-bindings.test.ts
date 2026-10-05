@@ -56,6 +56,23 @@ check(
 );
 
 check(
+    "contextual record enum fields preserve template string evaluation",
+    `
+    let calls=0;
+    const greenName='green';
+    function color():'green'|'yellow'{calls++;return calls===1?'green':'yellow';}
+    const values:{stand:'green_stand'|'yellow_stand'}[]=[
+        {stand:\`\${greenName}_stand\`},
+        {stand:\`\${color()}_stand\`},
+        {stand:\`\${color()}_stand\`},
+    ];
+    if(values[0].stand!=='green_stand' || values[1].stand!=='green_stand' || values[2].stand!=='yellow_stand')
+        throw new Error('record template values');
+    if(calls!==2)throw new Error('template expression evaluation');
+`,
+);
+
+check(
     "array and tuple alternatives share their original storage",
     `
     const live:number[]=[2,3];

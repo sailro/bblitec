@@ -42,6 +42,7 @@ function expressionEnum(
     const rawValue =
         lowerer.compileDataPath(unwrapped, "read") ??
         (ts.isCallExpression(unwrapped) ||
+        ts.isTemplateExpression(unwrapped) ||
         ts.isIdentifier(unwrapped) ||
         ts.isPropertyAccessExpression(unwrapped) ||
         ts.isElementAccessExpression(unwrapped)
