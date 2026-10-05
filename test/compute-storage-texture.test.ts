@@ -84,7 +84,7 @@ bbl::js::Promise<bbl::js::PromiseVoid> check(bbl::pal::EventLoop& loop, std::sha
     auto render_lease=std::make_shared<bbl::GpuTextureLease>(sampled.data.gpu_source);
     assert(sampled.data.gpu_source->owners==2);
     bool rejected=false;
-    try {bbl::dispose_compute_storage_texture(texture);} catch(const std::exception& e) {rejected=std::string(e.what())=="#907";}
+    try {bbl::dispose_compute_storage_texture(texture);} catch(const std::exception& e) {rejected=std::string(e.what())=="#982";}
     assert(rejected && !texture->destroyed && image->destroys==0);
     render_lease.reset();
     assert(sampled.data.gpu_source->owners==1);
@@ -92,18 +92,18 @@ bbl::js::Promise<bbl::js::PromiseVoid> check(bbl::pal::EventLoop& loop, std::sha
     bbl::dispose_compute_storage_texture(texture);
     assert(texture->destroyed && texture->compute_texture->destroyed && image->destroys==1 && engine->resource_epoch==1);
     rejected=false;
-    try {bbl::validate_compute_texture_resource(compute);} catch(const std::exception& e) {rejected=std::string(e.what())=="#859";}
+    try {bbl::validate_compute_texture_resource(compute);} catch(const std::exception& e) {rejected=std::string(e.what())=="#934";}
     assert(rejected && sampled.data.gpu_source->owners==0);
     for(int mode=1;mode<3;++mode) {
         device->mode=mode; rejected=false;
         try {(void)co_await bbl::create_compute_storage_texture(engine, options);} catch(const std::exception& e) {
-            rejected=std::string(e.what()).find(mode==1 ? "#899" : "allocation failure")!=std::string::npos;
+            rejected=std::string(e.what()).find(mode==1 ? "#974" : "allocation failure")!=std::string::npos;
         }
         assert(rejected && device->last->destroys==1);
     }
     device->mode=0;
     options.width=33; rejected=false;
-    try {(void)co_await bbl::create_compute_storage_texture(engine, options);} catch(const std::exception& e) {rejected=std::string(e.what()).find("#892")!=std::string::npos;}
+    try {(void)co_await bbl::create_compute_storage_texture(engine, options);} catch(const std::exception& e) {rejected=std::string(e.what()).find("#967")!=std::string::npos;}
     assert(rejected && device->calls==3);
     options.width=4;
     texture=co_await bbl::create_compute_storage_texture(engine, options);

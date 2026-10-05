@@ -37,35 +37,35 @@ struct Device final:bbl::pal::OffscreenDevice{bbl::pal::ComputeShaderLimits comp
 template<class F> void error(const char* expected,F fn){try{fn();}catch(const std::exception& e){if(std::string(e.what())==expected)return;throw std::runtime_error(std::string("Expected ")+expected+", got "+e.what());}throw std::runtime_error(std::string("Expected ")+expected+", no error");}
 int main(){
  for(int realm=0;realm<2;++realm){bbl::js::RealmScope scope;
-  error("#777",[]{bbl::get_compute_binding_resolver(3);});
+  error("#852",[]{bbl::get_compute_binding_resolver(3);});
   auto engine=std::make_shared<bbl::Engine>(), other=std::make_shared<bbl::Engine>();
   engine->offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(std::make_shared<bbl::pal::OffscreenSurface>(1,1),std::make_shared<Device>());
   bbl::ComputeBindingOptions options;auto sampled=bbl::compute_texture_binding("image",options);
   auto texture=std::make_shared<bbl::ComputeTextureResource>();texture->engine=engine;texture->handle=std::make_shared<Image>();texture->sample_type="float";texture->view_dimension="2d";
   auto resolver=bbl::get_compute_binding_resolver(sampled->kind);auto resolved=resolver->resolve(engine,sampled,texture);assert(std::get<std::shared_ptr<bbl::ComputeTextureResource>>(resolved.state)==texture);
   assert(std::get<bbl::pal::ComputeTextureResource>(resolver->get(engine,resolved.state)).role==bbl::pal::ComputeTextureViewRole::sampled);
-  error("#845",[&]{resolver->resolve(other,sampled,texture);});
-  error("#845",[&]{resolver->resolve(engine,sampled,std::monostate{});});
-  error("#850",[&]{resolver->validate(other,resolved.state);});
-  texture->sample_type="uint";error("#846",[&]{resolver->resolve(engine,sampled,texture);});texture->sample_type="float";
-  texture->multisampled=true;error("#847",[&]{resolver->resolve(engine,sampled,texture);});texture->multisampled=false;
-  texture->view_dimension="3d";error("#848",[&]{resolver->resolve(engine,sampled,texture);});texture->view_dimension="2d";
-  texture->destroyed=true;error("#849",[&]{resolver->get(engine,resolved.state);});
+  error("#920",[&]{resolver->resolve(other,sampled,texture);});
+  error("#920",[&]{resolver->resolve(engine,sampled,std::monostate{});});
+  error("#925",[&]{resolver->validate(other,resolved.state);});
+  texture->sample_type="uint";error("#921",[&]{resolver->resolve(engine,sampled,texture);});texture->sample_type="float";
+  texture->multisampled=true;error("#922",[&]{resolver->resolve(engine,sampled,texture);});texture->multisampled=false;
+  texture->view_dimension="3d";error("#923",[&]{resolver->resolve(engine,sampled,texture);});texture->view_dimension="2d";
+  texture->destroyed=true;error("#924",[&]{resolver->get(engine,resolved.state);});
   auto samplerDecl=bbl::compute_sampler_binding("sampler",options),storageDecl=bbl::compute_storage_buffer_binding("buffer",options);
   auto sampler=std::make_shared<bbl::ComputeSamplerResource>();sampler->engine=engine;sampler->allocation=std::make_shared<Image>();sampler->type="non-filtering";
   auto samplerResolver=bbl::get_compute_binding_resolver(samplerDecl->kind);auto samplerState=samplerResolver->resolve(engine,samplerDecl,sampler).state;
-  error("#814",[&]{samplerResolver->get(other,samplerState);});
-  sampler->type="comparison";error("#813",[&]{samplerResolver->resolve(engine,samplerDecl,sampler);});
-  auto storageResolver=bbl::get_compute_binding_resolver(storageDecl->kind);error("#781",[&]{storageResolver->resolve(engine,storageDecl,sampler);});
+  error("#889",[&]{samplerResolver->get(other,samplerState);});
+  sampler->type="comparison";error("#888",[&]{samplerResolver->resolve(engine,samplerDecl,sampler);});
+  auto storageResolver=bbl::get_compute_binding_resolver(storageDecl->kind);error("#856",[&]{storageResolver->resolve(engine,storageDecl,sampler);});
   options.format="rgba16float";auto imageDecl=bbl::compute_storage_texture_binding("output",options);
   auto registry=std::make_shared<bbl::ComputeStorageTextureRegistry>();registry->engine=engine;
   auto image=std::make_shared<bbl::ComputeStorageTexture>();image->registry=registry;image->allocation=std::make_shared<Image>();image->descriptor.format="rgba16float";image->descriptor.accesses={"write-only"};registry->resources.insert(image);
   auto imageResolver=bbl::get_compute_binding_resolver(imageDecl->kind);auto imageState=imageResolver->resolve(engine,imageDecl,image).state;
   assert(std::get<bbl::pal::ComputeTextureResource>(imageResolver->get(engine,imageState)).role==bbl::pal::ComputeTextureViewRole::storage);
-  image->descriptor.format="rgba32float";error("#830",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.format="rgba16float";
-  image->descriptor.dimension="3d";error("#831",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.dimension="2d";
-  image->descriptor.accesses={"read-only"};error("#832",[&]{imageResolver->resolve(engine,imageDecl,image);});
-  registry->resources.erase(image);error("#833",[&]{imageResolver->get(engine,imageState);});
+  image->descriptor.format="rgba32float";error("#905",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.format="rgba16float";
+  image->descriptor.dimension="3d";error("#906",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.dimension="2d";
+  image->descriptor.accesses={"read-only"};error("#907",[&]{imageResolver->resolve(engine,imageDecl,image);});
+  registry->resources.erase(image);error("#908",[&]{imageResolver->get(engine,imageState);});
   auto original=resolver;bbl::install_compute_binding_resolver(3,nullptr,nullptr);assert(bbl::get_compute_binding_resolver(3)==original);
  }
 }

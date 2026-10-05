@@ -2120,6 +2120,24 @@ struct MorphTargetLanes {
     }
 };
 
+/** One influencing bone's eight bind-space box corners (the pin's `BoneCornerBox`). */
+struct SkinnedBoneCorners {
+    std::uint32_t bone_index = 0;
+    /** 8 corners x xyz, at the pin's Float32Array width. */
+    std::array<float, 24> corners{};
+};
+
+/**
+ * enableSkeletonShadows' per-geometry cache: the used bones' bind boxes and
+ * their union, built from the skin lanes at `source` for `bone_count` bones.
+ */
+struct SkinnedBoneBounds {
+    const void* source = nullptr;
+    std::size_t bone_count = 0;
+    std::vector<SkinnedBoneCorners> boxes;
+    std::array<std::array<float, 3>, 2> base{};
+};
+
 struct ModelGeometry {
     /** Source procedural streams own one tightly packed allocation. */
     bool owned_packed_geometry = false;
@@ -2148,6 +2166,12 @@ struct ModelGeometry {
     // differ. The alternative is folding it afresh every frame for every
     // target, which is what the pin's cache exists to avoid.
     mutable std::vector<std::array<Vec3, 2>> morph_bounds;
+    // enableSkeletonShadows' bone boxes, filled on first use. Upstream the
+    // cache is per mesh and invalidated when its positions or skin streams
+    // change identity; here the skin lives in these vertices, so the cache
+    // keys on them and a scene skeleton's attachment, which rewrites their
+    // lanes in place, drops it. `mutable` as `morph_bounds` is.
+    mutable SkinnedBoneBounds skinned_bones;
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
@@ -2204,6 +2228,7 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
     release_storage(geometry.morph_bounds);
+    geometry.skinned_bones = {};
     release_storage(geometry.morph_normals);
     release_storage(geometry.morph_tangents);
     release_storage(geometry.indices);
@@ -6509,6 +6534,7 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
+void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
@@ -6562,6 +6588,8 @@ public:
 inline SceneNodeChildrenView scene_node_children(Engine& engine, SceneNodeHandle node) {
     return {engine, std::move(node)};
 }
+/** `getContainerMeshes` over retained scene nodes: every mesh under them once, in preorder. */
+js::Array<MeshHandle> container_meshes(Engine& engine, const js::Array<SceneNodeHandle>& entities);
 void set_asset_root_position(Engine& engine, AssetHandle asset, Vec3d value);
 void set_asset_root_position_component(Engine& engine, AssetHandle asset, std::size_t component,
                                        double value);

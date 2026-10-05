@@ -749,7 +749,9 @@ export class StaticEvaluator {
                 const converted = `bbl::js::number_from_string(${operand.cpp})`;
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
             }
-            if (operand.kind !== "number")
+            // Unary plus and minus apply ToNumber, which `castNumber` is for
+            // typed numeric data and dynamic JSON alike.
+            if (!isNumericValue(operand))
                 this.fail(
                     unwrapped.operand,
                     `Unary numeric input requires a number or string, received ${operand.kind}.`,
@@ -779,11 +781,7 @@ export class StaticEvaluator {
                 // run-time arms; a rung added to the value dispatch
                 // reaches numeric positions without a second copy here.
                 const value = this.resolveValue(unwrapped);
-                if (
-                    value.kind === "number" ||
-                    value.dataType?.kind === "number" ||
-                    isJsonValue(value)
-                ) {
+                if (isNumericValue(value)) {
                     return this.castNumber(value, precision);
                 }
                 this.fail(

@@ -3,8 +3,8 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.32.0",
-    "sourceVersion": "2e064d88ec7422af946f8ec7f089ac6519f99295"
+    "version": "1.33.0",
+    "sourceVersion": "1d1a2c0de2fc845d57096b7abe0256c10e648ff3"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
@@ -25,7 +25,7 @@
     "fixedAnimationFrame": "130",
     "fixedCaptureFrame": "30",
     "fixedAnimationCallbacks": "1",
-    "engine": "Babylon Lite v1.32.0",
+    "engine": "Babylon Lite v1.33.0",
     "loadingDetail": "Preparing scene…",
     "animationFrozen": "true",
     "seekWarmupFrames": "6",
@@ -147,7 +147,7 @@
     "ignoredDefaultArguments": [
       "--hide-scrollbars"
     ],
-    "version": "154.0.8037.58",
+    "version": "154.0.8037.93",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu"
@@ -196,5 +196,5 @@
     }
   ],
   "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
-  "capturedAt": "2026-09-29T09:55:07.389Z"
+  "capturedAt": "2026-10-05T18:15:42.615Z"
 }

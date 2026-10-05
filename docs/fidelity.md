@@ -47,7 +47,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
 | Camera input | Pinned handlers take SDL relative motion as client-pixel deltas and SDL keyboard state as the held KeyboardEvent.code set |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
-| Skinning | Eight loaded influences reduced to four |
+| Skinning | Eight loaded influences reduced to four, for drawing and skeleton shadow bounds |
 | Thin-instance culling | Admitted paths may use the pin's all-active fallback |
 | Splats | Synchronous render-thread sorting; draw/sort/picking share cloud identity |
 

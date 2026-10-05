@@ -13,6 +13,7 @@
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
 #include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_gpu_common.hpp"
@@ -1365,11 +1366,15 @@ void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& ge
                 geometry.bounds_max.y,
                 geometry.bounds_max.z,
             };
+            // Whether the morph stage writes the carrier's box: the skeleton
+            // stage composes over it.
+            [[maybe_unused]] const bool morph_bounded =
+                generator.morph_shadow_bounds && !geometry.morph_positions.empty();
 #if BBLITE_SHADOW_MORPH_BOUNDS
             // enableMorphTargetShadows' provider, read LIVE: the weights
             // are what the scene animates, and the fit has to follow them
             // or it bounds a scrambled mesh by its unmorphed box.
-            if (generator.morph_shadow_bounds && !geometry.morph_positions.empty()) {
+            if (morph_bounded) {
                 upstream::ensure_morph_target_ranges(geometry);
                 // The two weight lanes handed over as a pointer and a
                 // count rather than selected with a ternary. There is no
@@ -1388,6 +1393,13 @@ void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& ge
                     uncapped ? storage_weights.size() : record.morph_weights.size(),
                     caster.bounds_min, caster.bounds_max);
             }
+#endif
+#if BBLITE_SHADOW_SKELETON_BOUNDS
+            // enableSkeletonShadows' provider: the bones' live boxes, since a
+            // skinned caster moves through its palette, not its world matrix.
+            if (generator.skeleton_shadow_bounds)
+                upstream::expand_skeleton_caster_bounds(geometry, record, morph_bounded,
+                                                        caster.bounds_min, caster.bounds_max);
 #endif
         }
         // `computeDirectionalLightMatrix` reads the mesh's live boundMin and

@@ -73,6 +73,7 @@ import {
     resolveShaderTextureSlot,
     resolveShaderUniform,
     type ShaderMaterialContext,
+    type ShaderUniformLengthCheck,
     type ShaderUniformSlot,
 } from "./shader-material.js";
 import type { GeometryOutputTaskManifest, Value } from "./types.js";
@@ -291,13 +292,13 @@ export class IntrinsicOptions {
     public compileShaderUniformComponents(
         expression: ts.Expression,
         uniform: ShaderUniformSlot,
-        lengthError: 399 | 401,
+        lengthCheck: ShaderUniformLengthCheck,
     ): string[] {
         return compileShaderUniformComponents(
             this.context,
             expression,
             uniform,
-            lengthError,
+            lengthCheck,
         );
     }
 

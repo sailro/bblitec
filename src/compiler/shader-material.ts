@@ -22,7 +22,10 @@ import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
-import { pinnedErrorMessageCpp } from "../lowering/pinned-error.js";
+import {
+    pinnedErrorCode,
+    pinnedErrorMessageCpp,
+} from "../lowering/pinned-error.js";
 import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
@@ -680,7 +683,7 @@ function compileShaderUniformSignatures(
                             name: uniformName,
                             type: uniformType,
                         },
-                        399,
+                        "normalizeUniformValue",
                     ),
                 });
             }
@@ -867,12 +870,16 @@ export function resolveShaderStorageBufferSlot(
     return slot;
 }
 
+/** The pinned uniform writers whose array-length check a component list mirrors. */
+export type ShaderUniformLengthCheck =
+    "normalizeUniformValue" | "setUniformValue";
+
 export function compileShaderUniformComponents(
     context: ShaderMaterialContext,
     expression: ts.Expression,
     uniform: Pick<ShaderUniformSlot, "count" | "name" | "type">,
-    /** The pin's length error: 401 for `setShaderUniform`, 399 for a default. */
-    lengthError: 399 | 401,
+    /** The pinned function whose length check this mirrors: the setter's, or a default's. */
+    lengthCheck: ShaderUniformLengthCheck,
 ): string[] {
     const { count } = uniform;
     if (count === 1) {
@@ -907,21 +914,30 @@ export function compileShaderUniformComponents(
     }
     if (value.kind === "data" && isTypedArrayType(value.dataType)) {
         // The pin's setter takes any ArrayLike: a length other than the
-        // declared count throws (LiteError 401), then each lane is stored
+        // declared count throws (the pinned length check), then each lane is stored
         // through Math.fround.
         const array = context.bindings.pinValueToTemporary(
             value,
             "uniform_values",
         ).cpp;
+        const pinned = sharedPinnedContext();
+        const messageArguments = [
+            uniform.name,
+            uniform.type,
+            count,
+            { cpp: `std::to_string(${array}.size())` },
+        ];
         const message = pinnedErrorMessageCpp(
-            sharedPinnedContext(),
-            lengthError,
-            [
-                uniform.name,
-                uniform.type,
-                count,
-                { cpp: `std::to_string(${array}.size())` },
-            ],
+            pinned,
+            pinnedErrorCode(
+                pinned,
+                pinned.functionDeclaration(
+                    "src/material/shader/shader-material.ts",
+                    lengthCheck,
+                ).declaration,
+                messageArguments.length,
+            ),
+            messageArguments,
         );
         context.emit({
             kind: "expression",

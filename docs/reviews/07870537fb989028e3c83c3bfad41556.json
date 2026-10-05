@@ -1,0 +1,105 @@
+{
+    "angles": ["reuse", "simplification", "efficiency", "altitude"],
+    "findings": [
+        {
+            "summary": "Skeleton shadow bounds read the skin from the geometry's vertex lanes, which a scene skeleton's attachment already fills, instead of searching every scene skeleton per caster per fit; the attachment drops the cache it rewrites.",
+            "applied": true
+        },
+        {
+            "summary": "The bone-box cache keys on the skin lanes and bone count and keeps the boxes' union beside them, as the pin's getCache does, instead of recomputing the union on every composed fit.",
+            "applied": true
+        },
+        {
+            "summary": "Every pinned function the skeleton provider restates (buildSkinnedBoneCorners, extentCorners, getCache, createSkeletonBoundsProvider, getPreviousDeformableShadowBounds, mapCasterMeshes, enableSkeletonShadows) is held to its complete body instead of a handful of shape counts.",
+            "applied": true
+        },
+        {
+            "summary": "The skeleton provider's infinity initialisers, two-step composed union and early empty-box return collapse into one form.",
+            "applied": true
+        },
+        {
+            "summary": "The caster fit's morph flag is one const expression, shared by both deformable-bounds stages.",
+            "applied": true
+        },
+        {
+            "summary": "The caster version sum takes the generator record instead of one flag parameter per bounds provider.",
+            "applied": true
+        },
+        {
+            "summary": "The morph and skeleton registrations share one intrinsic case and one emitted registration template.",
+            "applied": true
+        },
+        {
+            "summary": "The shared pending PBR rebuild is pinned by one whole-chain shape contract instead of three partial checks.",
+            "applied": true
+        },
+        {
+            "summary": "The pinned error-table readers share one import-aware ThrowLiteError call finder, and the uniform length check passes its own argument count.",
+            "applied": true
+        },
+        {
+            "summary": "The mesh-walk recognizers share const-alias and empty-list-fallback helpers with the skinned descendant search instead of carrying new copies.",
+            "applied": true
+        },
+        {
+            "summary": "getContainerMeshes over a container literal compiles its entities through the scene-node vector sink and the program's engine instead of a hand-written kind list.",
+            "applied": true
+        },
+        {
+            "summary": "Unary plus and minus and numeric nullish defaults accept operands through the existing isNumericValue predicate.",
+            "applied": true
+        },
+        {
+            "summary": "A bare mesh parent write returns on an unchanged parent before the cycle walk, as the pin's setter does.",
+            "applied": true
+        },
+        {
+            "summary": "The skeleton bounds test compiles one native program for both fits, takes the morph box from the pin, uses floatLiteral and keeps one stand-in cast.",
+            "applied": true
+        },
+        {
+            "summary": "runGeneratedProgram returns the program's output instead of a second exported runner.",
+            "applied": true
+        },
+        {
+            "summary": "The Shadows paragraph names morph/skeleton caster bounds without a doubled conjunction.",
+            "applied": true
+        },
+        {
+            "summary": "Drop Math.fround on the native fixture's printed floats.",
+            "applied": false,
+            "blockedBy": "Declined: %.9g round-trips a float only through a float parse; the parsed double differs from the float32 value (-3.35000014 vs -3.3500001430511475), so the fround is what makes the comparison exact.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Select the pinned throw by its decoded message rather than by its argument count.",
+            "applied": false,
+            "blockedBy": "Declined: matching by message would restate the pinned message text in this repository; the argument count is structural and pinnedErrorCode already refuses when it does not single out one throw.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Package recursive visitor walks as packaging-time source walks instead of recognizing their spellings.",
+            "applied": false,
+            "blockedBy": "Declined: it would move the four published scenes that use the recursive visitor off the preorder collection contract they load through; this change only widens the spellings the existing contract proves.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Route about thirty generated throws that restate decoded pinned messages through one helper emitting the pin's #code.",
+            "applied": false,
+            "blockedBy": "Declined: those throws live in ten lowerers this change does not touch; this change fixes the two hand-written codes it reached and reads them from the pin.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Batch pending PBR rebuilds across several drains before one dispatch.",
+            "applied": false,
+            "blockedBy": "Declined: processMaterialSwaps drains once per frame and the pin's dynamic import settles before the next frame, so each native continuation is one pin drain and already holds one full rebuild.",
+            "filedIn": "docs/reviews (declined in this record)"
+        },
+        {
+            "summary": "Lower buildSkinnedBoneCorners with lowerPinnedFunction instead of restating it.",
+            "applied": false,
+            "blockedBy": "Declined: its nested accumulate arrow and BoneCornerBox records are not shapes the pinned-function lowerer translates; the restatement is held to the complete pinned body instead.",
+            "filedIn": "docs/reviews (declined in this record)"
+        }
+    ]
+}

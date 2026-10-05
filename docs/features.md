@@ -389,7 +389,8 @@ mesh. Broader imported hierarchy cloning refuses; child-mesh queries remain limi
 Stored `SceneNode` handles retain imported-root and mesh cloning. Their `children` traversal is live,
 ordered and preserves mixed mesh/node identity; `"material" in node` distinguishes meshes.
 Optional visibility and thin-instance reads retain concrete node state. Removal snapshots children
-before recursion and uses the concrete mesh retirement path.
+before recursion and uses the concrete mesh retirement path. `getContainerMeshes` also flattens an
+`{ entities: [...] }` literal of retained nodes, walking their live children.
 Standalone transform-node cloning and child-list mutation through this view refuse.
 Stored asset containers check synthetic-root ownership at runtime; singleton cloned-root containers preserve the clone's identity.
 Detached imported leaves share geometry.
@@ -536,9 +537,10 @@ Closed-context graph operations, master ramps and nullable buffers remain limite
 
 ## Shadows
 
-PCF spot/directional, ESM directional and CSM support reached receivers/casters, layers, blur and morph
-bounds. receiveShadows needs a known supported value. PCF `mapSize` may be a run-time integer; `normalBias`
-is evaluated and unused, as in the pin. Broader options and thin-instance contracts refuse.
+PCF spot/directional, ESM directional and CSM support reached receivers/casters, layers, blur and
+morph/skeleton caster bounds. receiveShadows needs a known supported value. PCF `mapSize` may be a
+run-time integer; `normalBias` is evaluated and unused, as in the pin. Broader options and
+thin-instance contracts refuse.
 PCF spot refresh and CSM stabilization/bias remain limited.
 Generator enable changes retain resources and update receiver darkness; CSM callbacks retain source order.
 

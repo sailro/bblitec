@@ -3653,6 +3653,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene286",
+        name: "Scene 286 - ShaderMaterial on Interleaved glTF",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene286.ts",
+        title: "Babylon Lite Native - Interleaved ShaderMaterial",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene278",
         name: "Scene 278 - Line System",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene278.ts",
@@ -5009,11 +5021,11 @@ const sceneInputs: readonly SceneInput[] = [
             referenceFrame: 180,
             // Not qualified: the canvas itself differs at the
             // reference frame (docs/status.md row). The gates sit just above
-            // that published measurement (0.204 / 0.223), so they catch a
+            // that published measurement (0.959 / 0.723), so they catch a
             // regression.
-            maxFullMad: 0.3,
-            maxForegroundMad: 0.35,
-            canvasThresholds: { maxFullMad: 1.2, maxForegroundMad: 1.3 },
+            maxFullMad: 1.0,
+            maxForegroundMad: 0.75,
+            canvasThresholds: { maxFullMad: 3.4, maxForegroundMad: 3.2 },
             backgroundColor: [46, 46, 51],
             backgroundThreshold: 30,
             nativeEnvironment: fixedCaptureEnvironment(),

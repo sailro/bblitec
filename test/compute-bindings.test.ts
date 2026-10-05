@@ -60,9 +60,9 @@ int main(){
  invalidate=true;assert(bbl::ensure_compute_binding_groups(binding)!=groups&&validations==2&&gets==2&&device->groups.size()==6);
  assert(binding->resource_epoch==1);bbl::ensure_compute_binding_groups(binding,false);assert(validations==2&&gets==2);
  engine->resource_epoch=2;bbl::ensure_compute_binding_groups(binding,false);assert(gets==3&&device->groups.size()==9);
- for(const bool extra:{false,true}){auto bad=resources;if(extra)bad.emplace("unknown",std::monostate{});else bad.clear();bool failed=false;try{(void)bbl::create_compute_binding_set(shader,bad);}catch(const std::exception& e){failed=std::string(e.what())==(extra?"#778":"#779");}assert(failed);}
+ for(const bool extra:{false,true}){auto bad=resources;if(extra)bad.emplace("unknown",std::monostate{});else bad.clear();bool failed=false;try{(void)bbl::create_compute_binding_set(shader,bad);}catch(const std::exception& e){failed=std::string(e.what())==(extra?"#853":"#854");}assert(failed);}
  bbl::dispose_compute_binding_set(binding);bbl::dispose_compute_binding_set(binding);assert(binding->destroyed&&!binding->groups&&!binding->device&&uniform->allocation);
- bool disposed=false;try{(void)bbl::ensure_compute_binding_groups(binding);}catch(const std::exception& e){disposed=std::string(e.what())=="#780";}assert(disposed);
+ bool disposed=false;try{(void)bbl::ensure_compute_binding_groups(binding);}catch(const std::exception& e){disposed=std::string(e.what())=="#855";}assert(disposed);
 }
 `,
     );

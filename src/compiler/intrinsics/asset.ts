@@ -66,6 +66,7 @@ export interface AssetIntrinsicContext
             | "reachJsData"
             | "probeEmission"
             | "requireEngine"
+            | "requireDefaultEngine"
             | "fail"
             | "resolveStaticExpression"
             | "expectStaticArrayLiteral"
@@ -227,8 +228,46 @@ function compileGetContainerMeshes(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
+    const argument = context.unwrap(argumentAt(call, 0));
+    if (ts.isObjectLiteralExpression(argument))
+        return compileNodeContainerMeshes(context, argument, call);
     const container = context.compileValue(argumentAt(call, 0));
     return context.handleCollections.assetMeshCollection(container, call);
+}
+
+/**
+ * `getContainerMeshes({ entities })`: a container built in code over
+ * retained scene nodes. The pin's walk runs natively over their live
+ * `children`, so it sees the hierarchy as it stands at the call.
+ */
+function compileNodeContainerMeshes(
+    context: AssetIntrinsicContext,
+    literal: ts.ObjectLiteralExpression,
+    call: ts.CallExpression,
+): Value {
+    const entities = context.objectProperty(literal, "entities");
+    if (!entities || literal.properties.length !== 1) {
+        return context.fail(
+            literal,
+            "A container literal passed to getContainerMeshes names only its entities.",
+        );
+    }
+    const nodes = context.dataLowerer.compileForSink(entities, {
+        kind: "vector",
+        element: { kind: "handle", handle: "scene-node" },
+    });
+    const engineCpp = context.requireDefaultEngine(call);
+    context.reachFeature("scene:node-transforms", call);
+    return {
+        kind: "data",
+        engineCpp,
+        cpp: `bbl::container_meshes(${engineCpp}, ${nodes})`,
+        dataType: {
+            kind: "vector",
+            element: { kind: "handle", handle: "mesh" },
+        },
+        freshData: true,
+    };
 }
 
 /**

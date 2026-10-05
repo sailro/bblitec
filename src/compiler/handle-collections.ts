@@ -2928,17 +2928,10 @@ function isAssetSkinnedDescendantSearch(
     // `const m = node as unknown as Mesh;` -- the cast the source needs
     // because a SceneNode has no `skeleton` member. It carries no runtime
     // meaning, so the alias is just another name for the parameter.
-    const aliasDeclaration = singleConstDeclaration(alias!);
-    if (
-        !aliasDeclaration ||
-        !ts.isVariableStatement(alias!) ||
-        (alias.declarationList.flags & ts.NodeFlags.Const) === 0 ||
-        !isIdentifierRead(aliasDeclaration.initializer, root) ||
-        aliasDeclaration.name.text === declaration.name.text
-    ) {
+    const self = constAliasOf(alias!, root);
+    if (!self || self.text === declaration.name.text) {
         return false;
     }
-    const self = aliasDeclaration.name;
 
     if (!ts.isIfStatement(selfArm!) || !!selfArm.elseStatement) {
         return false;
@@ -2966,14 +2959,7 @@ function isAssetSkinnedDescendantSearch(
         return false;
     }
     const walked = unwrapWalkExpression(walk.expression);
-    const children =
-        ts.isBinaryExpression(walked) &&
-        walked.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
-        ts.isArrayLiteralExpression(unwrapWalkExpression(walked.right)) &&
-        (unwrapWalkExpression(walked.right) as ts.ArrayLiteralExpression)
-            .elements.length === 0
-            ? unwrapWalkExpression(walked.left)
-            : walked;
+    const children = emptyListFallbackOperand(walked) ?? walked;
     if (!isPropertyReadOf(children, root, "children")) return false;
 
     const childDeclaration = walk.initializer.declarations[0]!;
@@ -3827,14 +3813,20 @@ function guardedBy(
  *         }
  *     }
  *
- * Four corpus scenes write the flatten this way rather than as a worklist,
- * and the difference is only the arrangement: the same `_gpu` probe selects
- * the same nodes, and the same `children` descent reaches the same
- * subtrees. What has to be proven is what it was there -- that the walk is
- * total (nothing filters a child, and the descent runs on every node the
- * guard passes), that it collects exactly the loader's mesh records, and
- * that it does nothing else: two statements, one push, one recursive call,
- * no other effect.
+ * Corpus scenes write the flatten this way rather than as a worklist, and
+ * the difference is only the arrangement: the same `_gpu` probe selects the
+ * same nodes, and the same `children` descent reaches the same subtrees.
+ * What has to be proven is what it was there -- that the walk is total
+ * (nothing filters a child, and the descent runs on every node the guard
+ * passes), that it collects exactly the loader's mesh records, and that it
+ * does nothing else: one push, one recursive call, no other effect.
+ *
+ * Two arrangements of each half are proven. The collection is guarded by a
+ * renderable type guard, or by the pin's own `_gpu` truth probe; the descent
+ * by a children type guard, or written as the pin writes a nullable list,
+ * `for (const child of node.children ?? [])`. Either may read the node
+ * through one asserted view declared first, `const n = node as {...}`,
+ * which is the node itself.
  *
  * The proven traversal is the pin's preorder `getContainerMeshes`. Packaging
  * executes that function on the pin's hierarchy and retains its permutation
@@ -3857,50 +3849,74 @@ function isRecursiveMeshFlattenVisitor(
                 !!parameter.dotDotDotToken ||
                 !!parameter.initializer ||
                 !!parameter.questionToken,
-        ) ||
-        declaration.body.statements.length !== 2
+        )
     ) {
         return false;
     }
     const node = declaration.parameters[0]!.name;
     const out = declaration.parameters[1]!.name;
     if (!ts.isIdentifier(node) || !ts.isIdentifier(out)) return false;
+    const statements = declaration.body.statements;
+    const view =
+        statements.length === 3
+            ? constAliasOf(statements[0]!, node)
+            : undefined;
+    if (statements.length !== (view ? 3 : 2)) return false;
+    const names = view ? [node, view] : [node];
+    const [collectStatement, descendStatement] = statements.slice(view ? 1 : 0);
 
-    // `if (<renderable guard>(node)) meshes.push(node)` -- the collection.
-    const collect = guardedArm(declaration.body.statements[0]!);
+    // `if (<renderable probe>) meshes.push(node)` -- the collection.
+    const collect = guardedArm(collectStatement!);
     if (
         !collect ||
-        !guardedBy(collect.test, node, resolve, isRenderablePresenceGuard) ||
-        !isIdentifierRead(
-            pushedArgument(singleExpressionStatement(collect.body), out, false),
-            node,
+        !names.some(
+            (name) =>
+                guardedBy(
+                    collect.test,
+                    name,
+                    resolve,
+                    isRenderablePresenceGuard,
+                ) || isPropertyReadOf(collect.test, name, "_gpu"),
+        ) ||
+        !names.some((name) =>
+            isIdentifierRead(
+                pushedArgument(
+                    singleExpressionStatement(collect.body),
+                    out,
+                    false,
+                ),
+                name,
+            ),
         )
     ) {
         return false;
     }
 
-    // `if (<children guard>(node)) for (const child of node.children)
-    //      collectMeshes(child, meshes)` -- the descent, over every child.
-    const descend = guardedArm(declaration.body.statements[1]!);
+    // The descent, over every child: `if (<children guard>(node)) for (const
+    // child of node.children) collectMeshes(child, meshes)`, or the same loop
+    // over `node.children ?? []` with no guard.
+    const descend = guardedArm(descendStatement!);
+    const loop = descend
+        ? names.some((name) =>
+              guardedBy(descend.test, name, resolve, (candidate) =>
+                  isChildrenPresenceGuard(candidate, libraryGlobal),
+              ),
+          )
+            ? singleStatement(descend.body, ts.isForOfStatement)
+            : undefined
+        : ts.isForOfStatement(descendStatement!)
+          ? descendStatement
+          : undefined;
+    const children =
+        loop &&
+        (descend ? loop.expression : emptyListFallbackOperand(loop.expression));
     if (
-        !descend ||
-        !guardedBy(descend.test, node, resolve, (candidate) =>
-            isChildrenPresenceGuard(candidate, libraryGlobal),
-        )
-    ) {
-        return false;
-    }
-    const descendBody = ts.isBlock(descend.body)
-        ? descend.body.statements
-        : [descend.body];
-    if (descendBody.length !== 1) return false;
-    const loop = descendBody[0]!;
-    if (
-        !ts.isForOfStatement(loop) ||
+        !loop ||
+        !children ||
+        !names.some((name) => isPropertyReadOf(children, name, "children")) ||
         loop.awaitModifier ||
         !ts.isVariableDeclarationList(loop.initializer) ||
-        loop.initializer.declarations.length !== 1 ||
-        !isPropertyReadOf(loop.expression, node, "children")
+        loop.initializer.declarations.length !== 1
     ) {
         return false;
     }
@@ -3917,6 +3933,42 @@ function isRecursiveMeshFlattenVisitor(
         isIdentifierRead(argumentAt(call, 0), child) &&
         isIdentifierRead(argumentAt(call, 1), out)
     );
+}
+
+/**
+ * `const n = node as T`: one constant alias of `node`, through any type
+ * assertion. It names the same object, so a read of the alias is a read of
+ * the node.
+ */
+function constAliasOf(
+    statement: ts.Statement,
+    node: ts.Identifier,
+): ts.Identifier | undefined {
+    const declaration = singleConstDeclaration(statement);
+    return declaration &&
+        ts.isVariableStatement(statement) &&
+        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0 &&
+        isIdentifierRead(declaration.initializer, node)
+        ? declaration.name
+        : undefined;
+}
+
+/** The list `<list> ?? []` reads whole, absent reading as empty. */
+function emptyListFallbackOperand(
+    expression: ts.Expression,
+): ts.Expression | undefined {
+    const current = unwrapWalkExpression(expression);
+    if (
+        !ts.isBinaryExpression(current) ||
+        current.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        return undefined;
+    }
+    const fallback = unwrapWalkExpression(current.right);
+    return ts.isArrayLiteralExpression(fallback) &&
+        fallback.elements.length === 0
+        ? unwrapWalkExpression(current.left)
+        : undefined;
 }
 
 /**

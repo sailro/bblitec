@@ -1496,6 +1496,10 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
             return undefined;
         },
     });
+    // `hooks._n` is the full PBR group rebuild not yet dispatched: every PBR
+    // request of one synchronous drain joins the first one's. The native drain
+    // dispatches its whole batch at once, so that slot is "a full rebuild is
+    // already in this batch".
     const schedule = lowerPinnedBody(
         b.file,
         b.declaration.body!.statements.slice(2),
@@ -1508,6 +1512,13 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                 [
                     "scene._groups.get(builder)?.r",
                     { cpp: "(target && target->rebuild_ready)", type: "bool" },
+                ],
+                [
+                    "hooks._n",
+                    {
+                        cpp: "runtime_full_rebuild_pending(pending)",
+                        type: "bool",
+                    },
                 ],
             ]),
             calls: new Map(),
@@ -1522,7 +1533,45 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                     return "builder == 1";
                 return undefined;
             },
-            statement(node) {
+            statement(node, _numeric, indent) {
+                if (ts.isExpressionStatement(node)) {
+                    const assignment = node.expression;
+                    if (
+                        !ts.isBinaryExpression(assignment) ||
+                        assignment.operatorToken.kind !==
+                            ts.SyntaxKind.EqualsToken
+                    )
+                        return undefined;
+                    if (
+                        context.expressionMatchesShape(
+                            assignment.left,
+                            "hooks._l",
+                        )
+                    ) {
+                        context.assertExpressionShape(
+                            assignment,
+                            `hooks._l = Promise.resolve(hooks._l)
+                                .then(() => import("./scene-rebuild.js"))
+                                .finally(() => {
+                                    hooks._n = undefined;
+                                })
+                                .then(({ rebuildScenePbrPipelines }) => (scene._z ? undefined : rebuildScenePbrPipelines(scene, true)))
+                                .catch((error: unknown) => {
+                                    scene._runtimeBuilds?._x(error);
+                                })`,
+                            "Shared pending PBR group rebuild",
+                        );
+                        return [
+                            `${indent}pending.push_back({mesh, builder, true});`,
+                        ];
+                    }
+                    context.assertExpressionShape(
+                        assignment,
+                        "hooks._n = hooks.track(hooks._l)",
+                        "Pending PBR rebuild slot",
+                    );
+                    return [];
+                }
                 if (!ts.isVariableStatement(node)) return undefined;
                 const variable = node.declarationList.declarations[0];
                 if (
@@ -1537,49 +1586,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                         "scene._runtimeBuilds ?? installRuntimeBuilds(scene)",
                         "Runtime build scheduler identity",
                     );
-                    return ["    install_material_runtime(scene);"];
-                }
-                if (variable.name.text === "rebuild") {
-                    const calls = context.findNodes(
-                        variable.initializer,
-                        (expression): expression is ts.CallExpression =>
-                            ts.isCallExpression(expression) &&
-                            context.expressionMatchesShape(
-                                expression.expression,
-                                "rebuildScenePbrPipelines",
-                            ),
-                    );
-                    if (calls.length !== 1)
-                        context.contractError(
-                            variable,
-                            "Expected one scheduled PBR rebuild.",
-                        );
-                    context.assertExpressionShape(
-                        calls[0]!,
-                        "rebuildScenePbrPipelines(scene, true)",
-                        "Runtime forced group rebuild",
-                    );
-                    const continuations = context.findNodes(
-                        variable.initializer,
-                        (expression): expression is ts.ArrowFunction =>
-                            ts.isArrowFunction(expression) &&
-                            !ts.isBlock(expression.body) &&
-                            context.hasNode(
-                                expression.body,
-                                (node) => node === calls[0],
-                            ),
-                    );
-                    if (continuations.length !== 1)
-                        context.contractError(
-                            variable,
-                            "Expected one PBR rebuild continuation.",
-                        );
-                    context.assertExpressionShape(
-                        continuations[0]!.body as ts.Expression,
-                        "scene._z ? undefined : rebuildScenePbrPipelines(scene, true)",
-                        "Queued rebuild disposal guard",
-                    );
-                    return [];
+                    return [`${indent}install_material_runtime(scene);`];
                 }
                 return undefined;
             },
@@ -1589,13 +1596,9 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                         b.declaration,
                         "Expected a runtime build request.",
                     );
-                if (
-                    context.expressionMatchesShape(
-                        expression,
-                        "hooks.track(rebuild)",
-                    )
-                )
-                    return "pending.push_back({mesh, builder, true})";
+                // Joining the pending rebuild adds no request of its own.
+                if (context.expressionMatchesShape(expression, "hooks._n"))
+                    return "";
                 context.assertExpressionShape(
                     expression,
                     "hooks.queue(builder, mesh).catch(() => undefined)",
@@ -1606,6 +1609,9 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
         },
     );
     return `struct SourceRuntimeGroupBuild { MeshHandle mesh; std::uint64_t builder; bool full; };
+bool runtime_full_rebuild_pending(const std::vector<SourceRuntimeGroupBuild>& pending) {
+    return std::any_of(pending.begin(), pending.end(), [](const SourceRuntimeGroupBuild& build) {return build.full;});
+}
 double source_group_mesh_index(const std::vector<MeshHandle>& meshes, MeshHandle mesh) {
     const auto found = std::find_if(meshes.begin(), meshes.end(), [mesh](MeshHandle candidate) {return candidate == mesh;});
     return found == meshes.end() ? -1.0 : static_cast<double>(found - meshes.begin());
@@ -1632,7 +1638,7 @@ void dispatch_pbr_runtime_builds(Scene& scene, const std::vector<PbrPendingGroup
     append_pbr_runtime_builds(scene, runtime_builds, pending);
     append_pbr_runtime_builds(scene, meshes, pending);
     // The source import continuation runs after request membership updates.
-    // Keep one rebuild per request; the source does not coalesce this path.
+    // A batch holds at most one full rebuild: later PBR requests joined it.
     for (const auto& [mesh, builder, full] : pending) {
         if (scene.disposed) continue;
         try {

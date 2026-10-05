@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "2e064d88ec7422af946f8ec7f089ac6519f99295",
+  "sourceVersion": "1d1a2c0de2fc845d57096b7abe0256c10e648ff3",
   "scenes": [
     {
       "id": "scene1",
@@ -1503,6 +1503,12 @@
       "upstreamPath": "lab/lite/src/lite/scene290.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene290.ts",
       "sha256": "3be4e2dde44fb2bbddb4e192bd1d8d9fa8e6e7c9630536d47792a9d97ff49283"
+    },
+    {
+      "id": "scene286",
+      "upstreamPath": "lab/lite/src/lite/scene286.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene286.ts",
+      "sha256": "37399b93f5d1df2236cbecdffb3fc94786a93ba992ebc5f3a60019e4b54134af"
     }
   ],
   "modules": [
@@ -1815,6 +1821,11 @@
       "upstreamPath": "lab/lite/src/shared/scene66-block-loader.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene66-block-loader.ts",
       "sha256": "6b05ac91f03798c89d3600d254dbc49a79fe235c1872618f89ecc1aa55c40b57"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene306-external-video.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene306-external-video.ts",
+      "sha256": "7b0f7daee18c4ae47f13c3a1a252c0821bc28c1cac725a1026f12436baf01df1"
     }
   ],
   "staged": [
@@ -1832,6 +1843,11 @@
       "upstreamPath": "LICENSE",
       "source": "corpus/babylon-lite/LICENSE",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene306.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene306.ts",
+      "sha256": "1689014b8d364b575568d546735d6a7dfe6e16abb989f7c239d0fc29659f364f"
     }
   ],
   "tooling": [
@@ -3660,7 +3676,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "008ed3364ede5b2f560071117801ba9dfd6e37fd6edc6a32cd0cfcdd9136ebff"
+          "sha256": "b32f8263871c63ec4fe2fd921f7a1cca52591f80cfc2bc53257fa942bfb45d01"
         }
       },
       "files": [
@@ -4548,10 +4564,10 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
       "reference": {
         "source": "reference/playroom/babylon-lite-golden.png",
-        "sha256": "7787bf18b0b0aa0f2913bda5d4dac71ded95defd8f82acc60dcc6c679ca83348",
+        "sha256": "b31b197769657f9283fd072b20e62afaf35b80ac810c7ca536b96babadd2aa45",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "ed9544c4d927d89e5cf04058b8be0e9d2c0eb55d5d67f351835d870d988d3f13"
+          "sha256": "58974d911fb8c41a46e15105c22a54038017b2490bf7681cd3ddc34b82c47b33"
         }
       },
       "files": [
@@ -4563,7 +4579,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/playroom.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
-          "sha256": "a796bb8639e8f2ffa316673875b103e5e6115b5ec8dce502df93a46bef9ede9a"
+          "sha256": "d223bb8c62847ad005e6561b2a03c47d9ac8945672073570629caefba0a28069"
         },
         {
           "upstreamPath": "lab/lite/src/demos/playroom/assets.ts",
@@ -4623,7 +4639,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/playroom/ragdoll.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/ragdoll.ts",
-          "sha256": "a57317e78d66441688abd9a6e192d7d04cea8ba4bfa7d69a8247c37e9f9c38b0"
+          "sha256": "40a2685448bae1d89d1ca84011df3a2f358af4b731efb1003b83cf6e32910816"
         },
         {
           "upstreamPath": "lab/lite/src/demos/playroom/types.ts",
@@ -4638,7 +4654,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/playroom/world.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/world.ts",
-          "sha256": "1b0d078afc5cdeafa8097064369976cec6bde0b8dd8979f4127ce242c3f34487"
+          "sha256": "457c01e543eead951cee1da93be10cc3f8b93c5de17f67180a704bb89125e851"
         },
         {
           "upstreamPath": "lab/public/playroom/README.md",
