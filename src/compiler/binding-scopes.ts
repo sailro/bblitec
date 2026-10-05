@@ -2336,6 +2336,10 @@ export class BindingScopes {
         if (existing) return existing;
         const stored = node && this.referenceRecordValue(record, node);
         if (stored) {
+            if (this.context.hasStableNativeBinding(stored)) {
+                this.context.useNativeValue(stored);
+                return stored;
+            }
             // Choose the whole-object home before boxing individual fields.
             // Inlined calls bind it here so later sinks share this allocation.
             const cpp = this.context.allocateTemporaryCppName(label);
