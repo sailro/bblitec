@@ -69,6 +69,7 @@ import type { LinearDepthMaterialOptions } from "../lowering/linear-depth-lowere
 import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
+    resolveShaderExternalTextureSlot,
     resolveShaderStorageBufferSlot,
     resolveShaderTextureSlot,
     resolveShaderUniform,
@@ -276,6 +277,17 @@ export class IntrinsicOptions {
         nameExpression: ts.Expression,
     ): number {
         return resolveShaderTextureSlot(this.context, material, nameExpression);
+    }
+
+    public resolveShaderExternalTextureSlot(
+        material: Value,
+        nameExpression: ts.Expression,
+    ): number {
+        return resolveShaderExternalTextureSlot(
+            this.context,
+            material,
+            nameExpression,
+        );
     }
 
     public resolveShaderStorageBufferSlot(

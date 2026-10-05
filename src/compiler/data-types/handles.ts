@@ -53,6 +53,8 @@ const handleCppTypes: Record<HandleKind, string> = {
     "compute-storage-texture": "std::shared_ptr<bbl::ComputeStorageTexture>",
     "compute-texture-resource": "std::shared_ptr<bbl::ComputeTextureResource>",
     "compute-sampler": "std::shared_ptr<bbl::ComputeSamplerResource>",
+    video: "bbl::VideoHandle",
+    "external-texture": "bbl::ExternalTextureHandle",
     "compute-binding-decl": "bbl::ComputeBindingDeclPtr",
     "compute-binding-set": "std::shared_ptr<bbl::ComputeBindingSet>",
     "compute-shader": "std::shared_ptr<bbl::ComputeShader>",

@@ -6,6 +6,14 @@ window.addEventListener("click", event => {
     if (lifecycle.persisted === false || lifecycle.persisted !== undefined) throw new Error("Absent lifecycle field");
 });
 function removed(): void { throw new Error("Removed lifecycle listener ran"); }
+window.addEventListener("beforeunload", (event: BeforeUnloadEvent) => {
+    if (event.type !== "beforeunload" || event.target !== document || event.currentTarget !== window ||
+        event.eventPhase !== 2 || event.bubbles || !event.cancelable || event.composed ||
+        !event.isTrusted || order !== "") throw new Error("Before-unload event payload");
+    event.preventDefault();
+    if (!event.defaultPrevented) throw new Error("Before-unload cancellation state");
+    order += "beforeunload;";
+}, {once: true});
 window.addEventListener("pagehide", removed);
 window.removeEventListener("pagehide", removed);
 window.addEventListener("pagehide", () => { order += "capture;"; }, {capture: true});
@@ -19,7 +27,7 @@ window.addEventListener("pagehide", (event: PageTransitionEvent) => {
     queueMicrotask(() => { order += "microtask;"; });
 }, {once: true});
 window.addEventListener("pagehide", () => {
-    if (order !== "capture;target;microtask;") throw new Error("Lifecycle listener order: " + order);
+    if (order !== "beforeunload;capture;target;microtask;") throw new Error("Lifecycle listener order: " + order);
     localStorage.setItem("pagehide-result", order);
 });
 globalThis.close();

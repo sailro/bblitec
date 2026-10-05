@@ -32,6 +32,7 @@ import {
     shaderSystemMatrices,
 } from "../shader-ir.js";
 import {
+    shaderSamplerDeclarations,
     shaderSamplerName,
     shaderUniformValueLayout,
 } from "../shader-material-programs.js";
@@ -119,6 +120,7 @@ export function compileShaderMaterialOptions(
             "attributes",
             "uniforms",
             "samplers",
+            "externalTextures",
             "storageBuffers",
             "defines",
             "needAlphaBlending",
@@ -128,22 +130,20 @@ export function compileShaderMaterialOptions(
             "depthWrite",
             "depthCompare",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, storage buffers, defines, alpha state and blend mode, culling, depthWrite and depthCompare only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite and depthCompare only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
     const fragmentExpression = context.objectProperty(object, "fragmentSource");
     const attributesExpression = context.objectProperty(object, "attributes");
+    // The pin reads `options.uniforms ?? []`, so an absent list declares
+    // none; a refusal about the list then points at the options object.
     const uniformsExpression = context.objectProperty(object, "uniforms");
-    if (
-        !vertexExpression ||
-        !fragmentExpression ||
-        !attributesExpression ||
-        !uniformsExpression
-    ) {
+    const uniformsNode = uniformsExpression ?? object;
+    if (!vertexExpression || !fragmentExpression || !attributesExpression) {
         context.fail(
             object,
-            "Shader material requires vertexSource, fragmentSource, attributes, and uniforms.",
+            "Shader material requires vertexSource, fragmentSource, and attributes.",
         );
     }
 
@@ -156,7 +156,9 @@ export function compileShaderMaterialOptions(
         signatures: declaredUniforms,
         defaults: uniformDefaults,
         dynamicDefaults,
-    } = compileShaderUniformSignatures(context, uniformsExpression);
+    } = uniformsExpression
+        ? compileShaderUniformSignatures(context, uniformsExpression)
+        : { signatures: [], defaults: [], dynamicDefaults: [] };
     const dynamicSourceUniforms = [
         ...compiledVertex.dynamicUniforms,
         ...compiledFragment.dynamicUniforms,
@@ -181,6 +183,12 @@ export function compileShaderMaterialOptions(
         generatedNames,
     );
     const samplers = samplerDeclarations.map(({ name }) => name);
+    const externalTextures = compileShaderExternalTextures(
+        context,
+        context.objectProperty(object, "externalTextures"),
+        generatedNames,
+        samplers.length,
+    );
     const storageBuffers = compileShaderStorageBuffers(
         context,
         context.objectProperty(object, "storageBuffers"),
@@ -281,7 +289,7 @@ export function compileShaderMaterialOptions(
     for (const signature of uniforms) {
         if (!signature.includes(":") && !isShaderSystemMatrix(signature)) {
             context.fail(
-                uniformsExpression,
+                uniformsNode,
                 `Reached scene-local shader materials support the ${shaderSystemMatrices.join("/")} system uniforms, received '${signature}'.`,
             );
         }
@@ -295,6 +303,7 @@ export function compileShaderMaterialOptions(
         uniformDefaults,
         samplers,
         samplerDeclarations,
+        ...(externalTextures.length > 0 ? { externalTextures } : {}),
         storageBuffers,
         defines,
         needAlphaBlending,
@@ -319,7 +328,7 @@ export function compileShaderMaterialOptions(
         );
         if (!declared) {
             context.fail(
-                uniformsExpression,
+                uniformsNode,
                 `Shader uniform default '${entry.name}' has no typed declaration.`,
             );
         }
@@ -328,13 +337,13 @@ export function compileShaderMaterialOptions(
         );
         if (componentCount === 0) {
             context.fail(
-                uniformsExpression,
+                uniformsNode,
                 `Shader uniform default '${entry.name}' has an unsupported type.`,
             );
         }
         if (entry.values.length !== componentCount) {
             context.fail(
-                uniformsExpression,
+                uniformsNode,
                 `Shader uniform default '${entry.name}' expects ${componentCount} component(s).`,
             );
         }
@@ -444,21 +453,7 @@ function compileShaderSamplers(
         } else {
             name = context.compileStaticString(element);
         }
-        if (!WGSL_IDENTIFIER.test(name)) {
-            context.fail(
-                element,
-                `Shader material sampler '${name}' is not a valid WGSL identifier.`,
-            );
-        }
-        for (const generated of [name, shaderSamplerName(name)]) {
-            if (used.has(generated)) {
-                context.fail(
-                    element,
-                    `Shader material sampler '${name}' collides with another generated identifier.`,
-                );
-            }
-            used.add(generated);
-        }
+        reserveSamplerPair(context, element, "sampler", name, used);
         samplers.push({ name, sampleType, viewDimension, comparison });
     }
     if (samplers.length > MAX_SHADER_SAMPLERS) {
@@ -468,6 +463,71 @@ function compileShaderSamplers(
         );
     }
     return samplers;
+}
+
+/**
+ * The `externalTextures` list (`createExternalTextureSlots` in
+ * shader-external-texture.ts): each name a WGSL identifier, unique together
+ * with its `<name>Sampler` companion against every other generated name.
+ * The pin asserts this when a binding API first reads the slots; a material
+ * that declares one is bound before it draws, so generation asserts it here.
+ */
+function compileShaderExternalTextures(
+    context: ShaderMaterialContext,
+    expression: ts.Expression | undefined,
+    used: Set<string>,
+    samplers: number,
+): string[] {
+    if (!expression) return [];
+    const names = context
+        .expectStaticArrayElements(expression)
+        .map((element) => {
+            const name = context.compileStaticString(element);
+            reserveSamplerPair(
+                context,
+                element,
+                "external texture",
+                name,
+                used,
+            );
+            return name;
+        });
+    // Each binds a texture/sampler pair after the samplers', in the same slots.
+    if (samplers + names.length > MAX_SHADER_SAMPLERS) {
+        context.fail(
+            expression,
+            `Reached shader materials bind at most ${MAX_SHADER_SAMPLERS} sampler and external-texture pairs; this one binds ${samplers + names.length}.`,
+        );
+    }
+    return names;
+}
+
+/**
+ * A sampler-shaped name the pin's prelude declares beside its `<name>Sampler`
+ * companion: a WGSL identifier, both names unique among the generated ones.
+ */
+function reserveSamplerPair(
+    context: ShaderMaterialContext,
+    element: ts.Expression,
+    kind: "sampler" | "external texture",
+    name: string,
+    used: Set<string>,
+): void {
+    if (!WGSL_IDENTIFIER.test(name)) {
+        context.fail(
+            element,
+            `Shader material ${kind} '${name}' is not a valid WGSL identifier.`,
+        );
+    }
+    for (const generated of [name, shaderSamplerName(name)]) {
+        if (used.has(generated)) {
+            context.fail(
+                element,
+                `Shader material ${kind} '${name}' collides with another generated identifier.`,
+            );
+        }
+        used.add(generated);
+    }
 }
 
 function compileShaderStorageBuffers(
@@ -837,6 +897,39 @@ export function resolveShaderTextureSlot(
         context.fail(
             nameExpression,
             `Shader variant '${program.name}' declares no sampler '${name}'.`,
+        );
+    }
+    return slot;
+}
+
+/**
+ * The native slot a `setShaderExternalTexture` name addresses: the pin's
+ * `_externalTextureSlots` map, settled at generation, at the pair's
+ * position in the binding order.
+ */
+export function resolveShaderExternalTextureSlot(
+    context: ShaderMaterialContext,
+    material: Value,
+    nameExpression: ts.Expression,
+): number {
+    if (!material.shaderVariant) {
+        context.fail(
+            nameExpression,
+            "Shader external-texture bindings require a shader material.",
+        );
+    }
+    const program = context.sceneManifest.reachedShaderProgram(
+        material.shaderVariant,
+        nameExpression,
+    );
+    const name = context.compileStringLiteral(nameExpression);
+    const slot = shaderSamplerDeclarations(program).findIndex(
+        (decl) => decl.external && decl.name === name,
+    );
+    if (slot < 0) {
+        context.fail(
+            nameExpression,
+            `Shader variant '${program.name}' declares no external texture '${name}'.`,
         );
     }
     return slot;

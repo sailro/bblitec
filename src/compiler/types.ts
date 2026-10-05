@@ -811,6 +811,12 @@ export interface CompiledShaderProgram {
     readonly samplers: string[];
     /** The normalized sampler shapes parallel to `samplers`. */
     readonly samplerDeclarations: CompiledShaderSampler[];
+    /**
+     * The `externalTextures` list: video slots `setShaderExternalTexture`
+     * binds, each the pin's `<name>` / `<name>Sampler` pair after the
+     * samplers. Absent when the material declares none.
+     */
+    readonly externalTextures?: string[];
     /** Read-only storage bindings in declaration order. */
     readonly storageBuffers: CompiledShaderStorageBuffer[];
     /**
@@ -856,6 +862,11 @@ export interface CompiledShaderSampler {
     sampleType: "float" | "unfilterable-float" | "depth";
     viewDimension: "2d" | "2d-array";
     comparison: boolean;
+    /**
+     * An `externalTextures` entry: the pin's `texture_external` pair,
+     * bound after every sampler (shader-external-texture.ts).
+     */
+    external?: true;
 }
 
 export interface CompiledShaderStorageBuffer {
@@ -1406,6 +1417,14 @@ export type ValueKind =
      * of the `URL.revokeObjectURL` that releases it, which erases.
      */
     | "executed-url"
+    /**
+     * An HTMLVideoElement a zero-parameter scene producer made, executed at
+     * generation (`executed-video-function.ts`): a native record of the
+     * frame the browser's WebGPU import yielded and the media readyState.
+     */
+    | "video"
+    /** `createExternalTexture`'s `{ video }` record. */
+    | "external-texture"
     /**
      * A `CsgSolid`: the pinned BSP solid, which exists only at generation.
      * The plan it carries is replayed against the pin's own modules when
@@ -2829,6 +2848,7 @@ export type Feature =
     | "material:node-inputs"
     | "material:shader"
     | "material:shader-storage"
+    | "material:shader-external-texture"
     | "material:standard"
     | "material:standard-vertex-colors"
     | "material:standard-skeleton"

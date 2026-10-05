@@ -198,6 +198,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     ComputeDispatch: "compute-dispatch",
     ComputeTextureResource: "compute-texture-resource",
     ComputeSampler: "compute-sampler",
+    ExternalTexture: "external-texture",
     ComputeBindingDecl: "compute-binding-decl",
     ComputeBindingSet: "compute-binding-set",
     ComputeUniformLayout: "compute-uniform-layout",
@@ -548,6 +549,7 @@ export function platformHandleKind(
     | "gpu-texture"
     | "custom-event"
     | "dom-event"
+    | "video"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (type.symbol.name === "GPUDevice") return "gpu-device";
@@ -557,6 +559,8 @@ export function platformHandleKind(
     if (type.symbol.name === "Gamepad") return "gamepad";
     if (type.symbol.name === "GamepadButton") return "gamepad-button";
     if (type.symbol.name === "CustomEvent") return "custom-event";
+    // Only a generation-executed producer makes one (executed-video-function.ts).
+    if (type.symbol.name === "HTMLVideoElement") return "video";
     if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;

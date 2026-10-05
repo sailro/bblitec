@@ -95,6 +95,9 @@ const keyboardNames = new Set(["keydown", "keyup"]);
 /** CSS transition events the UI projection sources. */
 const transitionNames = new Set(["transitionend"]);
 
+/** Page lifecycle events the Window dispatches as its document unloads. */
+const pageLifecycleNames = new Set(["beforeunload", "pagehide"]);
+
 /** These names already carry a distinct native payload/service contract. */
 export function isCustomDomEventName(type: string): boolean {
     return (
@@ -104,7 +107,7 @@ export function isCustomDomEventName(type: string): boolean {
         !transitionNames.has(type) &&
         !dragNames.has(type) &&
         type !== "storage" &&
-        type !== "pagehide"
+        !pageLifecycleNames.has(type)
     );
 }
 
@@ -506,13 +509,12 @@ export function emitDomEventListener(
     )
         return false;
     const type = context.compileStringLiteral(call.arguments[0]!);
-    const pagehide = type === "pagehide";
-    if (pagehide && !context.options.workers) {
+    const pageLifecycle = pageLifecycleNames.has(type);
+    if (pageLifecycle && context.options.workers?.namespace !== undefined)
         context.fail(
             call,
-            "Page lifecycle listeners require an asynchronous Window application realm.",
+            "Page lifecycle events dispatch at the Window, which a worker realm does not have.",
         );
-    }
     let target: string | undefined;
     let engine: string | undefined;
     let storedTarget: Value | undefined;
@@ -585,13 +587,13 @@ export function emitDomEventListener(
     }
     if (!target || !engine) return false;
     if (
-        pagehide &&
+        pageLifecycle &&
         !storedTarget &&
         target !== "bbl::DomEventTarget::window()"
     ) {
         context.fail(
             call,
-            "Page lifecycle listeners require an asynchronous Window application realm.",
+            "Page lifecycle events dispatch at the Window; a listener on another target never runs.",
         );
     }
     if (
@@ -604,7 +606,7 @@ export function emitDomEventListener(
     )
         return false;
     // Page transitions dispatch through the pointer family's Window path.
-    const family = pagehide ? "pointer" : domListenerFamily(type);
+    const family = pageLifecycle ? "pointer" : domListenerFamily(type);
     if (!family) return false;
     const custom = family === "custom";
     if (

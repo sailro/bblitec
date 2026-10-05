@@ -47,6 +47,8 @@ export type HandleKind =
     | "compute-storage-texture"
     | "compute-texture-resource"
     | "compute-sampler"
+    | "video"
+    | "external-texture"
     | "compute-binding-decl"
     | "compute-binding-set"
     | "compute-shader"

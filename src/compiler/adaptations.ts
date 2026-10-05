@@ -16,6 +16,7 @@ interface AdaptationContext extends Pick<
     | "options"
     | "jsRandomReached"
     | "browserTextureFunctions"
+    | "executedVideoFunctions"
     | "canvasReadbackFunctions"
     | "assets"
     | "sceneManifest"
@@ -467,6 +468,33 @@ export function compileAdaptations(
             validation: [
                 "browser-texture structural detection and refusal tests",
                 "byte-stable across repeated compilations",
+            ],
+        });
+    }
+    if (context.executedVideoFunctions.size > 0) {
+        adaptations.push({
+            id: "browser-produced-videos",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene builds an HTMLVideoElement at run time " +
+                `(${[...context.executedVideoFunctions].sort().join(", ")}) ` +
+                "and samples it through a ShaderMaterial external texture, " +
+                "which imports the video's current frame on every bind; the " +
+                "producer's method changes the media state the bind checks.",
+            nativeSemantics:
+                "Generation executes the producer in headless Chromium, imports " +
+                "its video through WebGPU exactly as the binding does and " +
+                "packages the texels it yields as RGBA8, refusing a frame " +
+                "between 8-bit levels. It requires the frame and readyState to " +
+                "hold still after the producer returns, and measures its one " +
+                "method's readyState effect -- synchronous and idempotent, from " +
+                "a body that reaches only the producer's own objects -- so a " +
+                "native call writes that state. The texels depend on the Chrome " +
+                "that baked them.",
+            risk: "medium",
+            validation: [
+                "video producer structural detection and bake decoding tests",
+                "scene306 browser-golden parity",
             ],
         });
     }

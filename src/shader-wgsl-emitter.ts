@@ -338,11 +338,51 @@ function specializeMixedUniformRoot(
 }
 
 /**
+ * `textureLoad` on an external texture takes no level; on the 2D texture a
+ * baked frame binds as, level 0 is the one the frame has.
+ */
+function specializeExternalTextureLoads(
+    module: ShaderModule,
+    program: ShaderIrProgram,
+): ShaderModule {
+    const external = new Set(
+        program.reflection.samplerDeclarations
+            .filter((decl) => decl.external)
+            .map((decl) => decl.name),
+    );
+    if (external.size === 0) return module;
+    return mapShaderModule(module, (expression) => {
+        const texture = expression.kind === "call" && expression.arguments[0];
+        return expression.kind === "call" &&
+            expression.name === "textureLoad" &&
+            expression.arguments.length === 2 &&
+            texture &&
+            texture.kind === "path" &&
+            texture.parts.length === 1 &&
+            external.has(texture.parts[0]!)
+            ? {
+                  ...expression,
+                  arguments: [
+                      ...expression.arguments,
+                      { kind: "number", value: "0" },
+                  ],
+              }
+            : expression;
+    });
+}
+
+/**
  * The texture/sampler pairs a fragment samples, at this backend's own
  * addresses: SDL_GPU takes fragment textures at group 2, binding `2n` with
  * the sampler at `2n + 1`, where the pin binds both into its group 1 beside
  * the uniform blocks. The identifiers stay the pin's, because the caller's
  * WGSL samples through them.
+ *
+ * An external texture binds its video's baked frame: the RGBA8 texels the
+ * browser's import yields, as a plain `texture_2d<f32>`. Over that one
+ * plane, `textureSampleBaseClampToEdge` and `textureLoad` at level 0
+ * (`specializeExternalTextureLoads`) read the texel the pin's
+ * `texture_external` does.
  */
 function emitSamplerBindings(
     program: ShaderIrProgram,
@@ -410,9 +450,12 @@ export function emitNativeWgslProgram(
     const block = program.reflection.uniformBlocks.find(
         (candidate) => candidate.stage === stage,
     );
-    const module = specializeMixedUniformRoot(
-        stage === "vertex" ? program.vertex : program.fragment,
-        block,
+    const module = specializeExternalTextureLoads(
+        specializeMixedUniformRoot(
+            stage === "vertex" ? program.vertex : program.fragment,
+            block,
+        ),
+        program,
     );
     const vertexInput =
         stage === "vertex"

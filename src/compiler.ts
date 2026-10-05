@@ -139,6 +139,7 @@ import {
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
+import { compileExecutedVideoFunctionCall } from "./compiler/executed-video-function.js";
 import {
     compileEnginePixelRatioCap,
     compileEnginePrecisionPolicy,
@@ -826,6 +827,8 @@ class Compiler implements LoweringServices {
      */
     public readonly browserTextureFunctions = new EmissionSet<string>();
     public readonly canvasReadbackFunctions = new EmissionSet<string>();
+    /** The bounded video producers this compilation executed at generation. */
+    public readonly executedVideoFunctions = new EmissionSet<string>();
     /** Whether a scene threw one of its own preconditions. */
     @journaled public accessor throwReached = false;
     public readonly staticConstants = new EmissionMap<
@@ -6953,6 +6956,18 @@ class Compiler implements LoweringServices {
         callee: ts.Identifier,
     ): Value | undefined {
         return compileExecutedUrlFunctionCall(this, call, callee);
+    }
+
+    /**
+     * A zero-parameter producer that creates a video element runs in
+     * Chromium at generation (`executed-video-function.ts`); its body is a
+     * media pipeline the native runtime does not have.
+     */
+    public compileExecutedVideoFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        return compileExecutedVideoFunctionCall(this, call, callee);
     }
 
     public registerSpriteAtlasAsset(expression: ts.Expression): string {

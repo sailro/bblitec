@@ -1040,16 +1040,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             loop.after_microtasks(tick_document);
                         },
                         [&] {
-                            auto& engine = window_document_engine();
-                            if (engine.dom_input) {
-                                const auto event = window_pagehide_event();
-                                engine.dom_input->pointer.dispatch(
-                                    event,
-                                    [&](auto& callback, const auto& payload) {
-                                        loop.dispatch_callback([&] { callback(payload); });
-                                    },
-                                    &engine);
-                            }
+                            dispatch_page_lifecycle(
+                                window_document_engine(),
+                                [&](auto& callback, const auto& payload) {
+                                    loop.dispatch_callback([&] { callback(payload); });
+                                });
                         });
                 } catch (const WorkerTerminated&) {
                 } catch (...) {

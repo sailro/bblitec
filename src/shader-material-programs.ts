@@ -14,6 +14,8 @@ export interface ShaderMaterialProgramSource {
     /** Reached `samplers`, in declaration order — the binding order too. */
     samplers?: string[];
     samplerDeclarations?: CompiledShaderSampler[];
+    /** Reached `externalTextures`, bound after the samplers. */
+    externalTextures?: string[];
     storageBuffers?: CompiledShaderStorageBuffer[];
     /** Reached `defines`, already in the pin's sorted `ShaderDefine` order. */
     defines?: Array<{ name: string; value: boolean | number }>;
@@ -75,22 +77,31 @@ export function shaderSamplerName(name: string): string {
     return `${name}Sampler`;
 }
 
-/** Normalize bare sampler names to the pin's default sampler shape. */
+/**
+ * Normalize bare sampler names to the pin's default sampler shape, followed
+ * by the external textures: the pin's prelude and layout append those pairs
+ * after every sampler and before the storage buffers.
+ */
 export function shaderSamplerDeclarations(
     program: Pick<
         ShaderMaterialProgramSource,
-        "samplers" | "samplerDeclarations"
+        "samplers" | "samplerDeclarations" | "externalTextures"
     >,
 ): CompiledShaderSampler[] {
-    return (
-        program.samplerDeclarations ??
-        (program.samplers ?? []).map((name) => ({
-            name,
-            sampleType: "float" as const,
-            viewDimension: "2d" as const,
-            comparison: false,
-        }))
-    );
+    const declaration = (name: string) => ({
+        name,
+        sampleType: "float" as const,
+        viewDimension: "2d" as const,
+        comparison: false,
+    });
+    return [
+        ...(program.samplerDeclarations ??
+            (program.samplers ?? []).map(declaration)),
+        ...(program.externalTextures ?? []).map((name) => ({
+            ...declaration(name),
+            external: true as const,
+        })),
+    ];
 }
 
 const systemUniformTypes: Record<string, string | undefined> = {
@@ -175,13 +186,15 @@ ${custom.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
     const samplerBlock = samplerDeclarations
         .map((decl) => {
             const depth = decl.comparison || decl.sampleType === "depth";
-            const textureType = depth
-                ? decl.viewDimension === "2d-array"
-                    ? "texture_depth_2d_array"
-                    : "texture_depth_2d"
-                : decl.viewDimension === "2d-array"
-                  ? "texture_2d_array<f32>"
-                  : "texture_2d<f32>";
+            const textureType = decl.external
+                ? "texture_external"
+                : depth
+                  ? decl.viewDimension === "2d-array"
+                      ? "texture_depth_2d_array"
+                      : "texture_depth_2d"
+                  : decl.viewDimension === "2d-array"
+                    ? "texture_2d_array<f32>"
+                    : "texture_2d<f32>";
             const samplerType = decl.comparison
                 ? "sampler_comparison"
                 : "sampler";

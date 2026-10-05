@@ -273,6 +273,7 @@ export interface ExpressionContext
             | "asyncActivations"
             | "compileBrowserTextureFunctionCall"
             | "compileExecutedUrlFunctionCall"
+            | "compileExecutedVideoFunctionCall"
             | "compileStaticFetchMethod"
             | "compilePlatformCall"
             | "reachJson"
@@ -3257,6 +3258,13 @@ export class ExpressionLowerer {
         );
         if (executedUrl) {
             return executedUrl;
+        }
+        const executedVideo = this.context.compileExecutedVideoFunctionCall(
+            call,
+            callee,
+        );
+        if (executedVideo) {
+            return executedVideo;
         }
         const userFunction = this.context.userFunctions.compile(
             this.context,

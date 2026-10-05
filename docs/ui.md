@@ -129,9 +129,12 @@ Element views validate target ownership; Document, Window, text and unrepresente
 methods; an unrepresented canvas is not content-editable.
 Queued form events copy value, checked, selected option and disclosure state before application callbacks.
 
-Window pagehide runs before realm cleanup on close/reload, with Document target and Window currentTarget.
-It uses shared listener ordering and microtask checkpoints, with the [HTML page-transition flags](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-pagetransitionevent-interface).
-Beforeunload and page-history caching are unsupported; native pagehide has persisted=false.
+Window beforeunload then pagehide run before realm cleanup on close/reload, with Document target and
+Window currentTarget. They use shared listener ordering and microtask checkpoints; beforeunload does
+not bubble and is cancelable, but no prompt exists to cancel, and pagehide carries the
+[HTML page-transition flags](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-pagetransitionevent-interface).
+A synchronous scene dispatches both once its frames end; a worker realm refuses them. Page-history
+caching is unsupported; native pagehide has persisted=false.
 
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Plain text leaf updates retain projected text nodes and send changed strings

@@ -2036,6 +2036,27 @@ inline bool operator==(const PixelsTexture& left, const PixelsTexture& right) {
 using StoredTexture = std::variant<FileTexture, PixelsTexture>;
 
 /**
+ * An HTMLVideoElement a closed scene producer made, executed at generation:
+ * the frame WebGPU's `importExternalTexture` yielded from it, as RGBA8
+ * texels, and the media `readyState` the scene observes. The producer's
+ * own methods are the only writers of that state.
+ */
+struct VideoElement {
+    /** RGBA8 at the external-texture sampler; no texels while the video has no current data. */
+    PixelsTexture frame;
+    int ready_state = 0;
+};
+using VideoHandle = std::shared_ptr<VideoElement>;
+/** `HTMLMediaElement.HAVE_CURRENT_DATA`. */
+inline constexpr int video_have_current_data = 2;
+
+/** `createExternalTexture`'s `{ video }` record; its identity is the record's. */
+struct ExternalTexture {
+    VideoHandle video;
+};
+using ExternalTextureHandle = std::shared_ptr<const ExternalTexture>;
+
+/**
  * One texture a `MaterialPlugin` binds (`plugin-bridge-shared.ts`).
  *
  * `getSamplers()` declares the binding pair and `bindTextures(out)` fills
@@ -2987,6 +3008,8 @@ struct MaterialRecord {
     std::vector<float> shader_uniform_values;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
+    /** `externalTextures` slots, keyed by the sampler slot they bind at. */
+    std::vector<ExternalTextureHandle> shader_external_textures;
     /** CSM receiver textures keyed by shader sampler slot. */
     std::vector<ShadowGeneratorHandle> shader_csm_textures;
     /** Optional shader material used only by this material's shadow pass. */
@@ -6116,6 +6139,14 @@ void set_scene_shader_uniform_value(Engine& engine, std::size_t slot, std::uint3
 }
 void set_shader_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                         FileTexture texture);
+MaterialRecord& shader_material(Engine& engine, MaterialHandle handle);
+VideoHandle create_baked_video(int ready_state);
+VideoHandle create_baked_video(const std::string& path, std::uint32_t width,
+                               std::uint32_t height, int ready_state);
+ExternalTextureHandle create_external_texture(VideoHandle video);
+bool is_external_texture_ready(const ExternalTextureHandle& texture);
+void set_shader_external_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
+                                 ExternalTextureHandle texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,

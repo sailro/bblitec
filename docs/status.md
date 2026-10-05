@@ -265,6 +265,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 303 | <img src="images/scenes/scene303.png" alt="Scene 303 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Sprite2D Renderer-Native Y-Sort |
 | 304 | <img src="images/scenes/scene304.png" alt="Scene 304 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Calculator KHR_interactivity |
 | 305 | <img src="images/scenes/scene305.png" alt="Scene 305 rendering" width="160"> | pixel‑perfect | pixel‑perfect | NPE Teleport Graph Plumbing |
+| 306 | <img src="images/scenes/scene306.png" alt="Scene 306 rendering" width="160"> | pixel‑perfect | pixel‑perfect | External Video Texture |
 
 ## Upstream application gates
 

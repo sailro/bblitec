@@ -9,15 +9,29 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("Window pagehide preserves targets, flags, callback ordering and storage before cleanup", (t) => {
+test("Window beforeunload and pagehide preserve targets, flags, callback ordering and storage before cleanup", (t) => {
     const entry = resolve("test/fixtures/window-pagehide.ts");
     const source = readFileSync(entry, "utf8");
     const generated = compileSource(source, { fileName: entry });
     assert.ok(generated.manifest.features.includes("platform:window"));
-    assert.throws(
-        () => compileSource('window.addEventListener("pagehide", () => {});'),
-        /asynchronous Window/,
-    );
+    // A synchronous scene registers them on its own engine; its frame loop
+    // dispatches them when the window closes.
+    for (const type of ["pagehide", "beforeunload"]) {
+        const scene = compileSource(
+            `import { createEngine } from "@babylonjs/lite";
+            async function main() {
+                const engine = await createEngine({});
+                window.addEventListener("${type}", () => {});
+            }
+            void main();`,
+        );
+        assert.ok(!scene.manifest.features.includes("platform:window"));
+        assert.ok(
+            scene.cpp.includes(
+                `bbl::on_dom_pointer(v_engine, bbl::DomEventTarget::window(), "${type}"`,
+            ),
+        );
+    }
     assert.throws(
         () =>
             compileSource(
@@ -27,7 +41,7 @@ test("Window pagehide preserves targets, flags, callback ordering and storage be
                 ),
                 { fileName: entry },
             ),
-        /asynchronous Window/,
+        /dispatch at the Window/,
     );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -66,14 +80,11 @@ test("Window pagehide preserves targets, flags, callback ordering and storage be
                     document.dom_input->pointer.dispatch(ordinary, [&](auto& callback, const auto& payload) {
                         loop.dispatch_callback([&] { callback(payload); });
                     }, &document);
-                    const auto event = window_pagehide_event();
-                    assert(event.dom->path == std::vector<DomEventTarget>{DomEventTarget::window()});
-                    document.dom_input->pointer.dispatch(event, [&](auto& callback, const auto& payload) {
+                    for (const auto& event : {window_beforeunload_event(), window_pagehide_event()})
+                        assert(event.dom->path == std::vector<DomEventTarget>{DomEventTarget::window()});
+                    dispatch_page_lifecycle(document, [&](auto& callback, const auto& payload) {
                         loop.dispatch_callback([&] { callback(payload); });
-                    }, &document);
-                    assert(!event.dom->current_target.has_value());
-                    assert(event.dom->phase == 0);
-                    assert(event.dom->path.empty());
+                    });
                 });
                 assert(cleaned);
                 return 0;
@@ -84,7 +95,7 @@ test("Window pagehide preserves targets, flags, callback ordering and storage be
             assert(!bbl::dom_event_persisted(ordinary).has_value());
             const int result = generated_main();
             assert(result == 0);
-            assert(bbl::pal::stored == "capture;target;microtask;");
+            assert(bbl::pal::stored == "beforeunload;capture;target;microtask;");
             bbl::pal::document.dom_input.reset();
         }
     `,

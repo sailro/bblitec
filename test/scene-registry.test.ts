@@ -259,6 +259,7 @@ test("registers unique generated scene targets", () => {
             "scene304",
             "scene187",
             "scene305",
+            "scene306",
             "scene282",
             "scene218",
             "scene219",

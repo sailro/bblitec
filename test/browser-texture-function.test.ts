@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 
 import { compileSource } from "../src/compiler.js";
+import { loadedFunctions } from "./fixture-functions.js";
 import {
     bakeBrowserTextureFunction,
     browserTextureFunctionShape,
@@ -11,7 +12,6 @@ import {
     pngDimensions,
     type BrowserTextureFunctionShape,
 } from "../src/compiler/browser-texture-function.js";
-import { createCompilerProgram } from "../src/compiler/program.js";
 import { parseDataUrl } from "../src/data-url.js";
 import type { CompileResult } from "../src/compiler/types.js";
 
@@ -46,31 +46,15 @@ function fixtureDeclarations(module: "tiles" | "refusals" | "import-cache"): {
     checker: ts.TypeChecker;
     declaration(this: void, name: string): ts.FunctionDeclaration;
 } {
-    const fileName = "test/browser-texture-shape.ts";
-    const frontend = createCompilerProgram(
+    const { checker, declaration } = loadedFunctions(
         `import * as fixture from "./fixtures/browser-texture/${module}.js";\n` +
             "export const used = fixture;\n",
-        fileName,
+        "test/browser-texture-shape.ts",
     );
-    const source = frontend.program
-        .getSourceFiles()
-        .find((candidate) =>
-            candidate.fileName.endsWith(
-                `fixtures/browser-texture/${module}.ts`,
-            ),
-        );
-    assert.ok(source, `fixture module ${module}.ts was not loaded`);
     return {
-        checker: frontend.checker,
-        declaration(this: void, name) {
-            const found = source.statements.find(
-                (statement): statement is ts.FunctionDeclaration =>
-                    ts.isFunctionDeclaration(statement) &&
-                    statement.name?.text === name,
-            );
-            assert.ok(found, `fixture function ${name} was not found`);
-            return found;
-        },
+        checker,
+        declaration: (name) =>
+            declaration(`fixtures/browser-texture/${module}.ts`, name),
     };
 }
 
@@ -447,7 +431,7 @@ test("refuses a driver result it cannot package", () => {
 
 test("preserves the pinned Sandblox producers' bytes and options", () => {
     const corpus = "corpus/babylon-lite/lab/lite/src/demos/sandblox";
-    const frontend = createCompilerProgram(
+    const loaded = loadedFunctions(
         `import { createStudTextures } from "../${corpus}/stud-texture.js";\n` +
             `import { buildCharacter } from "../${corpus}/character.js";\n` +
             "export const used = [createStudTextures, buildCharacter];\n",
@@ -456,26 +440,13 @@ test("preserves the pinned Sandblox producers' bytes and options", () => {
     const declaration = (
         module: string,
         name: string,
-    ): ts.FunctionDeclaration => {
-        const source = frontend.program
-            .getSourceFiles()
-            .find((candidate) =>
-                candidate.fileName.endsWith(`${corpus}/${module}`),
-            );
-        assert.ok(source, `pinned Sandblox module ${module} was not loaded`);
-        const found = source.statements.find(
-            (statement): statement is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(statement) &&
-                statement.name?.text === name,
-        );
-        assert.ok(found, `pinned Sandblox function ${name} was not found`);
-        return found;
-    };
+    ): ts.FunctionDeclaration =>
+        loaded.declaration(`${corpus}/${module}`, name);
 
     // The stud tile pair: an exported async producer returning a record,
     // through an OffscreenCanvas PNG encode and two loadTexture2D calls.
     const studs = browserTextureFunctionShape(
-        frontend.checker,
+        loaded.checker,
         declaration("stud-texture.ts", "createStudTextures"),
     );
     assert.ok(studs);
@@ -518,7 +489,7 @@ test("preserves the pinned Sandblox producers' bytes and options", () => {
     // The character face: a NON-exported producer whose whole point is the
     // rasterizer, handed to createTexture2DFromPixels as raw RGBA.
     const face = browserTextureFunctionShape(
-        frontend.checker,
+        loaded.checker,
         declaration("character.ts", "createClassicSmileTexture"),
     );
     assert.ok(face);
