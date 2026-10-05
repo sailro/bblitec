@@ -79,6 +79,22 @@ check(
 );
 
 check(
+    "logical-record-value-guards",
+    `
+    interface Item {value:number}
+    function choose(enabled:boolean, value:Item|undefined, other:Item):Item {
+        const result=(enabled && value) || other;
+        return result;
+    }
+    const calls:Array<typeof choose>=[choose];
+    const first:Item={value:2};
+    const second:Item={value:3};
+    if(calls[0]!(false,first,second)!==second || calls[0]!(true,undefined,second)!==second ||
+       calls[0]!(true,first,second)!==first) throw new Error('record value guards');
+`,
+);
+
+check(
     "asserted-numeric-coercion",
     `
     interface Input {duration?:number}
