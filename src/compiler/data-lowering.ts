@@ -1241,31 +1241,39 @@ export class DataLowerer {
                 owner.dataType?.kind === "handle" &&
                 !cppIdentifierPattern.test(owner.cpp)
             ) {
-                const temporary =
-                    this.context.allocateTemporaryCppName("property_owner");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: temporary,
-                    initializer: presenceFlagCpp(owner)
-                        ? `(${presenceFlagCpp(owner)} ? ${owner.cpp} : ${this.context.dataTypes.cppType(owner.dataType)}{})`
-                        : owner.cpp,
-                    attributes: "[[maybe_unused]] ",
-                });
-                owner = withNativeMetadata(
-                    this.leafValue(temporary, owner.dataType),
-                    owner,
-                );
-                owner = {
-                    ...owner,
-                    nativeCaptures: [
-                        this.context.registerNativeConstBinding(
-                            temporary,
-                            false,
-                            `const ${this.context.dataTypes.cppType(owner.dataType!)}`,
-                        ),
-                    ],
-                };
+                if (owner.kind === "engine") {
+                    owner = this.context.bindings.pinValueToTemporary(
+                        owner,
+                        "property_owner",
+                        unwrapped.expression,
+                    );
+                } else {
+                    const temporary =
+                        this.context.allocateTemporaryCppName("property_owner");
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "const auto",
+                        name: temporary,
+                        initializer: presenceFlagCpp(owner)
+                            ? `(${presenceFlagCpp(owner)} ? ${owner.cpp} : ${this.context.dataTypes.cppType(owner.dataType)}{})`
+                            : owner.cpp,
+                        attributes: "[[maybe_unused]] ",
+                    });
+                    owner = withNativeMetadata(
+                        this.leafValue(temporary, owner.dataType),
+                        owner,
+                    );
+                    owner = {
+                        ...owner,
+                        nativeCaptures: [
+                            this.context.registerNativeConstBinding(
+                                temporary,
+                                false,
+                                `const ${this.context.dataTypes.cppType(owner.dataType!)}`,
+                            ),
+                        ],
+                    };
+                }
             }
             if (
                 mode === "write" &&
