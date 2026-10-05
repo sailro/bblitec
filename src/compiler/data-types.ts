@@ -2120,7 +2120,16 @@ export class DataTypeRegistry {
                 // A function passed through another stored function remains the same
                 // JavaScript function object. Carry its identity across that native
                 // call boundary so an eventual Array/Map/Set comparison can observe it.
-                return mapped ? [markIdentityFunctions(mapped)] : [undefined];
+                return mapped
+                    ? [
+                          markIdentityFunctions(
+                              this.ownReadonlyArrayParameter(
+                                  mapped,
+                                  parameterType,
+                              ),
+                          ),
+                      ]
+                    : [undefined];
             });
         if (parameters.some((parameter) => parameter === undefined)) {
             return undefined;
@@ -4095,6 +4104,24 @@ export class DataTypeRegistry {
         const inner = type.kind === "optional" ? type.inner : type;
         return inner.kind === "span"
             ? this.markStoredObjectReferences(type)
+            : type;
+    }
+
+    /**
+     * A readonly Array parameter is still a JavaScript object. Its callee
+     * can retain it in a record, callback or another container without
+     * returning an array directly. ArrayLike remains a borrowed view: it
+     * does not promise an Array owner.
+     */
+    public ownReadonlyArrayParameter(
+        type: DataType,
+        sourceType: ts.Type,
+    ): DataType {
+        const concrete = this.checker.getNonNullableType(
+            this.resolveTypeParameter(sourceType),
+        );
+        return concrete.symbol?.name === "ReadonlyArray"
+            ? this.ownReturnedArray(type)
             : type;
     }
 

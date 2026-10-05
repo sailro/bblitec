@@ -12,7 +12,11 @@ import {
     foldSettledComparison,
     type ComparisonContext,
 } from "./comparisons.js";
-import { BUFFER_VIEW_KINDS, TYPED_ARRAY_KINDS } from "./data-types.js";
+import {
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+    type DataType,
+} from "./data-types.js";
 import { compileDomInstanceOf } from "./dom-targets.js";
 import {
     authoredErrorBase,
@@ -24,6 +28,13 @@ import { unwrapExpression } from "./syntax.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isStringValue, sameCompiledValue, type Value } from "./types.js";
+
+function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
+    if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
+    if (type?.kind === "union")
+        return type.members.some(hasBorrowedArrayIdentity);
+    return type?.kind === "span" || type?.kind === "table";
+}
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -522,6 +533,15 @@ export class ConditionLowerer {
                 rightValue,
                 unwrapped.right,
             );
+            if (
+                equality &&
+                (hasBorrowedArrayIdentity(leftValue.dataType) ||
+                    hasBorrowedArrayIdentity(rightValue.dataType))
+            )
+                this.context.fail(
+                    unwrapped,
+                    "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
+                );
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

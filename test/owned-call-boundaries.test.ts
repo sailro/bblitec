@@ -135,13 +135,13 @@ check(
 `,
 );
 
-test("retaining an existing borrowed readonly array still refuses", () => {
+test("retaining an ArrayLike view without an Array owner still refuses", () => {
     assert.throws(
         () =>
             compileSource(`
             interface Item {value:number;}
             const saved:Array<readonly Item[]>=[];
-            const stores:Array<(items:readonly Item[])=>void>=[items=>saved.push(items)];
+            const stores:Array<(items:ArrayLike<Item>)=>void>=[items=>saved.push(items as readonly Item[])];
             stores[0]!([{value:1}]);
         `),
         /A borrowed array view cannot retain JavaScript array identity in owning storage/,
