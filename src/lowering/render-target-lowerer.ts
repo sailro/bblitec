@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerSurfaceRenderTargetSize } from "./render-target-size.js";
 import { lowerRenderTargetLifecycle } from "./render-target-lifecycle.js";
+import { pinnedErrorCode } from "./pinned-error.js";
 import { recordAt } from "../compiler/record-access.js";
 
 const renderTargetModule = "src/engine/render-target.ts";
@@ -10,6 +11,9 @@ const rttModule = "src/texture/rtt.ts";
 
 /** Lowers render-target allocation independently of any renderer or task family. */
 export class RenderTargetLowerer {
+    /** The pin's code for a sampled depth facade over a multisampled or absent depth attachment. */
+    private readonly sampledDepthError: number;
+
     public constructor(
         private readonly context: LoweringContext,
         private readonly surface = false,
@@ -19,6 +23,13 @@ export class RenderTargetLowerer {
             "createRenderTarget",
         );
         this.assertPinnedRenderTargetTextureArms();
+        this.sampledDepthError = pinnedErrorCode(
+            this.context,
+            this.context.functionDeclaration(
+                "src/texture/rtt-depth.ts",
+                "withSampledDepthTexture",
+            ).declaration,
+        );
     }
 
     /**
@@ -189,7 +200,7 @@ RenderTargetTexture create_render_target_texture(
         throw std::runtime_error("Surface render target textures require surface dimensions.");
     }
     if (options.sampled_depth && (!options.has_depth || options.samples != 1)) {
-        throw std::runtime_error("#650");
+        throw std::runtime_error("#${this.sampledDepthError}");
     }
     const RenderTargetHandle target =
         create_render_target(engine, options);

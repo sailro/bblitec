@@ -37,6 +37,19 @@ export function isPinnedErrorCall(
     });
 }
 
+/** The pin's error-helper calls under `owner`, by the helper its module imports. */
+function pinnedErrorCalls(
+    context: LoweringContext,
+    owner: ts.Node,
+): ts.CallExpression[] {
+    const file = owner.getSourceFile();
+    return context.findNodes(
+        owner,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) && isPinnedErrorCall(file, node),
+    );
+}
+
 /** The pin's generated error table: one message decoder per code. */
 function pinnedErrorTable(context: LoweringContext): {
     file: ts.SourceFile;
@@ -62,19 +75,11 @@ export function encodePinnedErrorContracts(
     const codes = new Map<string, number>();
     const templates = new Map<string, number>();
     const reachedCodes = new Set(
-        context
-            .findNodes(
-                owner,
-                (node): node is ts.CallExpression =>
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression) &&
-                    node.expression.text === "ThrowLiteError",
-            )
-            .flatMap((call) =>
-                call.arguments[0] && ts.isNumericLiteral(call.arguments[0])
-                    ? [Number(call.arguments[0].text)]
-                    : [],
-            ),
+        pinnedErrorCalls(context, owner).flatMap((call) =>
+            call.arguments[0] && ts.isNumericLiteral(call.arguments[0])
+                ? [Number(call.arguments[0].text)]
+                : [],
+        ),
     );
     const templateKey = (template: ts.TemplateExpression): string =>
         JSON.stringify([
@@ -146,6 +151,29 @@ export function encodePinnedErrorContracts(
     } finally {
         transformed.dispose();
     }
+}
+
+/**
+ * The literal code of the one `ThrowLiteError` call inside `owner`, or of the
+ * one passing `messageArguments` message arguments when that is given.
+ */
+export function pinnedErrorCode(
+    context: LoweringContext,
+    owner: ts.Node,
+    messageArguments?: number,
+): number {
+    const calls = pinnedErrorCalls(context, owner).filter(
+        (call) =>
+            messageArguments === undefined ||
+            call.arguments.length === messageArguments + 1,
+    );
+    const code = calls.length === 1 ? calls[0]!.arguments[0] : undefined;
+    if (!code || !ts.isNumericLiteral(code))
+        return context.contractError(
+            owner,
+            "Expected one pinned ThrowLiteError call with a literal code.",
+        );
+    return Number(code.text);
 }
 
 /** The fixed message the pin's error table decodes for `code`. */
@@ -236,13 +264,7 @@ export function containsPinnedErrorMessage(
     node: ts.Node,
     message: string,
 ): boolean {
-    const calls = context.findNodes(
-        node,
-        (child): child is ts.CallExpression =>
-            ts.isCallExpression(child) &&
-            ts.isIdentifier(child.expression) &&
-            child.expression.text === "ThrowLiteError",
-    );
+    const calls = pinnedErrorCalls(context, node);
     if (!calls.length) return false;
     const { table } = pinnedErrorTable(context);
     return calls.some((call) => {

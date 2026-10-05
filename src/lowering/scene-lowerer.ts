@@ -811,7 +811,7 @@ ${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSc
     scene.transmission_enabled = true;
 }
 ${fogSource}${clipPlaneSource}${meshDirtySource}${visibilitySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
-${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes === true) + sceneNodeTraversalSource() + lowerSceneNodeRemoval(this.context) : ""}
+${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes === true) + sceneNodeTraversalSource(this.context) + lowerSceneNodeRemoval(this.context) : ""}
 } // namespace bbl
 `,
         };
@@ -1516,14 +1516,15 @@ void set_mesh_transform_parent(
     if (parent.value >= engine.meshes.size()) {
         throw std::runtime_error("Invalid mesh parent handle.");
     }
-    require_acyclic_mesh_parent(engine, mesh, parent);
-    require_live_mesh_parent(${recordAt("engine.meshes", "parent")});
     MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
+    // The pin's setter returns on an unchanged parent before anything else.
     if (
         record.parent.value == parent.value &&
         record.transform_parent.value >= engine.transform_nodes.size()) {
         return;
     }
+    require_acyclic_mesh_parent(engine, mesh, parent);
+    require_live_mesh_parent(${recordAt("engine.meshes", "parent")});
     unregister_from_parents(engine, record, mesh);
     record.transform_parent = TransformNodeHandle{};
     record.parent = parent;
@@ -2061,6 +2062,19 @@ Scene create_scene_context(Surface& surface) {
     if (!scene.state->source_material_publication) scene.material_family_mask |= material_family_bit(*scene.engine, mesh);
 ${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
 ${options.pbrSceneHooks ? "    queue_pbr_material_group(scene, mesh);\n" : ""}\
+${
+    options.parenting
+        ? `    // addToScene descends into the node's children, each after the
+    // pin's bare \`child.parent = entity\` write (a no-op for the parent
+    // setParent already installed).
+    for (std::size_t index = 0; index < ${recordAt("scene.engine->meshes", "mesh")}.children.size(); ++index) {
+        const MeshHandle child = ${recordAt("scene.engine->meshes", "mesh")}.children[index];
+        set_mesh_transform_parent(*scene.engine, child, mesh);
+        add_to_scene(scene, child);
+    }
+`
+        : ""
+}\
 }
 
 // The observable quaternion's setter: the quaternion becomes the rotation

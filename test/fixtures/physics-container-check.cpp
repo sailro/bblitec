@@ -96,7 +96,7 @@ int main() {
         add_physics_shape_child_from_parent(world, empty, physics_node(TransformNodeHandle{0}),
                                             container, physics_node(TransformNodeHandle{1}));
     } catch (const std::runtime_error& error) {
-        singular = std::string(error.what()) == "#562";
+        singular = std::string(error.what()) == "#637";
     }
     assert(singular && empty.handle.ownership->children.empty());
     const auto retained_container = pal::physics_shape_create_container();

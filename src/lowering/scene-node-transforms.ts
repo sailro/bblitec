@@ -4,6 +4,7 @@ import {
     type SceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import { recordAt } from "../compiler/record-access.js";
+import type { LoweringContext } from "./context.js";
 
 function assetRead(descriptor: SceneNodeTransformDescriptor): string {
     const root =
@@ -77,9 +78,65 @@ void ${descriptor.sceneNodeComponentSetter}(
 `;
 }
 
-/** Concrete handle transport for a retained SceneNode hierarchy. */
-export function sceneNodeTraversalSource(): string {
+/**
+ * The pin's `getContainerMeshes`, over retained scene nodes. A node is visited
+ * once (the pin's `seen` set, one slot bitmap per record table here), a mesh
+ * is the node carrying `_gpu`, and the descent follows the live `children`
+ * list in order.
+ */
+function containerMeshesSource(context: LoweringContext): string {
+    context.assertFunctionBodyShape(
+        context.functionDeclaration(
+            "src/asset-container.ts",
+            "getContainerMeshes",
+        ).declaration,
+        `{
+    const meshes: Mesh[] = [];
+    const seen = new Set<unknown>();
+    const visit = (node: SceneNode): void => {
+        if (seen.has(node)) {
+            return;
+        }
+        seen.add(node);
+        if ((node as unknown as { _gpu?: unknown })._gpu) {
+            meshes.push(node as unknown as Mesh);
+        }
+        const children = (node as unknown as { children?: SceneNode[] }).children;
+        if (children) {
+            for (const child of children) {
+                visit(child);
+            }
+        }
+    };
+    for (const entity of container.entities) {
+        visit(entity as SceneNode);
+    }
+    return meshes;
+}`,
+        "Container mesh flatten",
+    );
     return `
+js::Array<MeshHandle> container_meshes(Engine& engine, const js::Array<SceneNodeHandle>& entities) {
+    js::Array<MeshHandle> meshes;
+    std::array<std::vector<bool>, std::variant_size_v<SceneNodeHandle>> seen{};
+    const auto visit = [&](const auto& self, const SceneNodeHandle& node) -> void {
+        const std::uint32_t slot = std::visit([](const auto& concrete) { return concrete.value; }, node);
+        auto& visited = seen.at(node.index());
+        if (slot >= visited.size()) visited.resize(static_cast<std::size_t>(slot) + 1u);
+        if (visited[slot]) return;
+        visited[slot] = true;
+        if (const auto* mesh = std::get_if<MeshHandle>(&node)) meshes.push_back(*mesh);
+        for (const SceneNodeHandle child : scene_node_children(engine, node)) self(self, child);
+    };
+    for (const SceneNodeHandle& entity : entities) visit(visit, entity);
+    return meshes;
+}
+`;
+}
+
+/** Concrete handle transport for a retained SceneNode hierarchy. */
+export function sceneNodeTraversalSource(context: LoweringContext): string {
+    return `${containerMeshesSource(context)}
 MeshVisibility& scene_node_visibility(Engine& engine, const SceneNodeHandle& node) {
     return std::visit([&](const auto& concrete) -> MeshVisibility& {
         using Handle = std::decay_t<decltype(concrete)>;

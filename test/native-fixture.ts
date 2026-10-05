@@ -381,6 +381,7 @@ export function runNativeFixtureCompiler(
 /**
  * Compiles one generated translation unit in `artifacts/<name>` and runs it:
  * a failed assertion or an uncaught throw in the program fails the caller.
+ * Returns what the program printed.
  */
 export function runGeneratedProgram(
     tools: WindowsBuildTools,
@@ -392,7 +393,7 @@ export function runGeneratedProgram(
         timeoutMs?: number;
         expectedOutput?: string;
     } = {},
-): void {
+): string {
     const directory = resolve("artifacts", name);
     mkdirSync(directory, { recursive: true });
     const source = join(directory, "check.cpp"),
@@ -425,6 +426,7 @@ export function runGeneratedProgram(
     });
     if (options.expectedOutput !== undefined)
         assert.equal(output.toString("utf8"), options.expectedOutput);
+    return output.toString("utf8");
 }
 
 /** Preserve object paths when distinct source folders contain equal basenames. */

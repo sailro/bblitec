@@ -332,7 +332,7 @@ function compileShaderUniformWrite(
     const components = context.intrinsicOptions.compileShaderUniformComponents(
         argumentAt(call, 2),
         uniform,
-        401,
+        "setUniformValue",
     );
     const engine = context.requireEngine(material, call);
     if (material.sceneMaterialSlot !== undefined) {

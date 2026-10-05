@@ -105,6 +105,10 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_CLUSTERED_LIGHTS", anyOf: ["light:clustered"] },
     { macro: "BBLITE_SHADOWS_CSM", anyOf: ["shadow:csm"] },
     { macro: "BBLITE_SHADOW_MORPH_BOUNDS", anyOf: ["shadow:morph-bounds"] },
+    {
+        macro: "BBLITE_SHADOW_SKELETON_BOUNDS",
+        anyOf: ["shadow:skeleton-bounds"],
+    },
     { macro: "BBLITE_PHYSICS_VIEWER", anyOf: ["physics:viewer"] },
     { macro: "BBLITE_HAS_PHYSICS_QUERIES", anyOf: ["physics:queries"] },
     { macro: "BBLITE_HAS_PHYSICS_CONSTRAINTS", anyOf: ["physics:constraints"] },

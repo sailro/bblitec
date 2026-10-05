@@ -182,6 +182,8 @@ void attach_scene_skeleton(
             record.weights[vertex * 4 + 3],
         };
     }
+    // The skin lanes changed in place: skeleton shadow bounds rebuild.
+    geometry.skinned_bones = {};
     // The pin's own mesh.skeleton assignment reaches three things at once:
     // the mesh composes under MSH_HAS_SKELETON (generation's half), its
     // draw binds the skeleton's palette texture, and its vertex stage

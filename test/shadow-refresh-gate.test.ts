@@ -47,12 +47,9 @@ test("emits the morph-target caster bounds only for a scene that registers them"
     assert.match(morph, /inline void ensure_morph_target_ranges\(/);
     assert.match(
         morph,
-        /if \(morph_shadow_bounds\) sum \+= mesh\.morph_weights_version;/,
+        /if \(generator\.morph_shadow_bounds\) sum \+= mesh\.morph_weights_version;/,
     );
-    assert.match(
-        morph,
-        /shadow_caster_version_sum\(\s*engine, generator\.caster_meshes, generator\.morph_shadow_bounds\)/,
-    );
+    assert.match(morph, /shadow_caster_version_sum\(engine, generator\)/);
     assert.match(
         shadowFactorySource(new LoweringContext(), [
             "shadow:pcf",

@@ -497,12 +497,13 @@ export function compileShadowIntrinsic(
             };
         }
 
-        // Upstream this installs a bounds provider into a WeakMap and wraps
+        // Upstream each installs a bounds provider into a WeakMap and wraps
         // each caster in a proxy mesh whose boundMin/boundMax it rewrites
         // per frame. This port fills one caster carrier per fit, so the
         // registration is a flag on the generator and the carrier reads it
         // where it fills the bounds -- same provider, no proxy.
-        case "enableMorphTargetShadows": {
+        case "enableMorphTargetShadows":
+        case "enableSkeletonShadows": {
             context.expectArgumentCount(call, 1, 1);
             const generator = context.compileValue(argumentAt(call, 0));
             context.expectKind(
@@ -510,11 +511,15 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 argumentAt(call, 0),
             );
-            context.reachFeature("shadow:morph-bounds", call);
+            const morph = importedName === "enableMorphTargetShadows";
+            context.reachFeature(
+                morph ? "shadow:morph-bounds" : "shadow:skeleton-bounds",
+                call,
+            );
             return {
                 kind: "void",
                 cpp:
-                    `bbl::enable_morph_target_shadows(` +
+                    `bbl::${morph ? "enable_morph_target_shadows" : "enable_skeleton_shadows"}(` +
                     `${context.requireEngine(generator, call)}, ` +
                     `${generator.cpp})`,
             };

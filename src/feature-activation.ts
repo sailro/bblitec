@@ -1055,6 +1055,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/shadow/enable-morph-target-shadows.ts",
         consumers: CMAKE,
     },
+    // `enableSkeletonShadows`: the caster fit's live bone-box bounds, a
+    // pinned module of its own, compiled only for a scene that registers it.
+    "shadow:skeleton-bounds": {
+        provenance: "src/shadow/enable-skeleton-shadows.ts",
+        consumers: CMAKE,
+    },
     "sprite:2d": {
         provenance:
             "src/sprite/sprite-2d.ts + " +

@@ -1400,8 +1400,9 @@ async function executeGeneratedAssertions(
     await t.test(
         "generated C++ executes the same assertions",
         { skip: !native },
-        () =>
-            runGeneratedProgram(native!, `language-constructs/${name}`, source),
+        () => {
+            runGeneratedProgram(native!, `language-constructs/${name}`, source);
+        },
     );
 }
 
@@ -2280,6 +2281,17 @@ check(
     const lanes = Float64Array.from(floats, (value) => value / 2);
     if (calls !== "012" || mapped[0] !== 6 || mapped[1] !== 3 || mapped[2] !== 252 || named[0] !== 3 || named[2] !== 65534) throw new Error("mapped");
     if (ranged[3] !== -9 || picked[0] !== 1.25 || picked.length !== 2 || lanes[1] !== 0.75) throw new Error("mapped sources");
+`,
+);
+
+check(
+    "unary-numeric-json",
+    `
+    interface Rig { readonly axis: readonly [number, number, number]; readonly offset: number; readonly text: number; }
+    const rig = JSON.parse('{"axis":[1,-2,0.5],"offset":3,"text":"4"}') as Rig;
+    const flipped = { x: -rig.axis[0] * rig.offset, y: +rig.axis[1], z: -rig.axis[2] };
+    if (flipped.x !== -3 || flipped.y !== -2 || flipped.z !== -0.5) throw new Error("unary over parsed lanes");
+    if (-rig.text !== -4 || +rig.text !== 4) throw new Error("unary applies ToNumber to a parsed string");
 `,
 );
 

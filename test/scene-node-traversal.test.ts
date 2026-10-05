@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { LoweringContext } from "../src/lowering/context.js";
 import { sceneNodeTraversalSource } from "../src/lowering/scene-node-transforms.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import {
@@ -71,7 +72,7 @@ test("node children preserve interleaved live order and concrete clone identity"
 namespace bbl {
 MeshHandle clone_mesh_node(Engine&,MeshHandle source) {return MeshHandle{source.value+10};}
 AssetHandle clone_asset_root(Engine&,AssetHandle source) {return AssetHandle{source.value+20};}
-${sceneNodeTraversalSource()}
+${sceneNodeTraversalSource(new LoweringContext())}
 }
 int main(){
     using namespace bbl;
@@ -95,6 +96,9 @@ int main(){
     assert(count==3 && root.size()==3);
     auto mesh=scene_node_children(engine,MeshHandle{0});
     assert(mesh.size()==1 && std::get<MeshHandle>(mesh[0]).value==2);
+    // getContainerMeshes: preorder over live children, each node once across entities.
+    const auto flattened=container_meshes(engine,{AssetHandle{0},MeshHandle{1}});
+    assert(flattened.size()==3 && flattened[0].value==0 && flattened[1].value==2 && flattened[2].value==1);
     assert(std::get<MeshHandle>(clone_scene_node(engine,MeshHandle{1})).value==11);
     assert(std::get<AssetHandle>(clone_scene_node(engine,AssetHandle{0})).value==20);
     bool refused=false;

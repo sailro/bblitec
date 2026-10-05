@@ -200,7 +200,7 @@ test("actual pinned node builders retain private slots and start the complete fa
     const failing = scene();
     core.addToScene(failing, mesh(missing));
     core.addToScene(failing, mesh(valid));
-    await assert.rejects(core.buildScene(failing), /#333/);
+    await assert.rejects(core.buildScene(failing), /#403/);
     assert.equal(
         bindings.length,
         3,

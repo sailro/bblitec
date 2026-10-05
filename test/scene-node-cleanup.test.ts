@@ -80,7 +80,7 @@ void remove_from_scene(Scene& scene,MeshHandle mesh){
 }
 MeshHandle clone_mesh_node(Engine&,MeshHandle mesh){return mesh;}
 AssetHandle clone_asset_root(Engine&,AssetHandle asset){return asset;}
-${sceneNodeTraversalSource()}
+${sceneNodeTraversalSource(new LoweringContext())}
 ${lowerSceneNodeRemoval(new LoweringContext())}
 }
 int main(){
@@ -171,7 +171,7 @@ void set_thin_instance_count(Engine& engine,MeshHandle mesh,double count){engine
 MeshHandle clone_mesh_node(Engine&,MeshHandle mesh){return mesh;}
 AssetHandle clone_asset_root(Engine&,AssetHandle asset){return asset;}
 ${cppFunction(factories, "js::F32Array thin_instance_matrices(")}
-${sceneNodeTraversalSource()}
+${sceneNodeTraversalSource(new LoweringContext())}
 }
 `,
     );

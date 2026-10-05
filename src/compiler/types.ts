@@ -2977,6 +2977,9 @@ export type Feature =
     // `enableMorphTargetShadows`, the caster fit's morph-expanded bounds
     // (upstream's own `shadow/enable-morph-target-shadows.ts` module).
     | "shadow:morph-bounds"
+    // `enableSkeletonShadows`, the caster fit's live bone-box bounds
+    // (upstream's own `shadow/enable-skeleton-shadows.ts` module).
+    | "shadow:skeleton-bounds"
     | "sprite:2d"
     | "sprite:2d-depth-host"
     | "sprite:2d-y-sort"

@@ -37,6 +37,7 @@ import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { doubleLiteral, floatLiteral, stringLiteral } from "../cpp-literals.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
+import { lowerSkeletonShadowBounds } from "./skeleton-shadow-bounds.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerShadowEnabled } from "./shadow-enabled.js";
@@ -1293,6 +1294,31 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
     );
 }
 
+/**
+ * A deformable-bounds provider's registration (`enableMorphTargetShadows`,
+ * `enableSkeletonShadows`). Upstream each installs a provider object into a
+ * WeakMap and wraps each caster in a proxy mesh whose boundMin/boundMax it
+ * rewrites per frame; this port has one caster carrier per fit, so the flag
+ * is read where that carrier is filled and the proxy has nothing left to do.
+ */
+function deformableBoundsRegistration(
+    provenance: string,
+    cppName: string,
+    field: string,
+): string {
+    return `
+// ${provenance}: register the provider on this generator.
+void ${cppName}(
+    Engine& engine,
+    ShadowGeneratorHandle generator) {
+    if (generator.value >= engine.shadow_generators.size()) {
+        throw std::runtime_error("Invalid shadow generator handle.");
+    }
+    ${recordAt("engine.shadow_generators", "generator")}.${field} = true;
+}
+`;
+}
+
 /** The pinned WebGPU filter string, as this header's own enum. */
 function esmFilter(filter: string): string {
     if (filter === "linear") return "linear";
@@ -1495,6 +1521,9 @@ export function pinnedShadowHeader(
     // it caches, and the weight version the render gate sums -- is emitted
     // only for a scene that calls it.
     const morphBounds = features.includes("shadow:morph-bounds");
+    // `enableSkeletonShadows`, the bone-box provider, likewise emitted only
+    // for a scene that registers it.
+    const skeletonBounds = features.includes("shadow:skeleton-bounds");
     // `computeAabb`'s local arm, the per-target delta range the morph
     // bounds provider caches.
     const computeAabb = morphBounds
@@ -1780,7 +1809,7 @@ inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
 
 `
         : ""
-}${lowerBuildLightViewMatrix(context)}
+}${skeletonBounds ? lowerSkeletonShadowBounds(context) : ""}${lowerBuildLightViewMatrix(context)}
 
 ${lowerMultiply4x4(context)}
 
@@ -1862,21 +1891,21 @@ ${lowerShadowEnabled(context)}
  */
 inline std::uint64_t shadow_caster_version_sum(
     const Engine& engine,
-    const std::vector<MeshHandle>& caster_meshes${
-        morphBounds
-            ? `,
-    bool morph_shadow_bounds`
-            : ""
-    }) {
+    const ShadowGeneratorRecord& generator) {
     std::uint64_t sum = 0;
-    for (const MeshHandle handle : caster_meshes) {
+    for (const MeshHandle handle : generator.caster_meshes) {
         // The caster array keeps a removed mesh, and names it, so its
         // record is still there to be moved (\`caster_names\`).
         const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         sum += mesh.transform_version + mesh.instance_version;${
             morphBounds
                 ? `
-        if (morph_shadow_bounds) sum += mesh.morph_weights_version;`
+        if (generator.morph_shadow_bounds) sum += mesh.morph_weights_version;`
+                : ""
+        }${
+            skeletonBounds
+                ? `
+        if (generator.skeleton_shadow_bounds) sum += mesh.bone_matrices_version;`
                 : ""
         }
     }
@@ -1970,8 +1999,7 @@ inline bool shadow_refresh_due(
     // a flag fixed at creation makes unreadable.
     if (generator.force_refresh_every_frame) return true;
     const auto light_matrix = light_world_matrix(light);
-    const std::uint64_t caster_version = shadow_caster_version_sum(
-        engine, generator.caster_meshes${morphBounds ? ", generator.morph_shadow_bounds" : ""});
+    const std::uint64_t caster_version = shadow_caster_version_sum(engine, generator);
 #if BBLITE_SHADOWS_CSM
     const bool camera_unchanged = csm_camera == nullptr
         ? eye.x == gate.last_fo_offset.x &&
@@ -2202,6 +2230,8 @@ export function shadowFactorySource(
     // `enableMorphTargetShadows`, the one entry point of its own pinned
     // module: emitted only for a scene that calls it.
     const morphBounds = features.includes("shadow:morph-bounds");
+    // `enableSkeletonShadows`, the same for the bone-box provider.
+    const skeletonBounds = features.includes("shadow:skeleton-bounds");
     // One family's caster view, under the filter its task carries. The node
     // family has a second compiled module for both modes: ESM adds its
     // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
@@ -2540,26 +2570,7 @@ void refresh_shadow_task_meshes(
 }
 
 } // namespace
-${
-    morphBounds
-        ? `
-// src/shadow/enable-morph-target-shadows.ts enableMorphTargetShadows:
-// register the morph bounds provider on this generator. Upstream that
-// installs a provider object into a WeakMap and wraps each caster in a
-// proxy mesh whose boundMin/boundMax it rewrites per frame; this port has
-// one caster carrier per fit, so the flag is read where that carrier is
-// filled and the proxy has nothing left to do.
-void enable_morph_target_shadows(
-    Engine& engine,
-    ShadowGeneratorHandle generator) {
-    if (generator.value >= engine.shadow_generators.size()) {
-        throw std::runtime_error("Invalid shadow generator handle.");
-    }
-    ${recordAt("engine.shadow_generators", "generator")}.morph_shadow_bounds = true;
-}
-`
-        : ""
-}
+${morphBounds ? deformableBoundsRegistration("src/shadow/enable-morph-target-shadows.ts#enableMorphTargetShadows", "enable_morph_target_shadows", "morph_shadow_bounds") : ""}${skeletonBounds ? deformableBoundsRegistration("src/shadow/enable-skeleton-shadows.ts#enableSkeletonShadows", "enable_skeleton_shadows", "skeleton_shadow_bounds") : ""}
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

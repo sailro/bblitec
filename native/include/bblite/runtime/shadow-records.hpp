@@ -88,6 +88,9 @@ struct ShadowGeneratorRecord {
     // AABB rather than its unmorphed geometry box. Off unless the scene
     // asks, exactly as upstream installs no provider unless it is called.
     bool morph_shadow_bounds = false;
+    // enableSkeletonShadows: bound each skinned caster by its bones' live
+    // boxes rather than its bind-pose geometry box.
+    bool skeleton_shadow_bounds = false;
     /**
      * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
      * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /

@@ -110,13 +110,13 @@ bbl::js::Promise<bbl::js::PromiseVoid> prepare_checks(bbl::pal::EventLoop& loop,
  (void)co_await first;(void)co_await second;assert(shader->pipeline&&!shader->pending);
  (void)co_await bbl::prepare_compute_shader(shader);assert(device->pipelines.size()==before+1);
  auto dead=bbl::create_compute_shader(engine,options);dead->artifact="fixture.comp";auto pending=bbl::prepare_compute_shader(dead);bbl::dispose_compute_shader(dead);
- bool rejected=false;try{(void)co_await pending;}catch(const std::exception& error){rejected=std::string(error.what())=="#825";}assert(rejected&&!dead->pipeline);
+ bool rejected=false;try{(void)co_await pending;}catch(const std::exception& error){rejected=std::string(error.what())=="#900";}assert(rejected&&!dead->pipeline);
  auto retry=bbl::create_compute_shader(engine,options);retry->artifact="fixture.comp";device->fail=true;
  rejected=false;try{(void)co_await bbl::prepare_compute_shader(retry);}catch(const std::exception& error){rejected=std::string(error.what())=="pipeline failure";}assert(rejected&&!retry->pending&&!retry->pipeline);
  device->fail=false;(void)co_await bbl::prepare_compute_shader(retry);assert(retry->pipeline);
  auto stale=bbl::create_compute_shader(engine,options);stale->artifact="fixture.comp";pending=bbl::prepare_compute_shader(stale);
  auto previous=engine->offscreen_run;engine->offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(std::make_shared<bbl::pal::OffscreenSurface>(1,1),std::make_shared<Device>());
- rejected=false;try{(void)co_await pending;}catch(const std::exception& error){rejected=std::string(error.what())=="#826";}assert(rejected&&!stale->pipeline);engine->offscreen_run=previous;
+ rejected=false;try{(void)co_await pending;}catch(const std::exception& error){rejected=std::string(error.what())=="#901";}assert(rejected&&!stale->pipeline);engine->offscreen_run=previous;
  completed=true;loop.close();co_return bbl::js::PromiseVoid{};
 }
 int main(){
@@ -136,19 +136,19 @@ int main(){
  assert(device->groups[2].label=="compute-group2"&&device->groups[2].entries[0].binding==1&&device->groups[2].entries[0].visibility==4&&device->groups[2].entries[0].buffer->has_dynamic_offset);
  assert(device->pipelines[0].compute.entry_point==shader->entry_point&&device->pipelines[0].compute.module==shader->module&&device->pipelines[0].layout==shader->pipeline_layout);
  bbl::assert_compute_shader_live(shader);bbl::dispose_compute_shader(shader);bbl::dispose_compute_shader(shader);assert(alias->destroyed&&alias->device==nullptr&&alias->decls[0]==base);
- bool dead=false;try{bbl::assert_compute_shader_live(alias);}catch(const std::exception& e){dead=std::string(e.what())=="#825";}assert(dead);
+ bool dead=false;try{bbl::assert_compute_shader_live(alias);}catch(const std::exception& e){dead=std::string(e.what())=="#900";}assert(dead);
  const auto rejects=[&](const bbl::ComputeShaderOptions& value,const std::string& code){bool rejected=false;try{(void)bbl::create_compute_shader(engine,value);}catch(const std::exception& e){rejected=e.what()==code;}assert(rejected);};
- auto invalid=options;invalid.entry_point="";rejects(invalid,"#815");invalid=options;invalid.source="";rejects(invalid,"#817");
- invalid=options;invalid.bindings.push_back(first);rejects(invalid,"#820");
- binding.group=2;binding.binding=1;invalid=options;invalid.bindings.push_back(bbl::compute_uniform_buffer_binding("duplicate",binding));rejects(invalid,"#821");
- binding.group=-1;invalid=options;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#816");
- binding.group=4;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#818");
- binding.group=0;binding.binding=8;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#819");
- binding.binding=0;binding.min_binding_size=3;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#822");
- device->limits.max_uniform_buffers_per_shader_stage=2;rejects(options,"#824");device->limits.max_uniform_buffers_per_shader_stage=4;
+ auto invalid=options;invalid.entry_point="";rejects(invalid,"#890");invalid=options;invalid.source="";rejects(invalid,"#892");
+ invalid=options;invalid.bindings.push_back(first);rejects(invalid,"#895");
+ binding.group=2;binding.binding=1;invalid=options;invalid.bindings.push_back(bbl::compute_uniform_buffer_binding("duplicate",binding));rejects(invalid,"#896");
+ binding.group=-1;invalid=options;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#891");
+ binding.group=4;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#893");
+ binding.group=0;binding.binding=8;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#894");
+ binding.binding=0;binding.min_binding_size=3;invalid.bindings={bbl::compute_uniform_buffer_binding("bad",binding)};rejects(invalid,"#897");
+ device->limits.max_uniform_buffers_per_shader_stage=2;rejects(options,"#899");device->limits.max_uniform_buffers_per_shader_stage=4;
  bbl::pal::EventLoop loop;bool completed=false;loop.run([&]{prepare_checks(loop,engine,device,options,completed);});assert(completed);
  auto changed=std::make_shared<Device>();engine->offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(std::make_shared<bbl::pal::OffscreenSurface>(1,1),changed);
- bool stale=false;try{bbl::assert_compute_shader_live(other);}catch(const std::exception& e){stale=std::string(e.what())=="#826";}assert(stale);
+ bool stale=false;try{bbl::assert_compute_shader_live(other);}catch(const std::exception& e){stale=std::string(e.what())=="#901";}assert(stale);
 }
 `,
     );
@@ -195,8 +195,8 @@ test("empty compute shader inputs reach source errors without offline shader com
 import {createEngine,createComputeShader} from "@babylonjs/lite";
 async function main(){
  const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
- try {createComputeShader(engine,{computeSource:""});}catch(error){if(!(error instanceof Error)||error.message!=="#817")throw error;}
- try {createComputeShader(engine,{computeSource:"@compute @workgroup_size(1) fn main() {}",entryPoint:""});}catch(error){if(!(error instanceof Error)||error.message!=="#815")throw error;}
+ try {createComputeShader(engine,{computeSource:""});}catch(error){if(!(error instanceof Error)||error.message!=="#892")throw error;}
+ try {createComputeShader(engine,{computeSource:"@compute @workgroup_size(1) fn main() {}",entryPoint:""});}catch(error){if(!(error instanceof Error)||error.message!=="#890")throw error;}
 }
 void main();`);
     assert.equal(result.manifest.computePrograms?.length ?? 0, 0);
