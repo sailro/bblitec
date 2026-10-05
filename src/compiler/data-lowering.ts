@@ -3910,6 +3910,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         mode,
                         access,
                     );
+                if (mode === "write" && owner.recordProperties)
+                    delete writable(owner.recordProperties)[name];
                 return withNativeMetadata(
                     {
                         ...this.leafValue(
@@ -3948,6 +3950,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ),
             );
             const commonType = fields[0]!.type;
+            if (mode === "write" && owner.recordProperties)
+                for (const field of fields)
+                    delete writable(owner.recordProperties)[field.sourceName];
             if (mode === "write" && fields.some((field) => field.accessor))
                 this.accessorRead("", commonType, mode, access);
             if (

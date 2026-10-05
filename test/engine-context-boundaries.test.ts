@@ -18,6 +18,127 @@ const materialBody = `const material = createStandardMaterial();
     material.alpha = 0.25;
     return 0.25;`;
 
+for (const [owned, demanded] of [
+    [false, false],
+    [true, false],
+    [true, true],
+] as const) {
+    test(`${demanded ? "demanded record" : owned ? "owned nullable" : "entry"} engine aliases share class and nested helper contexts`, (t) => {
+        const { cpp } = compileSource(`
+            import {createEngine, createStandardMaterial, stopEngine, type EngineContext} from "@babylonjs/lite";
+            function context(engine: EngineContext) {
+                return {engine, stop() {stopEngine(engine);}};
+            }
+            let creations = 0;
+            interface State {readonly engine: EngineContext; ${demanded ? "" : "values: number[];"} count: number;}
+            function stored(engine: EngineContext): State {
+                creations++;
+                return {engine, ${demanded ? "" : "values: [],"} count: 1};
+            }
+            function construct(): void {
+                const material = createStandardMaterial();
+                material.alpha = 0.25;
+            }
+            function build(left: ReturnType<typeof context>, right: State): void {
+                ${demanded ? "" : "right.values.push(1);"}
+                right["count"] = 2;
+                const {count} = right;
+                if (count !== 2) throw new Error("stale record value");
+                construct();
+                left.stop(); stopEngine(right.engine);
+            }
+            class Owner {
+                readonly engine: EngineContext;
+                constructor(engine: EngineContext) {
+                    this.engine = engine;
+                    construct();
+                }
+            }
+            async function main(): Promise<void> {
+                ${
+                    owned
+                        ? "let engine: EngineContext | null = null; engine = await createEngine(new OffscreenCanvas(1, 1));"
+                        : "const engine = await createEngine({});"
+                }
+                new Owner(engine);
+                const state${demanded ? "" : ": State"} = stored(engine);
+                ${
+                    demanded
+                        ? `const states: State[] = [state];
+                state["count"] = 2;
+                if (states[0]!.count !== 2) throw new Error("lost stored record alias");`
+                        : ""
+                }
+                build(context(engine), state);
+                if (creations !== 1) throw new Error("repeated initializer");
+                stopEngine(engine);
+                ${owned ? "globalThis.close();" : ""}
+            }
+        `);
+        const tools = optionalNativeFixtureTools(false);
+        if (!tools) {
+            t.skip("Requires the Windows native fixture compiler.");
+            return;
+        }
+        runGeneratedProgram(
+            tools,
+            `engine-context-aliases-${demanded ? "demanded" : owned ? "owned" : "entry"}`,
+            `
+            #include <bblite/${owned ? "pal_async_engine" : "runtime"}.hpp>
+            namespace { bbl::Engine* original = nullptr; unsigned stops = 0; }
+            ${
+                owned
+                    ? `
+            namespace { std::weak_ptr<bbl::Engine> lifetime; }
+            namespace bbl::pal {
+                std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) {
+                    auto engine = std::make_shared<Engine>();
+                    engine->realm_owner = engine;
+                    lifetime = engine;
+                    return engine;
+                }
+            }`
+                    : "namespace bbl { Engine create_engine(EngineOptions) { return {}; } }"
+            }
+            #define main generated_main
+            ${cpp}
+            #undef main
+            namespace bbl {
+                MaterialHandle create_standard_material(Engine& engine) {
+                    if (original && original != &engine) throw std::runtime_error("different alias owner");
+                    original = &engine;
+                    engine.materials.emplace_back();
+                    return {static_cast<std::uint32_t>(engine.materials.size() - 1)};
+                }
+                void stop_engine(Engine& engine) {
+                    if (original != &engine || engine.materials.size() != 2 ||
+                        engine.materials[0].alpha != 0.25f || engine.materials[1].alpha != 0.25f)
+                        throw std::runtime_error("wrong context owner");
+                    ++stops;
+                }
+            }
+            int main() {
+                const int result = generated_main();
+                if (stops != 3) throw std::runtime_error("lost alias call");
+                ${owned ? 'if (!lifetime.expired()) throw std::runtime_error("engine alias leak");' : ""}
+                return result;
+            }
+        `,
+            {
+                ...(owned
+                    ? {
+                          defines: [
+                              "BBLITE_WORKERS=1",
+                              "BBLITE_OFFSCREEN_SURFACES=1",
+                          ],
+                      }
+                    : {}),
+                timeoutMs: 10000,
+            },
+        );
+    });
+}
+
 for (const [label, parameter, depth] of [
     ["direct", "engine: EngineContext", 0],
     ["record", "state: {engine: EngineContext}", 1],
@@ -156,6 +277,33 @@ test("implicit constructors refuse ambiguous contexts and unowned raw handles", 
                 ),
             ),
         /not associated with an engine/,
+    );
+});
+
+test("nullable engine reassignment keeps earlier and later snapshots distinct", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            import {createStandardMaterial, type EngineContext} from "@babylonjs/lite";
+            function context(engine: EngineContext) {
+                return {engine, read() {return engine.drawCallCount;}};
+            }
+            function build(first: ReturnType<typeof context>, second: ReturnType<typeof context>): void {
+                createStandardMaterial();
+            }
+            function make(firstOwner: EngineContext, secondOwner: EngineContext): () => number {
+                let engine: EngineContext | null = null;
+                engine = firstOwner;
+                const first = context(engine);
+                engine = null;
+                engine = secondOwner;
+                const second = context(engine);
+                return () => {build(first, second); return 0;};
+            }
+            const factories: Array<typeof make> = [make];
+            if (factories.length !== 1) throw new Error("retained factory");
+        `),
+        /one unambiguous engine context/,
     );
 });
 

@@ -1411,15 +1411,18 @@ export class AsyncLowerer {
     ): Value {
         const { ownedCpp, ...value } = source;
         if (value.kind === "engine" && value.dataType?.kind === "handle")
-            return {
+            return valueForKind("engine", {
                 ...this.context.dataLowerer.leafValue(cpp, value.dataType),
+                ...(value.engineIdentity
+                    ? { engineIdentity: value.engineIdentity }
+                    : {}),
                 nativeCaptures: [binding],
                 nativeCompanionCaptures: {
                     engineCpp: [binding],
                     ownedEngineCpp: [binding],
                     storedEngineCpp: [binding],
                 },
-            };
+            });
         if (value.kind === "tuple")
             return {
                 ...value,

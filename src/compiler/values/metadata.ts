@@ -200,7 +200,7 @@ const resourceMetadataFields = {
     "clustered-light-container": ["clusteredContainerState"],
     browser: ["browserValue", "nodeBlockLoader"],
     surface: ["surfaceCanvas", "msaaSamples"],
-    engine: ["surfaceCanvas", "msaaSamples"],
+    engine: ["surfaceCanvas", "msaaSamples", "engineIdentity"],
     "offscreen-canvas": ["surfaceCanvas", "msaaSamples"],
     "morph-targets": ["morphTarget"],
     "platform-mouse-event": ["platformEventBase"],

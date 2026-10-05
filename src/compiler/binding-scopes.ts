@@ -888,6 +888,8 @@ export class BindingScopes {
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
+        if (value.kind === "engine" && !value.engineIdentity)
+            value = { ...value, engineIdentity: Symbol() };
         // A resource whose native value has one type declares it for the
         // local holding it, whichever declaration emitted that local, so a
         // closure capturing it has a concrete environment.
@@ -2154,7 +2156,7 @@ export class BindingScopes {
                     !storedCallbacks)
             )
                 return undefined;
-            const projected = this.context.dataLowerer.leafValue(
+            let projected = this.context.dataLowerer.leafValue(
                 this.context.dataLowerer.compileKnownValueForSink(
                     value,
                     stored,
@@ -2165,6 +2167,40 @@ export class BindingScopes {
             // This expression constructs an object; it cannot be a missing
             // element. Do not snapshot a redundant presence bit at each binding.
             delete writable(projected).optionalFoundCpp;
+            const fields = this.context.dataTypes.structFields(
+                stored.name,
+                node,
+                "accessors",
+            );
+            if (
+                fields.some(
+                    (field) =>
+                        field.readOnly &&
+                        value.recordProperties?.[field.sourceName]
+                            ?.engineIdentity,
+                )
+            ) {
+                projected = this.pinValueToTemporary(projected, "record", node);
+                const properties: Record<string, Value> = {};
+                for (const field of fields) {
+                    if (field.accessor) continue;
+                    const member = this.context.dataLowerer.leafValue(
+                        `${projected.cpp}->${field.name}`,
+                        field.type,
+                    );
+                    const identity = field.readOnly
+                        ? value.recordProperties?.[field.sourceName]
+                              ?.engineIdentity
+                        : undefined;
+                    if (identity && member.kind === "engine")
+                        writable(member).engineIdentity = identity;
+                    properties[field.sourceName] = member;
+                }
+                projected = valueForKind("data", {
+                    ...projected,
+                    recordProperties: properties,
+                });
+            }
             return { ...projected, freshData: true };
         });
     }

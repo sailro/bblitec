@@ -5485,16 +5485,24 @@ class Compiler implements LoweringServices {
     private scopedEngineContexts(): { cpp: string; owner: Value }[] {
         const frame = this.returnFrames[0];
         if (!frame) return [];
-        const candidates = new Map<string, Value>();
+        const candidates = new Map<
+            symbol | string,
+            { cpp: string; owner: Value }
+        >();
         const ancestry = new Set<string>();
         const seenValues = new Set<Value>();
         const collectType = (
             type: DataType,
             cpp: string,
             owner: Value,
+            known: Value | undefined,
         ): void => {
             if (type.kind === "handle" && type.handle === "engine") {
-                candidates.set(`(*${cpp})`, owner);
+                const engine = `(*${cpp})`;
+                candidates.set(known?.engineIdentity ?? engine, {
+                    cpp: engine,
+                    owner,
+                });
                 return;
             }
             if (type.kind !== "struct" || ancestry.has(type.name)) return;
@@ -5513,6 +5521,9 @@ class Compiler implements LoweringServices {
                             field.type,
                             `${cpp}${access}${field.name}`,
                             owner,
+                            field.readOnly
+                                ? known?.recordProperties?.[field.sourceName]
+                                : undefined,
                         );
                 }
             } finally {
@@ -5523,11 +5534,14 @@ class Compiler implements LoweringServices {
             if (seenValues.has(value)) return;
             seenValues.add(value);
             if (value.kind === "engine") {
-                candidates.set(value.cpp, owner);
+                candidates.set(value.engineIdentity ?? value.cpp, {
+                    cpp: value.cpp,
+                    owner,
+                });
                 return;
             }
             if (value.dataType)
-                return collectType(value.dataType, value.cpp, owner);
+                return collectType(value.dataType, value.cpp, owner, value);
             for (const field of Object.values(value.recordProperties ?? {}))
                 collect(field, owner);
         };
@@ -5542,11 +5556,7 @@ class Compiler implements LoweringServices {
                 seenValues.clear();
                 collect(value, value);
             }
-            if (candidates.size > 0)
-                return Array.from(candidates, ([cpp, owner]) => ({
-                    cpp,
-                    owner,
-                }));
+            if (candidates.size > 0) return Array.from(candidates.values());
         }
         return [];
     }
@@ -6604,6 +6614,8 @@ class Compiler implements LoweringServices {
         value: Value,
         node: ts.Node,
     ): void {
+        if (target.kind === "engine")
+            writable(target).engineIdentity = Symbol();
         const storage =
             target.optionalStorageCpp ??
             this.fail(
@@ -6763,6 +6775,7 @@ class Compiler implements LoweringServices {
         const value = this.compileValue(expression.right);
         if (value.kind === "json-null") {
             this.emit({ kind: "expression", code: `${storage}.reset();` });
+            delete writable(target).engineIdentity;
             delete writable(target).spriteDepthMode;
             return true;
         }

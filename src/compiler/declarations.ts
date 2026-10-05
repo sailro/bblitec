@@ -2347,9 +2347,15 @@ export class DeclarationLowerer {
                     literal.elements.every(ts.isObjectLiteralExpression)
                         ? this.context.compileValue(literal)
                         : undefined;
-                const initializer = arraySnapshot
+                const engineRecordSnapshot =
+                    this.hasReadonlyEngineField(type, declaration) &&
+                    !this.context.sharedClosures.identifierIsRebound(name)
+                        ? this.context.compileValue(declaration.initializer)
+                        : undefined;
+                const snapshot = arraySnapshot ?? engineRecordSnapshot;
+                const initializer = snapshot
                     ? this.context.dataLowerer.compileKnownValueForSink(
-                          arraySnapshot,
+                          snapshot,
                           type,
                           declaration.initializer,
                       )
@@ -2383,6 +2389,16 @@ export class DeclarationLowerer {
                         ? { sharedStorageCpp: cppName }
                         : {}),
                 };
+                if (engineRecordSnapshot) {
+                    const properties = this.projectReadonlyEngineProperties(
+                        bound.cpp,
+                        type,
+                        engineRecordSnapshot,
+                        declaration,
+                    );
+                    if (properties)
+                        writable(bound).recordProperties = properties;
+                }
                 this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
@@ -2775,7 +2791,12 @@ export class DeclarationLowerer {
             });
         }
         const initializerBoundary = this.context.nativeBindingCheckpoint();
+        const readonlyEngineCall =
+            ts.isCallExpression(initializer) &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            this.hasReadonlyEngineField(annotated, initializer);
         const initializerSnapshot =
+            readonlyEngineCall ||
             (annotated.kind === "http-response" &&
                 !this.context.sharedClosures.identifierIsRebound(name)) ||
             (spreadTarget &&
@@ -2883,8 +2904,20 @@ export class DeclarationLowerer {
                 : "copy",
         );
         const staticRecordProperties: Record<string, Value> = {
-            ...(initializerSnapshot?.recordProperties ?? {}),
+            ...(readonlyEngineCall
+                ? {}
+                : (initializerSnapshot?.recordProperties ?? {})),
         };
+        if (readonlyEngineCall && initializerSnapshot)
+            Object.assign(
+                staticRecordProperties,
+                this.projectReadonlyEngineProperties(
+                    boundCpp,
+                    annotated,
+                    initializerSnapshot,
+                    initializer,
+                ),
+            );
         if (
             Object.keys(staticRecordProperties).length === 0 &&
             annotated.kind === "struct" &&
@@ -2993,6 +3026,52 @@ export class DeclarationLowerer {
             this.context.bindings.defineVariable(name, represented);
         }
         return true;
+    }
+
+    private hasReadonlyEngineField(type: DataType, node: ts.Node): boolean {
+        return (
+            type.kind === "struct" &&
+            this.context.dataTypes
+                .structFields(type.name, node, "accessors")
+                .some(
+                    (field) =>
+                        field.readOnly &&
+                        field.type.kind === "handle" &&
+                        field.type.handle === "engine",
+                )
+        );
+    }
+
+    /** Read live fields from storage; only proven readonly owners keep identity. */
+    private projectReadonlyEngineProperties(
+        cpp: string,
+        type: DataType,
+        source: Value,
+        node: ts.Node,
+    ): Record<string, Value> | undefined {
+        if (type.kind !== "struct") return undefined;
+        const memberAccess = this.context.dataTypes.isReferenceStruct(type.name)
+            ? "->"
+            : ".";
+        const properties: Record<string, Value> = {};
+        for (const field of this.context.dataTypes.structFields(
+            type.name,
+            node,
+            "accessors",
+        )) {
+            if (field.accessor) continue;
+            const member = this.context.dataLowerer.leafValue(
+                `${cpp}${memberAccess}${field.name}`,
+                field.type,
+            );
+            const identity = field.readOnly
+                ? source.recordProperties?.[field.sourceName]?.engineIdentity
+                : undefined;
+            if (identity && member.kind === "engine")
+                writable(member).engineIdentity = identity;
+            properties[field.sourceName] = member;
+        }
+        return properties;
     }
 
     /** TypeScript's evolved reads supply storage for an initially empty array. */
