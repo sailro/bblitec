@@ -18,6 +18,7 @@ import {
 } from "./generic-function-storage.js";
 import {
     NativeRecordStorageRequired,
+    mergeNativeRecordStorage,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -278,7 +279,10 @@ export class StorageDemandPlanner {
         } else if (request.kind === "record") {
             const existing = this.records.get(request.demand.identity);
             if (existing) {
-                if (request.demand.proxy) existing.demand = request.demand;
+                existing.demand = mergeNativeRecordStorage(
+                    existing.demand,
+                    request.demand,
+                );
                 return;
             }
             this.records.set(request.demand.identity, request);

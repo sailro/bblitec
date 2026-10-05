@@ -32,6 +32,7 @@ import {
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
+import { structOwnEntries } from "./object-statics.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -47,6 +48,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    propertyNameText,
 } from "./syntax.js";
 import {
     isCompileTimeOnlyValue,
@@ -98,6 +100,7 @@ interface DeclarationContext
             | "compileStringLiteral"
             | "constArrayLiteral"
             | "defaultEngine"
+            | "refuseBorrowedPlatformEventEscape"
             | "emitDiscardedValue"
             | "callbacks"
             | "emitNativeCallbackStorage"
@@ -2344,9 +2347,15 @@ export class DeclarationLowerer {
                     literal.elements.every(ts.isObjectLiteralExpression)
                         ? this.context.compileValue(literal)
                         : undefined;
-                const initializer = arraySnapshot
+                const engineRecordSnapshot =
+                    this.hasReadonlyEngineField(type, declaration) &&
+                    !this.context.sharedClosures.identifierIsRebound(name)
+                        ? this.context.compileValue(declaration.initializer)
+                        : undefined;
+                const snapshot = arraySnapshot ?? engineRecordSnapshot;
+                const initializer = snapshot
                     ? this.context.dataLowerer.compileKnownValueForSink(
-                          arraySnapshot,
+                          snapshot,
                           type,
                           declaration.initializer,
                       )
@@ -2380,6 +2389,16 @@ export class DeclarationLowerer {
                         ? { sharedStorageCpp: cppName }
                         : {}),
                 };
+                if (engineRecordSnapshot) {
+                    const properties = this.projectReadonlyEngineProperties(
+                        bound.cpp,
+                        type,
+                        engineRecordSnapshot,
+                        declaration,
+                    );
+                    if (properties)
+                        writable(bound).recordProperties = properties;
+                }
                 this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
@@ -2772,7 +2791,12 @@ export class DeclarationLowerer {
             });
         }
         const initializerBoundary = this.context.nativeBindingCheckpoint();
+        const readonlyEngineCall =
+            ts.isCallExpression(initializer) &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            this.hasReadonlyEngineField(annotated, initializer);
         const initializerSnapshot =
+            readonlyEngineCall ||
             (annotated.kind === "http-response" &&
                 !this.context.sharedClosures.identifierIsRebound(name)) ||
             (spreadTarget &&
@@ -2880,8 +2904,20 @@ export class DeclarationLowerer {
                 : "copy",
         );
         const staticRecordProperties: Record<string, Value> = {
-            ...(initializerSnapshot?.recordProperties ?? {}),
+            ...(readonlyEngineCall
+                ? {}
+                : (initializerSnapshot?.recordProperties ?? {})),
         };
+        if (readonlyEngineCall && initializerSnapshot)
+            Object.assign(
+                staticRecordProperties,
+                this.projectReadonlyEngineProperties(
+                    boundCpp,
+                    annotated,
+                    initializerSnapshot,
+                    initializer,
+                ),
+            );
         if (
             Object.keys(staticRecordProperties).length === 0 &&
             annotated.kind === "struct" &&
@@ -2990,6 +3026,52 @@ export class DeclarationLowerer {
             this.context.bindings.defineVariable(name, represented);
         }
         return true;
+    }
+
+    private hasReadonlyEngineField(type: DataType, node: ts.Node): boolean {
+        return (
+            type.kind === "struct" &&
+            this.context.dataTypes
+                .structFields(type.name, node, "accessors")
+                .some(
+                    (field) =>
+                        field.readOnly &&
+                        field.type.kind === "handle" &&
+                        field.type.handle === "engine",
+                )
+        );
+    }
+
+    /** Read live fields from storage; only proven readonly owners keep identity. */
+    private projectReadonlyEngineProperties(
+        cpp: string,
+        type: DataType,
+        source: Value,
+        node: ts.Node,
+    ): Record<string, Value> | undefined {
+        if (type.kind !== "struct") return undefined;
+        const memberAccess = this.context.dataTypes.isReferenceStruct(type.name)
+            ? "->"
+            : ".";
+        const properties: Record<string, Value> = {};
+        for (const field of this.context.dataTypes.structFields(
+            type.name,
+            node,
+            "accessors",
+        )) {
+            if (field.accessor) continue;
+            const member = this.context.dataLowerer.leafValue(
+                `${cpp}${memberAccess}${field.name}`,
+                field.type,
+            );
+            const identity = field.readOnly
+                ? source.recordProperties?.[field.sourceName]?.engineIdentity
+                : undefined;
+            if (identity && member.kind === "engine")
+                writable(member).engineIdentity = identity;
+            properties[field.sourceName] = member;
+        }
+        return properties;
     }
 
     /** TypeScript's evolved reads supply storage for an initially empty array. */
@@ -3420,7 +3502,21 @@ export class DeclarationLowerer {
                       declaration.initializer,
                   )
                 : rawValue;
-        const bindings = declaration.name.elements;
+        this.bindArrayPattern(
+            declaration.name,
+            value,
+            declaration.initializer,
+            initializerBoundary,
+        );
+    }
+
+    private bindArrayPattern(
+        pattern: ts.ArrayBindingPattern,
+        value: Value,
+        source: ts.Node,
+        initializerBoundary = this.context.nativeBindingCheckpoint(),
+    ): void {
+        const bindings = pattern.elements;
         const restIndex = bindings.findIndex(
             (element) =>
                 !ts.isOmittedExpression(element) &&
@@ -3448,16 +3544,18 @@ export class DeclarationLowerer {
             if (ts.isOmittedExpression(element)) {
                 return;
             }
-            if (!ts.isIdentifier(element.name) || element.dotDotDotToken) {
+            if (element.dotDotDotToken) {
                 this.context.fail(
                     element,
-                    "Tuple destructuring supports plain identifiers.",
+                    "A rest binding must be handled by its array owner.",
                 );
             }
             // A default applies exactly when the lane is undefined: past
             // the end of the tuple, or present as `undefined`.
             const bound =
-                (!present || present.kind === "json-null") &&
+                (!present ||
+                    (present.kind === "json-null" &&
+                        present.cpp === "std::nullopt")) &&
                 element.initializer
                     ? this.context.compileValue(element.initializer)
                     : present;
@@ -3466,6 +3564,10 @@ export class DeclarationLowerer {
                     element,
                     "The tuple has no element for this binding and it declares no default.",
                 );
+            }
+            if (!ts.isIdentifier(element.name)) {
+                this.bindNestedPattern(element.name, bound, element);
+                return;
             }
             let stored = bound;
             if (bound.kind === "record") {
@@ -3558,7 +3660,7 @@ export class DeclarationLowerer {
         if (value.kind === "data" && tupleArity !== undefined) {
             if ((restIndex >= 0 ? restIndex : bindings.length) > tupleArity) {
                 this.context.fail(
-                    declaration.name,
+                    pattern,
                     `Tuple has ${tupleArity} elements, destructuring expects ${bindings.length}.`,
                 );
             }
@@ -3597,7 +3699,7 @@ export class DeclarationLowerer {
                 this.context.allocateTemporaryCppName("destructure_vector");
             this.context.emit({
                 kind: "declaration",
-                type: "const auto&",
+                type: "const auto",
                 name: temporary,
                 initializer: value.cpp,
             });
@@ -3606,6 +3708,8 @@ export class DeclarationLowerer {
                 cpp: temporary,
             };
             const elementType = value.dataType.element;
+            let defaultType: DataType | undefined;
+            let defaultsWhenEmpty = false;
             bindings.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) {
                     return;
@@ -3621,16 +3725,53 @@ export class DeclarationLowerer {
                     );
                     return;
                 }
-                if (element.initializer && ts.isIdentifier(element.name)) {
-                    // A default stands in for a lane past the end.
-                    const fallback = this.context.dataLowerer.compileForSink(
-                        element.initializer,
-                        elementType,
+                if (element.initializer) {
+                    if (!defaultType) {
+                        const indexed = this.context.checker.getIndexTypeOfType(
+                            this.context.checker.getTypeAtLocation(pattern),
+                            ts.IndexKind.Number,
+                        );
+                        const absent = indexed && nullability(indexed);
+                        if (absent?.null && absent.undefined)
+                            this.context.fail(
+                                element,
+                                "Destructuring defaults require distinguishable null and undefined array elements.",
+                            );
+                        defaultsWhenEmpty = Boolean(
+                            absent?.undefined &&
+                            (elementType.kind === "optional" ||
+                                (elementType.kind === "struct" &&
+                                    this.context.dataTypes.isReferenceStruct(
+                                        elementType.name,
+                                    ))),
+                        );
+                        defaultType =
+                            defaultsWhenEmpty && elementType.kind === "optional"
+                                ? elementType.inner
+                                : elementType;
+                    }
+                    const type = defaultType;
+                    const lane = `${temporary}[${index}]`;
+                    const present =
+                        `${temporary}.size() > ${index}` +
+                        (defaultsWhenEmpty
+                            ? ` && ${elementType.kind === "optional" ? optionalPresentCpp(lane) : `static_cast<bool>(${lane})`}`
+                            : "");
+                    const selected =
+                        defaultsWhenEmpty && elementType.kind === "optional"
+                            ? `*${lane}`
+                            : lane;
+                    // An absent lane or stored undefined selects the lazy default.
+                    const fallback = this.context.dataLowerer.compileArm(() =>
+                        this.context.dataLowerer.compileForSink(
+                            element.initializer!,
+                            type,
+                        ),
                     );
                     this.bindCopiedDefault(
                         element.name,
-                        elementType,
-                        `${temporary}.size() > ${index} ? ${temporary}[${index}] : ${fallback}`,
+                        type,
+                        `${present} ? ${selected} : ${this.context.dataLowerer.armExpression(element.initializer, fallback.lines, fallback.value, type)}`,
                     );
                     return;
                 }
@@ -3639,14 +3780,14 @@ export class DeclarationLowerer {
                     this.context.dataLowerer.readVectorBindingElement(
                         storedVector,
                         index,
-                        declaration.initializer!,
+                        source,
                     ),
                 );
             });
             return;
         }
         this.context.fail(
-            declaration.initializer,
+            source,
             "Array destructuring requires a tuple-producing initializer.",
         );
     }
@@ -3656,16 +3797,21 @@ export class DeclarationLowerer {
      * holding `initializer`, the value the lane or field would have had.
      */
     private bindCopiedDefault(
-        name: ts.Identifier,
+        name: ts.BindingName,
         type: DataType,
         initializer: string,
     ): void {
         const value = this.context.dataLowerer.leafValue(initializer, type);
-        if (this.context.mutableCapturedParameter(name, value)) {
+        if (
+            ts.isIdentifier(name) &&
+            this.context.mutableCapturedParameter(name, value)
+        ) {
             this.context.bindings.bindParameterValue(name, value);
             return;
         }
-        const cppName = this.context.bindings.cppIdentifier(name.text);
+        const cppName = ts.isIdentifier(name)
+            ? this.context.bindings.cppIdentifier(name.text)
+            : this.context.allocateTemporaryCppName("destructure_default");
         this.context.reachJsData();
         this.context.emit({
             kind: "declaration",
@@ -3673,11 +3819,21 @@ export class DeclarationLowerer {
             name: cppName,
             initializer: initializer,
         });
-        this.context.bindings.defineVariable(
-            name,
-            this.context.dataLowerer.leafValue(cppName, type),
-        );
+        const copied = this.context.dataLowerer.leafValue(cppName, type);
+        if (ts.isIdentifier(name))
+            this.context.bindings.defineVariable(name, copied);
+        else this.bindNestedPattern(name, copied, name);
         this.context.dataLowerer.registerLocal(cppName, "copy");
+    }
+
+    private bindNestedPattern(
+        pattern: ts.BindingPattern,
+        value: Value,
+        source: ts.Node,
+    ): void {
+        if (ts.isObjectBindingPattern(pattern))
+            this.bindObjectPattern(pattern, value, source);
+        else this.bindArrayPattern(pattern, value, source);
     }
 
     private emitObjectBindingDeclaration(
@@ -3730,16 +3886,36 @@ export class DeclarationLowerer {
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
+            // Retain the selected object before a binding's default can replace
+            // its source slot. Value-layout records still read their live fields.
+            const owner = this.context.dataTypes.isReferenceStruct(
+                value.dataType.name,
+            )
+                ? this.context.bindings.pinValueToTemporary(
+                      value,
+                      "destructure_owner",
+                  )
+                : value;
             const temporary =
                 this.context.allocateTemporaryCppName("destructure");
             this.context.emit({
                 kind: "declaration",
                 type: "auto&&",
                 name: temporary,
-                initializer: value.cpp,
+                initializer: owner.cpp,
             });
+            const consumed = new EmissionSet<string>();
             for (const element of pattern.elements) {
+                if (element.dotDotDotToken) {
+                    this.bindStructRest(
+                        element,
+                        { ...owner, cpp: temporary },
+                        consumed,
+                    );
+                    continue;
+                }
                 const { name, property } = this.bindingProperty(element);
+                consumed.add(property);
                 const field = this.context.dataTypes.structField(
                     value.dataType.name,
                     property,
@@ -3758,21 +3934,62 @@ export class DeclarationLowerer {
                         name: storedFieldCpp,
                         initializer: `${slotCpp}.get()`,
                     });
-                if (element.initializer && field.type.kind === "optional") {
-                    // The default stands in for an absent optional field; the
-                    // binding is then a value of the field's inner type.
-                    const fallback = this.context.dataLowerer.compileForSink(
-                        element.initializer,
-                        field.type.inner,
-                    );
-                    this.bindCopiedDefault(
-                        name,
-                        field.type.inner,
-                        `${optionalPresentCpp(storedFieldCpp)} ? *${storedFieldCpp} : ${fallback}`,
-                    );
-                    continue;
+                if (
+                    element.initializer &&
+                    (field.type.kind === "optional" ||
+                        (field.type.kind === "struct" &&
+                            this.context.dataTypes.isReferenceStruct(
+                                field.type.name,
+                            )))
+                ) {
+                    const sourceProperty =
+                        this.context.checker.getPropertyOfType(
+                            this.context.checker.getTypeAtLocation(pattern),
+                            property,
+                        );
+                    const absent =
+                        sourceProperty &&
+                        nullability(
+                            this.context.checker.getTypeOfSymbolAtLocation(
+                                sourceProperty,
+                                pattern,
+                            ),
+                        );
+                    if (absent?.null && absent.undefined)
+                        this.context.fail(
+                            element,
+                            "Destructuring defaults require distinguishable null and undefined source fields.",
+                        );
+                    if (absent?.undefined && !absent.null) {
+                        // The default stands in for an absent optional field; the
+                        // binding is then a value of the field's inner type.
+                        const inner =
+                            field.type.kind === "optional"
+                                ? field.type.inner
+                                : field.type;
+                        const fallback = this.context.dataLowerer.compileArm(
+                            () =>
+                                this.context.dataLowerer.compileForSink(
+                                    element.initializer!,
+                                    inner,
+                                ),
+                        );
+                        const present =
+                            field.type.kind === "optional"
+                                ? optionalPresentCpp(storedFieldCpp)
+                                : `static_cast<bool>(${storedFieldCpp})`;
+                        const selected =
+                            field.type.kind === "optional"
+                                ? `*${storedFieldCpp}`
+                                : storedFieldCpp;
+                        this.bindCopiedDefault(
+                            name,
+                            inner,
+                            `${present} ? ${selected} : ${this.context.dataLowerer.armExpression(element.initializer, fallback.lines, fallback.value, inner)}`,
+                        );
+                        continue;
+                    }
                 }
-                const cppName = this.context.bindings.cppIdentifier(name.text);
                 // A default on a required field never applies: the field is
                 // never undefined, so the binding is the field itself.
                 const fieldCpp = storedFieldCpp;
@@ -3780,6 +3997,11 @@ export class DeclarationLowerer {
                     fieldCpp,
                     field.type,
                 );
+                if (!ts.isIdentifier(name)) {
+                    this.bindNestedPattern(name, initialValue, element);
+                    continue;
+                }
+                const cppName = this.context.bindings.cppIdentifier(name.text);
                 if (this.context.mutableCapturedParameter(name, initialValue)) {
                     this.context.bindings.bindParameterValue(
                         name,
@@ -3787,12 +4009,15 @@ export class DeclarationLowerer {
                     );
                     continue;
                 }
+                // Owning wrappers copy the selected identity, not the slot that
+                // supplied it. Borrowed layouts keep their existing alias checks.
                 const aliases =
-                    field.type.kind !== "number" &&
-                    field.type.kind !== "boolean" &&
-                    field.type.kind !== "string" &&
-                    field.type.kind !== "enum" &&
-                    field.type.kind !== "handle";
+                    field.type.kind === "span" ||
+                    field.type.kind === "table" ||
+                    (field.type.kind === "struct" &&
+                        !this.context.dataTypes.isReferenceStruct(
+                            field.type.name,
+                        ));
                 this.context.emit({
                     kind: "declaration",
                     type: `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""}`,
@@ -3818,19 +4043,21 @@ export class DeclarationLowerer {
                     writable(fieldValue).staticBoolean =
                         staticField.staticBoolean;
                 }
-                if (aliases && staticField?.staticElements) {
+                if (staticField?.staticElements) {
                     writable(fieldValue).staticElements =
                         staticField.staticElements;
                     writable(fieldValue).staticElementsOwner =
                         staticField.staticElementsOwner ?? staticField;
                 }
-                if (aliases && staticField?.collectionCardinality) {
+                if (staticField?.collectionCardinality) {
                     writable(fieldValue).collectionCardinality =
                         staticField.collectionCardinality;
                 }
                 this.context.bindings.defineVariable(name, fieldValue);
                 if (aliases) {
                     this.context.dataLowerer.registerAlias(cppName, fieldCpp);
+                } else {
+                    this.context.dataLowerer.registerLocal(cppName, "copy");
                 }
             }
             return;
@@ -3852,6 +4079,11 @@ export class DeclarationLowerer {
                     );
                 }
                 const { name, property } = this.bindingProperty(element);
+                if (!ts.isIdentifier(name))
+                    this.context.fail(
+                        name,
+                        "Physics aggregate bindings require an identifier.",
+                    );
                 const propertyValue =
                     readProperty(
                         this.context,
@@ -3894,6 +4126,11 @@ export class DeclarationLowerer {
         });
         for (const element of pattern.elements) {
             const { name, property } = this.bindingProperty(element);
+            if (!ts.isIdentifier(name))
+                this.context.fail(
+                    name,
+                    "Render-target texture bindings require an identifier.",
+                );
             const cppName = this.context.allocateTemporaryCppName(
                 `class_field_${name.text}`,
             );
@@ -3923,31 +4160,109 @@ export class DeclarationLowerer {
         }
     }
 
-    /**
-     * The source property a destructuring element reads, with the
-     * binding forms the compiler does not lower rejected first. The
-     * record and render-target paths share this and then diverge on
-     * where the value comes from.
-     */
-    private bindingProperty(element: ts.BindingElement): {
-        name: ts.Identifier;
-        property: string;
-    } {
-        if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+    /** Object rest copies remaining own fields into a fresh object. */
+    private bindStructRest(
+        element: ts.BindingElement,
+        source: Value,
+        consumed: ReadonlySet<string>,
+    ): void {
+        if (
+            !ts.isIdentifier(element.name) ||
+            source.dataType?.kind !== "struct"
+        )
             this.context.fail(
                 element,
-                "Object destructuring supports identifier properties only.",
+                "A rest binding takes an identifier and represented object storage.",
+            );
+        const type = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(element.name),
+            element.name,
+        );
+        if (type?.kind !== "struct")
+            this.context.fail(
+                element,
+                "Object rest requires a concrete record result type.",
+            );
+        this.context.dataTypes.markStoredObjectReferences(type);
+        const cppName = this.context.bindings.cppIdentifier(element.name.text);
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: cppName,
+            initializer: this.context.dataLowerer.structAggregate(type, []),
+        });
+        for (const { key, value, presentCpp } of structOwnEntries(
+            this.context,
+            source,
+            source.dataType,
+            element,
+            consumed,
+        )) {
+            const field = this.context.dataTypes.structField(
+                type.name,
+                key,
+                element,
+            );
+            if (presentCpp)
+                this.context.emit({
+                    kind: "open",
+                    code: `if (${presentCpp}) {`,
+                });
+            this.context.refuseBorrowedPlatformEventEscape(
+                value,
+                element,
+                "object rest",
+            );
+            const copied = this.context.dataLowerer.compileKnownValueForSink(
+                value,
+                field.type,
+                element,
+            );
+            this.context.emit({
+                kind: "expression",
+                code: `${cppName}->${field.name} = ${copied};`,
+            });
+            if (presentCpp) this.context.emit({ kind: "close", code: "}" });
+        }
+        this.context.bindings.defineVariable(
+            element.name,
+            this.context.dataLowerer.leafValue(cppName, type),
+        );
+        this.context.dataLowerer.registerLocal(cppName, "copy");
+    }
+
+    /** The source property named by an ordinary destructuring binding. */
+    private bindingProperty(element: ts.BindingElement): {
+        name: ts.BindingName;
+        property: string;
+    } {
+        if (element.dotDotDotToken) {
+            this.context.fail(
+                element,
+                "A rest binding must be handled by its object owner.",
             );
         }
-        return {
-            name: element.name,
-            property:
-                element.propertyName &&
-                (ts.isIdentifier(element.propertyName) ||
-                    ts.isStringLiteral(element.propertyName))
-                    ? element.propertyName.text
-                    : element.name.text,
-        };
+        const propertyName = element.propertyName;
+        if (!propertyName && ts.isIdentifier(element.name))
+            return { name: element.name, property: element.name.text };
+        if (!propertyName)
+            this.context.fail(
+                element,
+                "A nested binding requires a property key.",
+            );
+        let property = propertyNameText(propertyName);
+        if (ts.isComputedPropertyName(propertyName)) {
+            const expression = this.context.unwrap(propertyName.expression);
+            if (ts.isStringLiteralLike(expression)) property = expression.text;
+            else if (ts.isNumericLiteral(expression))
+                property = String(Number(expression.text));
+        }
+        if (property === undefined)
+            this.context.fail(
+                propertyName,
+                "Object destructuring requires a literal property key.",
+            );
+        return { name: element.name, property };
     }
 
     private emitRecordBindingDeclaration(
@@ -4023,6 +4338,10 @@ export class DeclarationLowerer {
                     propertyValue,
                     "module_export_snapshot",
                 );
+            if (!ts.isIdentifier(name)) {
+                this.bindNestedPattern(name, propertyValue, element);
+                continue;
+            }
             if (this.context.mutableCapturedParameter(name, propertyValue)) {
                 this.context.bindings.bindParameterValue(name, propertyValue);
                 continue;

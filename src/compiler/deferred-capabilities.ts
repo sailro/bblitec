@@ -4,7 +4,10 @@ import { sceneRelativeSourceLabel } from "../source-location.js";
 import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
-import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
+import {
+    DEFERRED_DOM_OBJECTS,
+    DEFERRED_INTL_OBJECTS,
+} from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     declarationOrigin,
@@ -21,7 +24,7 @@ import { isDomReceiver } from "./dom-targets.js";
 
 export interface DeferredCapabilitySite {
     id: string;
-    origin: "dom" | "babylon" | "css";
+    origin: "dom" | "babylon" | "default-lib" | "css";
     operation: "call" | "construct" | "read" | "write";
     signature: string;
     signatureHash: string;
@@ -42,7 +45,7 @@ export type DeferredCapabilityEmission = Pick<
 >;
 
 interface Descriptor {
-    origin: "dom" | "babylon";
+    origin: "dom" | "babylon" | "default-lib";
     api: string;
     timing: DeferredCapabilitySite["timing"];
 }
@@ -75,7 +78,11 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Element.insertAdjacentElement",
         "Element.getAttributeNames",
         "Event.composedPath",
-        "Node.insertBefore",
+        "Element.setPointerCapture",
+        "Element.releasePointerCapture",
+        "Element.hasPointerCapture",
+        "Element.innerHTML.svg-image",
+        "Element.innerHTML.form-controls",
         "ChildNode.replaceWith",
         "AbortController.abort",
         "AbortSignal.throwIfAborted",
@@ -98,6 +105,14 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "MediaRecorder.addEventListener",
         "BlobEvent.data",
         "Response.headers",
+        "Body.body",
+        "Blob.stream",
+        "ReadableStream.pipeThrough",
+        "CompressionStream.constructor",
+        "DecompressionStream.constructor",
+        "CompressionStream.readable",
+        "DecompressionStream.readable",
+        "Response.constructor",
         "Headers.get",
         "HTMLCanvasElement.captureStream",
         "AudioContext.createMediaStreamSource",
@@ -126,6 +141,16 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Blob.bytes",
         "HTMLMediaElement.play",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
+    ...[
+        "Intl.ListFormat.constructor",
+        "Intl.ListFormat.format",
+        "Intl.PluralRules.constructor",
+        "Intl.PluralRules.select",
+    ].map((api): Descriptor => ({
+        origin: "default-lib",
+        api,
+        timing: "throw",
+    })),
     ...[
         "createAudioEngineAsync.options",
         "createSoundSourceAsync.options",
@@ -203,9 +228,17 @@ function declarationApi(
         ts.isIdentifier(parent.parent.name)
     )
         return `${parent.parent.name.text}.${name.text}`;
-    return ts.isInterfaceDeclaration(parent) || ts.isClassDeclaration(parent)
-        ? `${parent.name?.text}.${name.text}`
-        : name.text;
+    if (ts.isInterfaceDeclaration(parent) || ts.isClassDeclaration(parent)) {
+        const namespace = parent.parent;
+        const prefix =
+            ts.isModuleBlock(namespace) &&
+            ts.isIdentifier(namespace.parent.name) &&
+            namespace.parent.name.text === "Intl"
+                ? "Intl."
+                : "";
+        return `${prefix}${parent.name?.text}.${name.text}`;
+    }
+    return name.text;
 }
 
 export function deferredCapabilityDescriptor(
@@ -372,15 +405,36 @@ export class DeferredCapabilities {
     compileConstructor(node: ts.NewExpression): Value | undefined {
         const context = this.context;
         if (!context.options.deferredCapabilities) return undefined;
-        const name = context.libraryGlobal(node.expression);
-        if (!name || !descriptors.has(`dom:${name}.constructor`))
+        const callee = context.unwrap(node.expression);
+        const intl =
+            ts.isPropertyAccessExpression(callee) &&
+            context.libraryGlobal(callee.expression) === "Intl";
+        const name = intl
+            ? `Intl.${callee.name.text}`
+            : context.libraryGlobal(callee);
+        const origin = intl ? "default-lib" : "dom";
+        if (!name || !descriptors.has(`${origin}:${name}.constructor`))
             return undefined;
         const signature = context.checker.getResolvedSignature(node);
         if (
             !signature?.declaration ||
-            declarationOrigin(signature.declaration) !== "dom"
+            declarationOrigin(signature.declaration) !== origin
         )
             return undefined;
+        if (name === "Response") {
+            const body = node.arguments?.[0];
+            const bodyType =
+                body &&
+                context.dataTypes.fromTsType(
+                    context.checker.getTypeAtLocation(body),
+                    body,
+                );
+            if (
+                bodyType?.kind !== "deferred-platform-object" ||
+                bodyType.name !== "ReadableByteStream"
+            )
+                return undefined;
+        }
         const type = context.dataTypes.fromTsType(
             context.checker.getTypeAtLocation(node),
             node,
@@ -400,8 +454,8 @@ export class DeferredCapabilities {
         return this.emitKnown(
             node,
             {
-                id: `dom:${name}.constructor`,
-                origin: "dom",
+                id: `${origin}:${name}.constructor`,
+                origin,
                 operation: "construct",
                 timing: "throw",
                 signature: context.checker.signatureToString(
@@ -503,14 +557,26 @@ export class DeferredCapabilities {
         value: Value,
         node: ts.Expression,
     ): boolean {
-        const owner = api.split(".")[0];
+        const owner = api.startsWith("Intl.")
+            ? api.split(".")[1]!
+            : api.split(".")[0];
         if (owner === "Window") return this.windowReceiver(value, node);
         const type = value.dataType;
-        if (DEFERRED_DOM_OBJECTS.some((name) => name === owner))
-            return type?.kind === "deferred-dom-object" && type.name === owner;
+        if (
+            DEFERRED_DOM_OBJECTS.some((name) => name === owner) ||
+            DEFERRED_INTL_OBJECTS.some((name) => name === owner)
+        )
+            return (
+                type?.kind === "deferred-platform-object" && type.name === owner
+            );
         const handle = type?.kind === "handle" ? type.handle : value.kind;
         if (owner === "SurfaceContext") return value.kind === "engine";
-        if (owner === "Response")
+        if (owner === "ReadableStream")
+            return (
+                type?.kind === "deferred-platform-object" &&
+                type.name === "ReadableByteStream"
+            );
+        if (owner === "Response" || owner === "Body")
             return (
                 type?.kind === "http-response" ||
                 value.kind === "static-fetch-response"
@@ -719,7 +785,7 @@ export class DeferredCapabilities {
             return undefined;
         const target = context.unwrap(call.expression);
         if (
-            descriptor.origin === "dom" &&
+            descriptor.origin !== "babylon" &&
             descriptor.api.includes(".") &&
             !ts.isPropertyAccessExpression(target)
         )
@@ -808,7 +874,7 @@ export class DeferredCapabilities {
             )!;
         };
         if (
-            descriptor.origin === "dom" &&
+            descriptor.origin !== "babylon" &&
             descriptor.api.includes(".") &&
             ts.isPropertyAccessExpression(target)
         ) {

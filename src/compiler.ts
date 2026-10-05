@@ -66,7 +66,10 @@ import {
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
 import type { DynamicBindingStorage } from "./compiler/dynamic-binding-storage.js";
-import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
+import {
+    mergeNativeRecordStorage,
+    type NativeRecordStorageDemand,
+} from "./compiler/native-record-storage.js";
 import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
 import {
     isStorageDemand,
@@ -607,13 +610,19 @@ function compileSourceApplication(
                         !dynamicBindings.get(request.declaration)))
             ) {
                 dynamicBindings.set(request.declaration, request.storage);
-            } else if (
-                request.kind === "record" &&
-                (!ownedRecords.has(request.demand.identity) ||
-                    (request.demand.proxy &&
-                        !ownedRecords.get(request.demand.identity)?.proxy))
-            ) {
-                ownedRecords.set(request.demand.identity, request.demand);
+            } else if (request.kind === "record") {
+                const previous = ownedRecords.get(request.demand.identity);
+                const merged = mergeNativeRecordStorage(
+                    previous,
+                    request.demand,
+                );
+                if (
+                    previous &&
+                    previous.proxy === merged.proxy &&
+                    previous.unionStorage === merged.unionStorage
+                )
+                    return false;
+                ownedRecords.set(request.demand.identity, merged);
             } else if (
                 request.kind === "generic" &&
                 genericFunctions.add(request.demand)
@@ -785,8 +794,9 @@ class Compiler implements LoweringServices {
               kind: "native";
               type: DataType | "void";
               contextualVoid?: boolean;
+              engineScopeDepth: number;
           } & NativeFunctionBodyOptions)
-        | { kind: "inline"; wrapped: boolean }
+        | { kind: "inline"; wrapped: boolean; engineScopeDepth: number }
     > = emissionArray([]);
     private readonly synchronousCleanupFrames: Array<object | undefined> =
         emissionArray([]);
@@ -1202,7 +1212,7 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
-        this.dataTypes.prepareProxyRecords(this.ownedRecords.values());
+        this.dataTypes.prepareRecordLayouts(this.ownedRecords.values());
         for (const demand of this.ownedRecords.values())
             this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {
@@ -2076,6 +2086,10 @@ class Compiler implements LoweringServices {
     }
 
     public hasStableNativeBinding(value: Value): boolean {
+        const storage =
+            value.stableOwnerCpp ??
+            (value.kind === "engine" ? value.storedEngineCpp : undefined) ??
+            value.cpp;
         if (
             value.sharedStorageCpp ||
             value.borrowedData ||
@@ -2087,12 +2101,10 @@ class Compiler implements LoweringServices {
                 )) ||
             (value.dataType?.kind === "struct" &&
                 !this.dataTypes.isReferenceStruct(value.dataType.name)) ||
-            !cppIdentifierPattern.test(value.stableOwnerCpp ?? value.cpp)
+            !cppIdentifierPattern.test(storage)
         )
             return false;
-        return this.hasStableNativeExpression(
-            value.stableOwnerCpp ?? value.cpp,
-        );
+        return this.hasStableNativeExpression(storage);
     }
 
     private hasStableNativeExpression(cpp: string): boolean {
@@ -5470,6 +5482,87 @@ class Compiler implements LoweringServices {
         return this.defaultEngineCpp;
     }
 
+    /** Explicit engine parameters and their record fields supply a native body's
+     * implicit resource context, without changing the entry's engine binding. */
+    private scopedEngineContexts(): { engine: Value; owner: Value }[] {
+        const frame = this.returnFrames[0];
+        if (!frame) return [];
+        const candidates = new Map<
+            symbol | string,
+            { engine: Value; owner: Value }
+        >();
+        const ancestry = new Set<string>();
+        const seenValues = new Set<Value>();
+        const collectType = (
+            type: DataType,
+            cpp: string,
+            owner: Value,
+            known: Value | undefined,
+        ): void => {
+            if (type.kind === "handle" && type.handle === "engine") {
+                const engine = `(*${cpp})`;
+                candidates.set(known?.engineIdentity ?? engine, {
+                    engine: this.dataLowerer.leafValue(cpp, type),
+                    owner,
+                });
+                return;
+            }
+            if (type.kind !== "struct" || ancestry.has(type.name)) return;
+            ancestry.add(type.name);
+            try {
+                const access = this.dataTypes.isReferenceStruct(type.name)
+                    ? "->"
+                    : ".";
+                for (const field of this.dataTypes.structFields(
+                    type.name,
+                    this.sourceFile,
+                    "accessors",
+                )) {
+                    if (!field.accessor)
+                        collectType(
+                            field.type,
+                            `${cpp}${access}${field.name}`,
+                            owner,
+                            field.readOnly
+                                ? known?.recordProperties?.[field.sourceName]
+                                : undefined,
+                        );
+                }
+            } finally {
+                ancestry.delete(type.name);
+            }
+        };
+        const collect = (value: Value, owner: Value): void => {
+            if (seenValues.has(value)) return;
+            seenValues.add(value);
+            if (value.kind === "engine") {
+                candidates.set(value.engineIdentity ?? value.cpp, {
+                    engine: value,
+                    owner,
+                });
+                return;
+            }
+            if (value.dataType)
+                return collectType(value.dataType, value.cpp, owner, value);
+            for (const field of Object.values(value.recordProperties ?? {}))
+                collect(field, owner);
+        };
+        for (
+            let index = this.bindings.variableScopes.length - 1;
+            index >= frame.engineScopeDepth - 1;
+            --index
+        ) {
+            for (const { value } of this.bindings.variableScopes[
+                index
+            ]!.values()) {
+                seenValues.clear();
+                collect(value, value);
+            }
+            if (candidates.size > 0) return Array.from(candidates.values());
+        }
+        return [];
+    }
+
     public reachJsRandom(): void {
         this.jsRandomReached = true;
     }
@@ -5646,6 +5739,7 @@ class Compiler implements LoweringServices {
         this.returnFrames.push({
             kind: "native",
             type: returnType ?? "void",
+            engineScopeDepth: this.bindings.variableScopes.length,
             ...(contextualVoid ? { contextualVoid: true } : {}),
             ...options,
         });
@@ -5797,7 +5891,7 @@ class Compiler implements LoweringServices {
     }
 
     private describeEngineCaptures(value: Value): void {
-        if (!this.options.workers || !value.engineCpp) return;
+        if (!value.engineCpp) return;
         if (value.kind === "engine" && value.ownedEngineCpp) {
             const owner = this.nativeBindings.get(value.ownedEngineCpp);
             if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
@@ -6067,6 +6161,7 @@ class Compiler implements LoweringServices {
         this.returnFrames.push({
             kind: "inline",
             wrapped,
+            engineScopeDepth: this.bindings.variableScopes.length,
         });
     }
 
@@ -6509,7 +6604,7 @@ class Compiler implements LoweringServices {
      * declaration and the assignment alike.
      */
     public optionalResourceCpp(value: Value): string {
-        const cpp = value.ownedEngineCpp ?? value.cpp;
+        const cpp = value.storedEngineCpp ?? value.ownedEngineCpp ?? value.cpp;
         const found = presenceFlagCpp(value);
         return found !== undefined && found !== "true"
             ? `(${found} ? std::optional{${cpp}} : std::nullopt)`
@@ -6521,6 +6616,8 @@ class Compiler implements LoweringServices {
         value: Value,
         node: ts.Node,
     ): void {
+        if (target.kind === "engine")
+            writable(target).engineIdentity = Symbol();
         const storage =
             target.optionalStorageCpp ??
             this.fail(
@@ -6680,6 +6777,7 @@ class Compiler implements LoweringServices {
         const value = this.compileValue(expression.right);
         if (value.kind === "json-null") {
             this.emit({ kind: "expression", code: `${storage}.reset();` });
+            delete writable(target).engineIdentity;
             delete writable(target).spriteDepthMode;
             return true;
         }
@@ -8019,13 +8117,21 @@ class Compiler implements LoweringServices {
     }
 
     public requireDefaultEngine(node: ts.Node): string {
-        if (!this.defaultEngineCpp) {
+        const scoped = this.scopedEngineContexts();
+        if (scoped.length > 1)
+            this.fail(
+                node,
+                "An implicit resource constructor requires one unambiguous engine context.",
+            );
+        let engine = scoped[0]?.engine.cpp ?? this.defaultEngineCpp;
+        if (!engine) {
             this.fail(
                 node,
                 "This intrinsic requires createEngine to run first.",
             );
         }
         if (
+            scoped.length === 0 &&
             this.returnFrames.some(
                 (frame) => frame.kind === "native" && frame.namespaceScope,
             )
@@ -8035,8 +8141,27 @@ class Compiler implements LoweringServices {
                 "A namespace-scope function has no binding for the entry's engine.",
                 "entry-scope-required",
             );
-        this.trackRetainedCaptureName(this.defaultEngineCpp);
-        return this.defaultEngineCpp;
+        if (scoped[0]) {
+            this.useNativeValue(scoped[0].owner);
+            const source = scoped[0].engine;
+            // A resource keeps its construction owner even when the source slot
+            // is later reassigned. Its escaped uses capture this stable owner.
+            const retained =
+                source.ownedEngineCpp || source.storedEngineCpp
+                    ? this.bindings.pinValueToTemporary(
+                          source,
+                          "engine_context",
+                          ts.isExpression(node) ? node : undefined,
+                      )
+                    : source;
+            engine = retained.cpp;
+            this.realmEngineCaptures.set(
+                engine,
+                this.nativeValueCaptures.bindingsOf(retained),
+            );
+            this.useNativeValue(retained);
+        } else this.trackRetainedCaptureName(engine);
+        return engine;
     }
 
     /**
@@ -8447,8 +8572,9 @@ class Compiler implements LoweringServices {
             jsDataReached: this.jsDataReached,
             deferredCapabilitiesReached:
                 this.deferredCapabilities.sites.length > 0 ||
-                this.dataTypes.usesDeferredDomStorage(),
+                this.dataTypes.usesDeferredPlatformStorage(),
             windowStorageReached: this.dataTypes.usesWindowStorage(),
+            responseStorageReached: this.dataTypes.usesResponseStorage(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

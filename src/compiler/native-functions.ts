@@ -812,6 +812,16 @@ export class NativeFunctionLowerer {
             parameter.type.kind === "optional"
                 ? parameter.type.inner
                 : parameter.type;
+        if (target.kind === "vector") {
+            const actual =
+                this.context.knownValueWithoutEvaluation(argument)?.dataType ??
+                this.context.dataLowerer.dataTypeAt(argument);
+            const inner = actual?.kind === "optional" ? actual.inner : actual;
+            // A static table row has a view, not a retained Array owner.
+            // The inline body can consume that view without copying it;
+            // any attempt to retain it still reaches the owning-sink refusal.
+            if (inner?.kind === "span" || inner?.kind === "table") return false;
+        }
         if (target.kind === "span" && target.element.kind === "number") {
             const actual =
                 this.context.knownValueWithoutEvaluation(argument)?.dataType ??
@@ -1344,6 +1354,12 @@ export class NativeFunctionLowerer {
                 parameterTsType,
                 parameter,
             );
+            if (parameterType)
+                parameterType =
+                    this.context.dataTypes.ownReadonlyArrayParameter(
+                        parameterType,
+                        parameterTsType,
+                    );
             const freshMatchingArray =
                 arrayStorage === "fresh" &&
                 parameterType?.kind === "span" &&

@@ -2001,6 +2001,10 @@ export interface ValueFields {
         readonly sources: readonly string[];
     };
     ownedEngineCpp?: string;
+    /** Owned data wrapper for an engine reference crossing a stored boundary. */
+    storedEngineCpp?: string;
+    /** One bound engine value; aliases and owning snapshots retain this identity. */
+    engineIdentity?: symbol;
     cpp: string;
     /** Owning materialization of a borrowed lookup result at a retained sink. */
     ownedCpp?: string;

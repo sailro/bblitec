@@ -54,6 +54,7 @@ runtime calls throw or reject according to each descriptor. Later source still c
 Registered audio graph operations retain typed failures; engine/source option variants reject only for present options, preserving the existing absent-options adapters.
 Registered media stream, recording, streamed-audio and script-element operations throw or reject at their typed boundary. Recorder and BlobEvent values have owned nominal storage; no unavailable producer returns a dummy object.
 Session storage access, idle scheduling/cancellation, dynamic surface pixel-ratio reads/writes and application-realm device recovery have typed throwing boundaries. Idle callbacks retain owned signatures; scene-only recovery keeps its supported path.
+Byte streams/compression and Intl.ListFormat/PluralRules have typed throwing boundaries; existing buffered response reads and ICU operations remain supported.
 Unregistered APIs, unsupported type/ownership forms and dynamic argument spreads still refuse.
 The default mode retains strict admission and existing capability-absence guards.
 AbortController/AbortSignal use distinct opaque storage with no successful native producer. Their registered constructor, state reads, abort operations and signal-backed listener lifetimes throw when reached; an undefined listener signal uses ordinary native dispatch.
@@ -89,7 +90,8 @@ native identity. Mutation, escaping aliases and untracked extraction withdraw th
 `CompileOptions.environment`; absent keys are undefined. Built-ins cannot be overridden; dotenv and host
 variables are not loaded implicitly.
 
-Defaults and short-circuit operands evaluate once and lazily. Operands of concatenation, arithmetic,
+Defaults and short-circuit operands evaluate once and lazily. Record-valued `||` supports nested `&&`
+guards and retains the selected record's identity. Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
 call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
@@ -104,8 +106,8 @@ knows whether the slot existed, so a missing slot (`undefined`) and a stored `nu
 apart. Primitive unions containing both absence values retain distinct tags in dynamic storage;
 other values that may be either without a represented tag refuse strict comparison (`== null` answers
 either). An enum member reads as its constant wherever it is written,
-`Tone["Soft"]` included. Destructuring finishes the source before
-left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
+`Tone["Soft"]` included. Object and array declarations compose nested bindings, rest and lazy defaults.
+Destructuring finishes the source before left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings, plain struct fields and,
 when unrolled, plain or renamed object bindings; other nested/default/renamed struct bindings refuse.
 
@@ -115,6 +117,9 @@ returns. Owned document fields support assignment and numeric updates; array ind
 dense storage. Sparse growth, named array properties and writes through erased native views refuse. Source-backed
 record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
 permit statements before a final return; early returns refuse.
+Finite-key record unions share compatible arm storage, including numeric tuple fields of different
+lengths. Changing a retained arm's layout refuses generic substitutions, conflicting layouts, field
+loss and incompatible mutable field storage.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree;
 a typed record whose methods name its own binding is one shared object. Stored callback fields retain
 function identity and observe replacement through record aliases. Structural views of native services
@@ -142,7 +147,7 @@ Awaited, statically expanded `Promise.all` maps preserve fixed asset-load order;
 Outside a realm the executor runs in place and an await reads the settlement; one still pending ends the
 awaiting activation ([fidelity](fidelity.md#semantic-contract)). Timers/microtasks need no engine. RAF
 needs a Window repaint source. Unhandled rejections are reported in a subsequent task after microtasks.
-MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded through
+MessageChannel refuses; gzip/base64 JSON decoded through
 `DecompressionStream` folds at generation.
 
 ### Core TypeScript library
@@ -151,8 +156,8 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | --- | --- | --- |
 | Numbers | Reached Math operations, non-coercing Number predicates/constants, the predicates as function values (`every(Number.isFinite)`), JS coercions and rounding, numeric callbacks | Native double transcendental functions; deterministic random; bounded rest signatures |
 | Variadic Math | `min`, `max`, `hypot`, numeric tails and array spreads | Native `hypot` approximation; NaN/signed-zero rules retained for min/max |
-| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, typed `Array.from` mapper results, Object identity mappers, sorting (any function comparator), indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array, mutating methods on an array literal (`[a, b].pop()`), truncating `length` writes | Closed flatten depth; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array; sparse `length` growth refuses at run time; record conversion follows [fidelity](fidelity.md#semantic-contract) |
-| Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring; a number array asserted as a tuple stays that array | Sparse length growth and ambiguous null/undefined defaults refuse; an asserted array of another length refuses at run time |
+| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, typed `Array.from` mapper results, Object identity mappers, sorting (any function comparator), indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array, mutating methods on an array literal (`[a, b].pop()`), truncating `length` writes; readonly native/callback parameters retain array ownership | Closed flatten depth; borrowed views cannot provide retained array identity; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array; sparse `length` growth refuses at run time; record conversion follows [fidelity](fidelity.md#semantic-contract) |
+| Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring; a number array asserted as a tuple stays that array; numeric tuples retain identity through readonly-array parameters | Sparse length growth and ambiguous null/undefined defaults refuse; an asserted array of another length refuses at run time |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach`; stored `ReadonlyMap`/`ReadonlySet` views preserve identity | An iterator value of a nullable reference type reads as present |
 | WeakMap | Empty construction with erased object or DOM-target keys, get/set/has/delete, owned values | Each erased key must have represented record or DOM identity; other key views and initialized erased-key constructors refuse |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | General authored `Symbol.iterator` objects refuse |
@@ -160,7 +165,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options; `toLocaleLowerCase`/`toLocaleUpperCase` with default, string or string-array locales | Option getters and non-string locale entries refuse |
 | Text encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`) decoding an ArrayBuffer or view; `TextEncoder.encode` | Other encodings, streaming decode, `encodeInto` and codec properties refuse |
-| Objects | Supported keys/values/entries (as arrays for dictionaries, structs and parsed documents), assign/fromEntries/hasOwn/is, shallow spreads (including nullable dictionaries), delete/in, `for...in` over the same own keys; dynamic struct membership; fixed-field records read through string-indexed helper parameters; a closed record asserted from an open string record (`as Record<Union, V>`) views its entries; one asserted from `{}` is a dictionary | Own keys follow [fidelity](fidelity.md#semantic-contract); fixed-field dictionary reads require one non-nullable field type and preserve aliases; dynamic writes through that view, dynamic class membership and class hasOwn refuse. A struct with `?` properties spreads into a compile-time record or a fixed key list only with known own keys; Object.assign targets records, object literals and structs, other targets refuse; a closed asserted view's read of an absent entry refuses; enum-keyed views refuse |
+| Objects | Supported keys/values/entries (as arrays for dictionaries, structs and parsed documents), assign/fromEntries/hasOwn/is, shallow spreads (including nullable dictionaries), object-rest copies of represented records, delete/in, `for...in` over the same own keys; dynamic struct membership; fixed-field records read through string-indexed helper parameters; a closed record asserted from an open string record (`as Record<Union, V>`) views its entries; one asserted from `{}` is a dictionary | Object rest requires literal exclusion keys and a concrete record result. Own keys follow [fidelity](fidelity.md#semantic-contract); fixed-field dictionary reads require one non-nullable field type and preserve aliases; dynamic writes through that view, dynamic class membership and class hasOwn refuse. A struct with `?` properties spreads into a compile-time record or a fixed key list only with known own keys; Object.assign targets records, object literals and structs, other targets refuse; a closed asserted view's read of an absent entry refuses; enum-keyed views refuse |
 | JSON | Represented parse/stringify, mixed unions of serializable values, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers, cyclic serialization and Map/Set values refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone; Collator(locales, options) and `compare`, as `localeCompare`; number `toLocaleString(locales, options)`: decimal/percent, digit, grouping and locale-matcher options, `nu` extension | No DateTimeFormat locale/options, formatting or broader fields; Collator `resolvedOptions` and a detached `compare` refuse; `Intl.NumberFormat`, currency/unit styles and other number options refuse (a struct's absent option field is checked at run time); CLDR data is the platform ICU's |
@@ -176,10 +181,9 @@ Finite record Proxies support literal get/set traps, optional-key deletion and v
 of existing data properties; Reflect.get preserves represented getter receivers. Empty/class targets,
 dynamic-this methods, other traps, descriptor-inspecting traps and definitions requiring new
 property attributes refuse. Symbol and FinalizationRegistry values refuse.
-Array/object aliases retain identity, except that
-a plain record passed to a stored callback with an optional, default-initialized parameter can be copied
-into a returned closure, so later caller mutations are not observed. Spreads copy own scalar fields and
-share nested objects.
+Array/object aliases normally retain identity. Stored callbacks can copy plain value-layout records,
+including records captured through optional/defaulted parameters; later field replacements may not
+propagate between caller and callback. Spreads and object rest copy own scalar fields and share nested objects.
 Object enumeration places numeric index keys before insertion-ordered names. Fixed record key
 snapshots retain initialized keys; module namespace keys are lexical and values remain live.
 String-literal-union searches accept outside strings as misses. `invertMat4` returns nullable fresh
@@ -269,6 +273,9 @@ and [compiled bindings](backends.md#compiled-binding-contract).
 
 Scene, sprite, effect and scene-less frame-graph drivers share frame orchestration. Immutable engine
 aliases retain identity; multiple engines in one entry and rebinding refuse.
+Stored engine contexts retain their owners through records, collections, callbacks and Promises;
+borrowed entry contexts check their lifetime. Implicit resource constructors require one unambiguous
+scoped engine context. A scene or raw resource handle alone does not supply that context.
 
 Runtime `msaaSamples` selects one sample for numeric 1, four otherwise, evaluated once. Engine reads,
 default scene targets and effect/frame-graph targets share this selection. Explicit numeric constants

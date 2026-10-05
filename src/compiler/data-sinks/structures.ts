@@ -42,6 +42,7 @@ function expressionEnum(
     const rawValue =
         lowerer.compileDataPath(unwrapped, "read") ??
         (ts.isCallExpression(unwrapped) ||
+        ts.isTemplateExpression(unwrapped) ||
         ts.isIdentifier(unwrapped) ||
         ts.isPropertyAccessExpression(unwrapped) ||
         ts.isElementAccessExpression(unwrapped)
@@ -398,6 +399,12 @@ function valueStruct(
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const sourceType = value.dataType;
+        if (lowerer.context.dataTypes.isReferenceStruct(sourceType.name))
+            lowerer.context.dataTypes.requireRecordUnionStorage(
+                sourceType,
+                dataType,
+                node,
+            );
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
                 .structFields(sourceType.name, node, "accessors")

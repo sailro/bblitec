@@ -7,7 +7,7 @@
 
 namespace bbl {
 
-// Nominal storage for deferred DOM APIs. There is no successful producer.
+// Nominal storage for deferred platform APIs. There is no successful producer.
 class DeferredHeaders final {
     DeferredHeaders() = delete;
 };
@@ -27,6 +27,22 @@ class DeferredIdleDeadline final {
     DeferredIdleDeadline() = delete;
 };
 
+class DeferredReadableByteStream final {
+    DeferredReadableByteStream() = delete;
+};
+class DeferredCompressionStream final {
+    DeferredCompressionStream() = delete;
+};
+class DeferredDecompressionStream final {
+    DeferredDecompressionStream() = delete;
+};
+class DeferredListFormat final {
+    DeferredListFormat() = delete;
+};
+class DeferredPluralRules final {
+    DeferredPluralRules() = delete;
+};
+
 class DeferredCapabilityError final : public std::runtime_error {
 public:
     DeferredCapabilityError(std::string_view capability, std::string_view site)
@@ -36,7 +52,13 @@ public:
 
 // T is the authored result type. No successful result is ever constructed.
 template <typename T> T deferred_capability(std::string_view capability, std::string_view site) {
-    throw DeferredCapabilityError(capability, site);
+    // Keep the call opaque: optimizers must not diagnose following authored
+    // statements as unreachable merely because this runtime bridge is deferred.
+    T (*volatile invoke)(std::string_view, std::string_view) =
+        [](std::string_view current_capability, std::string_view current_site) -> T {
+        throw DeferredCapabilityError(current_capability, current_site);
+    };
+    return invoke(capability, site);
 }
 
 } // namespace bbl

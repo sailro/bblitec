@@ -46,13 +46,16 @@ inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string
     };
     const bool common = one_of(
         {"id", "class", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"});
-    const bool root = record.tag == "svg" &&
-                      one_of({"viewBox", "width", "height", "xmlns", "style", "aria-hidden"});
+    const bool root = record.tag == "svg" && one_of({"viewBox", "width", "height", "xmlns", "style",
+                                                     "aria-hidden", "hidden"});
     const bool path = record.tag == "path" && name == "d";
     const bool rectangle =
         record.tag == "rect" && one_of({"x", "y", "width", "height", "rx", "ry"});
     const bool circle = record.tag == "circle" && one_of({"cx", "cy", "r"});
-    if (!(common || root || path || rectangle || circle))
+    const bool line = record.tag == "line" && one_of({"x1", "y1", "x2", "y2"});
+    const bool ellipse = record.tag == "ellipse" && one_of({"cx", "cy", "rx", "ry"});
+    const bool polygon = (record.tag == "polyline" || record.tag == "polygon") && name == "points";
+    if (!(common || root || path || rectangle || circle || line || ellipse || polygon))
         throw std::runtime_error("Unsupported retained SVG attribute '" + std::string(name) +
                                  "' on <" + record.tag + ">.");
     if (name == "fill" || name == "stroke") {

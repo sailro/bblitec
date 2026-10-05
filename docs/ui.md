@@ -79,11 +79,11 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 
 | Area | Supported | Limits |
 | --- | --- | --- |
-| Construction | Static tags, appendChild, mixed text/element append/prepend/replaceChildren, element-array spreads in append/replaceChildren, remove, retained roots; parent, first/last child and sibling element reads | No general DOM implementation; prepend spreads refuse; tree, text and insertion reads inside innerHTML throw; document roots only append |
-| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute, isContentEditable from contenteditable; dataset reads/writes and Object.assign from plain string/number/boolean/nullish fields | Compound text writes; `<style>` text reads; unsupported root replacement/removal |
+| Construction | Static tags, retained createTextNode, appendChild/insertBefore, mixed text/element append/prepend/replaceChildren, element-array spreads in append/replaceChildren, remove, retained roots; parentElement, first/last child and sibling node/element reads; childElementCount and direct children.length/childNodes.length | No general DOM implementation; stored child collections and prepend spreads refuse; tree, text and insertion reads inside innerHTML throw; document roots only append |
+| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute/toggleAttribute, isContentEditable from contenteditable; dataset reads/writes and Object.assign from plain string/number/boolean/nullish fields | Compound text writes; `<style>` text reads; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | :scope, pseudo-element queries; dynamic selectors and interaction-state queries throw in deferred capability mode and otherwise refuse |
-| Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
+| Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events; setPointerCapture/releasePointerCapture/hasPointerCapture throw in deferred capability mode |
 | Handler properties | Element `on<event>` for represented pointer, keyboard, file-drag and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
 | Transitions | transitionend on elements, Document and Window with target and propertyName, through shared dispatch the update after RmlUi ends it | elapsedTime, other transition events, `ontransitionend` |
 | Storage listeners | Window/Document target identity, optional structural receivers, removal/once/capture and borrowed key/oldValue/newValue/url/storageArea | Own Window writes are silent; external-process storage notifications and constructed StorageEvent are unsupported |
@@ -161,7 +161,7 @@ iOS uses UIKit Files with local storage and security-scoped imports; other platf
 
 ### Markup
 
-Closed innerHTML admits text/div/span, packaged img assets and reviewed SVG/path/rect attributes. Finite
+Closed innerHTML admits text/div/span/label, opaque comments, packaged img assets and reviewed SVG/path/rect attributes. Finite
 conditional fragments select parsed alternatives; immutable aliases and helpers retain one runtime text span
 inside fixed authored fragments. Runtime text is escaped and stored text is read from its captured value.
 HTML markup retains role, aria-* and data-* metadata, bare hidden and button disabled attributes, and strong emphasis.
@@ -171,8 +171,10 @@ and removing or reparenting queried markup nodes refuse. Queried nodes accept te
 their descendants have no retained handles; later queries exclude replaced content.
 Scripts, event attributes, unbounded attributes and malformed nesting refuse. SVG rasterizes at CSS size;
 mixed currentColor/literal paints and queries inside static SVG markup refuse.
+Markup-created input/select/option/textarea controls and SVG image references require retained-state/asset bridges;
+deferred capability mode throws at the innerHTML write after evaluating its string, preserving prior content.
 
-`createElementNS` admits SVG svg/path/rect/circle nodes with retained identity, case-sensitive attributes,
+`createElementNS` admits SVG svg/path/rect/circle/line/ellipse/polyline/polygon nodes with retained identity, case-sensitive attributes,
 and live append/remove/replace operations. RmlUi's SVG plugin rasterizes shape XML; inherited currentColor
 tracks the SVG root's computed color. Shape styles, listeners, layout reads, nested SVG, paint servers,
 CSS-wide paint keywords and variable paints refuse.

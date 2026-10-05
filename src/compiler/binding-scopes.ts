@@ -888,6 +888,8 @@ export class BindingScopes {
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
+        if (value.kind === "engine" && !value.engineIdentity)
+            value = { ...value, engineIdentity: Symbol() };
         // A resource whose native value has one type declares it for the
         // local holding it, whichever declaration emitted that local, so a
         // closure capturing it has a concrete environment.
@@ -1194,7 +1196,10 @@ export class BindingScopes {
             this.defineVariable(identifier, value);
             return;
         }
-        if (value.kind === "engine" && value.ownedEngineCpp) {
+        if (
+            value.kind === "engine" &&
+            (value.ownedEngineCpp || value.dataType?.kind === "handle")
+        ) {
             // Escaping callbacks copy their tuple storage. Retain the owner,
             // then dereference it at each use instead of copying an Engine& alias.
             this.defineVariable(
@@ -1575,6 +1580,41 @@ export class BindingScopes {
         if (this.context.hasStableNativeBinding(value)) {
             this.context.useNativeValue(value);
             return value;
+        }
+        if (value.kind === "engine" && value.dataType?.kind === "handle") {
+            const owner = this.context.allocateTemporaryCppName(
+                `${label}_owner`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const bbl::StoredEngine",
+                name: owner,
+                initializer:
+                    value.storedEngineCpp ??
+                    `bbl::StoredEngine{${value.ownedEngineCpp ?? value.cpp}}`,
+                attributes: "[[maybe_unused]] ",
+            });
+            const binding = this.context.registerNativeConstBinding(owner);
+            this.context.registerNativeBindingType(owner, "bbl::StoredEngine");
+            const cpp = `(*${owner})`;
+            return {
+                ...value,
+                cpp,
+                engineCpp: cpp,
+                storedEngineCpp: owner,
+                ...(value.ownedEngineCpp
+                    ? { ownedEngineCpp: `${owner}.owner()` }
+                    : {}),
+                stableOwnerCpp: owner,
+                nativeBinding: true,
+                nativeCaptures: [binding],
+                nativeCompanionCaptures: {
+                    ...value.nativeCompanionCaptures,
+                    engineCpp: [binding],
+                    ownedEngineCpp: [binding],
+                    storedEngineCpp: [binding],
+                },
+            };
         }
         if (value.kind === "engine" && value.ownedEngineCpp) {
             if (value.stableOwnerCpp === value.ownedEngineCpp) return value;
@@ -2116,7 +2156,7 @@ export class BindingScopes {
                     !storedCallbacks)
             )
                 return undefined;
-            const projected = this.context.dataLowerer.leafValue(
+            let projected = this.context.dataLowerer.leafValue(
                 this.context.dataLowerer.compileKnownValueForSink(
                     value,
                     stored,
@@ -2127,6 +2167,40 @@ export class BindingScopes {
             // This expression constructs an object; it cannot be a missing
             // element. Do not snapshot a redundant presence bit at each binding.
             delete writable(projected).optionalFoundCpp;
+            const fields = this.context.dataTypes.structFields(
+                stored.name,
+                node,
+                "accessors",
+            );
+            if (
+                fields.some(
+                    (field) =>
+                        field.readOnly &&
+                        value.recordProperties?.[field.sourceName]
+                            ?.engineIdentity,
+                )
+            ) {
+                projected = this.pinValueToTemporary(projected, "record", node);
+                const properties: Record<string, Value> = {};
+                for (const field of fields) {
+                    if (field.accessor) continue;
+                    const member = this.context.dataLowerer.leafValue(
+                        `${projected.cpp}->${field.name}`,
+                        field.type,
+                    );
+                    const identity = field.readOnly
+                        ? value.recordProperties?.[field.sourceName]
+                              ?.engineIdentity
+                        : undefined;
+                    if (identity && member.kind === "engine")
+                        writable(member).engineIdentity = identity;
+                    properties[field.sourceName] = member;
+                }
+                projected = valueForKind("data", {
+                    ...projected,
+                    recordProperties: properties,
+                });
+            }
             return { ...projected, freshData: true };
         });
     }
@@ -2262,6 +2336,10 @@ export class BindingScopes {
         if (existing) return existing;
         const stored = node && this.referenceRecordValue(record, node);
         if (stored) {
+            if (this.context.hasStableNativeBinding(stored)) {
+                this.context.useNativeValue(stored);
+                return stored;
+            }
             // Choose the whole-object home before boxing individual fields.
             // Inlined calls bind it here so later sinks share this allocation.
             const cpp = this.context.allocateTemporaryCppName(label);

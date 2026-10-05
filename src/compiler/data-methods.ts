@@ -1884,7 +1884,9 @@ function arrayResultType(
     call: ts.CallExpression,
     fallback?: DataType<"vector">,
 ): DataType<"vector"> | undefined {
-    const inferred = lowerer.dataTypeAt(call);
+    const callType = lowerer.dataTypeAt(call);
+    // Optional-chain dispatch invokes the method only in the present arm.
+    const inferred = callType?.kind === "optional" ? callType.inner : callType;
     const result = fallback
         ? fallback.element.kind === "optional" &&
           inferred?.kind === "vector" &&

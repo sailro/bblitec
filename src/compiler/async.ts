@@ -1410,6 +1410,19 @@ export class AsyncLowerer {
         binding: NativeCaptureBinding,
     ): Value {
         const { ownedCpp, ...value } = source;
+        if (value.kind === "engine" && value.dataType?.kind === "handle")
+            return valueForKind("engine", {
+                ...this.context.dataLowerer.leafValue(cpp, value.dataType),
+                ...(value.engineIdentity
+                    ? { engineIdentity: value.engineIdentity }
+                    : {}),
+                nativeCaptures: [binding],
+                nativeCompanionCaptures: {
+                    engineCpp: [binding],
+                    ownedEngineCpp: [binding],
+                    storedEngineCpp: [binding],
+                },
+            });
         if (value.kind === "tuple")
             return {
                 ...value,
@@ -1840,6 +1853,9 @@ export class AsyncLowerer {
             return `std::string{${value.cpp}}`;
         return value.kind === "tuple" && !value.cpp
             ? `${this.cppType(value, node)}{${(value.tupleElements ?? []).map((element) => this.resultCpp(element, node)).join(", ")}}`
-            : (value.ownedEngineCpp ?? value.ownedCpp ?? value.cpp);
+            : (value.storedEngineCpp ??
+                  value.ownedEngineCpp ??
+                  value.ownedCpp ??
+                  value.cpp);
     }
 }

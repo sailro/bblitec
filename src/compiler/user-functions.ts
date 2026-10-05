@@ -3489,13 +3489,19 @@ export class UserFunctionLowerer {
                     );
                     if (!field || field.accessor)
                         throw new SharedCallRequiresInline();
-                    return [
-                        key,
-                        context.dataValue(
-                            `(${result.cpp})${member}${field.name}`,
-                            field.type,
-                        ),
-                    ];
+                    const property = context.dataValue(
+                        `(${result.cpp})${member}${field.name}`,
+                        field.type,
+                    );
+                    const identity =
+                        metadata.recordProperties![key]?.engineIdentity;
+                    if (
+                        field.readOnly &&
+                        property.kind === "engine" &&
+                        identity
+                    )
+                        writable(property).engineIdentity = identity;
+                    return [key, property];
                 }),
             );
         }
@@ -3943,7 +3949,31 @@ export class UserFunctionLowerer {
                         kind: "record",
                         cpp: "",
                         truthinessCpp: "true",
-                        ...(sameKeys ? { recordProperties: properties } : {}),
+                        ...(sameKeys
+                            ? {
+                                  recordProperties: Object.fromEntries(
+                                      Object.entries(properties).map(
+                                          ([key, property]) => {
+                                              if (
+                                                  !property.engineIdentity ||
+                                                  returnedValues.every(
+                                                      (value) =>
+                                                          value
+                                                              .recordProperties?.[
+                                                              key
+                                                          ]?.engineIdentity ===
+                                                          property.engineIdentity,
+                                                  )
+                                              )
+                                                  return [key, property];
+                                              const common = { ...property };
+                                              delete common.engineIdentity;
+                                              return [key, common];
+                                          },
+                                      ),
+                                  ),
+                              }
+                            : {}),
                     };
                 }
             } finally {

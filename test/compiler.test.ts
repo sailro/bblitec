@@ -986,14 +986,19 @@ test("lowers imported typed user functions and constants", () => {
         },
     );
 
-    assert.match(result.cpp, /auto& v_fn0_engine = v_engine/);
+    const engineAlias = /auto& (\w+) = v_engine;/.exec(result.cpp);
+    assert.ok(engineAlias, "the imported helper borrows the entry engine");
     assert.match(
         result.cpp,
-        /auto v_fn0_scene = bbl::create_scene_context\(v_fn0_engine\)/,
+        new RegExp(
+            `auto v_fn\\d+_scene = bbl::create_scene_context\\(${engineAlias[1]}\\)`,
+        ),
     );
     assert.match(
         result.cpp,
-        /create_directional_light\(v_engine, bbl::Vec3\{0\.0f, \(-1\.0f\), 0\.0f\}, 0\.75\)/,
+        new RegExp(
+            `create_directional_light\\(${engineAlias[1]}, bbl::Vec3\\{0\\.0f, \\(-1\\.0f\\), 0\\.0f\\}, 0\\.75\\)`,
+        ),
     );
     assert.match(
         result.cpp,
@@ -20616,17 +20621,24 @@ test("a storage buffer a nested callback replaces is read through its shared cel
 
         void main();
     `);
+    const engineAlias = /auto& (\w+) = v_engine;/.exec(result.cpp);
+    assert.ok(engineAlias, "the palette borrows the entry engine");
+    const buffer =
+        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/.exec(
+            result.cpp,
+        );
+    assert.ok(buffer, "the replaceable buffer has shared storage");
     assert.match(
         result.cpp,
-        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/,
+        new RegExp(
+            `\\(\\*${buffer[1]}\\) = bbl::create_storage_buffer\\((?:v_engine|${engineAlias[1]}), `,
+        ),
     );
     assert.match(
         result.cpp,
-        /\(\*v_fn\d+_buffer\) = bbl::create_storage_buffer\(/,
-    );
-    assert.match(
-        result.cpp,
-        /bbl::update_storage_buffer\(v_engine, \(\*v_fn\d+_buffer\), /,
+        new RegExp(
+            `bbl::update_storage_buffer\\(${engineAlias[1]}, \\(\\*${buffer[1]}\\), `,
+        ),
     );
 });
 

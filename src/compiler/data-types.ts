@@ -1,5 +1,8 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
-import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
+import {
+    DEFERRED_DOM_OBJECTS,
+    DEFERRED_INTL_OBJECTS,
+} from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
     BUFFER_VIEW_KINDS,
@@ -64,7 +67,12 @@ import {
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
-import { isNullable, nullability, presentMembers } from "./type-facts.js";
+import {
+    isNullable,
+    nullability,
+    presentMembers,
+    isTypeReference,
+} from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
@@ -610,6 +618,11 @@ export function isDomElementType(symbol: ts.Symbol): boolean {
     );
 }
 
+/** Text nodes share retained node handles, but are never element interfaces. */
+export function isDomTextType(symbol: ts.Symbol): boolean {
+    return symbol.name === "Text" && declaredInDomLibrary(symbol);
+}
+
 /**
  * Whether a compiled value is a plain-data numeric tuple of `arity`.
  *
@@ -778,8 +791,9 @@ export class DataTypeRegistry {
     private readonly emittedNamedTypes = new EmissionSet<string>();
     @journaled private accessor emittedJsonType = false;
     @journaled private accessor emittedFileType = false;
-    @journaled private accessor emittedDeferredDomType = false;
+    @journaled private accessor emittedDeferredPlatformType = false;
     @journaled private accessor emittedWindowType = false;
+    @journaled private accessor emittedResponseType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
     /**
@@ -998,16 +1012,25 @@ export class DataTypeRegistry {
     private readonly proxyRecords = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
+    private readonly unionRecordLayouts = new EmissionMap<
+        NativeRecordStorageDemand["identity"],
+        ts.UnionType
+    >();
 
     /** Register stronger layout demands before any nested record is mapped. */
-    public prepareProxyRecords(
+    public prepareRecordLayouts(
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         for (const demand of demands)
-            if (demand.proxy)
-                this.withRecordDemand(demand, () => {
+            this.withRecordDemand(demand, () => {
+                if (demand.unionStorage)
+                    this.unionRecordLayouts.set(
+                        this.structIdentity(demand.type),
+                        demand.unionStorage,
+                    );
+                if (demand.proxy)
                     this.proxyRecords.add(this.structIdentity(demand.type));
-                });
+            });
     }
 
     /** A proxy and its target retain one field layout but distinct object identities. */
@@ -1292,6 +1315,15 @@ export class DataTypeRegistry {
 
     /** Map a checker type and retain its source for a later ownership demand. */
     public fromTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+        if (
+            this.unionRecordLayouts.size &&
+            (type.flags & ts.TypeFlags.Object) !== 0
+        ) {
+            const layout = this.unionRecordLayouts.get(
+                this.structIdentity(type),
+            );
+            if (layout) return this.fromTsType(layout, node);
+        }
         const mapped = this.mapTsType(type, node);
         if (
             mapped?.kind === "struct" &&
@@ -1307,6 +1339,72 @@ export class DataTypeRegistry {
             });
         }
         return mapped;
+    }
+
+    /** A union view must share the arm's original storage, including its fields. */
+    public requireRecordUnionStorage(
+        sourceType: DataType<"struct">,
+        targetType: DataType<"struct">,
+        node: ts.Node,
+    ): void {
+        const target = this.nativeRecordSources.get(targetType.name);
+        if (!target?.type.isUnion()) return;
+        const source = this.nativeRecordSources.get(sourceType.name);
+        if (source?.type.isUnion())
+            this.fail(
+                node,
+                "A retained record has conflicting union storage layouts.",
+            );
+        const fields = this.structFields(targetType.name, node, "accessors");
+        if (
+            source &&
+            !source.frames.length &&
+            !target.frames.length &&
+            (source.type.flags & ts.TypeFlags.Object) !== 0 &&
+            this.structFields(sourceType.name, node, "accessors").every(
+                (field) => {
+                    const target = fields.find(
+                        (target) => target.sourceName === field.sourceName,
+                    );
+                    return (
+                        target &&
+                        !field.accessor &&
+                        !target.accessor &&
+                        this.sharedUnionFieldStorage(field.type, target.type)
+                    );
+                },
+            )
+        )
+            throw new NativeRecordStorageRequired({
+                ...source,
+                unionStorage: target.type,
+            });
+        this.fail(
+            node,
+            "A retained record union requires one shared layout preserving its original fields and storage kinds.",
+        );
+    }
+
+    private sharedUnionFieldStorage(
+        source: DataType,
+        target: DataType,
+    ): boolean {
+        if (dataTypesEqual(source, target)) return true;
+        if (
+            (source.kind === "string" || source.kind === "enum") &&
+            (target.kind === "string" || target.kind === "enum")
+        )
+            return true;
+        if (source.kind === "tuple" && target.kind === "vector")
+            return target.element.kind === "number";
+        if (
+            (source.kind === "span" || source.kind === "vector") &&
+            target.kind === "vector"
+        )
+            return dataTypesEqual(source.element, target.element);
+        if (source.kind === "optional" && target.kind === "optional")
+            return this.sharedUnionFieldStorage(source.inner, target.inner);
+        return false;
     }
 
     /** A checked object can use its declared layout only when no source field is lost or widened. */
@@ -1604,10 +1702,38 @@ export class DataTypeRegistry {
         );
         if (libraryObject) return { kind: libraryObject[2] };
         const deferredObject =
-            declaredInDomLibrary(type.symbol) &&
-            DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
+            (declaredInDomLibrary(type.symbol) &&
+                DEFERRED_DOM_OBJECTS.find(
+                    (name) => name === type.symbol.name,
+                )) ||
+            (declaredIn(type.symbol, "default-lib") &&
+                DEFERRED_INTL_OBJECTS.find(
+                    (name) => name === type.symbol.name,
+                ));
         if (deferredObject)
-            return { kind: "deferred-dom-object", name: deferredObject };
+            return { kind: "deferred-platform-object", name: deferredObject };
+        if (
+            type.symbol?.name === "ReadableStream" &&
+            declaredInDomLibrary(type.symbol)
+        ) {
+            // Only byte streams have an owned deferred boundary. Unconstrained or
+            // differently typed streams must not share their native identity.
+            if (!isTypeReference(type)) return undefined;
+            const arguments_ = this.checker.getTypeArguments(type);
+            const chunk = arguments_[0];
+            if (
+                arguments_.length !== 1 ||
+                !chunk ||
+                (chunk.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+                    0 ||
+                this.fromTsType(chunk, node)?.kind !== "u8array"
+            )
+                return undefined;
+            return {
+                kind: "deferred-platform-object",
+                name: "ReadableByteStream",
+            };
+        }
         if (declaredIn(type.symbol, "dom", "webgpu")) {
             if (type.symbol?.name === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };
@@ -1676,7 +1802,10 @@ export class DataTypeRegistry {
             // storage: audio context/buses, geometry, font, animation or particle plans.
             return undefined;
         }
-        if (type.symbol && isDomElementType(type.symbol)) {
+        if (
+            type.symbol &&
+            (isDomElementType(type.symbol) || isDomTextType(type.symbol))
+        ) {
             return { kind: "handle", handle: "ui-element" };
         }
         if (
@@ -2120,7 +2249,16 @@ export class DataTypeRegistry {
                 // A function passed through another stored function remains the same
                 // JavaScript function object. Carry its identity across that native
                 // call boundary so an eventual Array/Map/Set comparison can observe it.
-                return mapped ? [markIdentityFunctions(mapped)] : [undefined];
+                return mapped
+                    ? [
+                          markIdentityFunctions(
+                              this.ownReadonlyArrayParameter(
+                                  mapped,
+                                  parameterType,
+                              ),
+                          ),
+                      ]
+                    : [undefined];
             });
         if (parameters.some((parameter) => parameter === undefined)) {
             return undefined;
@@ -2468,6 +2606,38 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        // Tuple alternatives with different lengths still share array storage.
+        // Ask the checker for their indexed element union instead of treating
+        // length and the array methods as fields of a common record.
+        if (
+            members.every(
+                (member) =>
+                    this.checker.isTupleType(member) ||
+                    this.checker.isArrayType(member) ||
+                    (declaredInDefaultLibrary(member.symbol) &&
+                        member.symbol?.name === "ReadonlyArray"),
+            )
+        ) {
+            if (this.arrayUnionsInProgress.has(type)) return undefined;
+            this.arrayUnionsInProgress.add(type);
+            try {
+                const indexed = this.checker.getIndexTypeOfType(
+                    type,
+                    ts.IndexKind.Number,
+                );
+                const element = indexed && this.fromStoredTsType(indexed, node);
+                return element
+                    ? {
+                          kind: "vector",
+                          element: markIdentityFunctions(
+                              this.markStoredObjectReferences(element),
+                          ),
+                      }
+                    : undefined;
+            } finally {
+                this.arrayUnionsInProgress.delete(type);
+            }
+        }
         // Library binary classes keep their own storage, which `instanceof`
         // selects; a common-field record would drop `buffer` and the elements.
         if (type.types.every(binaryLibraryClass))
@@ -2493,6 +2663,8 @@ export class DataTypeRegistry {
         if (object === null) return undefined;
         return object ?? this.fromMixedUnion(type, node);
     }
+
+    private readonly arrayUnionsInProgress = new EmissionSet<ts.Type>();
 
     /** Fixed tuple alternatives share lanes where their stored representations agree. */
     private fromTupleUnion(
@@ -4098,6 +4270,26 @@ export class DataTypeRegistry {
             : type;
     }
 
+    /**
+     * A readonly Array parameter is still a JavaScript object. Its callee
+     * can retain it in a record, callback or another container without
+     * returning an array directly. ArrayLike remains a borrowed view: it
+     * does not promise an Array owner.
+     */
+    public ownReadonlyArrayParameter(
+        type: DataType,
+        sourceType: ts.Type,
+    ): DataType {
+        const inner = type.kind === "optional" ? type.inner : type;
+        if (inner.kind !== "span") return type;
+        const concrete = this.checker.getNonNullableType(
+            this.resolveTypeParameter(sourceType),
+        );
+        return concrete.symbol?.name === "ReadonlyArray"
+            ? this.ownReturnedArray(type)
+            : type;
+    }
+
     /** Shared returns can own local classes whose fields all have native storage. */
     public fromSharedReturnType(
         type: ts.Type,
@@ -4834,8 +5026,9 @@ export class DataTypeRegistry {
         if (["file", "blob", "file-list"].includes(dataType.kind))
             this.emittedFileType = true;
         if (dataType.kind === "json") this.emittedJsonType = true;
-        if (dataType.kind === "deferred-dom-object")
-            this.emittedDeferredDomType = true;
+        if (dataType.kind === "http-response") this.emittedResponseType = true;
+        if (dataType.kind === "deferred-platform-object")
+            this.emittedDeferredPlatformType = true;
         if (this.isWindowType(dataType)) this.emittedWindowType = true;
         return dataTypeCppType(dataType, this.cppContext);
     }
@@ -4855,10 +5048,14 @@ export class DataTypeRegistry {
         );
     }
 
-    public usesDeferredDomStorage(): boolean {
+    public usesResponseStorage(): boolean {
+        return this.emittedResponseType || this.usesNamedKind("http-response");
+    }
+
+    public usesDeferredPlatformStorage(): boolean {
         return (
-            this.emittedDeferredDomType ||
-            this.usesNamedKind("deferred-dom-object")
+            this.emittedDeferredPlatformType ||
+            this.usesNamedKind("deferred-platform-object")
         );
     }
 

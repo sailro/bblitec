@@ -1264,6 +1264,11 @@ export class ExpressionLowerer {
             });
             if (concatenated) return concatenated;
         }
+        if (ts.isBinaryExpression(unwrapped)) {
+            const logical =
+                this.context.dataLowerer.compileRecordLogicalValue(unwrapped);
+            if (logical) return logical;
+        }
         if (
             ts.isBinaryExpression(unwrapped) &&
             (unwrapped.operatorToken.kind ===

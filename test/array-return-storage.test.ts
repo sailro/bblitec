@@ -101,7 +101,7 @@ const source = `
 test("native array signatures distinguish fresh results, stable table rows and returned aliases", () => {
     const result = compileSource(source);
     assert.match(result.cpp, /bbl::js::Span<const bbl::js::Tuple<2>> row\(/);
-    assert.match(result.cpp, /copy\(bbl::js::Span<const double>/);
+    assert.match(result.cpp, /copy\(const bbl::js::Array<double>&/);
     assert.match(result.cpp, /identity\(const bbl::js::Array<double>&/);
     assert.match(result.cpp, /bbl::js::take_temporary\(bbl_method_\w+result\)/);
     assert.match(

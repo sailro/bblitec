@@ -52,7 +52,7 @@ export const scalarKinds: DataKindOperations<
     | "numberindex"
     | "json"
     | "event-target"
-    | "deferred-dom-object"
+    | "deferred-platform-object"
     | "borrowed-platform-event"
     | "handle"
     | TypedArrayKind
@@ -75,9 +75,9 @@ export const scalarKinds: DataKindOperations<
         opaqueReference: true,
     },
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
-    "deferred-dom-object": {
+    "deferred-platform-object": {
         cpp: (type) => `std::shared_ptr<bbl::Deferred${type.name}>`,
-        key: (type) => `deferred-dom(${type.name})`,
+        key: (type) => `deferred-platform(${type.name})`,
         equal: (left, right) => left.name === right.name,
         children: () => [],
         byReference: true,

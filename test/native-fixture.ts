@@ -388,6 +388,7 @@ export function runGeneratedProgram(
     cpp: string,
     options: {
         defines?: readonly string[];
+        includeDirectories?: readonly string[];
         timeoutMs?: number;
         expectedOutput?: string;
     } = {},
@@ -408,6 +409,7 @@ export function runGeneratedProgram(
         "/fp:precise",
         "/utf-8",
         ...(options.defines ?? []).map((define) => `/D${define}`),
+        ...(options.includeDirectories ?? []).flatMap((path) => ["/I", path]),
         "/I",
         "native/include",
         "/I",

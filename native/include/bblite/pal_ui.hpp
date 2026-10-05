@@ -50,7 +50,18 @@ ui_query_element(Engine& engine, UiElementHandle root,
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors);
 /** Element tree reads over retained parents and children; innerHTML content throws. */
-enum class UiTreeRead { Parent, FirstChild, LastChild, PreviousSibling, NextSibling };
+enum class UiTreeRead {
+    Parent,
+    FirstChild,
+    LastChild,
+    PreviousSibling,
+    NextSibling,
+    FirstNode,
+    LastNode,
+    PreviousNode,
+    NextNode
+};
+double ui_child_count(Engine& engine, UiElementHandle node, bool elements_only);
 js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
                                               UiTreeRead read);
 std::string ui_text_content(Engine& engine, UiElementHandle node);
@@ -85,6 +96,8 @@ bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view 
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name,
                               bool present);
+bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string name,
+                         std::optional<bool> force = std::nullopt);
 std::string ui_escape_rml(std::string_view text);
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name, std::string value);
 void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,

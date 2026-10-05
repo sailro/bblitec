@@ -20,6 +20,7 @@ export interface NativeExpression {
 export const nativeCompanionKeys = [
     "engineCpp",
     "ownedEngineCpp",
+    "storedEngineCpp",
     "optionalStorageCpp",
     "optionalFoundCpp",
     "slotFoundCpp",

@@ -106,6 +106,13 @@ import {
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
 
+/** Browser markup whose renderer exists but retained DOM state has no bridge. */
+class DeferredMarkupBridge extends Error {
+    constructor(readonly capability: "svg-image" | "form-controls") {
+        super(`Retained markup requires the ${capability} bridge.`);
+    }
+}
+
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
     kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
@@ -887,7 +894,8 @@ export class UiProjection {
         const createsElement =
             ts.isPropertyAccessExpression(callee) &&
             (callee.name.text === "createElement" ||
-                callee.name.text === "createElementNS") &&
+                callee.name.text === "createElementNS" ||
+                callee.name.text === "createTextNode") &&
             isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
             (ts.isStringLiteral(value.arguments[0]) ||
@@ -3863,6 +3871,18 @@ export class UiProjection {
             }
             output.push(text);
 
+            if (value.startsWith("<!--", opening)) {
+                const end = value.indexOf("-->", opening + 4);
+                if (end < 0) fail("contains an unterminated comment.");
+                // Keep the source so comment-only markup still refuses DOM
+                // traversal: the retained tree has no comment-node records.
+                output.push(
+                    `<!--${escapeAttribute(value.slice(opening + 4, end))}-->`,
+                );
+                cursor = end + 3;
+                continue;
+            }
+
             let quote = "";
             let closing = opening + 1;
             for (; closing < value.length; closing++) {
@@ -3885,7 +3905,11 @@ export class UiProjection {
             }
             if (token.startsWith("/")) {
                 const tag = token.slice(1).trim().toLowerCase();
-                if (!/^(?:div|span|h1|h2|p|button|b|strong|a|svg)$/.test(tag)) {
+                if (
+                    !/^(?:div|span|h1|h2|p|button|b|strong|a|label|svg)$/.test(
+                        tag,
+                    )
+                ) {
                     fail(`does not support closing tag '</${tag}>'.`);
                 }
                 const current = stack.pop();
@@ -3915,6 +3939,18 @@ export class UiProjection {
                 fail(`contains invalid tag '<${token}>'.`);
             const tag = tagMatch[1]!.toLowerCase();
             const insideSvg = stack.some((node) => node.tag === "svg");
+            // RmlUi can draw these elements, but image references in SVG and
+            // markup-created controls do not yet retain browser state/ownership.
+            // Only these named bridges defer; malformed or unrelated tags refuse.
+            if (this.context.options.deferredCapabilities) {
+                if (insideSvg && tag === "image")
+                    throw new DeferredMarkupBridge("svg-image");
+                if (
+                    !insideSvg &&
+                    ["input", "select", "option", "textarea"].includes(tag)
+                )
+                    throw new DeferredMarkupBridge("form-controls");
+            }
             const svgPaint =
                 tag === "svg"
                     ? {
@@ -3928,7 +3964,7 @@ export class UiProjection {
                       : undefined;
             if (
                 (!insideSvg &&
-                    !/^(?:div|span|h1|h2|p|button|b|strong|a|img|svg)$/.test(
+                    !/^(?:div|span|h1|h2|p|button|b|strong|a|label|img|svg)$/.test(
                         tag,
                     )) ||
                 (insideSvg && !/^(?:path|rect)$/.test(tag))
@@ -3942,7 +3978,9 @@ export class UiProjection {
                 fail(`<${tag}> must use the self-closing form.`);
             }
             if (
-                /^(?:div|span|h1|h2|p|button|b|strong|a|svg)$/.test(tag) &&
+                /^(?:div|span|h1|h2|p|button|b|strong|a|label|svg)$/.test(
+                    tag,
+                ) &&
                 selfClosing
             ) {
                 fail(`<${tag}> must have an explicit closing tag.`);
@@ -4318,6 +4356,26 @@ export class UiProjection {
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
+    /** A selected unsupported markup arm throws before the setter mutates its owner. */
+    private deferredUiMarkup(
+        site: ts.Node,
+        error: DeferredMarkupBridge,
+        result: "string" | "void",
+    ): Value {
+        const trap = this.context.deferredCapabilities.emitKnown(
+            site,
+            {
+                id: `dom:Element.innerHTML.${error.capability}`,
+                origin: "dom",
+                operation: "write",
+                timing: "throw",
+                signature: "Element.innerHTML: string",
+            },
+            result === "string" ? { kind: "string" } : undefined,
+        );
+        return trap ?? this.context.fail(site, error.message);
+    }
+
     private uiStoredMarkupShape(
         expression: ts.Expression,
     ): UiMarkupShape | undefined {
@@ -4413,6 +4471,7 @@ export class UiProjection {
             pending: readonly UiMarkupPart[],
             prefix: string,
             substitutions: readonly string[],
+            runtimeBranch = false,
         ): string => {
             let source = prefix;
             const values = [...substitutions];
@@ -4441,6 +4500,16 @@ export class UiProjection {
                     const condition = this.context.conditions.compileCondition(
                         part.condition,
                     );
+                    if (condition === "true" || condition === "false")
+                        return emit(
+                            [
+                                ...(condition === "true" ? part.yes : part.no),
+                                ...pending.slice(index + 1),
+                            ],
+                            source,
+                            values,
+                            runtimeBranch,
+                        );
                     const branch = (parts: UiMarkupPart[]): string => {
                         let result = "";
                         const lines = this.context.captureEmittedLines(() => {
@@ -4450,6 +4519,7 @@ export class UiProjection {
                                     [...parts, ...pending.slice(index + 1)],
                                     source,
                                     values,
+                                    true,
                                 );
                             } finally {
                                 this.context.leaveRuntimeControlFlow();
@@ -4465,12 +4535,26 @@ export class UiProjection {
                     expression,
                     "Native UI innerHTML exceeds 32 closed markup alternatives.",
                 );
-            const lowered = this.lowerUiMarkupLiteral(
-                source,
-                expression,
-                ownerId,
-            );
-            return this.uiMarkupConcat(lowered, (index) => values[index]!);
+            try {
+                const lowered = this.context.probeEmission(() =>
+                    this.lowerUiMarkupLiteral(source, expression, ownerId),
+                );
+                return this.uiMarkupConcat(lowered, (index) => values[index]!);
+            } catch (error) {
+                if (!(error instanceof DeferredMarkupBridge)) throw error;
+                if (!runtimeBranch) throw error;
+                const owner =
+                    ownerId === undefined
+                        ? undefined
+                        : this.uiStaticElements.get(ownerId);
+                if (owner) {
+                    // A caught throw retains the old children; the successful
+                    // alternatives alone cannot prove the owner's whole shape.
+                    writable(owner).childShapeKnown = false;
+                    writable(owner).childCardinalityKnown = false;
+                }
+                return this.deferredUiMarkup(expression, error, "string").cpp;
+            }
         };
         this.context.reachJsData();
         return emit(sourceParts, "", []);
@@ -5009,15 +5093,38 @@ export class UiProjection {
                 return true;
             }
             if (property === "innerHTML") {
-                this.recordUiStaticReplaceChildren(directElement);
+                const receiver = pinDetached(
+                    this.context,
+                    directElement,
+                    "markup_receiver",
+                    expression.left.expression,
+                );
+                let markup: string;
+                try {
+                    markup = this.context.probeEmission(() => {
+                        this.recordUiStaticReplaceChildren(receiver);
+                        return this.compileUiMarkupString(
+                            expression.right,
+                            receiver.uiStaticId,
+                        );
+                    });
+                } catch (error) {
+                    if (!(error instanceof DeferredMarkupBridge)) throw error;
+                    this.context.emitDiscardedValue({
+                        kind: "string",
+                        cpp: this.uiStringCpp(
+                            expression.right,
+                            "Deferred innerHTML",
+                        ),
+                    });
+                    this.context.emitDiscardedValue(
+                        this.deferredUiMarkup(expression, error, "void"),
+                    );
+                    return true;
+                }
                 this.context.emit({
                     kind: "expression",
-                    code:
-                        `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
-                        `${this.compileUiMarkupString(
-                            expression.right,
-                            directElement.uiStaticId,
-                        )});`,
+                    code: `bbl::ui_set_inner_rml(${engine}, ${receiver.cpp}, ${markup});`,
                 });
                 return true;
             }

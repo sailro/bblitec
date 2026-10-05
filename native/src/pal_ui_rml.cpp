@@ -448,7 +448,8 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
 }
 
 UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag) {
-    if (tag != "svg" && tag != "path" && tag != "rect" && tag != "circle")
+    if (tag != "svg" && tag != "path" && tag != "rect" && tag != "circle" && tag != "line" &&
+        tag != "ellipse" && tag != "polyline" && tag != "polygon")
         throw std::runtime_error("Unsupported retained SVG tag.");
     const auto handle = ui_create_element(engine, tag);
     ui_element(engine, handle).svg_namespace = true;
@@ -499,12 +500,20 @@ const UiElementRecord& ui_traversable(Engine& engine, UiElementHandle node) {
 
 js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
                                               UiTreeRead read) {
+    const bool nodes = read == UiTreeRead::FirstNode || read == UiTreeRead::LastNode ||
+                       read == UiTreeRead::PreviousNode || read == UiTreeRead::NextNode;
+    if ((read == UiTreeRead::FirstNode || read == UiTreeRead::LastNode) &&
+        ui_element(engine, node).tag == "#text")
+        return std::nullopt;
+    if (nodes && (read == UiTreeRead::FirstNode || read == UiTreeRead::LastNode))
+        static_cast<void>(ui_first_child_node(engine, node));
     const auto element = [&](UiElementHandle candidate) {
-        return ui_element(engine, candidate).tag != "#text";
+        return nodes || ui_element(engine, candidate).tag != "#text";
     };
-    if (read == UiTreeRead::FirstChild || read == UiTreeRead::LastChild) {
+    if (read == UiTreeRead::FirstChild || read == UiTreeRead::LastChild ||
+        read == UiTreeRead::FirstNode || read == UiTreeRead::LastNode) {
         const auto& children = ui_traversable(engine, node).children;
-        if (read == UiTreeRead::FirstChild) {
+        if (read == UiTreeRead::FirstChild || read == UiTreeRead::FirstNode) {
             const auto found = std::find_if(children.begin(), children.end(), element);
             return found == children.end() ? js::Nullable<UiElementHandle>{} : *found;
         }
@@ -524,12 +533,36 @@ js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle no
         return parent;
     const auto& siblings = ui_element(engine, parent).children;
     const auto at = std::find(siblings.begin(), siblings.end(), node);
-    if (read == UiTreeRead::NextSibling) {
+    if (read == UiTreeRead::NextSibling || read == UiTreeRead::NextNode) {
         const auto found = std::find_if(std::next(at), siblings.end(), element);
         return found == siblings.end() ? js::Nullable<UiElementHandle>{} : *found;
     }
     const auto found = std::find_if(std::make_reverse_iterator(at), siblings.rend(), element);
     return found == siblings.rend() ? js::Nullable<UiElementHandle>{} : *found;
+}
+
+double ui_child_count(Engine& engine, UiElementHandle node, bool elements_only) {
+    if (ui_element(engine, node).tag == "#text")
+        return 0;
+    if (!elements_only)
+        static_cast<void>(ui_first_child_node(engine, node));
+    const auto& children = ui_traversable(engine, node).children;
+    if (!elements_only)
+        return static_cast<double>(children.size());
+    return static_cast<double>(std::count_if(children.begin(), children.end(), [&](auto child) {
+        return ui_element(engine, child).tag != "#text";
+    }));
+}
+
+bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string name,
+                         std::optional<bool> force) {
+    if (name.empty())
+        throw std::runtime_error("Native UI attribute name cannot be empty.");
+    const bool existed = ui_has_attribute(engine, element, name);
+    const bool present = force.value_or(!existed);
+    if (present != existed)
+        ui_set_boolean_attribute(engine, element, std::move(name), present);
+    return present;
 }
 
 std::string ui_text_content(Engine& engine, UiElementHandle node) {
@@ -833,6 +866,13 @@ std::size_t ui_markup_subtree_end(std::string_view source, std::size_t marker_at
     std::size_t depth = source[closing - 1] == '/' ? 0 : 1;
     for (auto next = closing + 1; depth > 0;) {
         const auto begin = source.find('<', next);
+        if (begin != std::string::npos && source.substr(begin).starts_with("<!--")) {
+            const auto end = source.find("-->", begin + 4);
+            if (end == std::string::npos)
+                throw std::runtime_error("Static UI markup comment is not balanced.");
+            next = end + 3;
+            continue;
+        }
         const auto end = source.find('>', begin);
         if (begin == std::string::npos || end == std::string::npos)
             throw std::runtime_error("Static UI markup subtree is not balanced.");
@@ -1464,15 +1504,15 @@ UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElemen
 
 UiElementHandle ui_insert_child(Engine& engine, UiElementHandle parent, UiElementHandle child,
                                 UiElementHandle reference) {
+    if (reference.value != invalid_handle && ui_element(engine, reference).parent != parent)
+        throw std::runtime_error("The node before which to insert is not a child of this node.");
     if (reference == child)
-        throw std::logic_error("A node cannot be inserted before itself.");
+        return child;
     ui_append_child(engine, parent, child);
     if (reference.value == invalid_handle)
         return child;
     auto& children = ui_element(engine, parent).children;
     const auto at = std::find(children.begin(), children.end(), reference);
-    if (at == children.end())
-        throw std::runtime_error("The node before which to insert is not a child of this node.");
     std::rotate(at, std::prev(children.end()), children.end());
     return child;
 }

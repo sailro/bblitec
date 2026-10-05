@@ -1241,31 +1241,39 @@ export class DataLowerer {
                 owner.dataType?.kind === "handle" &&
                 !cppIdentifierPattern.test(owner.cpp)
             ) {
-                const temporary =
-                    this.context.allocateTemporaryCppName("property_owner");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: temporary,
-                    initializer: presenceFlagCpp(owner)
-                        ? `(${presenceFlagCpp(owner)} ? ${owner.cpp} : ${this.context.dataTypes.cppType(owner.dataType)}{})`
-                        : owner.cpp,
-                    attributes: "[[maybe_unused]] ",
-                });
-                owner = withNativeMetadata(
-                    this.leafValue(temporary, owner.dataType),
-                    owner,
-                );
-                owner = {
-                    ...owner,
-                    nativeCaptures: [
-                        this.context.registerNativeConstBinding(
-                            temporary,
-                            false,
-                            `const ${this.context.dataTypes.cppType(owner.dataType!)}`,
-                        ),
-                    ],
-                };
+                if (owner.kind === "engine") {
+                    owner = this.context.bindings.pinValueToTemporary(
+                        owner,
+                        "property_owner",
+                        unwrapped.expression,
+                    );
+                } else {
+                    const temporary =
+                        this.context.allocateTemporaryCppName("property_owner");
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "const auto",
+                        name: temporary,
+                        initializer: presenceFlagCpp(owner)
+                            ? `(${presenceFlagCpp(owner)} ? ${owner.cpp} : ${this.context.dataTypes.cppType(owner.dataType)}{})`
+                            : owner.cpp,
+                        attributes: "[[maybe_unused]] ",
+                    });
+                    owner = withNativeMetadata(
+                        this.leafValue(temporary, owner.dataType),
+                        owner,
+                    );
+                    owner = {
+                        ...owner,
+                        nativeCaptures: [
+                            this.context.registerNativeConstBinding(
+                                temporary,
+                                false,
+                                `const ${this.context.dataTypes.cppType(owner.dataType!)}`,
+                            ),
+                        ],
+                    };
+                }
             }
             if (
                 mode === "write" &&
@@ -2469,6 +2477,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const index = this.narrowedUnionMemberIndex(
                 value.dataType,
                 narrowed,
+                expression,
             );
             return index < 0
                 ? value
@@ -2494,14 +2503,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             assertedNonNull ||
             ((!value.preserveUncheckedLookup || inner.kind !== "number") &&
-                narrowed &&
-                narrowed.kind !== "optional" &&
-                (dataTypesEqual(narrowed, inner) ||
-                    this.spanCompatible(inner, narrowed) ||
-                    (["string", "enum"].includes(inner.kind) &&
-                        ["string", "enum"].includes(narrowed.kind)) ||
+                ((narrowed &&
+                    narrowed.kind !== "optional" &&
+                    (dataTypesEqual(narrowed, inner) ||
+                        this.spanCompatible(inner, narrowed) ||
+                        (["string", "enum"].includes(inner.kind) &&
+                            ["string", "enum"].includes(narrowed.kind)))) ||
                     (inner.kind === "union" &&
-                        this.narrowedUnionMemberIndex(inner, narrowed) >= 0)))
+                        this.narrowedUnionMemberIndex(
+                            inner,
+                            narrowed,
+                            expression,
+                        ) >= 0)))
         ) {
             return this.narrowOptional(
                 this.presentOptionalValue(value, inner),
@@ -2516,14 +2529,40 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private narrowedUnionMemberIndex(
         type: DataType<"union">,
         narrowed: DataType | undefined,
+        expression?: ts.Expression,
     ): number {
-        return type.members.findIndex(
+        const exact = type.members.findIndex(
             (member) =>
                 narrowed &&
                 (dataTypesEqual(member, narrowed) ||
                     this.spanCompatible(member, narrowed) ||
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
+        if (exact >= 0) return exact;
+        // Array.isArray widens readonly arrays to any[] in lib.d.ts. The
+        // represented union still supplies the element type when exactly one
+        // member is an array; several array alternatives require more evidence.
+        if (
+            !expression ||
+            !this.context.checker.isArrayType(
+                this.context.checker.getTypeAtLocation(expression),
+            )
+        )
+            return -1;
+        let candidate = -1;
+        for (const [index, member] of type.members.entries()) {
+            if (
+                member.kind !== "vector" &&
+                member.kind !== "span" &&
+                member.kind !== "tuple" &&
+                member.kind !== "product" &&
+                member.kind !== "table"
+            )
+                continue;
+            if (candidate >= 0) return -1;
+            candidate = index;
+        }
+        return candidate;
     }
 
     /**
@@ -3879,6 +3918,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         mode,
                         access,
                     );
+                if (mode === "write" && owner.recordProperties)
+                    delete writable(owner.recordProperties)[name];
                 return withNativeMetadata(
                     {
                         ...this.leafValue(
@@ -3917,6 +3958,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ),
             );
             const commonType = fields[0]!.type;
+            if (mode === "write" && owner.recordProperties)
+                for (const field of fields)
+                    delete writable(owner.recordProperties)[field.sourceName];
             if (mode === "write" && fields.some((field) => field.accessor))
                 this.accessorRead("", commonType, mode, access);
             if (
@@ -4985,7 +5029,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "engine",
                 cpp: `(*${cpp})`,
                 engineCpp: `(*${cpp})`,
+                storedEngineCpp: cpp,
                 dataType,
+                ...(cppIdentifierPattern.test(cpp)
+                    ? {
+                          nativeCaptures: [
+                              this.context.registerNativeBinding(cpp),
+                          ],
+                      }
+                    : {}),
+                ...(this.context.options.workers
+                    ? { ownedEngineCpp: `(${cpp}).owner()` }
+                    : {}),
             };
         }
         if (dataType.kind === "number") {
@@ -7563,6 +7618,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        if (ts.isBinaryExpression(unwrapped)) {
+            const logical = this.compileRecordLogicalValue(unwrapped, dataType);
+            if (logical)
+                return this.compileKnownValueForSink(
+                    logical,
+                    dataType,
+                    unwrapped,
+                );
+        }
         if (
             dataType.kind === "optional" &&
             dataType.inner.kind === "boolean" &&
@@ -7714,7 +7778,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             value.kind === "engine"
         ) {
             this.context.useNativeValue(value);
-            return `&(${value.cpp})`;
+            return (
+                value.storedEngineCpp ??
+                `bbl::StoredEngine{${value.ownedEngineCpp ?? value.cpp}}`
+            );
         }
         if (value.cameraVector)
             this.context.admissions.noteCameraVectorCopy(value, node);
@@ -9432,6 +9499,81 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         for (const line of lines) this.context.emit(line);
         this.context.decreaseIndent();
         this.context.emit({ kind: "close", code: "}" });
+    }
+
+    /** Record-valued fallbacks retain only a truthy left value. */
+    public compileRecordLogicalValue(
+        expression: ts.BinaryExpression,
+        sink?: DataType,
+    ): Value | undefined {
+        if (expression.operatorToken.kind !== ts.SyntaxKind.BarBarToken)
+            return undefined;
+        const type = sink ?? this.dataTypeAt(expression);
+        const record = type?.kind === "optional" ? type.inner : type;
+        if (!type || record?.kind !== "struct") return undefined;
+        const result = this.context.allocateTemporaryCppName("logical_record");
+        const selected =
+            this.context.allocateTemporaryCppName("logical_selected");
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: result,
+            initializer: "{}",
+        });
+        this.context.registerNativeBinding(result);
+        this.context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: selected,
+            initializer: "false",
+        });
+        // A falsy guard in `guard && value` cannot be selected by the outer
+        // fallback. Keep the guard's effects and lower its right side lazily.
+        const whenTruthy = (
+            source: ts.Expression,
+            accept: (value: Value, node: ts.Expression) => void,
+        ): void => {
+            const node = this.context.unwrap(source);
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken
+            ) {
+                whenTruthy(node.left, () => whenTruthy(node.right, accept));
+                return;
+            }
+            const value = this.context.bindings.pinValueToTemporary(
+                this.context.compileValue(source),
+                "logical_left",
+                source,
+            );
+            const condition = this.truthinessCondition(value);
+            if (condition === undefined)
+                this.context.fail(
+                    source,
+                    "Logical record selection requires a truth-testable left operand.",
+                );
+            this.emitGuardedStore(condition, () => accept(value, source));
+        };
+        whenTruthy(expression.left, (value, node) => {
+            const cpp = this.compileKnownValueForSink(value, type, node);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${cpp};`,
+            });
+            this.context.emit({
+                kind: "expression",
+                code: `${selected} = true;`,
+            });
+        });
+        this.emitGuardedStore(`!${selected}`, () => {
+            const cpp = this.compileForSink(expression.right, type);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${cpp};`,
+            });
+        });
+        return this.leafValue(result, type);
     }
 
     /** Nullable boolean selection keeps absence distinct from false. */

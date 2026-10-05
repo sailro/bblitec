@@ -1875,6 +1875,10 @@ const UI_TREE_READS: ReadonlyMap<string, string> = new Map([
     ["lastElementChild", "LastChild"],
     ["previousElementSibling", "PreviousSibling"],
     ["nextElementSibling", "NextSibling"],
+    ["firstChild", "FirstNode"],
+    ["lastChild", "LastNode"],
+    ["previousSibling", "PreviousNode"],
+    ["nextSibling", "NextNode"],
 ]);
 
 /**
@@ -2027,6 +2031,13 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
         if (owner.kind === "ui-element" && !owner.uiDataset) {
+            if (property === "childElementCount")
+                return {
+                    kind: "number",
+                    cpp: `bbl::ui_child_count(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, true)`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
             if (property === "checked") {
                 if (owner.uiTag && owner.uiTag !== "input")
                     this.context.fail(
@@ -2353,6 +2364,23 @@ export class PropertyAccessLowerer {
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const collection = this.context.unwrap(expression.expression);
+        if (
+            expression.name.text === "length" &&
+            ts.isPropertyAccessExpression(collection) &&
+            ["children", "childNodes"].includes(collection.name.text)
+        ) {
+            const owner = this.context.ui.compileUiElementReceiver(
+                collection.expression,
+            );
+            if (owner)
+                return {
+                    kind: "number",
+                    cpp: `bbl::ui_child_count(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${collection.name.text === "children"})`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
+        }
         const windowProperty = this.context.windowProperties.read(expression);
         if (windowProperty) return windowProperty;
         const environment = browserEnvironmentPropertyValue(
