@@ -271,7 +271,7 @@ export const scalarsSinks: DataSinkOperations<
     | "blob"
     | "file-list"
     | "event-target"
-    | "deferred-dom-object"
+    | "deferred-platform-object"
     | "search-params"
     | "http-response"
     | "gpu-adapter"
@@ -369,7 +369,7 @@ export const scalarsSinks: DataSinkOperations<
     file: opaqueSink,
     blob: opaqueSink,
     "file-list": opaqueSink,
-    "deferred-dom-object": opaqueSink,
+    "deferred-platform-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>

@@ -1790,6 +1790,9 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
                 return false;
         }
         return true;
+    } else if constexpr (IsNullable<T>::value) {
+        return left.has_value() == right.has_value() &&
+               (!left.has_value() || same_value_zero(*left, *right));
     } else if constexpr (is_variant_v<T>) {
         return left.index() == right.index() &&
                std::visit(
@@ -1809,6 +1812,8 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
 template <typename T> [[nodiscard]] decltype(auto) stored_key(const T& key) {
     if constexpr (std::is_floating_point_v<T>) {
         return key == 0 ? T{} : key;
+    } else if constexpr (IsNullable<T>::value) {
+        return key.has_value() ? T{stored_key(*key)} : T{};
     } else if constexpr (is_variant_v<T>) {
         T stored = key;
         std::visit(
@@ -1853,6 +1858,13 @@ template <typename T> struct ValueHash {
         } else {
             return std::hash<T>{}(value);
         }
+    }
+};
+
+/** Optional keys hash their payload, with one stable hash for absence. */
+template <typename T> struct ValueHash<Nullable<T>> {
+    [[nodiscard]] std::size_t operator()(const Nullable<T>& value) const noexcept {
+        return value.has_value() ? ValueHash<T>{}(*value) : 0;
     }
 };
 

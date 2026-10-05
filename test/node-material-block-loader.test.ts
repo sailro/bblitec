@@ -347,6 +347,24 @@ test("restores and compiles Scene 83's exact closed emitter loader", () => {
     );
 });
 
+test("deferred streams preserve the supported immutable compressed graph decoder", () => {
+    const source = readFileSync(resolve(scene72), "utf8");
+    const strict = compileSource(source, {
+        ...labDeployment,
+        fileName: scene72,
+    });
+    const deferred = compileSource(source, {
+        ...labDeployment,
+        fileName: scene72,
+        deferredCapabilities: "runtime-throw",
+    });
+    assert.deepEqual(
+        deferred.manifest.nodeMaterials,
+        strict.manifest.nodeMaterials,
+    );
+    assert.equal(deferred.manifest.deferredCapabilities, undefined);
+});
+
 test("restores Scene 72's exact compressed graph, textures, and emitter loader", () => {
     assert.equal(
         gitBlobHash(readFileSync(resolve(scene72))),

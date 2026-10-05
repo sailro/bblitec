@@ -7,7 +7,7 @@
 
 namespace bbl {
 
-// Nominal storage for deferred DOM APIs. There is no successful producer.
+// Nominal storage for deferred platform APIs. There is no successful producer.
 class DeferredHeaders final {
     DeferredHeaders() = delete;
 };
@@ -25,6 +25,22 @@ class DeferredBlobEvent final {
 };
 class DeferredIdleDeadline final {
     DeferredIdleDeadline() = delete;
+};
+
+class DeferredReadableByteStream final {
+    DeferredReadableByteStream() = delete;
+};
+class DeferredCompressionStream final {
+    DeferredCompressionStream() = delete;
+};
+class DeferredDecompressionStream final {
+    DeferredDecompressionStream() = delete;
+};
+class DeferredListFormat final {
+    DeferredListFormat() = delete;
+};
+class DeferredPluralRules final {
+    DeferredPluralRules() = delete;
 };
 
 class DeferredCapabilityError final : public std::runtime_error {

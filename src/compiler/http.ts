@@ -192,6 +192,9 @@ export function compileHttpResponseMethod(
     method: string,
 ): Value | undefined {
     if (owner.dataType?.kind !== "http-response") return undefined;
+    // A Response can also arrive through owned parameters or a deferred
+    // constructor, without a fetch call having activated the promise realm.
+    if (!lowerer.context.options.workers) throw new ApplicationRealmRequired();
     lowerer.context.expectArgumentCount(call, 0, 0);
     if (method === "text") {
         const result = lowerer.leafValue(

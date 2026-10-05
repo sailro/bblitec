@@ -98,7 +98,11 @@ export const DEFERRED_DOM_OBJECTS = [
     "MediaRecorder",
     "BlobEvent",
     "IdleDeadline",
+    "CompressionStream",
+    "DecompressionStream",
 ] as const;
+
+export const DEFERRED_INTL_OBJECTS = ["ListFormat", "PluralRules"] as const;
 
 interface DataKinds {
     "module-namespace": { kind: "module-namespace"; module: string };
@@ -108,9 +112,12 @@ interface DataKinds {
     blob: { kind: "blob" };
     "file-list": { kind: "file-list" };
     "event-target": { kind: "event-target" };
-    "deferred-dom-object": {
-        kind: "deferred-dom-object";
-        name: (typeof DEFERRED_DOM_OBJECTS)[number];
+    "deferred-platform-object": {
+        kind: "deferred-platform-object";
+        name:
+            | (typeof DEFERRED_DOM_OBJECTS)[number]
+            | (typeof DEFERRED_INTL_OBJECTS)[number]
+            | "ReadableByteStream";
     };
     "http-response": { kind: "http-response" };
     "gpu-adapter": { kind: "gpu-adapter" };

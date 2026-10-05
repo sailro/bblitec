@@ -83,6 +83,12 @@ async function checkRuntimeHttp(
                 headersFailed=true;
             }
             if(!headersFailed||keys!==0||response.bodyUsed)throw new Error('header boundary ordering');
+            let bodyFailed=false;
+            try { response.body; } catch(error) {
+                if(!error.message.includes('dom:Body.body'))throw error;
+                bodyFailed=true;
+            }
+            if(!bodyFailed||response.bodyUsed)throw new Error('stream boundary consumed body');
     `
         : "";
     const source = `
@@ -122,7 +128,9 @@ async function checkRuntimeHttp(
     });
     assert.deepEqual(
         compiled.manifest.deferredCapabilities?.map((site) => site.id),
-        deferred ? ["dom:Response.headers", "dom:Headers.get"] : undefined,
+        deferred
+            ? ["dom:Response.headers", "dom:Headers.get", "dom:Body.body"]
+            : undefined,
     );
     assert.ok(compiled.manifest.features.includes("platform:http"));
     assert.ok(compiled.manifest.runtimeSources.includes("src/pal_http.cpp"));
@@ -170,7 +178,7 @@ async function checkRuntimeHttp(
 
 test("strict runtime HTTP preserves requests, responses and rejection", (t) =>
     checkRuntimeHttp(t, false));
-test("deferred response headers preserve HTTP bodies and recovery", (t) =>
+test("deferred response headers and streams preserve HTTP bodies and recovery", (t) =>
     checkRuntimeHttp(t, true));
 
 test("fetch refuses a cache mode a native response cannot honour", () => {

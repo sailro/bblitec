@@ -546,6 +546,7 @@ interface MainCppProjection {
     jsDataReached: boolean;
     deferredCapabilitiesReached?: boolean;
     windowStorageReached?: boolean;
+    responseStorageReached?: boolean;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
     runtimeMeshProfiles?: boolean;
@@ -728,7 +729,10 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("platform:http")
             ? "#include <bblite/pal_http.hpp>\n"
-            : "") +
+            : projection.responseStorageReached &&
+                !features.includes("platform:packaged-fetch")
+              ? "#include <bblite/pal_fetch_response.hpp>\n"
+              : "") +
         (features.includes("platform:packaged-fetch")
             ? "#include <bblite/pal_packaged_fetch.hpp>\n"
             : "") +

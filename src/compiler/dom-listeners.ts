@@ -285,7 +285,10 @@ export function deferredListenerSignal(
         else context.emitDiscardedValue(value);
         return "false";
     }
-    if (type?.kind !== "deferred-dom-object" || type.name !== "AbortSignal")
+    if (
+        type?.kind !== "deferred-platform-object" ||
+        type.name !== "AbortSignal"
+    )
         return context.fail(
             site,
             "Event listener signal requires the DOM AbortSignal identity.",

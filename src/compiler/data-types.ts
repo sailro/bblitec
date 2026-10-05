@@ -1,5 +1,8 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
-import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
+import {
+    DEFERRED_DOM_OBJECTS,
+    DEFERRED_INTL_OBJECTS,
+} from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
     BUFFER_VIEW_KINDS,
@@ -64,7 +67,12 @@ import {
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
-import { isNullable, nullability, presentMembers } from "./type-facts.js";
+import {
+    isNullable,
+    nullability,
+    presentMembers,
+    isTypeReference,
+} from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
@@ -778,8 +786,9 @@ export class DataTypeRegistry {
     private readonly emittedNamedTypes = new EmissionSet<string>();
     @journaled private accessor emittedJsonType = false;
     @journaled private accessor emittedFileType = false;
-    @journaled private accessor emittedDeferredDomType = false;
+    @journaled private accessor emittedDeferredPlatformType = false;
     @journaled private accessor emittedWindowType = false;
+    @journaled private accessor emittedResponseType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
     /**
@@ -1604,10 +1613,38 @@ export class DataTypeRegistry {
         );
         if (libraryObject) return { kind: libraryObject[2] };
         const deferredObject =
-            declaredInDomLibrary(type.symbol) &&
-            DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
+            (declaredInDomLibrary(type.symbol) &&
+                DEFERRED_DOM_OBJECTS.find(
+                    (name) => name === type.symbol.name,
+                )) ||
+            (declaredIn(type.symbol, "default-lib") &&
+                DEFERRED_INTL_OBJECTS.find(
+                    (name) => name === type.symbol.name,
+                ));
         if (deferredObject)
-            return { kind: "deferred-dom-object", name: deferredObject };
+            return { kind: "deferred-platform-object", name: deferredObject };
+        if (
+            type.symbol?.name === "ReadableStream" &&
+            declaredInDomLibrary(type.symbol)
+        ) {
+            // Only byte streams have an owned deferred boundary. Unconstrained or
+            // differently typed streams must not share their native identity.
+            if (!isTypeReference(type)) return undefined;
+            const arguments_ = this.checker.getTypeArguments(type);
+            const chunk = arguments_[0];
+            if (
+                arguments_.length !== 1 ||
+                !chunk ||
+                (chunk.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+                    0 ||
+                this.fromTsType(chunk, node)?.kind !== "u8array"
+            )
+                return undefined;
+            return {
+                kind: "deferred-platform-object",
+                name: "ReadableByteStream",
+            };
+        }
         if (declaredIn(type.symbol, "dom", "webgpu")) {
             if (type.symbol?.name === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };
@@ -4861,8 +4898,9 @@ export class DataTypeRegistry {
         if (["file", "blob", "file-list"].includes(dataType.kind))
             this.emittedFileType = true;
         if (dataType.kind === "json") this.emittedJsonType = true;
-        if (dataType.kind === "deferred-dom-object")
-            this.emittedDeferredDomType = true;
+        if (dataType.kind === "http-response") this.emittedResponseType = true;
+        if (dataType.kind === "deferred-platform-object")
+            this.emittedDeferredPlatformType = true;
         if (this.isWindowType(dataType)) this.emittedWindowType = true;
         return dataTypeCppType(dataType, this.cppContext);
     }
@@ -4882,10 +4920,14 @@ export class DataTypeRegistry {
         );
     }
 
-    public usesDeferredDomStorage(): boolean {
+    public usesResponseStorage(): boolean {
+        return this.emittedResponseType || this.usesNamedKind("http-response");
+    }
+
+    public usesDeferredPlatformStorage(): boolean {
         return (
-            this.emittedDeferredDomType ||
-            this.usesNamedKind("deferred-dom-object")
+            this.emittedDeferredPlatformType ||
+            this.usesNamedKind("deferred-platform-object")
         );
     }
 
