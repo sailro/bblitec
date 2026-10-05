@@ -3,6 +3,7 @@
 // `loadTexture2D` load runs, the hand-off that shares it with the first
 // readers, and its release. The codec itself is pal_image.hpp's.
 
+#include <bblite/features/has_image_decoder.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 
@@ -38,10 +39,14 @@ inline void orient_image(DecodedImage& image, bool invert_y, bool premultiply_al
 
 /** A texture's encoded `bytes`, decoded with its upload transforms. */
 inline DecodedImage decode_texture_image(const TextureData& data) {
+#if BBLITE_HAS_IMAGE_DECODER
     DecodedImage image =
         decode_image(std::span<const std::uint8_t>{data.bytes.data(), data.bytes.size()});
     orient_image(image, data.invert_y, data.premultiply_alpha);
     return image;
+#else
+    return decode_image(std::span<const std::uint8_t>{data.bytes.data(), data.bytes.size()});
+#endif
 }
 
 /** Texels a reader keeps, with their size. */

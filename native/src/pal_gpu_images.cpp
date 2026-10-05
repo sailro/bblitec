@@ -1,6 +1,6 @@
 // The texel bodies (pal_gpu_images.hpp): the decoded image a texture uploads,
 // the compressed-texture copy geometry and the readback row conversion. It
-// reads no generated header, so it compiles once for every scene.
+// reads the image-decoder feature as part of its shared compilation identity.
 #include "pal_gpu_images.hpp"
 
 #include <bblite/pal_texture_texels.hpp>
