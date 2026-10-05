@@ -5482,12 +5482,12 @@ class Compiler implements LoweringServices {
 
     /** Explicit engine parameters and their record fields supply a native body's
      * implicit resource context, without changing the entry's engine binding. */
-    private scopedEngineContexts(): { cpp: string; owner: Value }[] {
+    private scopedEngineContexts(): { engine: Value; owner: Value }[] {
         const frame = this.returnFrames[0];
         if (!frame) return [];
         const candidates = new Map<
             symbol | string,
-            { cpp: string; owner: Value }
+            { engine: Value; owner: Value }
         >();
         const ancestry = new Set<string>();
         const seenValues = new Set<Value>();
@@ -5500,7 +5500,7 @@ class Compiler implements LoweringServices {
             if (type.kind === "handle" && type.handle === "engine") {
                 const engine = `(*${cpp})`;
                 candidates.set(known?.engineIdentity ?? engine, {
-                    cpp: engine,
+                    engine: this.dataLowerer.leafValue(cpp, type),
                     owner,
                 });
                 return;
@@ -5535,7 +5535,7 @@ class Compiler implements LoweringServices {
             seenValues.add(value);
             if (value.kind === "engine") {
                 candidates.set(value.engineIdentity ?? value.cpp, {
-                    cpp: value.cpp,
+                    engine: value,
                     owner,
                 });
                 return;
@@ -5889,7 +5889,7 @@ class Compiler implements LoweringServices {
     }
 
     private describeEngineCaptures(value: Value): void {
-        if (!this.options.workers || !value.engineCpp) return;
+        if (!value.engineCpp) return;
         if (value.kind === "engine" && value.ownedEngineCpp) {
             const owner = this.nativeBindings.get(value.ownedEngineCpp);
             if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
@@ -8121,7 +8121,7 @@ class Compiler implements LoweringServices {
                 node,
                 "An implicit resource constructor requires one unambiguous engine context.",
             );
-        const engine = scoped[0]?.cpp ?? this.defaultEngineCpp;
+        let engine = scoped[0]?.engine.cpp ?? this.defaultEngineCpp;
         if (!engine) {
             this.fail(
                 node,
@@ -8139,8 +8139,26 @@ class Compiler implements LoweringServices {
                 "A namespace-scope function has no binding for the entry's engine.",
                 "entry-scope-required",
             );
-        if (scoped[0]) this.useNativeValue(scoped[0].owner);
-        else this.trackRetainedCaptureName(engine);
+        if (scoped[0]) {
+            this.useNativeValue(scoped[0].owner);
+            const source = scoped[0].engine;
+            // A resource keeps its construction owner even when the source slot
+            // is later reassigned. Its escaped uses capture this stable owner.
+            const retained =
+                source.ownedEngineCpp || source.storedEngineCpp
+                    ? this.bindings.pinValueToTemporary(
+                          source,
+                          "engine_context",
+                          ts.isExpression(node) ? node : undefined,
+                      )
+                    : source;
+            engine = retained.cpp;
+            this.realmEngineCaptures.set(
+                engine,
+                this.nativeValueCaptures.bindingsOf(retained),
+            );
+            this.useNativeValue(retained);
+        } else this.trackRetainedCaptureName(engine);
         return engine;
     }
 

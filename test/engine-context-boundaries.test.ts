@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -17,6 +19,78 @@ const retain = (parameters: string, body: string): string => `${imports}
 const materialBody = `const material = createStandardMaterial();
     material.alpha = 0.25;
     return 0.25;`;
+
+test("camera callbacks retain construction owners after nullable engine reset", (t) => {
+    const { cpp, manifest } = compileSource(`
+        import {createEngine, createSceneContext, createArcRotateCamera, attachControl,
+            type EngineContext, type ArcRotateCamera} from "@babylonjs/lite";
+        function camera() {
+            return createArcRotateCamera(0.5, 1, 2, {x: 0, y: 0, z: 0});
+        }
+        function read(camera: ArcRotateCamera): number {return camera.alpha;}
+        async function main(): Promise<void> {
+            let engine: EngineContext | null = null;
+            engine = await createEngine(new OffscreenCanvas(1, 1));
+            const scene = createSceneContext(engine);
+            const view = camera();
+            const dispose = attachControl(view, scene);
+            engine = null;
+            const readers: Array<() => number> = [() => {dispose(); return read(view);}];
+            if (readers[0]!() !== 0.5) throw new Error("lost camera owner");
+            globalThis.close();
+        }
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Requires the Windows native fixture compiler.");
+        return;
+    }
+    const output = resolve("artifacts/camera-context-snapshot");
+    emitUpstreamGenerated(output, manifest.features);
+    runGeneratedProgram(
+        tools,
+        "camera-context-snapshot",
+        `
+        #include <bblite/pal_async_engine.hpp>
+        namespace { std::weak_ptr<bbl::Engine> lifetime; unsigned attached = 0; }
+        namespace bbl::pal {
+            std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) {
+                auto engine = std::make_shared<Engine>();
+                engine->realm_owner = engine;
+                lifetime = engine;
+                return engine;
+            }
+        }
+        #define main generated_main
+        ${cpp}
+        #undef main
+        namespace bbl {
+            Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
+            CameraHandle create_arc_rotate_camera(Engine& engine, double alpha, double, double, Vec3d) {
+                if (lifetime.lock().get() != &engine) throw std::runtime_error("wrong construction owner");
+                engine.cameras.emplace_back();
+                engine.cameras.back().alpha = alpha;
+                return {static_cast<std::uint32_t>(engine.cameras.size() - 1)};
+            }
+            void attach_control(Engine& engine, CameraHandle camera, const Scene&) {
+                if (lifetime.lock().get() != &engine || handle_at(engine.cameras, camera).alpha != 0.5)
+                    throw std::runtime_error("wrong control owner");
+                ++attached;
+            }
+        }
+        int main() {
+            const int result = generated_main();
+            if (attached != 1 || !lifetime.expired()) throw std::runtime_error("camera owner lifetime");
+            return result;
+        }
+        `,
+        {
+            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            includeDirectories: [resolve(output, "upstream/include")],
+            timeoutMs: 10000,
+        },
+    );
+});
 
 for (const [owned, demanded] of [
     [false, false],
