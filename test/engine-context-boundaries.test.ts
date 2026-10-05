@@ -20,6 +20,17 @@ const materialBody = `const material = createStandardMaterial();
     material.alpha = 0.25;
     return 0.25;`;
 
+test("unused stored engine parameters reuse their owning argument storage", () => {
+    const { cpp } = compileSource(`
+        import type {EngineContext} from "@babylonjs/lite";
+        function read(value: number, engine: EngineContext): number {return value;}
+        const readers: Array<typeof read> = [read];
+        if (readers.length !== 1) throw new Error("retained reader");
+    `);
+    assert.match(cpp, /bbl::StoredEngine fn\d+_arg_1/);
+    assert.doesNotMatch(cpp, /const bbl::StoredEngine \w+ = fn\d+_arg_1;/);
+});
+
 test("camera callbacks retain construction owners after nullable engine reset", (t) => {
     const { cpp, manifest } = compileSource(`
         import {createEngine, createSceneContext, createArcRotateCamera, attachControl,

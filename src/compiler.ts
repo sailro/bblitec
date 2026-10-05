@@ -2086,6 +2086,10 @@ class Compiler implements LoweringServices {
     }
 
     public hasStableNativeBinding(value: Value): boolean {
+        const storage =
+            value.stableOwnerCpp ??
+            (value.kind === "engine" ? value.storedEngineCpp : undefined) ??
+            value.cpp;
         if (
             value.sharedStorageCpp ||
             value.borrowedData ||
@@ -2097,12 +2101,10 @@ class Compiler implements LoweringServices {
                 )) ||
             (value.dataType?.kind === "struct" &&
                 !this.dataTypes.isReferenceStruct(value.dataType.name)) ||
-            !cppIdentifierPattern.test(value.stableOwnerCpp ?? value.cpp)
+            !cppIdentifierPattern.test(storage)
         )
             return false;
-        return this.hasStableNativeExpression(
-            value.stableOwnerCpp ?? value.cpp,
-        );
+        return this.hasStableNativeExpression(storage);
     }
 
     private hasStableNativeExpression(cpp: string): boolean {
