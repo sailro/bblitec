@@ -335,11 +335,14 @@ function valueMap(
     if (value.kind === "record") {
         // A key a conditional spread wrote is stored while it is own, in
         // creation order.
-        const conditional = Object.values(value.recordProperties ?? {}).some(
-            (entry) => entry.conditionalOwnKey,
-        );
         const entries = Object.entries(value.recordProperties ?? {}).map(
-            ([name, entry]) => {
+            ([name, member]) => lowerer.recordMemberEntry(name, member, node),
+        );
+        const conditional = entries.some(
+            (entry) => entry.presentCpp !== undefined,
+        );
+        const stores = entries.map(
+            ({ key: name, value: entry, presentCpp }) => {
                 const key =
                     dataType.key.kind === "string"
                         ? lowerer.context.cppString(name)
@@ -349,19 +352,22 @@ function valueMap(
                                 node,
                                 "Compile-time open Records require string or number keys.",
                             );
-                if (!conditional)
-                    return `{${key}, ${lowerer.compileKnownValueForSink(entry, dataType.value, node)}}`;
-                if (!entry.conditionalOwnKey)
-                    return `own.set(${key}, ${lowerer.compileKnownValueForSink(entry, dataType.value, node)});`;
-                const held = lowerer.conditionalKeyValue(entry);
-                return `if (${lowerer.conditionalKeyPresentCpp(entry, node)}) own.set(${key}, ${lowerer.compileKnownValueForSink(held, dataType.value, node)});`;
+                const stored = lowerer.compileKnownValueForSink(
+                    entry,
+                    dataType.value,
+                    node,
+                );
+                if (!conditional) return `{${key}, ${stored}}`;
+                return presentCpp
+                    ? `if (${presentCpp}) own.set(${key}, ${stored});`
+                    : `own.set(${key}, ${stored});`;
             },
         );
         lowerer.context.reachJsData();
         const cppType = lowerer.context.dataTypes.cppType(dataType);
         return conditional
-            ? `[&]() { ${cppType} own; ${entries.join(" ")} return own; }()`
-            : `${cppType}{${entries.join(", ")}}`;
+            ? `[&]() { ${cppType} own; ${stores.join(" ")} return own; }()`
+            : `${cppType}{${stores.join(", ")}}`;
     }
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;

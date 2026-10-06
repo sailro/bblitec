@@ -4243,6 +4243,13 @@ export class DataTypeRegistry {
         );
     }
 
+    /** Whether every field of a struct is always an own key of its records. */
+    public ownKeysDecided(structName: string, node: ts.Node): boolean {
+        return this.structFields(structName, node, "accessors").every(
+            (field) => this.ownPropertyPresence(structName, field) === "own",
+        );
+    }
+
     /**
      * The run-time test that `field` is an own key of the struct `ownerCpp`
      * names (read through `access`), or undefined when it always is. A

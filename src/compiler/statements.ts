@@ -88,6 +88,7 @@ import {
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
+import { ownEntries, ownKeysKnown } from "./object-statics.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 import {
     nativeStatementCode,
@@ -2995,10 +2996,7 @@ export class StatementLowerer {
         if (owner.kind === "record") {
             // A key a conditional spread wrote is visited while it is own;
             // a runtime skip cannot carry a static loop exit.
-            const entries = Object.entries(owner.recordProperties ?? {});
-            const conditional = entries.some(
-                ([, value]) => value.conditionalOwnKey,
-            );
+            const conditional = !ownKeysKnown(context, owner, statement);
             if (
                 conditional &&
                 someAnalysisNode(
@@ -3024,16 +3022,14 @@ export class StatementLowerer {
                 this.emitUnrolledLoop(
                     context,
                     statement,
-                    entries.map(([key]) => bindKey(key)),
+                    Object.keys(owner.recordProperties ?? {}).map(bindKey),
                 );
             } else {
-                for (const [key, value] of entries) {
-                    const present = value.conditionalOwnKey
-                        ? context.dataLowerer.conditionalKeyPresentCpp(
-                              value,
-                              statement.expression,
-                          )
-                        : undefined;
+                for (const { key, presentCpp: present } of ownEntries(
+                    context,
+                    owner,
+                    statement.expression,
+                )!) {
                     if (present) {
                         context.emit({
                             kind: "open",

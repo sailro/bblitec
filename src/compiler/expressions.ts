@@ -86,10 +86,10 @@ import {
 import {
     OBJECT_STATIC_HANDLERS,
     compileObjectPrototypeCall,
+    ownArray,
+    ownKeysKnown,
     ownObjectEntries,
-    recordOwnArray,
     recordPropertyKeys,
-    structOwnArray,
     structOwnEntries,
 } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
@@ -1849,31 +1849,11 @@ export class ExpressionLowerer {
                 freshData: true,
             };
         }
-        if (
-            object.kind === "data" &&
-            object.dataType?.kind === "struct" &&
+        const array =
             resultType?.kind === "vector"
-        ) {
-            const array = structOwnArray(
-                this.context,
-                object,
-                object.dataType,
-                resultType,
-                projection,
-                call,
-            );
-            if (array) return array;
-        }
-        if (resultType?.kind === "vector") {
-            const array = recordOwnArray(
-                this.context,
-                object,
-                resultType,
-                projection,
-                call,
-            );
-            if (array) return array;
-        }
+                ? ownArray(this.context, object, resultType, projection, call)
+                : undefined;
+        if (array) return array;
         const pairs = ownObjectEntries(this.context, object, call);
         if (!pairs) {
             this.context.fail(
@@ -5337,16 +5317,10 @@ export class ExpressionLowerer {
         const dataType = this.context.dataLowerer.dataTypeAt(
             this.context.unwrap(expression),
         );
-        if (dataType?.kind !== "struct") return false;
-        return this.context.dataTypes
-            .structFields(dataType.name, expression, "accessors")
-            .some(
-                (field) =>
-                    this.context.dataTypes.ownPropertyPresence(
-                        dataType.name,
-                        field,
-                    ) !== "own",
-            );
+        return (
+            dataType?.kind === "struct" &&
+            !this.context.dataTypes.ownKeysDecided(dataType.name, expression)
+        );
     }
 
     private compileStaticObjectValue(
@@ -5417,22 +5391,27 @@ export class ExpressionLowerer {
                 "spread_member",
                 property.expression,
             );
-            // Both values select as the storage the key holds when present.
-            const type =
-                held.dataType?.kind === "optional"
-                    ? held.dataType.inner
-                    : held.dataType;
-            const present = this.context.dataLowerer.conditionalKeyValue(held);
-            const merged = this.selectValue(
-                this.context.captureNativeExpression(() =>
-                    this.context.dataLowerer.conditionalKeyPresentCpp(
+            const { value: entry, nativeCaptures } =
+                this.context.captureNativeDependencies(() =>
+                    this.context.dataLowerer.recordMemberEntry(
+                        key,
                         held,
                         property,
                     ),
-                ),
+                );
+            // A key that is always own replaces the earlier one outright.
+            if (entry.presentCpp === undefined) return storeProperty(key, held);
+            // Both values select as the storage the key holds when present.
+            const type = entry.value.dataType;
+            const merged = this.selectValue(
+                { cpp: entry.presentCpp, nativeCaptures },
                 type
-                    ? this.selectedArmValue(present, type, property.expression)
-                    : present,
+                    ? this.selectedArmValue(
+                          entry.value,
+                          type,
+                          property.expression,
+                      )
+                    : entry.value,
                 type
                     ? this.selectedArmValue(existing, type, property.expression)
                     : existing,
@@ -5455,38 +5434,31 @@ export class ExpressionLowerer {
                     spread.kind === "data" &&
                     spread.dataType?.kind === "struct"
                 ) {
-                    const optional = structOwnEntries(
-                        this.context,
-                        spread,
-                        spread.dataType,
-                        property,
-                    ).some((entry) => entry.presentCpp);
-                    if (optional && allowDictionarySpread) return undefined;
+                    const known = ownKeysKnown(this.context, spread, property);
+                    if (!known && allowDictionarySpread) return undefined;
                     // A `?` field whose storage says whether it is own
                     // becomes a key the record holds while it is present.
                     const entries = structOwnEntries(
                         this.context,
-                        optional
-                            ? this.context.bindings.pinValueToTemporary(
+                        known
+                            ? spread
+                            : this.context.bindings.pinValueToTemporary(
                                   spread,
                                   "spread_source",
                                   property.expression,
-                              )
-                            : spread,
+                              ),
                         spread.dataType,
                         property,
                     );
                     if (
-                        entries.some(
-                            (entry) => entry.presentCpp && !entry.stored,
-                        )
+                        entries.some((entry) => entry.presentCpp && !entry.slot)
                     )
                         this.context.fail(
                             property,
                             "A struct with optional properties spreads into a dictionary or a struct; a compile-time record needs keys known at generation.",
                         );
-                    for (const { key, value, stored } of entries) {
-                        if (!stored) {
+                    for (const { key, value, slot } of entries) {
+                        if (!slot) {
                             storeProperty(
                                 key,
                                 member(value, index, property.expression),
@@ -5494,7 +5466,7 @@ export class ExpressionLowerer {
                             continue;
                         }
                         const conditional: Value = {
-                            ...stored,
+                            ...slot,
                             conditionalOwnKey: true,
                         };
                         if (ownKeys.has(key))

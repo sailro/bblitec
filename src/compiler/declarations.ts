@@ -32,7 +32,7 @@ import {
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
-import { structOwnEntries } from "./object-statics.js";
+import { ownKeysKnown } from "./object-statics.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -2987,9 +2987,7 @@ export class DeclarationLowerer {
             initializerSnapshot?.kind === "record" &&
             ts.isIdentifier(name) &&
             !mutablePlainObject &&
-            !Object.values(initializerSnapshot.recordProperties ?? {}).some(
-                (property) => property.conditionalOwnKey,
-            )
+            ownKeysKnown(this.context, initializerSnapshot, name)
                 ? {
                       recordOwnKeys: Object.keys(
                           initializerSnapshot.recordProperties ?? {},
@@ -4316,39 +4314,15 @@ export class DeclarationLowerer {
             name: cppName,
             initializer: this.context.dataLowerer.structAggregate(type, []),
         });
-        for (const { key, value, presentCpp } of structOwnEntries(
-            this.context,
+        // The rest object is fresh: each field still holds its absent default.
+        this.context.dataLowerer.copyStructOwnProperties(
+            { cpp: cppName, type },
             source,
             source.dataType,
-            element,
-            consumed,
-        )) {
-            const field = this.context.dataTypes.structField(
-                type.name,
-                key,
-                element,
-            );
-            if (presentCpp)
-                this.context.emit({
-                    kind: "open",
-                    code: `if (${presentCpp}) {`,
-                });
-            this.context.refuseBorrowedPlatformEventEscape(
-                value,
-                element,
-                "object rest",
-            );
-            const copied = this.context.dataLowerer.compileKnownValueForSink(
-                value,
-                field.type,
-                element,
-            );
-            this.context.emit({
-                kind: "expression",
-                code: `${cppName}->${field.name} = ${copied};`,
-            });
-            if (presentCpp) this.context.emit({ kind: "close", code: "}" });
-        }
+            element.parent,
+            "rest",
+            { excludedKeys: consumed, fresh: () => true },
+        );
         this.context.bindings.defineVariable(
             element.name,
             this.context.dataLowerer.leafValue(cppName, type),

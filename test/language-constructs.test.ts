@@ -5969,6 +5969,21 @@ test("absent property reads refuse properties a converted record may carry", () 
             `),
         /has no field 'b'/,
     );
+    // An object rest copies what a converted record carried too.
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Source { a: number; c: number }
+            interface View { a: number; b?: number }
+            function readB(v: View): number { return v.b ?? -1; }
+            function make(a: number): { a: number; c: number; b: number } { return { a, c: 0, b: a * 2 }; }
+            const list: Source[] = [{ a: 3, c: 1 }];
+            list.push(make(1));
+            const { c, ...rest } = list[1]!;
+            const read = readB(rest) + c;
+            `),
+        /Property 'b' is not stored by 'rest' records, but a record converted into that storage may carry it/,
+    );
 });
 
 check(
@@ -7000,6 +7015,20 @@ check(
     setNumber(style, "scale", inputs[1]);
     setTint(style, "tint", 5);
     if (style.scale !== 4 || style.tint !== 5) throw new Error("restored fields");
+`,
+);
+
+check(
+    "object-rest-copies-nullable-optional-fields",
+    `
+    interface Entry { id: number; note?: string | null; tint?: number }
+    const entries: Entry[] = [{ id: 1, note: null }, { id: 2 }, { id: 3, note: "x", tint: 4 }];
+    let text = "";
+    for (const entry of entries) {
+        const { id, ...rest } = entry;
+        text += id + (rest.note ?? "-") + (rest.tint ?? 0) + ";";
+    }
+    if (text !== "1-0;2-0;3x4;") throw new Error(text);
 `,
 );
 
