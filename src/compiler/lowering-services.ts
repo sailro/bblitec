@@ -578,13 +578,15 @@ export interface LoweringServices {
     ): string;
     /**
      * A record accessor as the stored callback of an accessor-backed field:
-     * a getter returns `valueType`, a setter takes it.
+     * a getter returns `valueType`, a setter takes it. Its `this` is the
+     * slot's receiver (`receiverType`), else `home`, else the owner record.
      */
     compileStoredAccessor(
         owner: Value,
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
         receiverType?: DataType<"struct">,
+        home?: Value,
     ): string;
     compilePredicateWithValues(
         declaration:

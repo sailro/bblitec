@@ -8119,6 +8119,29 @@ check(
 `,
 );
 
+check(
+    "literal-accessors-read-the-object-the-literal-creates",
+    `
+    interface Box { w: number; readonly width: number; grow(): void }
+    const box: Box = { w: 1, get width(): number { return this.w; }, grow(): void { this.w += 1; } };
+    box.grow();
+    if (box.width !== 2) throw new Error("getter after a method write " + box.width);
+    box.w = 5;
+    if (box.width !== 5) throw new Error("getter after a field write " + box.width);
+    interface Gauge { level: number; readonly doubled: number; percent: number }
+    const gauge: Gauge = {
+        level: 1,
+        get doubled(): number { return this.level * 2; },
+        get percent(): number { return this.level * 100; },
+        set percent(value: number) { this.level = value / 100; },
+    };
+    gauge.level = 3;
+    if (gauge.doubled !== 6) throw new Error("getter-only literal " + gauge.doubled);
+    gauge.percent = 250;
+    if (gauge.level !== 2.5 || gauge.doubled !== 5 || gauge.percent !== 250) throw new Error("setter writes the live field");
+`,
+);
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

@@ -27,7 +27,9 @@ import {
     homeReceiver,
     literalSelf,
     readsHomeObject,
+    readsHomeObjectAccessor,
     type HomeObjectMethod,
+    type LiteralSelf,
 } from "../home-object-methods.js";
 import { returnedRecordLocal } from "../record-observations.js";
 
@@ -380,13 +382,25 @@ function valueStruct(
                 }),
             ),
             node,
+            // An accessor slot without a receiver reads `this` as the
+            // object the literal creates.
+            new Set(
+                fields.flatMap((field) =>
+                    field.accessor && !field.accessorReceiver
+                        ? [
+                              value.recordGetters?.[field.sourceName],
+                              value.recordSetters?.[field.sourceName],
+                          ].filter(readsHomeObjectAccessor)
+                        : [],
+                ),
+            ),
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
-                    return accessorSlot(lowerer, field, value, node);
+                    return accessorSlot(lowerer, field, value, node, self);
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -663,32 +677,38 @@ function accessorGetter(
     return getter;
 }
 
-/** A record's accessor property: its getter and setter in the field's accessor slot. */
+/**
+ * A record's accessor property: its getter and setter in the field's
+ * accessor slot, reading `this` as the slot's receiver or as the object the
+ * literal creates (`self`).
+ */
 function accessorSlot(
     lowerer: DataSinkHost,
     field: DataStructField,
     record: Value,
     node: ts.Node,
+    self: LiteralSelf | undefined,
 ): string {
     const getter = accessorGetter(lowerer, field, record, node);
     const setter = record.recordSetters?.[field.sourceName];
+    const receiver: DataType<"struct"> | undefined = field.accessorReceiver
+        ? { kind: "struct", name: field.accessorReceiver }
+        : undefined;
     const set = setter
         ? lowerer.context.compileStoredAccessor(
               record,
               setter,
               field.type,
-              field.accessorReceiver
-                  ? { kind: "struct", name: field.accessorReceiver }
-                  : undefined,
+              receiver,
+              homeReceiver(self, field.sourceName, setter),
           )
         : "{}";
     return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(
         record,
         getter,
         field.type,
-        field.accessorReceiver
-            ? { kind: "struct", name: field.accessorReceiver }
-            : undefined,
+        receiver,
+        homeReceiver(self, field.sourceName, getter),
     )}, ${set})`;
 }
 

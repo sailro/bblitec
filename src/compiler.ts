@@ -235,7 +235,10 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
-import { homeObjectMethods } from "./compiler/home-object-methods.js";
+import {
+    homeObjectAccessors,
+    homeObjectMethods,
+} from "./compiler/home-object-methods.js";
 import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
@@ -1315,9 +1318,11 @@ class Compiler implements LoweringServices {
                     }
                 } else if (
                     ts.isObjectLiteralExpression(node) &&
-                    homeObjectMethods(node).size > 0
+                    (homeObjectMethods(node).size > 0 ||
+                        homeObjectAccessors(node).size > 0)
                 ) {
-                    // A method's `this` is the object the literal creates.
+                    // A method's or accessor's `this` is the object the
+                    // literal creates.
                     const dataType = this.dataTypes.fromTsType(
                         this.checker.getContextualType(node) ??
                             this.checker.getTypeAtLocation(node),
@@ -7705,6 +7710,7 @@ class Compiler implements LoweringServices {
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
         receiverType?: DataType<"struct">,
+        home?: Value,
     ): string {
         const getter = ts.isGetAccessorDeclaration(accessor);
         const valueCpp = this.dataTypes.cppType(valueType);
@@ -7727,7 +7733,7 @@ class Compiler implements LoweringServices {
                           ),
                       ],
                   }
-                : undefined;
+                : home;
             if (getter) {
                 const value = this.compileRecordGetter(
                     owner,
