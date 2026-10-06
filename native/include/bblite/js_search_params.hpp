@@ -5,23 +5,21 @@
 
 namespace bbl::js {
 namespace search_params_detail {
+/** A hexadecimal digit's value, or -1. */
+[[nodiscard]] inline int hex_digit(char c) {
+    const int digit = radix_digit(c);
+    return digit < 16 ? digit : -1;
+}
+
 inline std::string decode(std::string_view input) {
-    const auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9')
-            return c - '0';
-        if (c >= 'a' && c <= 'f')
-            return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F')
-            return c - 'A' + 10;
-        return -1;
-    };
     std::string bytes;
     for (std::size_t i = 0; i < input.size(); ++i) {
         if (input[i] == '+')
             bytes.push_back(' ');
-        else if (input[i] == '%' && i + 2 < input.size() && hex(input[i + 1]) >= 0 &&
-                 hex(input[i + 2]) >= 0) {
-            bytes.push_back(static_cast<char>(16 * hex(input[i + 1]) + hex(input[i + 2])));
+        else if (input[i] == '%' && i + 2 < input.size() && hex_digit(input[i + 1]) >= 0 &&
+                 hex_digit(input[i + 2]) >= 0) {
+            bytes.push_back(
+                static_cast<char>(16 * hex_digit(input[i + 1]) + hex_digit(input[i + 2])));
             i += 2;
         } else
             bytes.push_back(input[i]);
@@ -79,20 +77,12 @@ inline std::string encode(std::string_view input, std::string_view extra_unescap
  */
 inline std::string decode(std::string_view input, std::string_view preserved) {
     const auto malformed = [] { return NamedError("URIError", "URI malformed"); };
-    const auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9')
-            return c - '0';
-        if (c >= 'a' && c <= 'f')
-            return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F')
-            return c - 'A' + 10;
-        return -1;
-    };
     // The octet escaped at `index`, which must be a '%' and two hex digits.
     const auto octet = [&](std::size_t index) -> unsigned {
         if (index + 2 >= input.size() || input[index] != '%')
             throw malformed();
-        const int high = hex(input[index + 1]), low = hex(input[index + 2]);
+        const int high = search_params_detail::hex_digit(input[index + 1]),
+                  low = search_params_detail::hex_digit(input[index + 2]);
         if (high < 0 || low < 0)
             throw malformed();
         return static_cast<unsigned>(high * 16 + low);

@@ -1202,9 +1202,10 @@ template <typename T>
     return target[index];
 }
 
-/** JavaScript refuses a read through null or undefined. */
-[[noreturn]] inline void throw_nullish_access() {
-    throw std::runtime_error("Cannot access a nullish value.");
+/** A read through null or undefined: JavaScript's TypeError. */
+[[noreturn]] inline void
+throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
+    throw NamedError("TypeError", message);
 }
 
 template <typename T> class Nullable {
@@ -2564,9 +2565,9 @@ struct CivilDate {
            digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
 }
 
-/** A property read of null or undefined: JavaScript's TypeError, typed as the read's result. */
+/** A property read of null or undefined, typed as the read's result. */
 template <typename T> [[nodiscard]] T absent_receiver_read(const char* message) {
-    throw NamedError("TypeError", message);
+    throw_nullish_access(message);
 }
 
 /**
