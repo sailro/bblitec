@@ -4917,3 +4917,26 @@ check(
     if (pairs[0]!(hosts[0]!, hosts[1]!) !== 8 || hosts[0]!.boundary.grow !== 5) throw new Error("spread arm override");
 `,
 );
+
+check(
+    "spread-struct-literals-omit-absent-optional-fields",
+    `
+    interface Arch { span: number }
+    interface WallOptions { width: number; seed: number; arch?: Arch; groundY?: () => number; dims?: number[] }
+    function compose(o: WallOptions): string {
+        return o.width + ":" + (o.arch ? o.arch.span : "none") + ":" + (o.groundY ? o.groundY() : -1) + ":" + (o.dims ? o.dims.length : 0);
+    }
+    function crown(width: number, dims: number[] | undefined): string {
+        const options: WallOptions = { width, seed: 3, ...(dims && dims.length > 0 ? { dims } : {}) };
+        return compose(options);
+    }
+    function arched(width: number, span: number): string {
+        const options: WallOptions = { ...{ width, seed: 1 }, arch: { span }, groundY: () => width * 2 };
+        return compose(options);
+    }
+    const crowns: Array<typeof crown> = [crown];
+    const arches: Array<typeof arched> = [arched];
+    if (crowns[0]!(2, [1, 2]) !== "2:none:-1:2" || crowns[0]!(4, undefined) !== "4:none:-1:0") throw new Error("absent optional fields");
+    if (arches[0]!(3, 5) !== "3:5:6:0") throw new Error("present optional fields");
+`,
+);

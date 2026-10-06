@@ -8769,11 +8769,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         declareDefault();
+        // An absent optional field keeps the default the declaration
+        // stored, as a struct literal omitting it does.
         const missing = this.context.dataTypes
             .structFields(dataType.name, literal)
             .find(
                 (field) =>
-                    field.type.kind !== "optional" && !assigned.has(field.name),
+                    field.type.kind !== "optional" &&
+                    !field.defaultWhenMissing &&
+                    !assigned.has(field.name),
             );
         if (missing) {
             this.context.fail(
