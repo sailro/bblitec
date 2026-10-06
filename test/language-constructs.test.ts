@@ -4800,3 +4800,21 @@ check(
 `,
 );
 
+check(
+    "error-constructors-called-without-new",
+    `
+    function fail(kind: number): number {
+        if (kind === 0) throw Error("plain");
+        if (kind === 1) throw RangeError("range " + kind);
+        return kind;
+    }
+    let caught = "";
+    for (const kind of [0, 1, 2]) {
+        try { caught += fail(kind); } catch (error) { if (error instanceof Error) caught += error.name + ":" + error.message + ";"; }
+    }
+    if (caught !== "Error:plain;RangeError:range 1;2") throw new Error(caught);
+    const held = TypeError("held");
+    if (held.name !== "TypeError" || held.message !== "held") throw new Error("held error value");
+`,
+);
+

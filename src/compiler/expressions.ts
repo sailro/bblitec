@@ -3106,6 +3106,13 @@ export class ExpressionLowerer {
             this.context.expectArgumentCount(call, 1, 1);
             return this.compileNumberConversion(argumentAt(call, 0));
         }
+        // `Error(message)` called without `new` constructs exactly as
+        // `new Error(message)` does, for every native Error constructor.
+        const errorName = errorConstructor(call, (expression) =>
+            this.context.libraryGlobal(expression),
+        );
+        if (errorName)
+            return compileErrorConstruction(this.context, call, errorName);
         if (this.context.libraryGlobal(callee) === "Boolean") {
             // `Boolean(x)` is x's truthiness, which the condition lowering
             // already spells for every kind.

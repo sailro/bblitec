@@ -1810,14 +1810,23 @@ export class StatementLowerer {
         // `throw new Error(message)` builds the Error value for this one
         // consumer, so its message stays an expression; a held Error value
         // or a string carries its message as a value.
-        const errorName = ts.isNewExpression(thrown)
-            ? errorConstructor(thrown, (callee) =>
+        const constructed =
+            ts.isNewExpression(thrown) || ts.isCallExpression(thrown)
+                ? thrown
+                : undefined;
+        const errorName = constructed
+            ? errorConstructor(constructed, (callee) =>
                   context.libraryGlobal(callee),
               )
             : undefined;
         const sourceError =
-            ts.isNewExpression(thrown) && errorName !== undefined
-                ? compileErrorConstruction(context, thrown, errorName, "thrown")
+            constructed && errorName !== undefined
+                ? compileErrorConstruction(
+                      context,
+                      constructed,
+                      errorName,
+                      "thrown",
+                  )
                 : context.compileValue(thrown);
         const error = authoredErrorValue(context, sourceError) ?? sourceError;
         if (error.dataType?.kind === "error") {
