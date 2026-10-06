@@ -5775,11 +5775,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * Compiles JavaScript Math member calls with runtime arguments.
      */
-    public compileMathCall(call: ts.CallExpression): Value | undefined {
+    /** `target` is the Math member the call reaches, when a `const` alias names it. */
+    public compileMathCall(
+        call: ts.CallExpression,
+        target: ts.Expression = call.expression,
+    ): Value | undefined {
         // Resolved, not spelled: a scene's own binding named `Math` is not
         // the library object, however the compiler came to know it.
         const callee = mathMemberAccess(
-            this.context.unwrap(call.expression),
+            this.context.unwrap(target),
             (expression) => this.context.libraryGlobal(expression),
         );
         if (!callee) {

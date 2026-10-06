@@ -4874,3 +4874,43 @@ check(
 `,
 );
 
+test("module const function aliases call the aliased function", async (t) => {
+    const directory = resolve("artifacts/const-function-aliases");
+    mkdirSync(directory, { recursive: true });
+    const module = `
+        function archKey(x: number, z: number): string { return Math.round(x * 10) + "," + Math.round(z * 10); }
+        const f32 = Math.fround;
+        const quantKey = archKey;
+        const sameKey = quantKey;
+        function append(log: number[]): number { log.push(log.length); return log.length; }
+        const record = append;
+        export function noise(x: number): number { const px = f32(x); return f32(f32(px * px) * f32(3 - f32(2 * px))); }
+        export function loopKey(x: number, z: number): string { return quantKey(x, z) + "~" + sameKey(z, x); }
+        export function aliasIdentity(): boolean { return quantKey === archKey && sameKey === archKey; }
+        export function recordTwice(log: number[]): number { record(log); return record(log); }`;
+    writeFileSync(join(directory, "aliases.ts"), module);
+    const entry = `
+        import { aliasIdentity, loopKey, noise, recordTwice } from "./aliases.js";
+        const x = 0.3, px = Math.fround(x);
+        if (noise(x) !== Math.fround(Math.fround(px * px) * Math.fround(3 - Math.fround(2 * px)))) throw new Error("Math alias");
+        if (loopKey(1, 0.25) !== "10,3~3,10" || !aliasIdentity()) throw new Error("function alias");
+        const log: number[] = [];
+        if (recordTwice(log) !== 2 || log.join(",") !== "0,1") throw new Error("alias calls run once each");
+        const stored: Array<typeof noise> = [noise];
+        if (stored[0]!(x) !== noise(x)) throw new Error("stored alias caller");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    const exported: Record<string, unknown> = {};
+    runInNewContext(commonJs(module), { exports: exported });
+    runInNewContext(commonJs(entry), { exports: {}, require: () => exported });
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "const-function-aliases", result.cpp);
+});
+
