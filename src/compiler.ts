@@ -235,7 +235,7 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
-import { readsHomeObject } from "./compiler/home-object-methods.js";
+import { homeObjectMethods } from "./compiler/home-object-methods.js";
 import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
@@ -1315,14 +1315,7 @@ class Compiler implements LoweringServices {
                     }
                 } else if (
                     ts.isObjectLiteralExpression(node) &&
-                    node.properties.some(
-                        (property) =>
-                            readsHomeObject(property) ||
-                            (ts.isPropertyAssignment(property) &&
-                                readsHomeObject(
-                                    this.unwrap(property.initializer),
-                                )),
-                    )
+                    homeObjectMethods(node).size > 0
                 ) {
                     // A method's `this` is the object the literal creates.
                     const dataType = this.dataTypes.fromTsType(
@@ -7677,6 +7670,7 @@ class Compiler implements LoweringServices {
                 dataType,
                 effectiveOwner,
                 identityCpp,
+                receiver,
             );
             this.registerNativeBinding(cpp);
             return cpp;

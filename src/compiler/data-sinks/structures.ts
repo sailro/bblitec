@@ -22,7 +22,13 @@ import {
     yieldsFreshObject,
     yieldsFreshRecordElements,
 } from "../fresh-records.js";
-import { homeObjectReceiver, readsHomeObject } from "../home-object-methods.js";
+import {
+    completeLiteralSelf,
+    homeReceiver,
+    literalSelf,
+    readsHomeObject,
+    type HomeObjectMethod,
+} from "../home-object-methods.js";
 import { returnedRecordLocal } from "../record-observations.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -359,18 +365,20 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
-        const home = homeObjectReceiver(
+        const self = literalSelf(
             lowerer.context,
             dataType,
-            fields.flatMap((field) => {
-                const method =
-                    field.type.kind === "function"
-                        ? value.recordMethods?.[field.sourceName]
-                        : undefined;
-                return method && readsHomeObject(method)
-                    ? [{ name: field.sourceName, method }]
-                    : [];
-            }),
+            new Map(
+                fields.flatMap((field): [string, HomeObjectMethod][] => {
+                    const method =
+                        field.type.kind === "function"
+                            ? value.recordMethods?.[field.sourceName]
+                            : undefined;
+                    return method && readsHomeObject(method)
+                        ? [[field.sourceName, method]]
+                        : [];
+                }),
+            ),
             node,
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
@@ -399,9 +407,7 @@ function valueStruct(
                                 value,
                                 ts.isMethodDeclaration(method) &&
                                     ts.isClassDeclaration(method.parent),
-                                home && readsHomeObject(method)
-                                    ? home
-                                    : undefined,
+                                homeReceiver(self, field.sourceName, method),
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
@@ -435,13 +441,13 @@ function valueStruct(
                 );
             })
             .join(", ")}}`;
-        if (home) {
-            lowerer.context.emit({
-                kind: "expression",
-                code: `${home.cpp} = bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate});`,
-            });
-            return home.cpp;
-        }
+        if (self)
+            return completeLiteralSelf(
+                lowerer.context,
+                self,
+                aggregate,
+                fields,
+            );
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
             ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
             : aggregate;

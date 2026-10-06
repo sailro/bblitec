@@ -66,6 +66,7 @@ import {
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import { nullableResourceEngine } from "./window-events.js";
+import { withLiteralSelfBinding } from "./home-object-methods.js";
 import {
     inferPromiseRejectStorage,
     inferUninitializedHandle,
@@ -2771,12 +2772,23 @@ export class DeclarationLowerer {
                 initializer,
             );
         // A record whose own methods name its binding (`batch.keyAt(i)` in a
-        // method of `const batch: Batch = {...}`) is one shared object: the
-        // methods read the binding when they run, after it is filled.
+        // method of `const batch: Batch = {...}`) is one shared object. An
+        // object literal binds the name to the object it creates before its
+        // methods capture it; through any other initializer the methods read
+        // a shared cell when they run, after it is filled.
         if (initializerReferencesBinding && annotated.kind === "struct")
             this.context.dataTypes.markStoredObjectReferences(annotated);
+        const selfLiteral =
+            initializerReferencesBinding &&
+            annotated.kind === "struct" &&
+            ts.isObjectLiteralExpression(initializer) &&
+            !initializer.properties.some(ts.isSpreadAssignment) &&
+            !this.context.sharedClosures.identifierIsRebound(name)
+                ? initializer
+                : undefined;
         const selfReferentialBinding =
             initializerReferencesBinding &&
+            !selfLiteral &&
             (annotated.kind === "function" ||
                 (annotated.kind === "struct" &&
                     this.context.dataTypes.isReferenceStruct(annotated.name)));
@@ -2852,19 +2864,33 @@ export class DeclarationLowerer {
                 });
             }
         } else {
-            const initializerCpp = this.context.takeNativeTemporary(
-                initializerSnapshot
-                    ? this.context.dataLowerer.compileKnownValueForSink(
-                          initializerSnapshot,
-                          annotated,
-                          declaration.initializer,
-                      )
-                    : this.context.dataLowerer.compileForSink(
-                          declaration.initializer,
-                          annotated,
-                      ),
-                initializerBoundary,
-            );
+            const source = declaration.initializer;
+            const lowerInitializer = (): string =>
+                this.context.takeNativeTemporary(
+                    initializerSnapshot
+                        ? this.context.dataLowerer.compileKnownValueForSink(
+                              initializerSnapshot,
+                              annotated,
+                              source,
+                          )
+                        : this.context.dataLowerer.compileForSink(
+                              source,
+                              annotated,
+                          ),
+                    initializerBoundary,
+                );
+            const initializerCpp = selfLiteral
+                ? withLiteralSelfBinding(
+                      selfLiteral,
+                      { name, cppName },
+                      lowerInitializer,
+                  )
+                : lowerInitializer();
+            if (selfLiteral && initializerCpp !== cppName)
+                this.context.fail(
+                    declaration,
+                    `Record '${name.text}' names itself in its methods, but its literal did not create the object the binding holds.`,
+                );
             const sourceValue = ts.isIdentifier(initializer)
                 ? this.context.bindings.lookupOptional(initializer)
                 : undefined;
@@ -2874,26 +2900,27 @@ export class DeclarationLowerer {
                 this.borrowsConstBinding(declaration, sourceValue) &&
                 (annotated.kind !== "struct" ||
                     this.context.dataTypes.isReferenceStruct(annotated.name));
-            this.context.emit(
-                sharedDataBinding
-                    ? {
-                          kind: "declaration",
-                          type: "auto",
-                          name: cppName,
-                          initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(${initializerCpp})`,
-                      }
-                    : selfReferentialBinding
-                      ? `(*${cppName}) = ${initializerCpp};`
-                      : {
-                            kind: "declaration",
-                            type: stableOwnerAlias
-                                ? "auto&"
-                                : this.context.dataTypes.cppType(annotated),
-                            name: cppName,
-                            initializer: initializerCpp,
-                            attributes: "[[maybe_unused]] ",
-                        },
-            );
+            if (!selfLiteral)
+                this.context.emit(
+                    sharedDataBinding
+                        ? {
+                              kind: "declaration",
+                              type: "auto",
+                              name: cppName,
+                              initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(${initializerCpp})`,
+                          }
+                        : selfReferentialBinding
+                          ? `(*${cppName}) = ${initializerCpp};`
+                          : {
+                                kind: "declaration",
+                                type: stableOwnerAlias
+                                    ? "auto&"
+                                    : this.context.dataTypes.cppType(annotated),
+                                name: cppName,
+                                initializer: initializerCpp,
+                                attributes: "[[maybe_unused]] ",
+                            },
+                );
         }
         // A spread element contributes as many elements as its source holds.
         if (
@@ -3037,7 +3064,8 @@ export class DeclarationLowerer {
                         boundValue,
                     )
                   : boundValue;
-        if (selfReferentialBinding) {
+        // The literal or the shared cell already bound the name.
+        if (selfReferentialBinding || selfLiteral) {
             this.context.bindings.rebindVariable(name, represented);
         } else {
             this.context.bindings.defineVariable(name, represented);

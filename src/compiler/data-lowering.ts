@@ -157,7 +157,12 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
-import { homeObjectReceiver, readsHomeObject } from "./home-object-methods.js";
+import {
+    completeLiteralSelf,
+    homeObjectMethods,
+    homeReceiver,
+    literalSelf,
+} from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 
 /**
@@ -7084,8 +7089,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
-                const booleanConstructor =
-                    this.context.libraryGlobal(callback) === "Boolean";
                 const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
                 const callbackValue = this.leafValue(
                     snapshotCpp,
@@ -7132,50 +7135,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             callbackArguments,
                             call,
                         )
-                      : booleanConstructor
-                        ? dataType.element.kind === "boolean"
-                            ? {
-                                  kind: "boolean" as const,
-                                  cpp: elementValue.cpp,
-                                  dataType: { kind: "boolean" as const },
-                              }
-                            : dataType.element.kind === "number"
-                              ? (this.context.reachJsData(),
-                                {
-                                    kind: "boolean" as const,
-                                    cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
-                                    dataType: { kind: "boolean" as const },
-                                })
-                              : dataType.element.kind === "string"
-                                ? {
-                                      kind: "boolean" as const,
-                                      cpp: `!(${elementValue.cpp}).empty()`,
-                                      dataType: { kind: "boolean" as const },
-                                  }
-                                : {
-                                      kind: "boolean" as const,
-                                      cpp:
-                                          this.truthinessCondition(
-                                              elementValue,
-                                          ) ??
-                                          this.context.fail(
-                                              callback,
-                                              `Boolean array callbacks require elements with a JavaScript truthiness, not ${dataType.element.kind}.`,
-                                          ),
-                                      dataType: { kind: "boolean" as const },
-                                  }
-                        : predicate
-                          ? this.context.compilePredicateWithValues(
-                                local!,
-                                callbackArguments,
-                                call,
-                            )
-                          : this.context.compileCallbackWithValues(
-                                local!,
-                                callbackArguments,
-                                call,
-                                method === "forEach",
-                            );
+                      : predicate
+                        ? this.context.compilePredicateWithValues(
+                              local!,
+                              callbackArguments,
+                              call,
+                          )
+                        : this.context.compileCallbackWithValues(
+                              local!,
+                              callbackArguments,
+                              call,
+                              method === "forEach",
+                          );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
                         kind: "boolean",
@@ -7364,6 +7335,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const field = this.context.dataTypes.genericFunctionCall(
                 functionType.generic,
                 call,
+                (argument) =>
+                    this.context.bindings.lookupOptional(argument)?.dataType
+                        ?.kind === "error",
             );
             callable = `(${callable}).select(&bblscene::${functionType.generic}Data::${field.name})`;
             functionType = field.type;
@@ -7890,33 +7864,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * The typed-array class a `new` or static-factory callee names: the
-     * global itself, or a binding holding a typed array's `constructor`.
+     * global itself, or a value that is a typed array's `constructor` --
+     * a binding holding one, or the read itself (`new arr.constructor(n)`).
      */
     private typedArrayClass(callee: ts.Expression): string | undefined {
         const name = this.context.libraryGlobal(callee);
         if (name !== undefined)
             return TYPED_ARRAY_KINDS.has(name) ? name : undefined;
         const unwrapped = this.context.unwrap(callee);
-        const declaration = ts.isIdentifier(unwrapped)
-            ? declaredSymbol(this.context.checker, unwrapped)?.valueDeclaration
-            : undefined;
-        const read =
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer
-                ? this.context.unwrap(declaration.initializer)
-                : undefined;
-        const constructorRead =
-            read !== undefined &&
-            ts.isPropertyAccessExpression(read) &&
-            read.name.text === "constructor";
-        const bound =
-            constructorRead && ts.isIdentifier(unwrapped)
-                ? this.context.bindings.lookupOptional(unwrapped)
-                : undefined;
-        return bound?.kind === "typed-array-constructor" &&
-            bound.typedArrayConstructor
-            ? typedArrayConstructorName(bound.typedArrayConstructor)
+        const value = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : ts.isPropertyAccessExpression(unwrapped) &&
+                unwrapped.name.text === "constructor"
+              ? this.context.compileValue(unwrapped)
+              : undefined;
+        return value?.kind === "typed-array-constructor" &&
+            value.typedArrayConstructor
+            ? typedArrayConstructorName(value.typedArrayConstructor)
             : undefined;
     }
 
@@ -9391,19 +9355,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Struct literals support plain property assignments.",
             );
         }
-        const home = homeObjectReceiver(
+        const self = literalSelf(
             this.context,
             dataType,
-            fields.flatMap((field) => {
-                const provider = provided.get(field.sourceName);
-                const method =
-                    provider && !ts.isMethodDeclaration(provider)
-                        ? this.context.unwrap(provider)
-                        : provider;
-                return method && readsHomeObject(method)
-                    ? [{ name: field.sourceName, method }]
-                    : [];
-            }),
+            homeObjectMethods(literal),
             literal,
         );
         const parts = fields.map((field) => {
@@ -9441,7 +9396,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field.type,
                     undefined,
                     false,
-                    home && readsHomeObject(initializer) ? home : undefined,
+                    homeReceiver(self, field.sourceName, initializer),
                 );
                 return this.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -9458,9 +9413,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer,
                 );
             const method = this.context.unwrap(initializer);
+            const receiver = homeReceiver(self, field.sourceName, method);
             if (
-                home &&
-                readsHomeObject(method) &&
+                receiver &&
+                ts.isFunctionExpression(method) &&
                 field.type.kind === "function"
             )
                 return this.context.dataTypes.structFieldInitializerCpp(
@@ -9470,7 +9426,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         field.type,
                         undefined,
                         false,
-                        home,
+                        receiver,
                     ),
                 );
             return this.context.dataTypes.structFieldInitializerCpp(
@@ -9484,13 +9440,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Struct literal has unknown field '${[...provided.keys()][0]}'.`,
             );
         }
-        if (home) {
-            this.context.emit({
-                kind: "expression",
-                code: `${home.cpp} = ${this.structAggregate(dataType, parts)};`,
-            });
-            return home.cpp;
-        }
+        if (self)
+            return completeLiteralSelf(
+                this.context,
+                self,
+                `bblscene::${dataType.name}Data{${parts.join(", ")}}`,
+                fields,
+            );
         return this.structAggregate(dataType, parts);
     }
 

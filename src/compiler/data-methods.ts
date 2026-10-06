@@ -57,6 +57,7 @@ import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import {
     arrayElementType,
+    declaredContextualType,
     isTypeReference,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
@@ -2016,20 +2017,11 @@ function narrowedTagFilter(
         result.element.name === element.name
     )
         return undefined;
-    // Only a declared destination expecting the narrower tags takes them: a
-    // typed variable, a record field or a return. A generic call's parameter
-    // takes its type from this argument, so it names no destination.
-    let position: ts.Node = call;
-    while (ts.isParenthesizedExpression(position.parent))
-        position = position.parent;
-    const parent = position.parent;
-    if (
-        !(ts.isPropertyAssignment(parent) && parent.initializer === position) &&
-        !(ts.isVariableDeclaration(parent) && parent.type) &&
-        !ts.isReturnStatement(parent)
-    )
-        return undefined;
-    const contextual = lowerer.context.checker.getContextualType(call);
+    // Only a destination expecting the narrower tags takes them: the
+    // contextual type, unless a generic call inferred it from this very
+    // argument (`Object.freeze(tags.filter(isCandidate))`), which then names
+    // no destination.
+    const contextual = declaredContextualType(lowerer.context.checker, call);
     const destination =
         contextual && lowerer.context.dataTypes.fromTsType(contextual, call);
     if (

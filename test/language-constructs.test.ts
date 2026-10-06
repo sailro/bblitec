@@ -3322,6 +3322,30 @@ check(
 `,
 );
 
+check(
+    "typed-array-constructor-reads-as-callees",
+    `
+    function grow<T extends Uint8Array | Float32Array>(value: T, length: number): T {
+        const next = new (value.constructor as { new (length: number): T })(length);
+        next.set(value);
+        return next;
+    }
+    function twin(value: Int16Array): Int16Array {
+        return (value.constructor as { from(values: ArrayLike<number>): Int16Array }).from(value);
+    }
+    let reads = 0;
+    const held = new Uint32Array([4, 5]);
+    function source(): Uint32Array { reads++; return held; }
+    const bytes = grow(new Uint8Array([1, 255]), 3);
+    const floats = grow(new Float32Array([0.5]), 2);
+    const copied = twin(new Int16Array([7, -3]));
+    const sized = new (source().constructor as { new (length: number): Uint32Array })(2);
+    if (!(bytes instanceof Uint8Array) || bytes.join() !== "1,255,0" || !(floats instanceof Float32Array) || floats.join() !== "0.5,0") throw new Error("new through the read");
+    if (!(copied instanceof Int16Array) || copied.join() !== "7,-3") throw new Error("from through the read");
+    if (!(sized instanceof Uint32Array) || sized.join() !== "0,0" || reads !== 1) throw new Error("owner evaluated once");
+`,
+);
+
 test("typed-array unions and views refuse what they do not represent", () => {
     const pick =
         "function pick(text: boolean): Float32Array | string { return text ? 'ab' : new Float32Array(2); }";
@@ -3349,6 +3373,10 @@ test("typed-array unions and views refuse what they do not represent", () => {
         [
             "const C = new Float32Array(1).constructor; const unused: string = C.name;",
             /Unsupported property value 'C\.name' \(owner typed-array-constructor/,
+        ],
+        [
+            "interface Rec { n: number } const recs: Rec[] = [{ n: 1 }]; const made = new (recs[0]!.constructor as { new (): Rec })(); const unused = made.n;",
+            /Struct Rec has no field 'constructor'/,
         ],
     ] as const)
         assert.throws(() => compileSource(source), message);
@@ -6130,6 +6158,25 @@ check(
 );
 
 check(
+    "type-guard-filters-narrow-into-contextual-destinations",
+    `
+    type Failure = "a" | "b" | "c";
+    type Candidate = "a" | "b";
+    const isCandidate = (f: Failure): f is Candidate => f !== "c";
+    function count(candidates: Candidate[]): number { return candidates.filter((c) => c === "a").length; }
+    const source: Failure[] = ["c", "a", "b"];
+    let kept: Candidate[] = [];
+    kept = source.filter(isCandidate);
+    const pick = (): Candidate[] => source.filter(isCandidate);
+    const nested: Candidate[][] = [source.filter(isCandidate)];
+    const frozen: readonly Failure[] = Object.freeze(source.filter(isCandidate));
+    source[0] = "a";
+    if (kept.join() !== "a,b" || count(source.filter(isCandidate)) !== 2 || pick().join() !== "a,a,b") throw new Error("declared destinations");
+    if (nested[0]!.join() !== "a,b" || frozen.join() !== "a,b") throw new Error("element and inferred destinations");
+`,
+);
+
+check(
     "record-spreads-copy-methods-into-struct-literals",
     `
     interface Live { update(dt: number): void; active(): boolean; count: number }
@@ -6227,12 +6274,77 @@ test("literal methods reading this refuse reads of their function value", () => 
         "const unused = mover.carryBegin.call(mover, 1);",
         "const { carryBegin } = mover; const unused = carryBegin(1);",
         "const copy: Mover = { ...mover }; const unused = copy.carryBegin(1);",
+        // A wider type the object flows to reads the same function value.
+        "interface View { carryBegin(id: number): boolean } const view: View = mover; const extracted = view.carryBegin; const unused = extracted(1);",
+        "function take(source: { carryBegin(id: number): boolean }) { const { carryBegin } = source; return carryBegin(1); } const unused = take(mover);",
     ])
         assert.throws(
             () => compileSource(`${factory}\n${use}`),
             /Method 'carryBegin' reads `this`, and .*:\d+ reads its function value, which could call it with another receiver/,
         );
 });
+
+check(
+    "literal-methods-reading-this-admit-reads-of-objects-that-cannot-hold-them",
+    `
+    interface Mover { carryBegin(id: number): boolean; prepareBegin(id: number): boolean; total: number }
+    interface Other { carryBegin: (id: number) => boolean; prepareBegin: number }
+    function createMover(): Mover {
+        return { total: 0, carryBegin(id) { this.total += id; return this.prepareBegin(id); }, prepareBegin(id) { return id > 0; } };
+    }
+    const movers: Array<typeof createMover> = [createMover];
+    const mover = movers[0]!();
+    const other: Other = { carryBegin: (id) => id > 1, prepareBegin: 3 };
+    const extracted = other.carryBegin;
+    const { prepareBegin } = other;
+    const copy = { ...other };
+    const values = Object.values(other).length;
+    if (!mover.carryBegin(2) || mover.carryBegin(-1) || mover.total !== 1) throw new Error("home object");
+    if (extracted(1) || prepareBegin !== 3 || !copy.carryBegin(2) || values !== 2) throw new Error("unrelated reads");
+`,
+);
+
+check(
+    "literal-methods-reach-their-object-by-this-and-by-name",
+    `
+    interface Counter {
+        value: number;
+        next: Counter | null;
+        bump(): number;
+        twice(): number;
+        owner(): Counter;
+        self(): Counter;
+        peek(): number;
+        link(other: Counter): void;
+    }
+    function createCounter(start: number): Counter {
+        const counter: Counter = {
+            value: start,
+            next: null,
+            bump() { this.value++; return counter.value; },
+            twice() { counter.bump(); return this.bump(); },
+            owner() { return counter; },
+            self() { return this; },
+            peek: () => counter.value,
+            link(other) { this.next = other; other.next = counter; },
+        };
+        return counter;
+    }
+    const counters: Array<typeof createCounter> = [createCounter];
+    const a = counters[0]!(1);
+    const b = counters[0]!(10);
+    if (a.twice() !== 3 || b.bump() !== 11 || a.peek() !== 3) throw new Error("this and name read one object");
+    if (a.owner() !== a || a.self() !== a || b.owner() !== b || a.owner() === b) throw new Error("object identity");
+    const peek = a.peek;
+    if (peek !== a.peek || peek === b.peek || peek() !== 3) throw new Error("method value identity");
+    a.link(a);
+    if (a.next !== a || a.next.self() !== a) throw new Error("an object holding itself");
+    a.link(b);
+    if (a.next !== b || b.next !== a || b.next.next !== b) throw new Error("two objects holding each other");
+    for (let round = 0; round < 64; round++) counters[0]!(round).link(counters[0]!(-round));
+    if (a.twice() !== 5 || b.next?.owner() !== a) throw new Error("objects after collection");
+`,
+);
 
 check(
     "optional-class-method-call-values",
@@ -6418,6 +6530,27 @@ check(
     if (ledger.execute("a", () => 3) !== 3 || seen !== "") throw new Error("applied command");
     if (ledger.execute("b", () => { throw new Error("broken"); }) !== -1 || seen !== "b:broken") throw new Error("caught error argument");
     if (ledgers[0]!().execute("c", () => { throw new Error("quiet"); }) !== -1) throw new Error("absent handler");
+`,
+);
+
+check(
+    "caught-error-aliases-in-stored-unknown-parameters",
+    `
+    interface Options { onUncertain?(command: string, error: unknown): void }
+    function attempt(options: Options, command: string, apply: () => number): number {
+        try { return apply(); }
+        catch (caught) {
+            const error = caught;
+            const again = error;
+            options.onUncertain?.(command, again);
+            return -1;
+        }
+    }
+    const attempts: Array<typeof attempt> = [attempt];
+    let seen = "";
+    const options: Options = { onUncertain: (command, error) => { seen += command + ":" + (error instanceof Error ? error.message : "?") + ";"; } };
+    if (attempts[0]!(options, "a", () => 2) !== 2 || seen !== "") throw new Error("applied command");
+    if (attempts[0]!(options, "b", () => { throw new RangeError("broken"); }) !== -1 || seen !== "b:broken;") throw new Error("caught error alias");
 `,
 );
 
