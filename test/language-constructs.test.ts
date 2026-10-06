@@ -6654,9 +6654,11 @@ function checkInRealm(name: string, source: string): void {
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { close: () => (closed = true) },
+            { close: () => (closed = true), setTimeout },
         );
-        await new Promise((resolve) => setImmediate(resolve));
+        // A realm may close from a timer callback as well as a reaction.
+        for (let turn = 0; turn < 20 && !closed; turn++)
+            await new Promise((resolve) => setTimeout(resolve, 0));
         assert.equal(closed, true);
         const result = compileSource(source, { fileName: `${name}.ts` });
         await t.test(
@@ -8471,5 +8473,25 @@ check(
     function narrowed(): Narrow[] { return tags.filter(isNarrow) as Narrow[]; }
     if (asserted.join() !== "a,b" || checked.join() !== "a,b" || record.values.join() !== "a,b" || narrowed().join() !== "a,b")
         throw new Error("narrowed tag filters through assertions");
+`,
+);
+
+checkInRealm(
+    "settled-records-enumerate-the-keys-their-tags-select",
+    `
+    setTimeout(() => {
+        void (async () => {
+            const failure = new RangeError("first");
+            const settled = await Promise.allSettled([Promise.resolve(3), Promise.reject(failure)]);
+            const rejected = settled[1]!;
+            if (rejected.status !== "rejected" || rejected.reason !== failure) throw new Error("rejection");
+            if (Object.keys(rejected).join() !== "status,reason") throw new Error("rejected keys " + Object.keys(rejected).join());
+            const keys: string[] = [];
+            for (const entry of settled) keys.push(Object.keys(entry).join("+"));
+            if (keys.join() !== "status+value,status+reason") throw new Error("keys per element " + keys.join());
+            if (!("value" in settled[0]!) || "reason" in settled[0]!) throw new Error("membership");
+            globalThis.close();
+        })();
+    }, 0);
 `,
 );
