@@ -8071,6 +8071,32 @@ check(
 `,
 );
 
+check(
+    "readonly-record-views-share-the-written-layout",
+    `
+    interface Vec { x: number; y: number; z: number }
+    interface Rest {
+        readonly transforms: ReadonlyArray<{
+            readonly position: { readonly x: number; readonly y: number; readonly z: number };
+            readonly rotation: { readonly x: number; readonly y: number; readonly z: number; readonly w: number };
+        }>;
+        launched: boolean;
+    }
+    const meshes: Vec[] = [{ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 }];
+    const state: Rest = {
+        transforms: meshes.map((mesh) => ({
+            position: { x: mesh.x, y: mesh.y, z: mesh.z },
+            rotation: { x: 0, y: 0, z: 0, w: 1 },
+        })),
+        launched: false,
+    };
+    const live = { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    live.position = { x: 7, y: 8, z: 9 };
+    const rest = state.transforms[1]!;
+    if (rest.position.y !== 5 || rest.rotation.w !== 1 || live.position.z !== 9) throw new Error("readonly views");
+`,
+);
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

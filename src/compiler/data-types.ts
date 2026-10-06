@@ -1631,7 +1631,60 @@ export class DataTypeRegistry {
             return dataTypesEqual(source.element, target.element);
         if (source.kind === "optional" && target.kind === "optional")
             return this.sharedUnionFieldStorage(source.inner, target.inner);
+        // A nested record of the same layout (`readonly` aside) is stored as
+        // it is; a record kept elsewhere is judged where it is stored.
+        if (source.kind === "struct" && target.kind === "struct")
+            return this.sameRecordLayout(source.name, target.name, new Set());
         return false;
+    }
+
+    /**
+     * Whether two structs hold the same fields in the same storage, the
+     * `readonly` modifiers of their record types aside.
+     */
+    private sameRecordLayout(
+        left: string,
+        right: string,
+        seen: Set<string>,
+    ): boolean {
+        if (left === right || seen.has(`${left}|${right}`)) return true;
+        seen.add(`${left}|${right}`);
+        const leftFields = this.structsByName.get(left)?.fields;
+        const rightFields = this.structsByName.get(right)?.fields;
+        const sameStorage = (a: DataType, b: DataType): boolean =>
+            dataTypesEqual(a, b) ||
+            (a.kind === "optional" &&
+                b.kind === "optional" &&
+                sameStorage(a.inner, b.inner)) ||
+            (a.kind === "struct" &&
+                b.kind === "struct" &&
+                this.sameRecordLayout(a.name, b.name, seen));
+        return (
+            leftFields !== undefined &&
+            rightFields !== undefined &&
+            leftFields.length === rightFields.length &&
+            this.isReferenceStruct(left) === this.isReferenceStruct(right) &&
+            !this.isClassStruct(left) &&
+            !this.isClassStruct(right) &&
+            leftFields.every((field) => {
+                const other = rightFields.find(
+                    (candidate) => candidate.sourceName === field.sourceName,
+                );
+                return (
+                    other !== undefined &&
+                    !field.accessor &&
+                    !other.accessor &&
+                    field.name === other.name &&
+                    field.optionalProperty === other.optionalProperty &&
+                    field.defaultWhenMissing === other.defaultWhenMissing &&
+                    field.uncheckedProperty === other.uncheckedProperty &&
+                    field.sharedAbsent === other.sharedAbsent &&
+                    JSON.stringify(field.presentForTags) ===
+                        JSON.stringify(other.presentForTags) &&
+                    sameStorage(field.type, other.type)
+                );
+            })
+        );
     }
 
     /** A checked object can use its declared layout only when no source field is lost or widened. */
