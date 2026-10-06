@@ -1017,13 +1017,17 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (ts.isCallExpression(unwrapped)) {
+            const joined = ts.isPropertyAccessExpression(unwrapped.expression)
+                ? this.context.unwrap(unwrapped.expression.expression)
+                : undefined;
+            // A literal with spreads joins the array it builds at run time.
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
                 unwrapped.expression.name.text === "join" &&
                 unwrapped.arguments.length <= 1 &&
-                ts.isArrayLiteralExpression(
-                    this.context.unwrap(unwrapped.expression.expression),
-                )
+                joined &&
+                ts.isArrayLiteralExpression(joined) &&
+                !joined.elements.some(ts.isSpreadElement)
             ) {
                 const value =
                     this.context.evaluator.compileStringLiteral(unwrapped);
@@ -1092,11 +1096,16 @@ export class ExpressionLowerer {
                             const spread = this.compileValue(
                                 element.expression,
                             );
-                            if (spread.kind !== "tuple") {
+                            const lanes =
+                                this.context.dataLowerer.spreadTupleLanes(
+                                    spread,
+                                    element,
+                                );
+                            if (!lanes) {
                                 staticTuple = false;
                                 break;
                             }
-                            elements.push(...(spread.tupleElements ?? []));
+                            elements.push(...lanes);
                         } else {
                             elements.push(
                                 this.builtLane(

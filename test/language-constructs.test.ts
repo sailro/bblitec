@@ -4798,3 +4798,92 @@ check(
     if (reset(lanes) !== lanes || lanes.join() !== "4,0,0") throw new Error("tuple fill");
 `,
 );
+
+check(
+    "numeric-tuples-as-arrays",
+    `
+    type Vec3 = [number, number, number];
+    function writeInto(x: number, out: number[]): void { out[0] = x; out[2] = x * 2; }
+    function frameInto(x: number, outU: number[], outV: number[]): void { writeInto(x, outU); writeInto(x + 1, outV); }
+    function dot(a: readonly number[], b: readonly number[]): number { return a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!; }
+    function sum(values: ArrayLike<number>): number { let total = 0; for (let i = 0; i < values.length; i++) total += values[i]!; return total; }
+    function frame(x: number, brick: { v: Vec3 }): Vec3 { const u: Vec3 = [0, 0, 0]; frameInto(x, u, brick.v as number[]); return u; }
+    const stored: Array<typeof frame> = [frame];
+    const brick = { v: [0, 0, 0] as Vec3 };
+    const u = stored[0]!(3, brick);
+    if (u.join() !== "3,0,6" || brick.v.join() !== "4,0,8") throw new Error("tuple written through an array parameter");
+    const direct: Vec3 = [1, 1, 1];
+    frameInto(5, direct, brick.v);
+    if (direct.join() !== "5,1,10" || brick.v.join() !== "6,0,12") throw new Error("direct tuple arguments");
+    if (dot(u, brick.v) !== 90 || sum(u) !== 9) throw new Error("tuple read through array views");
+    function first2(out: number[]): number { out[0] = 1; return out[0] + out.length; }
+    const counted: Array<typeof first2> = [first2];
+    if (counted[0]!([5, 6]) !== 3 || first2([7]) !== 2) throw new Error("array literal argument");
+    function normal(x: number, out: Vec3 = [0, 0, 0]): Vec3 { out[0] = x; out[1] = x + 1; return out; }
+    const scratch: Vec3 = [9, 9, 9];
+    const first = normal(1), second = normal(2), shared = normal(5, scratch);
+    if (first === second || first.join() !== "1,2,0" || second[0] !== 2 || shared !== scratch || scratch.join() !== "5,6,9")
+        throw new Error("defaulted tuple out-parameter");
+    const fog: [number, number, number, number] = [1, 2, 3, 4];
+    fog.fill(0, 2);
+    if (fog.join() !== "1,2,0,0") throw new Error("tuple fill range");
+    fog.fill(7);
+    fog[3] = 1;
+    fog.copyWithin(0, 3);
+    if (fog.join() !== "1,7,7,1") throw new Error("tuple fill and copyWithin");
+    const albedo: Vec3 = [0.5, 0.25, 1];
+    const uniform = { name: "albedo", defaultValue: [...albedo] };
+    albedo[0] = 2;
+    if (uniform.defaultValue[0] !== 0.5 || uniform.defaultValue.length !== 3) throw new Error("spread copies tuple lanes");
+    function corner(x: number, z: number): [number, number] { return [x, z]; }
+    const outline: number[] = [...corner(1, 2), ...corner(3, 4), 5];
+    if (outline.join() !== "1,2,3,4,5") throw new Error("tuple spreads into an array");
+    function withAlpha(rgb: Vec3): [number, number, number, number] { return [...rgb, 1]; }
+    if (withAlpha(albedo).join() !== "2,0.25,1,1") throw new Error("tuple spread into a wider tuple");
+    function waterY(x: number, z: number): number { return x * 10 + z; }
+    function sampler(ax: number, dx: number, at3: (x: number, z: number) => number): (t: number) => number {
+        const at = (t: number): [number, number] => [ax + dx * t, ax - dx * t];
+        return (t: number): number => at3(...at(t));
+    }
+    if (sampler(1, 2, waterY)(1) !== 29) throw new Error("tuple spread into a function value");
+    interface Batch { shift(seq: number, dx: number, dz: number): number }
+    const batch: Batch = { shift: (seq, dx, dz) => seq + dx * 10 + dz * 100 };
+    const delta: readonly [number, number] = [2, 3];
+    if (batch.shift(1, ...delta) !== 321) throw new Error("tuple spread into a method");
+`,
+);
+
+test("numeric tuples refuse writable array parameters that resize or outgrow them", () => {
+    for (const body of [
+        "function grow(out: number[]): void { out.push(1); }",
+        "function grow(out: number[]): void { out[3] = 1; }",
+        "function grow(out: number[]): void { out.length = 1; }",
+        "function grow(out: number[]): void { out[0] = 1; resize(out); } function resize(values: number[]): void { values.pop(); }",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${body}
+                    function frame(): number { const t: [number, number, number] = [0, 0, 0]; grow(t); return t[0]; }
+                    const roots: Array<typeof frame> = [frame];
+                    if (roots[0]!() !== 0) throw new Error("frame");`,
+                ),
+            /By-reference data arguments require a matching addressable local or path/,
+        );
+});
+
+check(
+    "numeric-tuples-in-array-sinks",
+    `
+    interface Decl { name: string; defaultValue?: number | number[] }
+    const cloud: [number, number, number, number] = [1, 2, 3, 4];
+    const decls: Decl[] = [{ name: "cloud", defaultValue: cloud }, { name: "scale", defaultValue: 2 }];
+    cloud[0] = 9;
+    const value = decls[0]!.defaultValue;
+    if (!Array.isArray(value) || value[0] !== 9 || value.length !== 4) throw new Error("tuple keeps identity in a union field");
+    const lanes: [number, number, number] = [1, 2, 3];
+    const record = { copy: [...lanes], list: [...[4, 5], ...lanes] };
+    lanes[0] = 7;
+    if (record.copy[0] !== 1 || record.list.join() !== "4,5,1,2,3") throw new Error("spreads copy where the record is built");
+`,
+);

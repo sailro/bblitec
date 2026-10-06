@@ -760,6 +760,208 @@ export function parameterIsReadOnly(
     return readOnly;
 }
 
+const fixedLengthCache = new EmissionWeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.Symbol, number | null>
+>();
+
+/** Array methods that keep the receiver's length and return a new value. */
+function keepsLengthReading(method: string): boolean {
+    return readOnlyDataMethods.has(method);
+}
+
+/** In-place array methods that keep the receiver's length. */
+const lengthPreservingWriters: ReadonlySet<string> = new EmissionSet([
+    "copyWithin",
+    "fill",
+    "reverse",
+    "sort",
+]);
+
+/**
+ * Whether a function body keeps an array parameter's length and identity
+ * to itself: the parameter (and the local constants naming it) is read,
+ * written at constant indices, searched, iterated, spread, or passed to a
+ * function that keeps it the same way; it is never resized, stored,
+ * returned or captured. Returns how many leading elements the body writes,
+ * or undefined when that is not proven. A numeric tuple of at least that
+ * many elements can then be passed as the parameter's array.
+ */
+export function fixedLengthParameterWrites(
+    checker: ts.TypeChecker,
+    declaration: SupportedFunction,
+    parameter: ts.Identifier,
+    active: Set<ts.Symbol> = new EmissionSet<ts.Symbol>(),
+): number | undefined {
+    const symbol = declaredSymbol(checker, parameter);
+    const body = declaration.body;
+    if (!symbol || !body) return undefined;
+    let byChecker = fixedLengthCache.get(checker);
+    const cached = byChecker?.get(symbol);
+    if (cached !== undefined) return cached ?? undefined;
+    if (active.has(symbol)) return 0;
+    active.add(symbol);
+    const aliases = new EmissionSet<ts.Symbol>([symbol]);
+    const writeTargets = new EmissionSet<ts.Node>();
+    forEachAnalysisNode(body, (node) => {
+        if (isAssignmentExpression(node))
+            for (const target of assignmentTargets(node.left))
+                writeTargets.add(unwrapExpression(target));
+        else if (isUpdateExpression(node))
+            writeTargets.add(unwrapExpression(node.operand));
+    });
+    let written = 0;
+    let proven = true;
+    const climb = (node: ts.Expression): ts.Expression => {
+        let current = node;
+        while (
+            ts.isParenthesizedExpression(current.parent) ||
+            ts.isAsExpression(current.parent) ||
+            ts.isNonNullExpression(current.parent) ||
+            ts.isTypeAssertionExpression(current.parent) ||
+            ts.isSatisfiesExpression(current.parent)
+        )
+            current = current.parent;
+        return current;
+    };
+    const callbackNamesArray = (
+        call: ts.CallExpression,
+        method: string,
+    ): boolean => {
+        const arrayParameter =
+            method === "reduce" || method === "reduceRight" ? 3 : 2;
+        return call.arguments.some((argument) =>
+            checker
+                .getTypeAtLocation(argument)
+                .getCallSignatures()
+                .some(
+                    (signature) => signature.parameters.length > arrayParameter,
+                ),
+        );
+    };
+    const passedArgument = (
+        call: ts.CallExpression | ts.NewExpression,
+        use: ts.Expression,
+    ): boolean => {
+        const index = call.arguments?.indexOf(use) ?? -1;
+        if (index < 0) return false;
+        const called = checker.getResolvedSignature(call)?.declaration;
+        if (called && declarationInDefaultLibrary(called)) {
+            const callee = unwrapExpression(call.expression);
+            return !(
+                ts.isPropertyAccessExpression(callee) &&
+                storingDataMethods.has(callee.name.text)
+            );
+        }
+        if (!isSupportedFunction(called)) return false;
+        const target = called.parameters[index];
+        if (!target || target.dotDotDotToken || !ts.isIdentifier(target.name))
+            return false;
+        const nested = fixedLengthParameterWrites(
+            checker,
+            called,
+            target.name,
+            active,
+        );
+        if (nested === undefined) return false;
+        written = Math.max(written, nested);
+        return true;
+    };
+    const admitted = (identifier: ts.Identifier): boolean => {
+        if (
+            ts.findAncestor(
+                identifier.parent,
+                (node) => ts.isFunctionLike(node) || node === declaration,
+            ) !== declaration
+        )
+            return false;
+        const use = climb(identifier);
+        const parent = use.parent;
+        if (ts.isElementAccessExpression(parent) && parent.expression === use) {
+            if (!writeTargets.has(climb(parent))) return true;
+            const index = unwrapExpression(parent.argumentExpression);
+            if (!ts.isNumericLiteral(index)) return false;
+            const value = Number(index.text);
+            if (!Number.isInteger(value) || value < 0) return false;
+            written = Math.max(written, value + 1);
+            return true;
+        }
+        if (
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === use
+        ) {
+            const member = parent.name.text;
+            const call = climb(parent).parent;
+            if (
+                ts.isCallExpression(call) &&
+                call.expression === climb(parent)
+            ) {
+                if (keepsLengthReading(member))
+                    return !callbackNamesArray(call, member);
+                return (
+                    lengthPreservingWriters.has(member) &&
+                    ts.isExpressionStatement(call.parent)
+                );
+            }
+            return member === "length" && !writeTargets.has(climb(parent));
+        }
+        if (
+            (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+            parent.expression !== use
+        )
+            return passedArgument(parent, use);
+        if (
+            ts.isSpreadElement(parent) ||
+            (ts.isForOfStatement(parent) && parent.expression === use)
+        )
+            return true;
+        if (
+            ts.isVariableDeclaration(parent) &&
+            parent.initializer === use &&
+            ts.isArrayBindingPattern(parent.name)
+        )
+            return true;
+        if (
+            ts.isVariableDeclaration(parent) &&
+            parent.initializer === use &&
+            ts.isIdentifier(parent.name) &&
+            (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
+        ) {
+            const alias = declaredSymbol(checker, parent.name);
+            if (alias) aliases.add(alias);
+            return alias !== undefined;
+        }
+        return (
+            ts.isBinaryExpression(parent) &&
+            [
+                ts.SyntaxKind.EqualsEqualsEqualsToken,
+                ts.SyntaxKind.ExclamationEqualsEqualsToken,
+            ].includes(parent.operatorToken.kind)
+        );
+    };
+    forEachAnalysisNode(body, (node) => {
+        if (!proven) return "skip";
+        if (
+            ts.isIdentifier(node) &&
+            !(
+                ts.isVariableDeclaration(node.parent) &&
+                node.parent.name === node
+            )
+        ) {
+            const named = declaredSymbol(checker, node);
+            if (named && aliases.has(named) && !admitted(node)) proven = false;
+        }
+    });
+    active.delete(symbol);
+    const result = proven ? written : undefined;
+    if (active.size === 0) {
+        byChecker ??= new EmissionWeakMap<ts.Symbol, number | null>();
+        byChecker.set(symbol, result ?? null);
+        fixedLengthCache.set(checker, byChecker);
+    }
+    return result;
+}
+
 /**
  * The expression a supported function's own final `return` yields, if any.
  *
@@ -6290,7 +6492,11 @@ export class UserFunctionLowerer {
             (argument.kind === "json-null" && argument.cpp === "std::nullopt")
         ) {
             if (argument?.kind === "void") context.emitDiscardedValue(argument);
-            return context.compileValue(initializer);
+            return this.defaultParameterValue(
+                context,
+                parameter,
+                context.compileValue(initializer),
+            );
         }
         const storage = argument.dataType;
         if (!storage) return argument;
@@ -6349,6 +6555,43 @@ ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
         });
         context.registerNativeConstBinding(result);
         return context.dataValue(result, type);
+    }
+
+    /**
+     * A default array literal is a fresh array per call. A parameter the
+     * body writes through (`out[0] = x`) holds it in the parameter's own
+     * native array storage, as a declared mutable local does.
+     */
+    private defaultParameterValue(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+    ): Value {
+        const declaration = parameter.declaration.parent;
+        if (
+            value.kind !== "tuple" ||
+            !ts.isIdentifier(parameter.name) ||
+            !isSupportedFunction(declaration) ||
+            parameterIsReadOnly(this.checker, declaration, parameter.name)
+        )
+            return value;
+        const storage = context.dataTypes.fromStoredTsType(
+            parameter.type,
+            parameter.declaration,
+        );
+        if (storage?.kind !== "tuple" && storage?.kind !== "vector")
+            return value;
+        return context.bindings.pinValueToTemporary(
+            context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    storage,
+                    parameter.declaration,
+                ),
+                storage,
+            ),
+            "default_argument",
+        );
     }
 
     /** Runs `work` with the type parameters a generic call binds in force. */
