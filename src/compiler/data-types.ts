@@ -759,13 +759,8 @@ function storedPresence(
     return admitsNull ? "nullable" : "stored";
 }
 
-/**
- * What an empty native slot of a field holds as a JavaScript value: the
- * absent values its property types admit, `either` when they admit both.
- */
-type FieldAbsence = AbsentValueKind;
-
-function valueAbsence(types: readonly ts.Type[]): FieldAbsence | undefined {
+/** The absent values a field's property types admit. */
+function valueAbsence(types: readonly ts.Type[]): AbsentValueKind | undefined {
     const absent = types.map(nullability);
     return absentValueKind({
         null: absent.some((each) => each.null),
@@ -782,12 +777,13 @@ function valueAbsence(types: readonly ts.Type[]): FieldAbsence | undefined {
 interface FieldPresence {
     readonly presence?: OwnPropertyPresence;
     readonly armPresence?: OwnPropertyPresence;
-    readonly absence?: FieldAbsence;
+    /** What an empty native slot of the field holds as a JavaScript value. */
+    readonly absence?: AbsentValueKind;
 }
 
 function fieldPresence(
     presence: OwnPropertyPresence | undefined,
-    absence: FieldAbsence | undefined,
+    absence: AbsentValueKind | undefined,
     armPresence?: OwnPropertyPresence,
 ): FieldPresence {
     return {
