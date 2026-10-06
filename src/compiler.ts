@@ -6210,28 +6210,27 @@ class Compiler implements LoweringServices {
         if (binding) this.useNativeBinding(binding);
     }
 
-    public beginInlineFrame(): void {
+    public emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label" | undefined,
+        emitBody: () => T,
+    ): T {
         this.returnFrames.push({
             kind: "inline",
             engineScopeDepth: this.bindings.variableScopes.length,
         });
-    }
-
-    public emitInlinedBody<T>(
-        declaration: ts.SignatureDeclaration,
-        returns: "break" | "label",
-        emitBody: () => T,
-    ): T {
-        return this.statements.emitInlinedBody(
-            this,
-            declaration,
-            returns,
-            emitBody,
-        );
-    }
-
-    public endInlineFrame(): void {
-        this.validateResourceLoopReturn(this.returnFrames.pop());
+        try {
+            return returns
+                ? this.statements.emitInlinedBody(
+                      this,
+                      declaration,
+                      returns,
+                      emitBody,
+                  )
+                : emitBody();
+        } finally {
+            this.validateResourceLoopReturn(this.returnFrames.pop());
+        }
     }
 
     private checkpointResourceConstruction(): ResourceConstructionCheckpoint {
