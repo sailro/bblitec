@@ -5801,12 +5801,14 @@ export class ExpressionLowerer {
                         ? `static_cast<bool>(${instance.cpp})`
                         : undefined);
                 if (optionalCall && optionalFound !== undefined) {
-                    if (!ts.isExpressionStatement(call.parent)) {
-                        this.context.fail(
+                    if (!ts.isExpressionStatement(call.parent))
+                        return this.compileOptionalMethodValue(
                             call,
-                            "Optional class method calls returning a value are not lowered.",
+                            callee.name.text,
+                            instance,
+                            declaration,
+                            optionalFound,
                         );
-                    }
                     this.context.emit({
                         kind: "open",
                         code: `if (${optionalFound}) {`,
@@ -5818,13 +5820,9 @@ export class ExpressionLowerer {
                         call,
                         declaration,
                     );
-                    if (result.kind !== "void") {
-                        this.context.fail(
-                            call,
-                            "Optional class method calls returning a value are not lowered.",
-                        );
-                    }
-                    if (result.cpp) {
+                    if (result.kind !== "void")
+                        this.context.emitDiscardedValue(result);
+                    else if (result.cpp) {
                         this.context.emit({
                             kind: "expression",
                             code: `${result.cpp};`,
@@ -5842,5 +5840,75 @@ export class ExpressionLowerer {
                 );
             }
         }
+    }
+
+    /**
+     * `receiver?.method(...)` as a value: the method runs, its arguments
+     * evaluated, only when the receiver is present, and the call is
+     * `undefined` otherwise, so the result is the call's nullable type (a
+     * `void` method's call is `undefined` either way).
+     */
+    private compileOptionalMethodValue(
+        call: ts.CallExpression,
+        method: string,
+        instance: Value,
+        declaration: ts.ClassDeclaration,
+        found: string,
+    ): Value {
+        const type = this.context.dataLowerer.dataTypeAt(call);
+        const slot =
+            type && !isUndefinedDataType(type)
+                ? {
+                      type,
+                      cpp: this.context.allocateTemporaryCppName(
+                          "optional_method_result",
+                      ),
+                  }
+                : undefined;
+        const lines = this.context.captureEmittedStatements(() =>
+            this.inRuntimeControlFlow(() => {
+                const result = this.context.classLowerer.compileMethodCall(
+                    instance,
+                    method,
+                    call,
+                    declaration,
+                );
+                if (!slot) {
+                    this.context.emitDiscardedValue(result);
+                    return;
+                }
+                if (result.kind === "void")
+                    this.context.fail(
+                        call,
+                        "An optional method call's value requires the method's represented result.",
+                    );
+                this.context.emit({
+                    kind: "expression",
+                    code: `${slot.cpp} = ${this.context.dataLowerer.compileKnownValueForSink(result, slot.type, call)};`,
+                });
+            }),
+        );
+        if (slot)
+            this.context.emit({
+                kind: "declaration",
+                type: this.context.dataTypes.cppType(slot.type),
+                name: slot.cpp,
+                initializer: this.context.dataTypes.absentValue(slot.type),
+            });
+        const binding = slot
+            ? this.context.registerNativeBinding(slot.cpp)
+            : undefined;
+        this.context.emit({ kind: "open", code: `if (${found}) {` });
+        this.context.increaseIndent();
+        this.context.emitCapturedStatements(lines);
+        this.context.decreaseIndent();
+        this.context.emit({ kind: "close", code: "}" });
+        return slot && binding
+            ? {
+                  ...this.context.dataLowerer.leafValue(slot.cpp, slot.type),
+                  nativeBinding: true,
+                  nativeCaptures: [binding],
+              }
+            : { kind: "json-null", cpp: "std::nullopt" };
     }
 }

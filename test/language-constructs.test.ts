@@ -4767,3 +4767,36 @@ test("literal methods reading this refuse reads of their function value", () => 
         );
 });
 
+check(
+    "optional-class-method-call-values",
+    `
+    class Contacts {
+        constructor(private readonly base: number) {}
+        age(a: number, b: number): number { return this.base + a + b; }
+        retains(a: number): boolean { return a > this.base; }
+        envelope(slot?: number): { compact: boolean } { return { compact: slot !== undefined }; }
+        touch(): void { touched++; }
+    }
+    let touched = 0;
+    const pairs = new Map<string, Contacts>();
+    pairs.set("x", new Contacts(10));
+    let evaluated = 0;
+    function argument(value: number): number { evaluated++; return value; }
+    function age(key: string): number { return pairs.get(key)?.age(argument(1), 2) ?? -1; }
+    function retains(key: string, a: number): boolean { return pairs.get(key)?.retains(a) ?? false; }
+    const normal = { compact: false };
+    function envelope(key: string): { compact: boolean } { return pairs.get(key)?.envelope(1) ?? normal; }
+    if (age("x") !== 13 || age("y") !== -1 || evaluated !== 1) throw new Error("optional method value");
+    if (!retains("x", 11) || retains("y", 11) || retains("x", 3)) throw new Error("optional boolean method");
+    if (!envelope("x").compact || envelope("y") !== normal) throw new Error("optional record method");
+    const missing = pairs.get("y")?.age(1, 2);
+    const touchedNone = pairs.get("y")?.touch();
+    const touchedOne = pairs.get("x")?.touch();
+    pairs.get("x")?.age(argument(1), 0);
+    if (missing !== undefined || touchedNone !== undefined || touchedOne !== undefined || touched !== 1 || evaluated !== 2)
+        throw new Error("absent receiver is undefined");
+    const stored: Array<typeof age> = [age];
+    if (stored[0]!("x") !== 13) throw new Error("stored caller");
+`,
+);
+
