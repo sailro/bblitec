@@ -9405,12 +9405,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         const targetField = targetFields.get(
                             sourceField.sourceName,
                         );
+                        // A field a shared layout holds for a wider record
+                        // type is absent from records of the spread's own
+                        // type; a wider record carries it past the target.
+                        const declared = this.context.checker
+                            .getTypeAtLocation(property.expression)
+                            .getProperty(sourceField.sourceName);
+                        if (
+                            !targetField &&
+                            sourceField.sharedAbsent &&
+                            !declared
+                        ) {
+                            this.context.dataTypes.noteRecordConversion(
+                                dataType,
+                                [sourceField.sourceName],
+                            );
+                            continue;
+                        }
                         if (!targetField)
                             this.context.fail(
                                 property,
                                 `Spread property '${sourceField.sourceName}' cannot be retained in the narrower '${dataType.name}' storage.`,
                             );
                         const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
+                        // The spread's own type declares the field required,
+                        // so its records hold it, absent-capable storage or not.
+                        if (
+                            sourceField.type.kind === "optional" &&
+                            sourceField.sharedAbsent &&
+                            targetField.type.kind !== "optional" &&
+                            declared !== undefined &&
+                            (declared.flags & ts.SymbolFlags.Optional) === 0
+                        ) {
+                            this.context.emit({
+                                kind: "expression",
+                                code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(`*${sourceCpp}`, sourceField.type.inner), targetField.type, property)};`,
+                            });
+                            assigned.add(targetField.name);
+                            continue;
+                        }
                         if (sourceField.type.kind === "optional") {
                             this.context.emit({
                                 kind: "open",

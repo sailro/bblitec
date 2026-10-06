@@ -362,6 +362,11 @@ export interface DataStructField {
     /** An asserted empty object can lack this otherwise required property. */
     uncheckedProperty?: boolean;
     /**
+     * A shared layout holds this field for the record types declaring it;
+     * records of a type sharing the layout without it hold it absent.
+     */
+    sharedAbsent?: boolean;
+    /**
      * A repository object literal (or a class that `implements` the type)
      * defines the property with `get`, and `set` when "get-set", or the
      * record is a view of an open record: the field is a `bbl::js::Accessor`
@@ -1049,6 +1054,14 @@ export class DataTypeRegistry {
         NativeRecordStorageDemand["identity"],
         ts.Type
     >();
+    /**
+     * Fields of a shared layout that a type sharing it does not declare, by
+     * layout identity: records of that type hold them absent.
+     */
+    private readonly layoutAbsentFields = new EmissionMap<
+        NativeRecordStorageDemand["identity"],
+        ReadonlySet<string>
+    >();
     /** Layout types being resolved, so a cycle of shared layouts maps once. */
     private readonly resolvingLayouts = new EmissionSet<ts.Type>();
 
@@ -1058,11 +1071,31 @@ export class DataTypeRegistry {
     ): void {
         for (const demand of demands)
             this.withRecordDemand(demand, () => {
-                if (demand.layout)
+                if (demand.layout) {
                     this.sharedRecordLayouts.set(
                         this.structIdentity(demand.type),
                         demand.layout,
                     );
+                    // A union layout already holds each arm's absent fields.
+                    if (!demand.layout.isUnion()) {
+                        const declared = new Set(
+                            this.structProperties(demand.type).map(
+                                (property) => property.name,
+                            ),
+                        );
+                        const identity = this.structIdentity(demand.layout);
+                        const absent = new Set(
+                            this.layoutAbsentFields.get(identity),
+                        );
+                        for (const property of this.structProperties(
+                            demand.layout,
+                        ))
+                            if (!declared.has(property.name))
+                                absent.add(property.name);
+                        if (absent.size)
+                            this.layoutAbsentFields.set(identity, absent);
+                    }
+                }
                 if (demand.proxy)
                     this.proxyRecords.add(this.structIdentity(demand.type));
             });
@@ -1389,11 +1422,13 @@ export class DataTypeRegistry {
      * only where nothing in the program can tell it from that object
      * (`recordCopyObservation`); otherwise the record stays one object:
      * either the source type's records are constructed in the target's
-     * layout (a union, or a record type declaring every source field and
-     * leaving its other fields optional), or the target is a view whose
-     * records are constructed in the source's layout (it declares only
-     * source fields). Returns when the copy is unobservable; otherwise
-     * throws the layout demand or refuses. Records read out of a shared
+     * layout (a union, or a record type declaring every source field), or
+     * the target is a view whose records are constructed in the source's
+     * layout (it declares only source fields). Fields the layout's type
+     * declares and the sharing type does not are held absent in the sharing
+     * type's records (`layoutAbsentFields`). Returns when the copy is
+     * unobservable; otherwise throws the layout demand or refuses. Records
+     * read out of a shared
      * array (`sharedArray`) are never copied: a copy needs a second array.
      * A copy handed to a call as `argument` needs only the call's writes.
      */
@@ -1487,24 +1522,13 @@ export class DataTypeRegistry {
                 );
             throw new NativeRecordStorageRequired({ ...owner, layout });
         };
-        if (plain && fits(sourceFields, targetFields)) {
-            const absent = targetFields.filter(
-                (field) =>
-                    !sourceFields.some(
-                        (candidate) =>
-                            candidate.sourceName === field.sourceName,
-                    ),
-            );
-            if (
-                union ||
-                absent.every(
-                    (field) =>
-                        field.defaultWhenMissing ||
-                        field.type.kind === "optional",
-                )
-            )
-                demand(source, target.type);
-        }
+        // The target's other fields are held absent in the source's records.
+        if (
+            plain &&
+            (union || (target.type.flags & RECORD_TYPE_FLAGS) !== 0) &&
+            fits(sourceFields, targetFields)
+        )
+            demand(source, target.type);
         if (union)
             this.fail(
                 node,
@@ -3897,6 +3921,9 @@ export class DataTypeRegistry {
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
         const partial = this.isPartialRecord(type);
+        const sharedAbsent = this.layoutAbsentFields.get(
+            this.structIdentity(type),
+        );
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
         for (const property of properties) {
@@ -3938,8 +3965,10 @@ export class DataTypeRegistry {
             if (!mappedValue) {
                 return undefined;
             }
+            const unchecked =
+                partial || sharedAbsent?.has(property.name) === true;
             const optional =
-                partial || (property.flags & ts.SymbolFlags.Optional) !== 0;
+                unchecked || (property.flags & ts.SymbolFlags.Optional) !== 0;
             const mapped: DataType = this.markStoredObjectReferences(
                 markIdentityFunctions(
                     optional
@@ -3959,7 +3988,10 @@ export class DataTypeRegistry {
                 ...(proxy ? { accessorReceiver: provisionalName } : {}),
                 ...(propertyIsReadOnly(property) ? { readOnly: true } : {}),
                 ...(optional ? { optionalProperty: true } : {}),
-                ...(partial ? { uncheckedProperty: true } : {}),
+                ...(unchecked ? { uncheckedProperty: true } : {}),
+                ...(sharedAbsent?.has(property.name)
+                    ? { sharedAbsent: true }
+                    : {}),
                 ...(optional && mapped.kind !== "optional"
                     ? { defaultWhenMissing: true }
                     : {}),
@@ -3997,7 +4029,7 @@ export class DataTypeRegistry {
         const key = fields
             .map(
                 (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${field.uncheckedProperty ? "unchecked" : "checked"}:${JSON.stringify(field.presentForTags)}${accessorKey(field)}`,
+                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${field.sharedAbsent ? "shared" : field.uncheckedProperty ? "unchecked" : "checked"}:${JSON.stringify(field.presentForTags)}${accessorKey(field)}`,
             )
             .join(",");
         const existing = this.structsByKey.get(key);

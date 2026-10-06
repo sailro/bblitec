@@ -5212,7 +5212,7 @@ check(
     }
     const base = palette();
     const extra: Spec = { id: "b", rgb: [4, 5, 6] };
-    const all: Swatch[] = [...base, { id: extra.id, rgb: extra.rgb, swatch: "#b" }];
+    const all: Swatch[] = [...base, { ...extra, swatch: "#b" }];
     if (all.length !== 2 || all[0]!.swatch !== "#a" || all[0]!.rgb[2] !== 3 || all[1]!.id !== "b") throw new Error("spread records");
     base[0]!.rgb[0] = 9;
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
@@ -6298,6 +6298,31 @@ check(
 );
 
 check(
+    "narrower-literals-share-the-wider-record-layout",
+    `
+    type Spec = { id: string; rgb: [number, number, number] };
+    type Swatch = Spec & { swatch: string };
+    function palette(): { id: string; labelKey: string; rgb: [number, number, number]; swatch: string }[] {
+        return [{ id: "a", labelKey: "tint.a", rgb: [1, 2, 3], swatch: "#a" }];
+    }
+    const base = palette();
+    const extra: Spec = { id: "b", rgb: [4, 5, 6] };
+    const all: Swatch[] = [...base, { ...extra, swatch: "#b" }];
+    if (all[0] !== base[0]) throw new Error("converted record keeps its identity");
+    all[0]!.swatch = "#c";
+    all[0]!.id = "z";
+    if (base[0]!.swatch !== "#c" || base[0]!.id !== "z" || base[0]!.labelKey !== "tint.a") throw new Error("write through the narrower view");
+    base[0]!.swatch = "#d";
+    if (all[0]!.swatch !== "#d") throw new Error("write through the wider record");
+    const narrow = all[1]!;
+    if (Object.keys(narrow).join(",") !== "id,rgb,swatch") throw new Error("narrower keys " + Object.keys(narrow).join(","));
+    if (JSON.stringify(narrow) !== '{"id":"b","rgb":[4,5,6],"swatch":"#b"}') throw new Error("narrower JSON " + JSON.stringify(narrow));
+    if (Object.keys(base[0]!).join(",") !== "id,labelKey,rgb,swatch") throw new Error("wider keys " + Object.keys(base[0]!).join(","));
+    if (JSON.stringify(all[0]) !== '{"id":"z","labelKey":"tint.a","rgb":[1,2,3],"swatch":"#d"}') throw new Error("wider JSON " + JSON.stringify(all[0]));
+`,
+);
+
+check(
     "tuples-stored-as-number-arrays-grow-together",
     `
     const store: number[][] = [];
@@ -6348,13 +6373,27 @@ check(
 `,
 );
 
+check(
+    "coalesced-narrower-records-take-the-wider-layout",
+    `
+    interface P { x: number; z: number }
+    interface C { x: number }
+    const items: P[] = [{ x: 1, z: 2 }];
+    const other: C = { x: 5 };
+    function read(i: number): number { const p = items[i] ?? other; other.x += 60; return p.x; }
+    if (read(0) !== 1 || read(3) !== 125 || other.x !== 125) throw new Error("selected record reads");
+    if ((items[3] ?? other) !== other || (items[0] ?? other) !== items[0]) throw new Error("selected identity");
+    if (JSON.stringify(other) !== '{"x":125}' || Object.keys(other).join(",") !== "x") throw new Error("narrower keys");
+`,
+);
+
 test("coalesced records refuse a copy the program could tell apart", () => {
     assert.throws(
         () =>
             compileSource(`interface P { x: number; z: number }
-            interface C { x: number }
+            interface C { x: number; w: number }
             const items: P[] = [{ x: 1, z: 2 }];
-            const other: C = { x: 5 };
+            const other: C = { x: 5, w: 6 };
             function read(i: number): number { const p = items[i] ?? other; other.x = 60; return p.x; }
             const unused = read(0);`),
         /'C' record stored as 'P' would be a copy of the one object JavaScript keeps, and the program writes 'x'/,
@@ -6371,17 +6410,6 @@ test("record conversions refuse what neither a copy nor a shared layout holds", 
             const seen = new Set<T>([t]);
             const unused = seen.has(t);`),
         /'S' record stored as 'T' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity/,
-    );
-    assert.throws(
-        () =>
-            compileSource(`interface Wide { a: number; b: number }
-            interface Narrow { a: number }
-            const w: Wide = { a: 1, b: 2 };
-            const n: Narrow = w;
-            n.a = 2;
-            const other: Narrow = { a: 3 };
-            const unused = w.a + other.a;`),
-        /missing required field 'b'\. 'Narrow' records share the 'Wide' layout/,
     );
 });
 
