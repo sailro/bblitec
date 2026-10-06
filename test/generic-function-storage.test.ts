@@ -390,7 +390,7 @@ test("stored polymorphic recursion and detached receivers refuse", () => {
         function make():State{return{count:0,ready:()=>true,read<T>(value:T):T{this.count++;return value;}};}
         ${setup}state.read(3);
     `),
-        /Stored generic methods using this require a shared native receiver/,
+        /An object literal method reading `this` requires shared native object storage/,
     );
 });
 
