@@ -572,6 +572,14 @@ check(
     minus **= edge[3]!;
     if (!Number.isNaN(one) || !Number.isNaN(minus) || !Number.isNaN(edge[0]! ** edge[3]!) || edge[2]! ** edge[4]! !== 1)
         throw new Error("JavaScript exponent edges");
+    if (!Number.isNaN(Math.pow(edge[0]!, edge[3]!)) || !Number.isNaN(Math.pow(edge[1]!, -edge[3]!)) ||
+        !Number.isNaN(Math.pow(edge[0]!, edge[2]!)) || Math.pow(edge[2]!, edge[4]!) !== 1 || Math.pow(edge[3]!, -1) !== 0 ||
+        Math.pow(h[0]!, 10) !== 1024 || edge[1]! ** 3 !== -1 || Math.pow(h[0]!, -2) !== 0.25)
+        throw new Error("Math.pow follows the exponent rules");
+    const powers = [edge[0]!, edge[1]!].map((base) => Math.pow(base, edge[3]!));
+    const pairwise = [edge[1]!, h[0]!].map(Math.pow);
+    if (!Number.isNaN(powers[0]!) || !Number.isNaN(powers[1]!) || pairwise[0] !== 1 || pairwise[1] !== 2)
+        throw new Error("Math.pow as a value");
 `,
 );
 
@@ -5797,6 +5805,9 @@ check(
     if (sum(doc.nodes[0]!) !== 7 || sum(doc.nodes[1]!) !== 2.5) throw new Error("document lanes");
     const [first, second] = JSON.parse('"ab"') as unknown as string[];
     if (first !== "a" || second !== "b") throw new Error("document string");
+    const sources = ['"\\ud83d\\ude00\\u00e9xyz"'];
+    const [emoji, accent, , fourth] = JSON.parse(sources[0]!) as unknown as string[];
+    if (emoji !== "\\ud83d\\ude00" || accent !== "\\u00e9" || fourth !== "y") throw new Error("document code points");
     const [one, missing] = JSON.parse("[1]") as number[];
     if (one !== 1 || missing !== undefined) throw new Error("document lane past the end");
     let name = "";
@@ -6648,6 +6659,10 @@ check(
     const store: State[] = [{ mix: 1 }, { mix: 2 }];
     const find = (id: number) => (Number.isSafeInteger(id) && id > 0 ? store.find((state) => state.mix === id) : undefined);
     if (find(gate[1]!) !== store[0] || find(gate[0]!) !== undefined || find(3) !== undefined) throw new Error("prepared search");
+    interface Badge { level: number; label?: string }
+    function badge(on: boolean): Badge { return { level: 1, ...(on ? { label: rng() > 0 ? "on" : "off" } : {}) }; }
+    const shown = badge(gate[1]! > 0);
+    if (shown.label !== "on" || shown.label.length !== 2 || badge(gate[0]! > 0).label !== undefined) throw new Error("prepared string member");
 `,
 );
 
@@ -6870,6 +6885,71 @@ check(
     if (receiver().indexOf(needle(), position()) !== 1 || log !== "rsp") throw new Error("evaluation order " + log);
     log = "";
     if (!receiver().endsWith(needle(), position() + 2) || log !== "rsp") throw new Error("endsWith order " + log);
+`,
+);
+
+check(
+    "string-searches-over-wtf8-storage",
+    `
+    const texts = ["a\\u00e9\\u20ac\\ud83d\\ude00b\\ud83d\\ude00", "x\\ud83dy\\ude00z", "\\ud83d\\ude00", "\\ud83d", "\\ude00"];
+    const t = texts[0]!, lone = texts[1]!, pair = texts[2]!, high = texts[3]!, low = texts[4]!;
+    // t's UTF-16 units: a é € H L b H L.
+    if (t.length !== 8 || t.indexOf("b") !== 5 || t.indexOf("\\ud83d\\ude00") !== 3 || t.indexOf("\\ud83d\\ude00", 4) !== 6 ||
+        t.indexOf("\\ud83d\\ude00", 3) !== 3 || t.indexOf("", 4) !== 4 || t.indexOf("", 99) !== 8 || t.indexOf("\\u20ac", -3) !== 2 ||
+        t.indexOf("b", NaN) !== 5 || t.indexOf("a", Infinity) !== -1 || t.indexOf("\\u00e9", 1.7) !== 1 || t.indexOf("\\u00e9\\u20ac") !== 1)
+        throw new Error("indexOf");
+    if (t.includes("b", 6) || !t.includes("\\ud83d\\ude00", 4) || t.includes("\\ud83d\\ude00", 7) || !t.includes("", 99) ||
+        !t.includes("a", -Infinity) || !t.includes("\\u20ac") || t.includes("c"))
+        throw new Error("includes");
+    if (t.lastIndexOf("\\ud83d\\ude00") !== 6 || t.lastIndexOf("\\ud83d\\ude00", 7) !== 6 || t.lastIndexOf("\\ud83d\\ude00", 5) !== 3 ||
+        t.lastIndexOf("\\ud83d\\ude00", 4) !== 3 || t.lastIndexOf("\\ud83d\\ude00", 2) !== -1 || t.lastIndexOf("", 4) !== 4 ||
+        t.lastIndexOf("", 99) !== 8 || t.lastIndexOf("") !== 8 || t.lastIndexOf("b", NaN) !== 5 || t.lastIndexOf("a", -Infinity) !== 0 ||
+        t.lastIndexOf("\\u20ac", 2) !== 2 || t.lastIndexOf("\\u20ac", 1) !== -1)
+        throw new Error("lastIndexOf");
+    if (!t.startsWith("\\ud83d\\ude00", 3) || !t.startsWith("", 4) || t.startsWith("b", 4) || !t.startsWith("\\u00e9\\u20ac", 1) ||
+        !t.startsWith("a", NaN) || t.startsWith("b", Infinity) || !t.startsWith("", Infinity) || !t.startsWith("b", 5) ||
+        !t.startsWith("a") || t.startsWith("\\u00e9"))
+        throw new Error("startsWith");
+    if (!t.endsWith("\\ud83d\\ude00") || !t.endsWith("\\u20ac", 3) || !t.endsWith("", 4) || t.endsWith("\\u20ac", 4) ||
+        !t.endsWith("b", 6) || t.endsWith("a", NaN) || !t.endsWith("", NaN) || !t.endsWith("\\ud83d\\ude00", Infinity) ||
+        t.endsWith("a", -1) || !t.endsWith("\\ud83d\\ude00b", 6) || t.endsWith("b"))
+        throw new Error("endsWith");
+    // A needle holding a lone surrogate matches one half of a pair.
+    if (t.indexOf(low) !== 4 || t.lastIndexOf(high) !== 6 || t.indexOf(high, 4) !== 6 || !t.includes(low, 5) ||
+        t.lastIndexOf(low, 6) !== 4 || !t.startsWith(low, 4) || !t.endsWith(high, 4) || !t.endsWith(low) || t.startsWith(high, 4) ||
+        t.indexOf(low + "b") !== 4 || t.indexOf("\\u20ac" + high) !== 2 || t.lastIndexOf(low + "b", 99) !== 4)
+        throw new Error("lone surrogate needles");
+    // Lone surrogates in the receiver are single code units.
+    if (lone.length !== 5 || lone.indexOf("y") !== 2 || lone.indexOf(high) !== 1 || lone.lastIndexOf(low + "z") !== 3 ||
+        !lone.endsWith(low + "z") || !lone.startsWith(high + "y", 1) || lone.includes("\\ud83d\\ude00") || lone.indexOf("z", 3) !== 4 ||
+        lone.indexOf("z", 5) !== -1 || lone.lastIndexOf("x", 1) !== 0 || !lone.includes(low, 3) || lone.includes(low, 4))
+        throw new Error("lone surrogate receiver");
+    if (pair.indexOf(high) !== 0 || pair.indexOf(low) !== 1 || pair.lastIndexOf(low) !== 1 || !pair.startsWith(high) ||
+        !pair.endsWith(low) || pair.indexOf("", 1) !== 1 || pair.lastIndexOf("", 1) !== 1 || pair.endsWith(high) ||
+        !pair.endsWith(high, 1) || pair.startsWith(low) || !pair.startsWith(low, 1) || pair.includes("x"))
+        throw new Error("pair halves");
+    // Concatenated halves are one pair.
+    const joined = high + low;
+    if (joined.length !== 2 || joined.indexOf("\\ud83d\\ude00") !== 0 || joined !== pair || !t.includes(joined, 6))
+        throw new Error("joined pair");
+    // A null position reads as 0; undefined reads as the method's absent position.
+    const none: number | null = texts.length > 9 ? 1 : null;
+    // @ts-expect-error null is outside the declared position type
+    if (t.lastIndexOf("a", none) !== 0 || t.lastIndexOf("b", null) !== -1 || t.endsWith("b", none) || !t.endsWith("", none) ||
+        // @ts-expect-error null is outside the declared position type
+        t.indexOf("b", none) !== 5 || !t.startsWith("a", none) || !t.includes("a", null))
+        throw new Error("null positions");
+    function ends(text: string, end?: number): boolean { return text.endsWith("\\ud83d\\ude00", end); }
+    function last(text: string, at?: number): number { return text.lastIndexOf("\\ud83d\\ude00", at); }
+    function has(text: string, at?: number): boolean { return text.includes("\\ud83d\\ude00", at); }
+    if (!ends(t) || ends(t, 4) || !ends(t, 5) || last(t) !== 6 || last(t, 4) !== 3 || !has(t) || has(t, 7) || !has(t, 4))
+        throw new Error("optional positions");
+    let log = "";
+    function receiver(): string { log += "r"; return "a/b"; }
+    function needle(): string { log += "s"; return "/"; }
+    if (!receiver().includes(needle()) || log !== "rs") throw new Error("includes order " + log);
+    log = "";
+    if (receiver().lastIndexOf(needle()) !== 1 || log !== "rs") throw new Error("lastIndexOf order " + log);
 `,
 );
 
@@ -7224,6 +7304,14 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
             const i = (s[0]! as unknown as { indexOf(a: string, b: number, c: number): number }).indexOf("b", 0, 1);
             console.log(i);`,
             /String\.indexOf expects a search string and an optional position/,
+        ],
+        [
+            `function ends(text: string, end: number | null | undefined): boolean {
+                // @ts-expect-error null is outside the declared position type
+                return text.endsWith("b", end);
+            }
+            console.log(ends("ab", [1].length > 3 ? null : undefined));`,
+            /String\.endsWith reads a null position as 0 and an undefined one as the end; this position's storage cannot tell them apart/,
         ],
         [
             `interface S { size: number; tint?: number }

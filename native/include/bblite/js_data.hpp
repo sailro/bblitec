@@ -1202,9 +1202,10 @@ template <typename T>
     return target[index];
 }
 
-/** JavaScript refuses a read through null or undefined. */
-[[noreturn]] inline void throw_nullish_access() {
-    throw std::runtime_error("Cannot access a nullish value.");
+/** A read through null or undefined: JavaScript's TypeError. */
+[[noreturn]] inline void
+throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
+    throw NamedError("TypeError", message);
 }
 
 template <typename T> class Nullable {
@@ -2462,13 +2463,14 @@ struct CivilDate {
 
 /** ToIntegerOrInfinity over a finite number. */
 [[nodiscard]] inline double integer(double value) { return std::trunc(value) + 0.0; }
-} // namespace date_detail
 
-/** One field of an integral time value read as UTC: NaN for an invalid date. */
-[[nodiscard]] inline double date_time_field(double time, DateField field) {
-    using namespace date_detail;
-    if (std::isnan(time))
-        return time;
+/** A clipped time value as whole days since 1970-01-01 and milliseconds into that day. */
+struct DayTime {
+    std::int64_t day;
+    std::int64_t within_day;
+};
+
+[[nodiscard]] inline DayTime day_time(double time) {
     // A clipped time value is an integer within 8.64e15, exact in 64 bits.
     constexpr std::int64_t day_length = 86400000;
     const auto milliseconds = static_cast<std::int64_t>(time);
@@ -2477,6 +2479,16 @@ struct CivilDate {
         within_day += day_length;
         --day;
     }
+    return {day, within_day};
+}
+} // namespace date_detail
+
+/** One field of an integral time value read as UTC: NaN for an invalid date. */
+[[nodiscard]] inline double date_time_field(double time, DateField field) {
+    using namespace date_detail;
+    if (std::isnan(time))
+        return time;
+    const auto [day, within_day] = day_time(time);
     switch (field) {
     case DateField::year:
         return static_cast<double>(civil_from_days(day).year);
@@ -2536,37 +2548,27 @@ struct CivilDate {
 [[nodiscard]] inline std::string date_iso_string(const Date& date) {
     if (!std::isfinite(*date))
         throw std::runtime_error("Invalid time value");
-    using namespace std::chrono;
-    const auto time = sys_time<milliseconds>{milliseconds{static_cast<std::int64_t>(*date)}};
-    const auto day = floor<days>(time);
-    // Gregorian calendars repeat every 400 years. Reduce into 2000..2399
-    // before using chrono::year, whose range is smaller than JavaScript's.
-    constexpr auto base = sys_days{year{2000} / January / 1};
-    const auto offset = (day - base).count();
-    constexpr std::int64_t cycle_days = 146097;
-    const auto cycles = offset >= 0 ? offset / cycle_days : (offset - cycle_days + 1) / cycle_days;
-    const year_month_day calendar{base + days{offset - cycles * cycle_days}};
-    const auto full_year = static_cast<int>(calendar.year()) + cycles * 400;
-    const hh_mm_ss clock{time - day};
+    using namespace date_detail;
+    const auto [day, within_day] = day_time(*date);
+    const auto civil = civil_from_days(day);
     const auto digits = [](std::int64_t value, std::size_t width) {
         auto text = std::to_string(value);
         if (text.size() < width)
             text.insert(0, width - text.size(), '0');
         return text;
     };
-    const auto year_text = full_year >= 0 && full_year <= 9999
-                               ? digits(full_year, 4)
-                               : std::string(full_year < 0 ? "-" : "+") +
-                                     digits(full_year < 0 ? -full_year : full_year, 6);
-    return year_text + "-" + digits(static_cast<unsigned>(calendar.month()), 2) + "-" +
-           digits(static_cast<unsigned>(calendar.day()), 2) + "T" +
-           digits(clock.hours().count(), 2) + ":" + digits(clock.minutes().count(), 2) + ":" +
-           digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
+    const auto year_text = civil.year >= 0 && civil.year <= 9999
+                               ? digits(civil.year, 4)
+                               : std::string(civil.year < 0 ? "-" : "+") +
+                                     digits(civil.year < 0 ? -civil.year : civil.year, 6);
+    return year_text + "-" + digits(civil.month, 2) + "-" + digits(civil.day, 2) + "T" +
+           digits(within_day / 3600000, 2) + ":" + digits(within_day / 60000 % 60, 2) + ":" +
+           digits(within_day / 1000 % 60, 2) + "." + digits(within_day % 1000, 3) + "Z";
 }
 
-/** A property read of null or undefined: JavaScript's TypeError, typed as the read's result. */
+/** A property read of null or undefined, typed as the read's result. */
 template <typename T> [[nodiscard]] T absent_receiver_read(const char* message) {
-    throw NamedError("TypeError", message);
+    throw_nullish_access(message);
 }
 
 /**
@@ -3532,18 +3534,23 @@ infinity_at(std::string_view value, std::size_t index) {
     return result;
 }
 
+/** The bytes of the encoded sequence starting at `offset`, cut at the end of `value`. */
+[[nodiscard]] inline std::size_t string_sequence_size(std::string_view value, std::size_t offset) {
+    const auto lead = static_cast<unsigned char>(value[offset]);
+    const std::size_t count = lead < 0x80u              ? 1u
+                              : (lead & 0xe0u) == 0xc0u ? 2u
+                              : (lead & 0xf0u) == 0xe0u ? 3u
+                              : (lead & 0xf8u) == 0xf0u ? 4u
+                                                        : 1u;
+    return std::min(count, value.size() - offset);
+}
+
 // JavaScript string iteration yields one Unicode code point as a string.
 // Native strings are UTF-8, so retain each complete encoded sequence.
 [[nodiscard]] inline Array<std::string> string_characters(const std::string& value) {
     Array<std::string> result;
     for (std::size_t offset = 0; offset < value.size();) {
-        const auto lead = static_cast<unsigned char>(value[offset]);
-        std::size_t count = lead < 0x80u              ? 1u
-                            : (lead & 0xe0u) == 0xc0u ? 2u
-                            : (lead & 0xf0u) == 0xe0u ? 3u
-                            : (lead & 0xf8u) == 0xf0u ? 4u
-                                                      : 1u;
-        count = std::min(count, value.size() - offset);
+        const std::size_t count = string_sequence_size(value, offset);
         result.push_back(value.substr(offset, count));
         offset += count;
     }
@@ -3565,14 +3572,6 @@ infinity_at(std::string_view value, std::size_t index) {
         result.push_back(value.substr(begin, end - begin));
         begin = end + separator.size();
     }
-}
-
-[[nodiscard]] inline bool string_starts_with(const std::string& value, const std::string& prefix) {
-    return value.starts_with(prefix);
-}
-
-[[nodiscard]] inline bool string_ends_with(const std::string& value, const std::string& suffix) {
-    return value.ends_with(suffix);
 }
 
 // UTF-16 indexing over native UTF-8 strings. Lone surrogates use WTF-8 so
@@ -3637,69 +3636,164 @@ private:
     return units;
 }
 
-/** Whether every byte is ASCII, so byte offsets are UTF-16 code unit indices. */
-[[nodiscard]] inline bool string_is_ascii(std::string_view value) {
-    return std::all_of(value.begin(), value.end(),
-                       [](char byte) { return static_cast<unsigned char>(byte) < 0x80u; });
+/** UTF-16 code units in canonical WTF-8 text: one per sequence, two per four-byte one. */
+[[nodiscard]] inline std::size_t string_unit_count(std::string_view value) {
+    std::size_t count = 0;
+    for (const char byte : value) {
+        const auto bits = static_cast<unsigned char>(byte);
+        if ((bits & 0xc0u) != 0x80u)
+            count += bits >= 0xf0u ? 2u : 1u;
+    }
+    return count;
 }
 
-/** A position argument: ToIntegerOrInfinity (NaN is 0) clamped to [0, length]. */
-[[nodiscard]] inline std::size_t string_position(double position, std::size_t length) {
-    if (!(position > 0.0))
-        return 0;
-    const double integer = std::trunc(position);
-    return integer >= static_cast<double>(length) ? length : static_cast<std::size_t>(integer);
+// The UTF-16 position searches over canonical WTF-8 storage, where a pair is
+// one four-byte sequence and a lone surrogate three bytes. A needle holding
+// no lone surrogate can neither begin nor end inside a pair of the receiver,
+// so its byte matches are exactly its UTF-16 matches: the search runs over
+// bytes and converts only a position (walking the prefix up to it) or a
+// found offset. A needle holding a lone surrogate searches UTF-16 units.
+namespace string_search_detail {
+/**
+ * Where a position lands: the clamped UTF-16 position (ToIntegerOrInfinity,
+ * NaN and negatives 0, at most the length) and the byte offset of the code
+ * point it starts, or of the pair it falls inside.
+ */
+struct Landing {
+    std::size_t position;
+    std::size_t offset;
+    bool inside_pair;
+};
+
+[[nodiscard]] inline Landing land(std::string_view value, double position) {
+    const double target = position > 0.0 ? std::trunc(position) : 0.0;
+    std::size_t index = 0, offset = 0;
+    while (offset < value.size() && static_cast<double>(index) < target) {
+        const std::size_t size = string_sequence_size(value, offset);
+        if (size == 4 && static_cast<double>(index + 1) == target)
+            return {index + 1, offset, true};
+        index += size == 4 ? 2u : 1u;
+        offset += size;
+    }
+    return {index, offset, false};
 }
 
-[[nodiscard]] inline double string_found_index(std::size_t index) {
+[[nodiscard]] inline bool holds_lone_surrogate(std::string_view search) {
+    for (std::size_t at = 0; at + 1 < search.size(); ++at)
+        if (static_cast<unsigned char>(search[at]) == 0xedu &&
+            static_cast<unsigned char>(search[at + 1]) >= 0xa0u)
+            return true;
+    return false;
+}
+
+/** A position over UTF-16 units, clamped as `land` clamps it. */
+[[nodiscard]] inline std::size_t unit_position(std::size_t length, double position) {
+    return relative_index(length, position > 0.0 ? position : 0.0);
+}
+
+[[nodiscard]] inline double found_index(std::size_t index) {
     return index == std::string::npos ? -1.0 : static_cast<double>(index);
 }
+} // namespace string_search_detail
 
 /** `String.prototype.indexOf`: the first UTF-16 index at or after the position. */
 [[nodiscard]] inline double string_index_of(const std::string& value, const std::string& search,
                                             double position = 0.0) {
-    if (string_is_ascii(value))
-        return string_found_index(value.find(search, string_position(position, value.size())));
-    const auto units = string_code_units(value);
-    return string_found_index(
-        units.find(string_code_units(search), string_position(position, units.size())));
+    using namespace string_search_detail;
+    if (holds_lone_surrogate(search)) {
+        const auto units = string_code_units(value);
+        return found_index(
+            units.find(string_code_units(search), unit_position(units.size(), position)));
+    }
+    const auto at = land(value, position);
+    // The empty needle is found at the position itself; any other cannot
+    // begin at a pair's second half, so the search starts after the pair.
+    if (search.empty())
+        return static_cast<double>(at.position);
+    const std::size_t from = at.offset + (at.inside_pair ? 4u : 0u);
+    const std::size_t found = value.find(search, from);
+    return found == std::string::npos
+               ? -1.0
+               : static_cast<double>(
+                     at.position + (at.inside_pair ? 1u : 0u) +
+                     string_unit_count(std::string_view(value).substr(from, found - from)));
+}
+
+/** `String.prototype.includes`: whether the needle occurs at or after the position. */
+[[nodiscard]] inline bool string_includes(const std::string& value, const std::string& search,
+                                          double position = 0.0) {
+    using namespace string_search_detail;
+    if (search.empty())
+        return true;
+    if (holds_lone_surrogate(search))
+        return string_index_of(value, search, position) >= 0.0;
+    const auto at = land(value, position);
+    return value.find(search, at.offset + (at.inside_pair ? 4u : 0u)) != std::string::npos;
 }
 
 /** `String.prototype.lastIndexOf`: the last UTF-16 index at or before the position (NaN is +∞). */
-[[nodiscard]] inline double string_last_index_of(const std::string& value,
-                                                 const std::string& search, double position) {
+[[nodiscard]] inline double
+string_last_index_of(const std::string& value, const std::string& search,
+                     double position = std::numeric_limits<double>::infinity()) {
+    using namespace string_search_detail;
     const double from = std::isnan(position) ? std::numeric_limits<double>::infinity() : position;
-    if (string_is_ascii(value))
-        return string_found_index(value.rfind(search, string_position(from, value.size())));
-    const auto units = string_code_units(value);
-    return string_found_index(
-        units.rfind(string_code_units(search), string_position(from, units.size())));
+    if (holds_lone_surrogate(search)) {
+        const auto units = string_code_units(value);
+        return found_index(
+            units.rfind(string_code_units(search), unit_position(units.size(), from)));
+    }
+    // A position at or past the byte length is past the UTF-16 length too.
+    if (from >= static_cast<double>(value.size())) {
+        if (search.empty())
+            return static_cast<double>(string_unit_count(value));
+        const std::size_t found = value.rfind(search);
+        return found == std::string::npos ? -1.0
+                                          : static_cast<double>(string_unit_count(
+                                                std::string_view(value).substr(0, found)));
+    }
+    const auto at = land(value, from);
+    if (search.empty())
+        return static_cast<double>(at.position);
+    // Inside a pair the latest start is the pair's own.
+    const std::size_t found = value.rfind(search, at.offset);
+    return found == std::string::npos
+               ? -1.0
+               : static_cast<double>(string_unit_count(std::string_view(value).substr(0, found)));
 }
 
 /** `String.prototype.startsWith` with a UTF-16 start position. */
 [[nodiscard]] inline bool string_starts_with(const std::string& value, const std::string& prefix,
-                                             double position) {
-    if (string_is_ascii(value))
-        return std::string_view(value)
-            .substr(string_position(position, value.size()))
-            .starts_with(prefix);
-    const auto units = string_code_units(value);
-    return std::u16string_view(units)
-        .substr(string_position(position, units.size()))
-        .starts_with(string_code_units(prefix));
+                                             double position = 0.0) {
+    using namespace string_search_detail;
+    if (holds_lone_surrogate(prefix)) {
+        const auto units = string_code_units(value);
+        return std::u16string_view(units)
+            .substr(unit_position(units.size(), position))
+            .starts_with(string_code_units(prefix));
+    }
+    const auto at = land(value, position);
+    // A pair's second half begins only the empty prefix.
+    return at.inside_pair ? prefix.empty()
+                          : std::string_view(value).substr(at.offset).starts_with(prefix);
 }
 
-/** `String.prototype.endsWith` with a UTF-16 end position. */
-[[nodiscard]] inline bool string_ends_with(const std::string& value, const std::string& suffix,
-                                           double end_position) {
-    if (string_is_ascii(value))
-        return std::string_view(value)
-            .substr(0, string_position(end_position, value.size()))
-            .ends_with(suffix);
-    const auto units = string_code_units(value);
-    return std::u16string_view(units)
-        .substr(0, string_position(end_position, units.size()))
-        .ends_with(string_code_units(suffix));
+/** `String.prototype.endsWith` with a UTF-16 end position (an absent one is the length). */
+[[nodiscard]] inline bool
+string_ends_with(const std::string& value, const std::string& suffix,
+                 double end_position = std::numeric_limits<double>::infinity()) {
+    using namespace string_search_detail;
+    if (holds_lone_surrogate(suffix)) {
+        const auto units = string_code_units(value);
+        return std::u16string_view(units)
+            .substr(0, unit_position(units.size(), end_position))
+            .ends_with(string_code_units(suffix));
+    }
+    if (end_position >= static_cast<double>(value.size()))
+        return value.ends_with(suffix);
+    const auto at = land(value, end_position);
+    // A pair's first half ends only the empty suffix.
+    return at.inside_pair ? suffix.empty()
+                          : std::string_view(value).substr(0, at.offset).ends_with(suffix);
 }
 
 [[nodiscard]] inline std::string string_from_code_units(const std::u16string& units) {
@@ -3724,14 +3818,7 @@ private:
 }
 
 [[nodiscard]] inline double string_length(const std::string& value) {
-    // A continuation byte contributes no code unit; a four-byte UTF-8
-    // sequence contributes the two code units of its surrogate pair.
-    std::size_t length = 0;
-    for (const unsigned char byte : value) {
-        if ((byte & 0xc0u) != 0x80u)
-            length += byte >= 0xf0u ? 2u : 1u;
-    }
-    return static_cast<double>(length);
+    return static_cast<double>(string_unit_count(value));
 }
 
 [[nodiscard]] inline std::string string_substring(const std::string& value, double start,

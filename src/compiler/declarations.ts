@@ -3839,7 +3839,7 @@ export class DeclarationLowerer {
                 kind: "declaration",
                 type: "const auto",
                 name: temporary,
-                initializer: `bbl::js::json_iterated(${value.cpp})`,
+                initializer: `bbl::js::json_iterated(${value.cpp}, ${bindings.length})`,
             });
             bindings.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) return;

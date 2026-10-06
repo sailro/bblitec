@@ -80,6 +80,7 @@ import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
+    exponentiationCall,
     MATH_MEMBERS,
     mathMemberAccess,
     mathUnaryFold,
@@ -6307,6 +6308,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     call,
                     `Math.${method} expects ${describeMathArity(member)}.`,
                 );
+            }
+            if (method === "pow") {
+                const [base, exponent] = numbers();
+                const power = exponentiationCall(
+                    base!,
+                    exponent!,
+                    staticNumberValue(this.context, argumentAt(call, 1)),
+                );
+                if (power.jsData) this.context.reachJsData();
+                return {
+                    kind: "number",
+                    cpp: power.cpp,
+                    dataType: { kind: "number" },
+                };
             }
             const cpp =
                 member.variadic &&
