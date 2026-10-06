@@ -4696,3 +4696,144 @@ check(
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
 `,
 );
+
+check(
+    "absent-optional-properties-of-narrower-records",
+    `
+    interface FieldSource {
+        readonly tex: Uint8Array;
+        readonly res: number;
+        readonly dirtyRow0?: number;
+        readonly dirtyRow1?: number;
+    }
+    interface ShapeField {
+        clear(): void;
+        readonly tex: Uint8Array;
+        readonly res: number;
+        readonly version: number;
+    }
+    interface DirtyField {
+        readonly tex: Uint8Array;
+        readonly res: number;
+        dirtyRow0: number;
+        dirtyRow1: number;
+    }
+    function rowsToSend(field: FieldSource): number {
+        const row0 = field.dirtyRow0;
+        const row1 = field.dirtyRow1;
+        if (row0 === undefined || row1 === undefined) return field.res;
+        return row1 < row0 ? 0 : row1 - row0 + 1;
+    }
+    function shapeField(res: number): ShapeField {
+        const tex = new Uint8Array(res * res * 4);
+        let version = 0;
+        return { clear() { tex.fill(0); version++; }, tex, res, get version() { return version; } };
+    }
+    const sendShape = (field: ShapeField): number => rowsToSend(field);
+    const sendDirty = (field: DirtyField): number => rowsToSend(field);
+    const senders: Array<(field: ShapeField) => number> = [sendShape];
+    const shape = shapeField(8);
+    const dirty: DirtyField = { tex: new Uint8Array(4), res: 4, dirtyRow0: 1, dirtyRow1: 2 };
+    if (senders[0]!(shape) !== 8 || sendDirty(dirty) !== 2) throw new Error("absent rows read undefined");
+    dirty.dirtyRow1 = 0;
+    if (sendDirty(dirty) !== 0) throw new Error("present rows stay live");
+
+    interface Encoding { on: string; off: string }
+    interface ToggleOptions { key: string; fallback: boolean; stored: string | null; encoding?: Encoding }
+    const ON_OFF: Encoding = { on: "on", off: "off" };
+    function toggle(options: ToggleOptions): boolean {
+        const encoding = options.encoding ?? ON_OFF;
+        return options.stored === encoding.on ? true : options.stored === encoding.off ? false : options.fallback;
+    }
+    function advice(options: { stored: string | null }): boolean {
+        return toggle({ ...options, key: "advice", fallback: true });
+    }
+    const toggles: Array<typeof advice> = [advice];
+    if (toggles[0]!({ stored: "off" }) || !toggles[0]!({ stored: null })) throw new Error("absent encoding");
+
+    interface FamilyMetadata { family?: unknown; legacy?: unknown }
+    function familyOf(metadata: Readonly<FamilyMetadata>): string {
+        if (metadata.family === undefined) return metadata.legacy ? "plaster" : "bricks";
+        return typeof metadata.family === "string" ? metadata.family : "other";
+    }
+    interface Manifest { name: string; legacy: boolean }
+    const describe = (manifest: Manifest): string => manifest.name + ":" + familyOf(manifest);
+    const manifests: Manifest[] = [{ name: "a", legacy: true }, { name: "b", legacy: false }];
+    if (manifests.map(describe).join(",") !== "a:plaster,b:bricks") throw new Error("absent unknown property");
+
+    function homeId(entity: { kind: string }): number {
+        const seq = entity.kind === "house" && "seq" in entity && typeof entity.seq === "number" ? entity.seq : undefined;
+        return seq ?? -1;
+    }
+    const homes: Array<(kind: string) => number> = [(kind) => homeId({ kind })];
+    if (homes[0]!("house") !== -1) throw new Error("absent key after in");
+
+    interface Moved { x: number; tag: string }
+    function nudge(target: { x: number; step?: number }): void { target.x += target.step ?? 1; }
+    const moved: Moved[] = [{ x: 1, tag: "a" }];
+    const nudges: Array<(item: Moved) => void> = [(item) => nudge(item)];
+    nudges[0]!(moved[0]!);
+    if (moved[0]!.x !== 2) throw new Error("the record keeps its identity");
+
+    interface Labelled { a: number; extra?: number; label?: string }
+    function twice(value: number | undefined): number { return value === undefined ? -1 : value * 2; }
+    function uses(source: Labelled): string {
+        let held: number | undefined = source.extra;
+        const first = twice(source.extra);
+        held = held ?? 4;
+        const values = [source.extra, source.a];
+        return first + "," + held + "," + typeof source.extra + ",x" + source.label + "-" + (source.label ?? "none") + "," + (values[0] === undefined);
+    }
+    const reads: Array<(item: { a: number }) => string> = [(item) => uses(item)];
+    const used = reads[0]!({ a: 1 });
+    if (used !== "-1,4,undefined,xundefined-none,true") throw new Error(used);
+    interface Signed { x: number; tint?: [number, number, number]; onDone?: () => void }
+    function signature(p: Signed): string {
+        p.onDone?.();
+        return p.x.toFixed(1) + "," + (p.tint?.join(",") ?? "") + "," + (p.tint?.length ?? -1);
+    }
+    const signatures: Array<(item: { x: number }) => string> = [(item) => signature(item)];
+    if (signatures[0]!({ x: 1 }) !== "1.0,,-1") throw new Error("absent optional chains");
+
+    interface Appearance { seed?: number; pattern?: number; foot?: number }
+    function sanitize<T extends Appearance>(record: T): T {
+        const clean = { ...record };
+        if (typeof clean.seed !== "number") delete clean.seed;
+        if (clean.foot === undefined) delete clean.foot;
+        return clean;
+    }
+    interface Kept { pattern: number; foot?: number }
+    const sanitizers: Array<(item: Kept) => string> = [(item) => JSON.stringify(sanitize(item))];
+    if (sanitizers[0]!({ pattern: 2, foot: 3 }) !== '{"pattern":2,"foot":3}' || sanitizers[0]!({ pattern: 2 }) !== '{"pattern":2}')
+        throw new Error("deleting absent and present properties");
+`,
+);
+
+test("absent property reads refuse properties a converted record may carry", () => {
+    const declarations = `
+    interface Narrow { a: number }
+    interface View { a: number; b?: number }
+    function readB(v: View): number { return v.b ?? -1; }
+    function make(a: number): { a: number; b: number } { return { a, b: a * 2 }; }
+    const list: Narrow[] = [{ a: 3 }];
+    `;
+    for (const body of [
+        "list.push(make(1)); const read = readB(list[0]!);",
+        "const read = readB(list[0]!); list.push(make(1));",
+        "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
+    ])
+        assert.throws(
+            () => compileSource(declarations + body),
+            /Property 'b' is not stored by '\w+' records, but a record converted into that storage may carry it/,
+        );
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Source { a: number; b?: number }
+            interface Shape { a: number }
+            function make(): Shape { return { a: 1 }; }
+            const read = (make() as Source).b;
+            `),
+        /has no field 'b'/,
+    );
+});

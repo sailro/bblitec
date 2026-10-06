@@ -163,6 +163,14 @@ export function nullability(type: ts.Type): Nullability {
     };
 }
 
+/** Whether a value of `type` may be `undefined`: it names it, or it is `unknown` or `any`. */
+export function admitsUndefined(type: ts.Type): boolean {
+    return (
+        nullability(type).undefined ||
+        (type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0
+    );
+}
+
 /**
  * Whether the type a position expects rules out a colour written as an
  * object of named channels (`{ r, g, b[, a] }`): the type is known (not

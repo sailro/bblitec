@@ -38,6 +38,7 @@ import {
 import { compileMapInitializer } from "./collection-methods.js";
 import {
     absenceKind,
+    admitsUndefined,
     arrayElementType,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
@@ -152,6 +153,11 @@ function namesStableOwner(owner: Value): boolean {
         owner.stableOwnerCpp !== undefined ||
         cppIdentifierPattern.test(owner.cpp)
     );
+}
+
+/** A native variable or member path, which evaluates without effects. */
+function isPathCpp(cpp: string): boolean {
+    return /^[\w:]+(?:(?:->|\.)\w+)*$/.test(cpp);
 }
 
 /**
@@ -3102,6 +3108,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : value;
     }
 
+    /**
+     * A read of a property the record's type admits as absent (optional,
+     * or typed to include undefined) and its struct does not store: the
+     * record lacks it, so the read is `undefined`. The receiver is a path,
+     * so skipping its evaluation skips no effect.
+     */
+    private absentPropertyRead(
+        owner: Value,
+        dataType: DataType<"struct">,
+        access: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = access.name.text;
+        const symbol = this.context.checker.getSymbolAtLocation(access.name);
+        if (
+            !symbol ||
+            ((symbol.flags & ts.SymbolFlags.Optional) === 0 &&
+                !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
+        )
+            return undefined;
+        if (owner.impure || !isPathCpp(owner.cpp)) return undefined;
+        if (
+            !this.context.dataTypes.absentRecordProperty(
+                dataType.name,
+                property,
+                access,
+            )
+        )
+            return undefined;
+        return { kind: "json-null", cpp: "std::nullopt" };
+    }
+
     private propertyRead(
         ownerValue: Value,
         access: ts.PropertyAccessExpression,
@@ -3198,6 +3235,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // owns all three.
                 return undefined;
             }
+            const absent = this.absentPropertyRead(owner, dataType, access);
+            if (absent) return absent;
             const field = this.context.dataTypes.structField(
                 dataType.name,
                 property,
@@ -8633,6 +8672,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
+                    // A spread copies every own property, including any a
+                    // record converted into the source storage carried.
+                    this.context.dataTypes.noteRecordConversion(
+                        dataType,
+                        [],
+                        spread.dataType,
+                    );
                     const sourceMember =
                         this.context.dataTypes.isReferenceStruct(
                             spread.dataType.name,
@@ -9001,6 +9047,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
+            // Deleting a property the record lacks changes nothing.
+            const owner = this.compileDataPath(target.expression, "read");
+            if (
+                owner?.kind === "data" &&
+                owner.dataType?.kind === "struct" &&
+                !owner.impure &&
+                isPathCpp(owner.cpp) &&
+                this.context.dataTypes.lacksRecordProperty(
+                    owner.dataType.name,
+                    target.name.text,
+                )
+            )
+                return;
             const field = this.compileDataPath(target, "write");
             if (
                 field?.dataType?.kind === "function" ||

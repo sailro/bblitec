@@ -51,6 +51,7 @@ import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
+import { AbsentRecordProperties } from "./absent-record-properties.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
@@ -905,6 +906,9 @@ export class DataTypeRegistry {
     private readonly partialRecords = new EmissionSet<
         ts.Symbol | ts.Type | string
     >();
+    private readonly absentProperties = new AbsentRecordProperties(
+        (node, message) => this.fail(node, message),
+    );
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -4839,6 +4843,61 @@ export class DataTypeRegistry {
         return found;
     }
 
+    /**
+     * Whether `structName`'s records provably lack `property`, so a read of
+     * it is `undefined`: no record type the struct stands for declares it.
+     * Class instances, proxies and views of open records keep their own
+     * lookup.
+     */
+    public absentRecordProperty(
+        structName: string,
+        property: string,
+        node: ts.Node,
+    ): boolean {
+        if (!this.lacksRecordProperty(structName, property)) return false;
+        this.absentProperties.read(structName, property, node);
+        return true;
+    }
+
+    /**
+     * Whether no record type `structName` stands for declares `property`.
+     * Unlike a read, deleting it needs no check against conversions: the
+     * JavaScript object lacks it afterwards either way.
+     */
+    public lacksRecordProperty(structName: string, property: string): boolean {
+        const definition = this.structsByName.get(structName);
+        if (
+            !definition ||
+            this.isClassStruct(structName) ||
+            !AbsentRecordProperties.omittable(property) ||
+            definition.fields.some(
+                (field) =>
+                    field.sourceName === property || field.name === property,
+            )
+        )
+            return false;
+        const source = this.nativeRecordSources.get(structName);
+        return !(
+            source &&
+            (this.recordViews.has(source.identity) ||
+                this.proxyRecords.has(source.identity))
+        );
+    }
+
+    /**
+     * A record converted into `target` storage, carrying `extra` properties
+     * beyond its fields; a struct source also passes on what was carried
+     * into it.
+     */
+    public noteRecordConversion(
+        target: DataType<"struct">,
+        extra: readonly string[],
+        source?: DataType<"struct">,
+    ): void {
+        if (source?.name === target.name) return;
+        this.absentProperties.noteConversion(target.name, extra, source?.name);
+    }
+
     private failAccessorField(field: DataStructField, node: ts.Node): never {
         return this.fail(
             node,
@@ -5477,6 +5536,7 @@ export class DataTypeRegistry {
      */
     public renderPreamble(structuredClone = false): DataPreamble {
         this.checkFieldPresenceReads();
+        this.absentProperties.check();
         const used = this.reachableNamedTypes();
         if (
             used.structs.size === 0 &&
