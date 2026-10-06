@@ -4077,6 +4077,14 @@ template <typename T>
     return Array<T>(values.begin() + begin, values.begin() + end);
 }
 
+/** A slice of a readonly view is a new array the caller owns. */
+template <typename T>
+[[nodiscard]] inline Array<std::remove_const_t<T>> array_slice(Span<T> values, double begin_value,
+                                                               double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    return Array<std::remove_const_t<T>>(values.begin() + begin, values.begin() + end);
+}
+
 /** JavaScript Array.join with an explicit element-to-string projection. */
 template <typename Range, typename Projection>
 [[nodiscard]] inline std::string array_join(const Range& values, const std::string& separator,

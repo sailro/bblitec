@@ -2925,6 +2925,49 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * `a ?? b` over records of two types. JavaScript selects one of the two
+     * objects, so each operand is stored as the expression's own record type
+     * the way an assignment there would store it (one shared layout, or a
+     * refusal where only a copy could hold it). The result is absent exactly
+     * when the left operand is and the fallback is too.
+     */
+    private coalesceDistinctRecords(
+        expression: ts.BinaryExpression,
+        left: Value,
+        leftFound: string,
+        fallback: Value,
+        fallbackLines: readonly string[],
+    ): Value {
+        const declared = this.dataTypeAt(expression);
+        const record =
+            declared?.kind === "optional" ? declared.inner : declared;
+        if (record?.kind !== "struct")
+            this.context.fail(
+                expression,
+                "Coalescing records of two types requires one record type for the result.",
+            );
+        // The selected object is an existing one: reference storage.
+        const type = this.context.dataTypes.markStoredObjectReferences(record);
+        const present = this.compileKnownValueForSink(
+            { ...left, optionalFoundCpp: "true" },
+            type,
+            expression.left,
+        );
+        const arm = this.compileArm(() =>
+            this.compileKnownValueForSink(fallback, type, expression.right),
+        );
+        return this.context.bindings.pinValueToTemporary(
+            this.leafValue(
+                `(${leftFound} ? ${present} : ` +
+                    `${this.armExpression(expression.right, [...fallbackLines, ...arm.lines], arm.value, type)})`,
+                type,
+            ),
+            "nullish_record",
+            expression,
+        );
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -3128,37 +3171,35 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         fallback.kind === "tuple"))
             ) {
                 const type = left.dataType;
-                return {
-                    ...this.leafValue(
-                        `(${leftFound} ? ${left.cpp} : ` +
-                            `${fallbackArm(type, () => this.compileKnownValueForSink(fallback, type, expression.right))})`,
-                        type,
-                    ),
-                    freshData: true,
-                };
+                const selected = this.leafValue(
+                    `(${leftFound} ? ${left.cpp} : ` +
+                        `${fallbackArm(type, () => this.compileKnownValueForSink(fallback, type, expression.right))})`,
+                    type,
+                );
+                // A shared object or array keeps its identity through the
+                // select; an inline record would be a copy of the left one.
+                return type.kind === "struct" &&
+                    !this.context.dataTypes.isReferenceStruct(type.name)
+                    ? selected
+                    : { ...selected, freshData: true };
             }
+            // Records of two types are both stored as the result's record
+            // type; records of one type select below, keeping the presence
+            // a fallback that can itself be absent composes into the result.
             if (
                 left.kind === "data" &&
                 fallback.kind === "data" &&
                 left.dataType?.kind === "struct" &&
-                fallback.dataType?.kind === "struct"
-            ) {
-                const common = this.context.dataTypes.commonStruct(
-                    left.dataType,
-                    fallback.dataType,
+                fallback.dataType?.kind === "struct" &&
+                !dataTypesEqual(left.dataType, fallback.dataType)
+            )
+                return this.coalesceDistinctRecords(
+                    expression,
+                    left,
+                    leftFound,
+                    fallback,
+                    fallbackLines,
                 );
-                if (common) {
-                    return {
-                        ...this.leafValue(
-                            `(${leftFound} ? ` +
-                                `${this.compileKnownValueForSink(left, common, expression.left)} : ` +
-                                `${fallbackArm(common, () => this.compileKnownValueForSink(fallback, common, expression.right))})`,
-                            common,
-                        ),
-                        freshData: true,
-                    };
-                }
-            }
             if (fallback.kind !== left.kind) {
                 this.context.fail(
                     expression.right,
@@ -5134,6 +5175,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access,
             );
         });
+    }
+
+    /**
+     * A lane of a tuple whose elements share union storage, bound as the
+     * type its binding declares: the union member that lane holds.
+     */
+    public narrowBindingLane(value: Value, name: ts.BindingName): Value {
+        const type =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        return value.kind === "data" &&
+            type?.kind === "union" &&
+            ts.isIdentifier(name)
+            ? this.narrowOptional(value, name)
+            : value;
     }
 
     /**
@@ -9450,12 +9507,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         const targetField = targetFields.get(
                             sourceField.sourceName,
                         );
+                        // A field a shared layout holds for a wider record
+                        // type is absent from records of the spread's own
+                        // type; a wider record carries it past the target.
+                        const declared = this.context.checker
+                            .getTypeAtLocation(property.expression)
+                            .getProperty(sourceField.sourceName);
+                        if (
+                            !targetField &&
+                            sourceField.sharedAbsent &&
+                            !declared
+                        ) {
+                            this.context.dataTypes.noteRecordConversion(
+                                dataType,
+                                [sourceField.sourceName],
+                            );
+                            continue;
+                        }
                         if (!targetField)
                             this.context.fail(
                                 property,
                                 `Spread property '${sourceField.sourceName}' cannot be retained in the narrower '${dataType.name}' storage.`,
                             );
                         const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
+                        // The spread's own type declares the field required,
+                        // so its records hold it, absent-capable storage or not.
+                        if (
+                            sourceField.type.kind === "optional" &&
+                            sourceField.sharedAbsent &&
+                            targetField.type.kind !== "optional" &&
+                            declared !== undefined &&
+                            (declared.flags & ts.SymbolFlags.Optional) === 0
+                        ) {
+                            this.context.emit({
+                                kind: "expression",
+                                code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(`*${sourceCpp}`, sourceField.type.inner), targetField.type, property)};`,
+                            });
+                            assigned.add(targetField.name);
+                            continue;
+                        }
                         if (sourceField.type.kind === "optional") {
                             this.context.emit({
                                 kind: "open",
@@ -14211,7 +14301,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 defineItem(
                     element_.name,
                     element.kind === "vector"
-                        ? this.readVectorBindingElement(source, index, element_)
+                        ? this.narrowBindingLane(
+                              this.readVectorBindingElement(
+                                  source,
+                                  index,
+                                  element_,
+                              ),
+                              element_.name,
+                          )
                         : this.fixedTupleElement(source, index, element_)!,
                 );
             });

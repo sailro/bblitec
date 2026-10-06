@@ -7282,3 +7282,266 @@ check(
         throw new Error("defaults " + defaults);
 `,
 );
+
+check(
+    "coalesced-records-keep-the-selected-object",
+    `
+    interface Grid { cells: number[]; size: number }
+    let created = 0;
+    function emptyGrid(size: number | null): Grid | null {
+        if (size === null) return null;
+        created++;
+        return { cells: [], size };
+    }
+    function current(previous: Grid | undefined, size: number | null): number {
+        const grid = previous ?? emptyGrid(size);
+        if (!grid) return -1;
+        grid.cells.push(grid.size);
+        return grid.cells.length;
+    }
+    const kept: Grid = { cells: [7], size: 3 };
+    if (current(kept, null) !== 2 || kept.cells.length !== 2) throw new Error("present operand is the kept grid");
+    if (current(undefined, 5) !== 1 || created !== 1) throw new Error("fallback grid");
+    if (current(undefined, null) !== -1 || created !== 1) throw new Error("absent fallback stays absent");
+    interface Support { readonly x: number; readonly z: number; readonly yaw: number }
+    interface Deps {
+        centre(id: number): { readonly x: number; readonly z: number } | null;
+        support?(id: number): Support | null;
+    }
+    function locate(deps: Deps, id: number): number {
+        const support = deps.support?.(id);
+        const parent = support ?? deps.centre(id);
+        if (!parent) return -1;
+        return parent.x + parent.z;
+    }
+    const full: Deps = {
+        centre: (id) => (id > 1 ? { x: id, z: 1 } : null),
+        support: (id) => (id === 7 ? { x: 70, z: 7, yaw: 0 } : null),
+    };
+    const bare: Deps = { centre: (id) => (id > 1 ? { x: id, z: 2 } : null) };
+    if (locate(full, 7) !== 77 || locate(full, 3) !== 4 || locate(full, 0) !== -1) throw new Error("records of two types");
+    if (locate(bare, 5) !== 7 || locate(bare, 1) !== -1) throw new Error("absent method");
+    interface Cells { cells: readonly number[]; flip: boolean }
+    interface CellMap { cells: readonly number[]; flip: boolean; key: string }
+    function describe(options: { cells?: Cells; map?: CellMap }): string {
+        const mode = options.cells ?? options.map;
+        if (!mode) return "plain";
+        return mode.cells.length + (mode.flip ? "f" : "n");
+    }
+    if (describe({}) !== "plain" || describe({ cells: { cells: [1], flip: true } }) !== "1f" || describe({ map: { cells: [], flip: false, key: "k" } }) !== "0n")
+        throw new Error("optional records of two types");
+`,
+);
+
+check(
+    "conditional-records-of-two-types-keep-the-selected-object",
+    `
+    interface A { kind: "a"; x: number }
+    interface B { kind: "b"; x: number; y: number }
+    const as: A[] = [{ kind: "a", x: 1 }];
+    const bs: B[] = [{ kind: "b", x: 2, y: 3 }];
+    const gate = new Float32Array([0, 1]);
+    const p = gate[1] ? as[0]! : bs[0]!;
+    p.x = 10;
+    if (as[0]!.x !== 10 || p !== as[0]) throw new Error("selected first record");
+    const q = gate[0] ? as[0]! : bs[0]!;
+    q.x = 20;
+    if (bs[0]!.x !== 20 || q !== bs[0] || (q.kind === "b" && q.y !== 3)) throw new Error("selected second record");
+`,
+);
+
+check(
+    "readonly-array-slices-are-owned-copies",
+    `
+    function root(values: readonly number[], index: number): number {
+        const parent = values.slice();
+        const find = (k: number): number => (parent[k] === k ? k : (parent[k] = find(parent[k]!)));
+        return find(index) * 10 + parent[index]!;
+    }
+    const roots: Array<typeof root> = [root];
+    if (roots[0]!([1, 1, 1, 2], 3) !== 11) throw new Error("stored");
+    if (root([1, 1, 1, 2], 3) !== 11) throw new Error("direct");
+    const table: readonly number[] = [0, 0, 1, 2];
+    if (root(table, 3) !== 0 || roots[0]!(table, 2) !== 0) throw new Error("named table");
+    function grown(values: readonly number[]): number[] {
+        const copy = values.slice(1);
+        copy.push(values.length);
+        return copy;
+    }
+    const sources: readonly number[] = [5, 6];
+    const grownCopies = [grown];
+    if (grown(sources).join(",") !== "6,2" || grownCopies[0]!(sources).join(",") !== "6,2" || sources.length !== 2) throw new Error("owned slice");
+`,
+);
+
+check(
+    "records-stored-as-another-record-type-stay-one-object",
+    `
+    interface Wide { a: number; b: number }
+    interface Narrow { a: number }
+    const w: Wide = { a: 1, b: 2 };
+    const n: Narrow = w;
+    n.a = 5;
+    if (w.a !== 5 || (n as Wide) !== w) throw new Error("local view");
+    const list: Narrow[] = [];
+    list.push(w);
+    list[0]!.a = 7;
+    if (w.a !== 7 || list[0] !== n) throw new Error("array element view");
+    w.a = 9;
+    if (list[0]!.a !== 9) throw new Error("element reads the wide record");
+    function bump(view: Narrow): void { view.a++; }
+    const stored: Wide[] = [{ a: 3, b: 4 }];
+    bump(stored[0]!);
+    bump(w);
+    if (stored[0]!.a !== 4 || w.a !== 10) throw new Error("parameter view");
+    interface State { count: number; readonly ids: number[]; name: string }
+    interface CountView { readonly count: number; readonly ids: readonly number[] }
+    const contacts = new WeakMap<CountView, string>();
+    function remember(view: CountView, label: string): void { contacts.set(view, label); }
+    function recall(view: CountView): string { return contacts.get(view) ?? "none"; }
+    const state: State = { count: 2, ids: [1, 2], name: "s" };
+    remember(state, "kept");
+    state.count = 3;
+    if (recall(state) !== "kept") throw new Error("keyed view identity");
+    interface Point { readonly x: number; readonly y: number }
+    interface Labelled { readonly x: number; readonly y: number; readonly label: string }
+    function length(point: Point): number { return Math.hypot(point.x, point.y); }
+    const labelled: Labelled[] = [{ x: 3, y: 4, label: "p" }];
+    if (length(labelled[0]!) !== 5) throw new Error("unobservable copy");
+`,
+);
+
+check(
+    "narrower-literals-share-the-wider-record-layout",
+    `
+    type Spec = { id: string; rgb: [number, number, number] };
+    type Swatch = Spec & { swatch: string };
+    function palette(): { id: string; labelKey: string; rgb: [number, number, number]; swatch: string }[] {
+        return [{ id: "a", labelKey: "tint.a", rgb: [1, 2, 3], swatch: "#a" }];
+    }
+    const base = palette();
+    const extra: Spec = { id: "b", rgb: [4, 5, 6] };
+    const all: Swatch[] = [...base, { ...extra, swatch: "#b" }];
+    if (all[0] !== base[0]) throw new Error("converted record keeps its identity");
+    all[0]!.swatch = "#c";
+    all[0]!.id = "z";
+    if (base[0]!.swatch !== "#c" || base[0]!.id !== "z" || base[0]!.labelKey !== "tint.a") throw new Error("write through the narrower view");
+    base[0]!.swatch = "#d";
+    if (all[0]!.swatch !== "#d") throw new Error("write through the wider record");
+    const narrow = all[1]!;
+    if (Object.keys(narrow).join(",") !== "id,rgb,swatch") throw new Error("narrower keys " + Object.keys(narrow).join(","));
+    if (JSON.stringify(narrow) !== '{"id":"b","rgb":[4,5,6],"swatch":"#b"}') throw new Error("narrower JSON " + JSON.stringify(narrow));
+    if (Object.keys(base[0]!).join(",") !== "id,labelKey,rgb,swatch") throw new Error("wider keys " + Object.keys(base[0]!).join(","));
+    if (JSON.stringify(all[0]) !== '{"id":"z","labelKey":"tint.a","rgb":[1,2,3],"swatch":"#d"}') throw new Error("wider JSON " + JSON.stringify(all[0]));
+`,
+);
+
+check(
+    "tuples-stored-as-number-arrays-grow-together",
+    `
+    const store: number[][] = [];
+    function keep(values: number[]): number { store.push(values); return values.length; }
+    const lane: [number, number] = [1, 2];
+    if (keep(lane) !== 2) throw new Error("length");
+    store[0]!.push(3);
+    if (lane.length !== 3 || store[0] !== lane || lane[2] !== 3) throw new Error("grown through a retained array");
+    const direct: [number, number] = [4, 5];
+    const view: number[] = direct;
+    view.push(6);
+    if (direct.length !== 3 || view !== direct) throw new Error("grown through a local array");
+    interface Holder { values: number[] }
+    const pair: [number, number] = [7, 8];
+    const holder: Holder = { values: pair };
+    holder.values.push(9);
+    pair[0] = 70;
+    if (pair.length !== 3 || holder.values[0] !== 70) throw new Error("grown through a field");
+    function fresh(): [number, number] { return [1, 1]; }
+    const owned: number[] = fresh();
+    owned.push(2);
+    if (owned.length !== 3) throw new Error("fresh tuple adopted");
+    interface Placed { pos: [number, number] }
+    const placed: Placed = { pos: [3, 4] };
+    function total(values: number | number[]): number {
+        if (typeof values === "number") return values;
+        let sum = 0;
+        for (const value of values) sum += value;
+        return sum;
+    }
+    if (total(placed.pos) !== 7 || total(2) !== 2) throw new Error("a reading callee borrows a field tuple");
+`,
+);
+
+check(
+    "heterogeneous-tuple-lanes-destructure-as-declared",
+    `
+    const pair: [string, (id: number) => string] = ["tower", (id) => "tower#" + id];
+    const [key, keyOf] = pair;
+    if (key !== "tower" || keyOf(4) !== "tower#4") throw new Error("destructured pair");
+    const pairs: Array<[string, (id: number) => string, number]> = [["a", (id) => "a" + id, 1], ["b", (id) => "b" + id, 2]];
+    let out = "";
+    for (const [name, nameOf, weight] of pairs) out += name + nameOf(weight);
+    const [first, firstOf] = pairs[1]!;
+    if (out !== "aa1bb2" || first !== "b" || firstOf(3) !== "b3") throw new Error("destructured lanes");
+    function apply([label, format]: [string, (value: number) => string], value: number): string { return label + "=" + format(value); }
+    if (apply(["v", (value) => value.toFixed(1)], 2) !== "v=2.0") throw new Error("parameter lanes");
+`,
+);
+
+check(
+    "coalesced-narrower-records-take-the-wider-layout",
+    `
+    interface P { x: number; z: number }
+    interface C { x: number }
+    const items: P[] = [{ x: 1, z: 2 }];
+    const other: C = { x: 5 };
+    function read(i: number): number { const p = items[i] ?? other; other.x += 60; return p.x; }
+    if (read(0) !== 1 || read(3) !== 125 || other.x !== 125) throw new Error("selected record reads");
+    if ((items[3] ?? other) !== other || (items[0] ?? other) !== items[0]) throw new Error("selected identity");
+    if (JSON.stringify(other) !== '{"x":125}' || Object.keys(other).join(",") !== "x") throw new Error("narrower keys");
+`,
+);
+
+test("coalesced records refuse a copy the program could tell apart", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface P { x: number; z: number }
+            interface C { x: number; w: number }
+            const items: P[] = [{ x: 1, z: 2 }];
+            const other: C = { x: 5, w: 6 };
+            function read(i: number): number { const p = items[i] ?? other; other.x = 60; return p.x; }
+            const unused = read(0);`),
+        /'C' record stored as 'P' would be a copy of the one object JavaScript keeps, and the program writes 'x'/,
+    );
+});
+
+test("record conversions refuse what neither a copy nor a shared layout holds", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface S { a: number; extra: number }
+            interface T { a: number; note?: string }
+            const s: S = { a: 1, extra: 2 };
+            const t: T = s;
+            const seen = new Set<T>([t]);
+            const unused = seen.has(t);`),
+        /'S' record stored as 'T' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity/,
+    );
+});
+
+test("tuples stored as growable number arrays need growable storage", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface H { pos: [number, number] }
+            const h: H = { pos: [1, 2] };
+            const store: number[][] = [];
+            store.push(h.pos);`),
+        /fixed-length tuple stored as a number array could grow through that array/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`const store: number[][] = [];
+            function keep(lane: [number, number]): void { store.push(lane); }
+            const lanes: Array<[number, number]> = [[1, 2], [3, 4]];
+            for (const lane of lanes) keep(lane);`),
+        /fixed-length tuple stored as a number array could grow through that array/,
+    );
+});

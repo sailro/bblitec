@@ -1674,10 +1674,11 @@ function compileArraySlice(state: ArrayMethodState): Value {
     const end = call.arguments[1]
         ? lowerer.context.compileNumber(call.arguments[1], "double")
         : `static_cast<double>(${narrowed.cpp}.size())`;
+    // The copy is a new array the program owns, even of a readonly view.
     return {
         kind: "data",
         cpp: `bbl::js::array_slice(${narrowed.cpp}, ${begin}, ${end})`,
-        dataType,
+        dataType: { kind: "vector", element: dataType.element },
     };
 }
 

@@ -9,8 +9,12 @@ export interface NativeRecordStorageDemand {
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
-    /** Union arms construct their original identities in this shared layout. */
-    unionStorage?: ts.UnionType;
+    /**
+     * Records of this type are constructed in this type's layout: a union or a
+     * record type they were converted into, or the record type a view of them
+     * was converted from. One object then keeps one identity under both types.
+     */
+    layout?: ts.Type;
 }
 
 /** Replays strengthen ownership without replacing an already chosen layout. */
@@ -18,11 +22,7 @@ export function mergeNativeRecordStorage(
     previous: NativeRecordStorageDemand | undefined,
     next: NativeRecordStorageDemand,
 ): NativeRecordStorageDemand {
-    if (
-        previous?.unionStorage &&
-        next.unionStorage &&
-        previous.unionStorage !== next.unionStorage
-    ) {
+    if (previous?.layout && next.layout && previous.layout !== next.layout) {
         const file = next.node.getSourceFile();
         const position = file.getLineAndCharacterOfPosition(
             next.node.getStart(file),
@@ -31,7 +31,7 @@ export function mergeNativeRecordStorage(
             file.fileName,
             position.line + 1,
             position.character + 1,
-            "A retained record has conflicting union storage layouts.",
+            "A retained record has conflicting shared storage layouts.",
             "unsupported",
             next.node,
         );

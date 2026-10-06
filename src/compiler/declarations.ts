@@ -3607,7 +3607,10 @@ export class DeclarationLowerer {
                 this.bindNestedPattern(element.name, bound, element);
                 return;
             }
-            let stored = bound;
+            let stored = this.context.dataLowerer.narrowBindingLane(
+                bound,
+                element.name,
+            );
             if (bound.kind === "record") {
                 const declared = this.context.dataTypes.fromTsType(
                     this.context.checker.getTypeAtLocation(element.name),

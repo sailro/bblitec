@@ -1841,7 +1841,10 @@ export class UserFunctionLowerer {
                     "Array-bound callback parameter reads beyond the supplied tuple.",
                 );
             }
-            context.bindings.bindParameterValue(element.name, lane!);
+            context.bindings.bindParameterValue(
+                element.name,
+                context.dataLowerer.narrowBindingLane(lane!, element.name),
+            );
         });
     }
 

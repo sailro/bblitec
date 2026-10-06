@@ -3,6 +3,14 @@ import ts from "typescript";
 import { dataTypesEqual, doubleLiteral, type DataType } from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
 
+import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import {
+    yieldsFreshObject,
+    yieldsFreshRecordElements,
+} from "../fresh-records.js";
+import { argumentOnlyRead } from "../record-observations.js";
+import { resolvedSymbol } from "../symbols.js";
+import { unwrapExpression } from "../syntax.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function expressionOptional(
@@ -130,6 +138,7 @@ function valueVector(
         value.dataType?.kind === "tuple" &&
         dataType.element.kind === "number"
     ) {
+        requireGrowableTuple(lowerer, value, node);
         lowerer.context.reachJsData();
         lowerer.markEscaped(value);
         return `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`;
@@ -189,8 +198,33 @@ function valueVector(
         const result =
             lowerer.context.allocateTemporaryCppName("project_result");
         const destinationCpp = lowerer.context.dataTypes.cppType(dataType);
+        // Elements of a fresh array are records nothing else reaches.
+        const own = ts.isExpression(node)
+            ? lowerer.dataTypeAt(node)
+            : undefined;
+        const freshElements =
+            own?.kind === "vector" &&
+            dataTypesEqual(own.element, value.dataType.element) &&
+            yieldsFreshRecordElements(lowerer.context.checker, node);
+        // The projection is a second array. JavaScript keeps one, so the
+        // records of an array the program still holds share one layout.
+        if (
+            !freshElements &&
+            value.dataType.element.kind === "struct" &&
+            !(ts.isExpression(node) && yieldsFreshArray(lowerer, node))
+        )
+            lowerer.context.dataTypes.storeRecordAs(
+                value.dataType.element,
+                dataType.element,
+                node,
+                lowerer.context.program.getSourceFiles(),
+                { sharedArray: true },
+            );
         const projected = lowerer.compileKnownValueForSink(
-            lowerer.leafValue(item, value.dataType.element),
+            {
+                ...lowerer.leafValue(item, value.dataType.element),
+                ...(freshElements ? { freshRecord: true as const } : {}),
+            },
             dataType.element,
             node,
         );
@@ -204,6 +238,92 @@ function valueVector(
         );
     }
     return undefined;
+}
+
+/**
+ * A number array holding a tuple is the tuple itself, and can grow. The
+ * tuple's fixed native storage cannot follow that growth, so it is adopted
+ * only when nothing else holds the tuple or the callee it is handed to only
+ * reads it; a tuple binding instead takes growable array storage, and any
+ * other tuple refuses.
+ */
+function requireGrowableTuple(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): void {
+    const expression = ts.isExpression(node)
+        ? unwrapExpression(node)
+        : undefined;
+    const own = expression ? lowerer.dataTypeAt(expression) : undefined;
+    // A call that creates its result owns it; a selection (`??`, `?:`)
+    // marked fresh may still yield a stored tuple.
+    if (
+        own?.kind === "tuple" &&
+        expression &&
+        ((value.freshData && ts.isCallExpression(expression)) ||
+            yieldsFreshObject(lowerer.context.checker, expression))
+    )
+        return;
+    // A callee that only reads the array cannot grow or retain it.
+    if (expression && argumentOnlyRead(lowerer.context.checker, expression))
+        return;
+    const named =
+        expression && ts.isIdentifier(expression)
+            ? resolvedSymbol(lowerer.context.checker, expression)
+                  ?.valueDeclaration
+            : undefined;
+    const declaration =
+        named && ts.isVariableDeclaration(named) && named.initializer
+            ? named
+            : lowerer.context.bindings.variableDeclarationOf(value.cpp);
+    if (declaration && !lowerer.context.dynamicBindings.has(declaration))
+        throw new DynamicBindingStorageRequired(declaration, "array");
+    lowerer.context.fail(
+        node,
+        "A fixed-length tuple stored as a number array could grow through that array, which its native storage cannot follow; give it number[] storage or store a copy ([...tuple]).",
+    );
+}
+
+/** Methods and statics that return a new array of the receiver's elements. */
+const ARRAY_COPIES = new Set([
+    "concat",
+    "filter",
+    "flat",
+    "flatMap",
+    "map",
+    "slice",
+    "toReversed",
+    "toSorted",
+    "toSpliced",
+    "with",
+    "from",
+    "of",
+    "values",
+]);
+
+/** Whether an array expression evaluates to an array no other reference holds. */
+function yieldsFreshArray(
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+): boolean {
+    const unwrapped = unwrapExpression(expression);
+    return (
+        yieldsFreshObject(lowerer.context.checker, unwrapped) ||
+        (ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            ARRAY_COPIES.has(unwrapped.expression.name.text) &&
+            (lowerer.context.checker.isArrayLikeType(
+                lowerer.context.checker.getTypeAtLocation(
+                    unwrapped.expression.expression,
+                ),
+            ) ||
+                ["Array", "Object"].includes(
+                    lowerer.context.libraryGlobal(
+                        unwrapped.expression.expression,
+                    ) ?? "",
+                )))
+    );
 }
 
 function valueMap(
