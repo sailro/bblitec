@@ -6170,6 +6170,73 @@ check(
 );
 
 check(
+    "coalesced-records-keep-the-selected-object",
+    `
+    interface Grid { cells: number[]; size: number }
+    let created = 0;
+    function emptyGrid(size: number | null): Grid | null {
+        if (size === null) return null;
+        created++;
+        return { cells: [], size };
+    }
+    function current(previous: Grid | undefined, size: number | null): number {
+        const grid = previous ?? emptyGrid(size);
+        if (!grid) return -1;
+        grid.cells.push(grid.size);
+        return grid.cells.length;
+    }
+    const kept: Grid = { cells: [7], size: 3 };
+    if (current(kept, null) !== 2 || kept.cells.length !== 2) throw new Error("present operand is the kept grid");
+    if (current(undefined, 5) !== 1 || created !== 1) throw new Error("fallback grid");
+    if (current(undefined, null) !== -1 || created !== 1) throw new Error("absent fallback stays absent");
+    interface Support { readonly x: number; readonly z: number; readonly yaw: number }
+    interface Deps {
+        centre(id: number): { readonly x: number; readonly z: number } | null;
+        support?(id: number): Support | null;
+    }
+    function locate(deps: Deps, id: number): number {
+        const support = deps.support?.(id);
+        const parent = support ?? deps.centre(id);
+        if (!parent) return -1;
+        return parent.x + parent.z;
+    }
+    const full: Deps = {
+        centre: (id) => (id > 1 ? { x: id, z: 1 } : null),
+        support: (id) => (id === 7 ? { x: 70, z: 7, yaw: 0 } : null),
+    };
+    const bare: Deps = { centre: (id) => (id > 1 ? { x: id, z: 2 } : null) };
+    if (locate(full, 7) !== 77 || locate(full, 3) !== 4 || locate(full, 0) !== -1) throw new Error("records of two types");
+    if (locate(bare, 5) !== 7 || locate(bare, 1) !== -1) throw new Error("absent method");
+    interface Cells { cells: readonly number[]; flip: boolean }
+    interface CellMap { cells: readonly number[]; flip: boolean; key: string }
+    function describe(options: { cells?: Cells; map?: CellMap }): string {
+        const mode = options.cells ?? options.map;
+        if (!mode) return "plain";
+        return mode.cells.length + (mode.flip ? "f" : "n");
+    }
+    if (describe({}) !== "plain" || describe({ cells: { cells: [1], flip: true } }) !== "1f" || describe({ map: { cells: [], flip: false, key: "k" } }) !== "0n")
+        throw new Error("optional records of two types");
+`,
+);
+
+check(
+    "conditional-records-of-two-types-keep-the-selected-object",
+    `
+    interface A { kind: "a"; x: number }
+    interface B { kind: "b"; x: number; y: number }
+    const as: A[] = [{ kind: "a", x: 1 }];
+    const bs: B[] = [{ kind: "b", x: 2, y: 3 }];
+    const gate = new Float32Array([0, 1]);
+    const p = gate[1] ? as[0]! : bs[0]!;
+    p.x = 10;
+    if (as[0]!.x !== 10 || p !== as[0]) throw new Error("selected first record");
+    const q = gate[0] ? as[0]! : bs[0]!;
+    q.x = 20;
+    if (bs[0]!.x !== 20 || q !== bs[0] || (q.kind === "b" && q.y !== 3)) throw new Error("selected second record");
+`,
+);
+
+check(
     "records-stored-as-another-record-type-stay-one-object",
     `
     interface Wide { a: number; b: number }
@@ -6205,6 +6272,19 @@ check(
     if (length(labelled[0]!) !== 5) throw new Error("unobservable copy");
 `,
 );
+
+test("coalesced records refuse a copy the program could tell apart", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface P { x: number; z: number }
+            interface C { x: number }
+            const items: P[] = [{ x: 1, z: 2 }];
+            const other: C = { x: 5 };
+            function read(i: number): number { const p = items[i] ?? other; other.x = 60; return p.x; }
+            const unused = read(0);`),
+        /'C' record stored as 'P' would be a copy of the one object JavaScript keeps, and the program writes 'x'/,
+    );
+});
 
 test("record conversions refuse what neither a copy nor a shared layout holds", () => {
     assert.throws(

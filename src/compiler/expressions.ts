@@ -4523,8 +4523,21 @@ export class ExpressionLowerer {
         // its branch's temporaries.
         const selectedArray =
             inferred?.kind === "optional" ? inferred.inner : inferred;
+        // Arms of two record types select one existing object: both are
+        // stored as the result's record type, in shared reference storage.
+        const armRecord = (arm: ts.Expression): string | undefined => {
+            if (ts.isObjectLiteralExpression(this.context.unwrap(arm)))
+                return undefined;
+            const type = this.context.dataLowerer.dataTypeAt(arm);
+            return type?.kind === "struct" ? type.name : undefined;
+        };
+        const distinctRecordArms =
+            inferred?.kind === "struct" &&
+            armRecord(unwrapped.whenTrue) !== undefined &&
+            armRecord(unwrapped.whenFalse) !== undefined &&
+            armRecord(unwrapped.whenTrue) !== armRecord(unwrapped.whenFalse);
         const conditionalType =
-            inferred && selectedArray?.kind === "span"
+            inferred && (selectedArray?.kind === "span" || distinctRecordArms)
                 ? this.context.dataTypes.markStoredObjectReferences(inferred)
                 : inferred?.kind === "enum"
                   ? { kind: "string" as const }

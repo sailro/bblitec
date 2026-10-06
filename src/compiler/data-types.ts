@@ -5034,52 +5034,6 @@ export class DataTypeRegistry {
         );
     }
 
-    /** The shared structural view of two record types, if one is non-empty. */
-    public commonStruct(
-        left: Extract<DataType, { kind: "struct" }>,
-        right: Extract<DataType, { kind: "struct" }>,
-    ): Extract<DataType, { kind: "struct" }> | undefined {
-        if (dataTypesEqual(left, right)) return left;
-        const fieldsFor = (name: string): DataStructField[] =>
-            this.structsByName.get(name)?.fields ?? [];
-        const rightFields = new EmissionMap(
-            fieldsFor(right.name).map((field) => [field.sourceName, field]),
-        );
-        const fields = fieldsFor(left.name).filter((field) => {
-            const candidate = rightFields.get(field.sourceName);
-            return (
-                candidate &&
-                dataTypesEqual(candidate.type, field.type) &&
-                candidate.accessor === field.accessor
-            );
-        });
-        if (fields.length === 0) return undefined;
-        const key = fields
-            .map(
-                (field) =>
-                    `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:required${accessorKey(field)}`,
-            )
-            .join(",");
-        const existing = this.structsByKey.get(key);
-        if (existing) return { kind: "struct", name: existing.name };
-        const name = this.uniqueName(
-            `Record${++this.anonymousStructIndex}`,
-            this.structNames,
-        );
-        this.registerStructDefinition(key, {
-            name,
-            fields: fields.map(
-                ({ sourceName, name: fieldName, type, accessor }) => ({
-                    sourceName,
-                    name: fieldName,
-                    type,
-                    ...(accessor ? { accessor } : {}),
-                }),
-            ),
-        });
-        return { kind: "struct", name };
-    }
-
     /** Whether a plain-data shape owns an engine/PAL resource handle. */
     public carriesHandle(
         type: DataType,
