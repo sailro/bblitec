@@ -12559,6 +12559,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   this.callSpanValue(expression) ??
                   this.selectedIterationValue(expression) ??
                   this.runtimeArrayLiteral(expression) ??
+                  this.constructedCollection(expression) ??
                   this.nullishArrayValue(expression) ??
                   (knownTuple
                       ? this.materializeKnownTuple(expression, knownTuple)
@@ -12783,6 +12784,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType,
             freshData: true,
         };
+    }
+
+    /** `new Set(...)`, `new Map(...)`: a fresh collection the loop ranges over. */
+    private constructedCollection(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const constructed = this.context.unwrap(expression);
+        if (
+            !ts.isNewExpression(constructed) ||
+            !["Set", "Map", "Array"].includes(
+                this.context.libraryGlobal(constructed.expression) ?? "",
+            )
+        )
+            return undefined;
+        return this.context.probeEmission(() => {
+            const value = this.context.compileValue(constructed);
+            const kind = value.dataType?.kind;
+            return value.kind === "data" &&
+                (kind === "set" || kind === "map" || kind === "vector")
+                ? { ...value, freshData: true }
+                : undefined;
+        });
     }
 
     /** A nullish/conditional container is materialized before range iteration. */

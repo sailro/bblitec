@@ -4,6 +4,7 @@ import {
     EmissionMap,
     EmissionSet,
     EmissionWeakSet,
+    journaled,
     writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -321,6 +322,55 @@ export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
         [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
     ]);
 
+/**
+ * How an unrolled iteration ended at generation: on, by a break or continue
+ * it settles, or by a jump only the running program takes.
+ */
+type StaticCompletion = "normal" | "break" | "continue" | "jumped";
+
+/** One loop instance being unrolled. */
+interface UnrolledLoop {
+    readonly iteration: ts.IterationStatement;
+    /** The label after the last iteration, once a runtime break needs it. */
+    readonly breakLabel: string | undefined;
+    /** Later iterations are scopes: a runtime break may pass over them. */
+    readonly scoped: boolean;
+    /** Whether the body may leave the loop under a runtime condition. */
+    readonly runtimeExits: boolean;
+}
+
+/** The iteration of an unrolled loop being emitted. */
+interface StaticIterationFrame {
+    readonly iteration: ts.IterationStatement;
+    readonly completion: StaticCompletion;
+    readonly loop: UnrolledLoop;
+    /**
+     * `flat` writes statements into the enclosing scope; `probe` does so
+     * speculatively and asks for a scope at the first runtime exit;
+     * `scoped` is that scope, whose exits jump.
+     */
+    readonly mode: "flat" | "probe" | "scoped";
+    /** Runtime branches open at the iteration's own level. */
+    readonly runtimeDepth: number;
+    /** A runtime exit was emitted: what follows is conditional. */
+    readonly exited: boolean;
+    readonly continueLabel: string | undefined;
+}
+
+/** The first runtime exit of a speculatively flat iteration. */
+class RuntimeLoopExitRequired extends Error {
+    public constructor(public readonly iteration: ts.IterationStatement) {
+        super("An unrolled iteration takes a runtime exit.");
+    }
+}
+
+/** Where labeled continues of an outer loop leave an inner one. */
+interface ContinueTrampoline {
+    readonly loop: ts.IterationStatement;
+    readonly label: string;
+    readonly used: boolean;
+}
+
 export class StatementLowerer {
     private readonly cleanupRegions = emissionArray<{
         node: ts.Node;
@@ -379,13 +429,17 @@ export class StatementLowerer {
         return false;
     }
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
-    private readonly labels: Array<{ source: string; target: string }> =
-        emissionArray([]);
-    /** Source loops whose current iteration is being emitted statically. */
-    private readonly staticIterationCompletions: Array<{
-        readonly iteration: ts.IterationStatement;
-        readonly completion: "normal" | "break" | "continue";
+    private readonly labels: Array<{
+        readonly source: string;
+        readonly target: string;
+        /** A labeled break jumps to the label after the statement. */
+        readonly used: boolean;
     }> = emissionArray([]);
+    /** Source loops whose current iteration is being emitted statically. */
+    private readonly staticIterationCompletions: StaticIterationFrame[] =
+        emissionArray([]);
+    /** Runtime branches being emitted: an exit below one is not settled. */
+    @journaled private accessor runtimeBranchDepth = 0;
 
     private preferNativeDataIteration(
         context: StatementLoweringContext,
@@ -437,9 +491,11 @@ export class StatementLowerer {
         emitBody: () => T,
     ): T {
         context.enterRuntimeControlFlow();
+        this.runtimeBranchDepth += 1;
         try {
             return emitBody();
         } finally {
+            this.runtimeBranchDepth -= 1;
             context.leaveRuntimeControlFlow();
         }
     }
@@ -451,26 +507,22 @@ export class StatementLowerer {
         iteration?: ts.IterationStatement,
     ): T {
         context.enterRuntimeIteration();
+        if (iteration) this.nativeLoops.push(iteration);
         try {
             return iteration &&
                 !context.isInParameterizedResourceLoop(iteration)
                 ? context.emitNativeDataIteration(iteration, emitBody)
                 : emitBody();
         } finally {
+            if (iteration) this.nativeLoops.pop();
             context.leaveRuntimeIteration();
         }
     }
 
-    /** Whether this continue binds one of the loops currently being unrolled. */
-    private continueTargetsStaticIteration(
-        statement: ts.ContinueStatement,
-    ): boolean {
-        return this.staticIterationForControl(statement) !== undefined;
-    }
-
+    /** The frame of the unrolled loop a break or continue binds, if any. */
     private staticIterationForControl(
         statement: ts.BreakStatement | ts.ContinueStatement,
-    ): (typeof this.staticIterationCompletions)[number] | undefined {
+    ): StaticIterationFrame | undefined {
         for (
             let parent: ts.Node | undefined = statement.parent;
             parent;
@@ -488,37 +540,253 @@ export class StatementLowerer {
         return undefined;
     }
 
+    /**
+     * A break or continue of a loop being unrolled. Reached on a path the
+     * iteration settles, it completes the iteration at generation; under a
+     * runtime branch, or after an exit the program decides, it jumps.
+     */
     private completeStaticIteration(
+        context: StatementLoweringContext,
         statement: ts.BreakStatement | ts.ContinueStatement,
     ): boolean {
         const frame = this.staticIterationForControl(statement);
         if (!frame) return false;
-        writable(frame).completion = ts.isBreakStatement(statement)
-            ? "break"
-            : "continue";
+        const exit = ts.isBreakStatement(statement) ? "break" : "continue";
+        if (this.runtimeBranchDepth <= frame.runtimeDepth && !frame.exited) {
+            writable(frame).completion = exit;
+            return true;
+        }
+        if (frame.mode === "probe")
+            throw new RuntimeLoopExitRequired(frame.iteration);
+        if (frame.mode === "flat")
+            context.fail(
+                statement,
+                exit === "break"
+                    ? "A break in a statically unrolled resource loop requires a generation-known condition."
+                    : "A continue in a statically unrolled loop requires a generation-known condition.",
+            );
+        let label: string;
+        if (exit === "break") {
+            // Every later iteration is a scope the jump passes over.
+            const loop = writable(frame.loop);
+            label = loop.breakLabel ??=
+                context.allocateTemporaryCppName("unrolled_break");
+            loop.scoped = true;
+        } else {
+            label = writable(frame).continueLabel ??=
+                context.allocateTemporaryCppName("unrolled_continue");
+        }
+        writable(frame).exited = true;
+        // At the iteration's own level nothing after the jump runs.
+        if (this.runtimeBranchDepth <= frame.runtimeDepth)
+            writable(frame).completion = "jumped";
+        context.emit({
+            kind: "control",
+            code: `goto ${label};`,
+            transfer: "goto",
+        });
         return true;
+    }
+
+    /** The loops a labeled jump leaves inside its target, innermost first. */
+    private loopsLeftByLabeledJump(
+        context: StatementLoweringContext,
+        statement: ts.BreakStatement | ts.ContinueStatement,
+    ): { loops: ts.IterationStatement[]; target: ts.Statement } {
+        const loops: ts.IterationStatement[] = [];
+        for (
+            let parent: ts.Node | undefined = statement.parent;
+            parent && !ts.isFunctionLike(parent);
+            parent = parent.parent
+        ) {
+            if (
+                ts.isLabeledStatement(parent) &&
+                parent.label.text === statement.label?.text
+            ) {
+                let target = parent.statement;
+                while (ts.isLabeledStatement(target)) target = target.statement;
+                return {
+                    loops: loops.filter((loop) => loop !== target),
+                    target,
+                };
+            }
+            if (ts.isIterationStatement(parent, false)) loops.push(parent);
+        }
+        context.fail(statement, "A labeled jump has no enclosing label.");
+    }
+
+    /**
+     * A labeled break of the unrolled loop it stands in directly is that
+     * loop's break; a jump past other unrolled iterations would skip their
+     * statements' initialization, so it refuses.
+     */
+    private labeledBreakOfUnrolledLoop(
+        context: StatementLoweringContext,
+        statement: ts.BreakStatement,
+    ): boolean {
+        const { loops, target } = this.loopsLeftByLabeledJump(
+            context,
+            statement,
+        );
+        const unrolled = (loop: ts.Statement): boolean =>
+            this.staticIterationCompletions.some(
+                (frame) => frame.iteration === loop,
+            );
+        if (
+            loops.length === 0 &&
+            unrolled(target) &&
+            this.staticIterationForControl(statement)?.iteration === target
+        )
+            return this.completeStaticIteration(context, statement);
+        if ([...loops, target].some(unrolled))
+            context.fail(
+                statement,
+                "A labeled break out of a statically unrolled loop is not lowered.",
+            );
+        return false;
+    }
+
+    /**
+     * The trampoline a labeled continue from a nested loop jumps to, or
+     * undefined when the label names the loop the continue stands in.
+     */
+    private labeledContinueTrampoline(
+        context: StatementLoweringContext,
+        statement: ts.ContinueStatement,
+    ): ContinueTrampoline | undefined {
+        const { loops, target } = this.loopsLeftByLabeledJump(
+            context,
+            statement,
+        );
+        if (!ts.isIterationStatement(target, false))
+            context.fail(statement, "A labeled continue must name a loop.");
+        if (loops.length === 0) return undefined;
+        if (
+            loops.some((loop) =>
+                this.staticIterationCompletions.some(
+                    (frame) => frame.iteration === loop,
+                ),
+            )
+        )
+            context.fail(
+                statement,
+                "A labeled continue out of a statically unrolled loop is not lowered.",
+            );
+        const outermost = loops.at(-1)!;
+        return (
+            this.continueTrampolines.find(
+                (trampoline) => trampoline.loop === outermost,
+            ) ??
+            context.fail(
+                statement,
+                "A labeled continue has no trampoline after the loop it leaves.",
+            )
+        );
+    }
+
+    /** Source loops lowered as native C++ loops, innermost last. */
+    private readonly nativeLoops = emissionArray<ts.IterationStatement>([]);
+
+    /** Labeled continues of an outer loop, by the inner loop they leave. */
+    private readonly continueTrampolines = emissionArray<ContinueTrampoline>(
+        [],
+    );
+
+    /**
+     * Emit a loop that labeled continues of its enclosing loop leave: they
+     * jump past it to a `continue` of that loop. Nothing between the two
+     * loops may hold its own breakable or cleanup scope.
+     */
+    private emitWithContinueTrampoline(
+        context: StatementLoweringContext,
+        loop: ts.IterationStatement,
+        emitLoop: () => void,
+    ): void {
+        let enclosing: ts.IterationStatement | undefined;
+        let crossed: ts.Node | undefined;
+        for (
+            let parent: ts.Node | undefined = loop.parent;
+            parent && !ts.isFunctionLike(parent);
+            parent = parent.parent
+        ) {
+            if (ts.isIterationStatement(parent, false)) {
+                enclosing = parent;
+                break;
+            }
+            if (ts.isSwitchStatement(parent) || ts.isTryStatement(parent))
+                crossed ??= parent;
+        }
+        const labels = new Set<string>();
+        for (
+            let parent = enclosing?.parent;
+            parent && ts.isLabeledStatement(parent);
+            parent = parent.parent
+        )
+            labels.add(parent.label.text);
+        const continues =
+            labels.size > 0 &&
+            someAnalysisNode(
+                loop,
+                (node) =>
+                    ts.isContinueStatement(node) &&
+                    node.label !== undefined &&
+                    labels.has(node.label.text),
+                { functions: "skip" },
+            );
+        if (!continues || !enclosing) {
+            emitLoop();
+            return;
+        }
+        if (crossed)
+            context.fail(
+                crossed,
+                "A labeled continue cannot leave a switch or try statement.",
+            );
+        if (
+            this.staticIterationCompletions.some(
+                (frame) => frame.iteration === enclosing,
+            )
+        )
+            context.fail(
+                loop,
+                "A labeled continue of a statically unrolled loop is not lowered.",
+            );
+        const trampoline: ContinueTrampoline = {
+            loop,
+            label: context.allocateTemporaryCppName("labeled_continue"),
+            used: false,
+        };
+        this.continueTrampolines.push(trampoline);
+        try {
+            emitLoop();
+        } finally {
+            this.continueTrampolines.pop();
+        }
+        if (!trampoline.used) return;
+        if (this.nativeLoops.at(-1) !== enclosing)
+            context.fail(
+                loop,
+                "A labeled continue requires its loop to run as a native loop.",
+            );
+        const skip = context.allocateTemporaryCppName("labeled_continue_skip");
+        context.emit({
+            kind: "control",
+            code: `goto ${skip};`,
+            transfer: "goto",
+        });
+        context.emit(`${trampoline.label}:;`);
+        context.emit({
+            kind: "control",
+            code: "continue;",
+            transfer: "continue",
+        });
+        context.emit(`${skip}:;`);
     }
 
     private staticIterationCompleted(): boolean {
         return this.staticIterationCompletions.some(
             ({ completion }) => completion !== "normal",
         );
-    }
-
-    /** Whether a subtree can continue one of the active static loops. */
-    private containsStaticIterationContinue(statement: ts.Statement): boolean {
-        const found = someAnalysisNode(statement, (node) => {
-            if (
-                ts.isContinueStatement(node) &&
-                !node.label &&
-                this.continueTargetsStaticIteration(node)
-            ) {
-                return true;
-            }
-            return false;
-        });
-
-        return found;
     }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
@@ -633,24 +901,19 @@ export class StatementLowerer {
             this.emitTry(context, statement);
             return;
         }
-        if (ts.isForStatement(statement)) {
-            this.emitFor(context, statement);
-            return;
-        }
-        if (ts.isDoStatement(statement)) {
-            this.emitDo(context, statement);
-            return;
-        }
-        if (ts.isWhileStatement(statement)) {
-            this.emitWhile(context, statement);
-            return;
-        }
-        if (ts.isForOfStatement(statement)) {
-            this.emitForOf(context, statement);
-            return;
-        }
-        if (ts.isForInStatement(statement)) {
-            this.emitForIn(context, statement);
+        if (ts.isIterationStatement(statement, false)) {
+            this.emitWithContinueTrampoline(context, statement, () => {
+                if (ts.isForStatement(statement))
+                    this.emitFor(context, statement);
+                else if (ts.isDoStatement(statement))
+                    this.emitDo(context, statement);
+                else if (ts.isWhileStatement(statement))
+                    this.emitWhile(context, statement);
+                else if (ts.isForOfStatement(statement))
+                    this.emitForOf(context, statement);
+                else if (ts.isForInStatement(statement))
+                    this.emitForIn(context, statement);
+            });
             return;
         }
         if (ts.isSwitchStatement(statement)) {
@@ -661,13 +924,14 @@ export class StatementLowerer {
             const target = context.allocateTemporaryCppName(
                 `label_${statement.label.text}`,
             );
-            this.labels.push({ source: statement.label.text, target });
+            const label = { source: statement.label.text, target, used: false };
+            this.labels.push(label);
             try {
                 this.emit(context, statement.statement);
             } finally {
                 this.labels.pop();
             }
-            context.emit(`${target}:;`);
+            if (label.used) context.emit(`${target}:;`);
             return;
         }
         if (ts.isBreakStatement(statement)) {
@@ -683,6 +947,8 @@ export class StatementLowerer {
                         "Labeled break has no active target.",
                     );
                 }
+                if (this.labeledBreakOfUnrolledLoop(context, statement)) return;
+                writable(label).used = true;
                 context.emit({
                     kind: "control",
                     code: `goto ${label.target};`,
@@ -700,7 +966,7 @@ export class StatementLowerer {
                 });
                 return;
             }
-            if (this.completeStaticIteration(statement)) return;
+            if (this.completeStaticIteration(context, statement)) return;
             context.emit({
                 kind: "control",
                 code: "break;",
@@ -710,13 +976,22 @@ export class StatementLowerer {
         }
         if (ts.isContinueStatement(statement)) {
             if (this.completeCleanupJump(context, statement)) return;
-            if (statement.label) {
-                context.fail(
-                    statement,
-                    "Labeled continue is not supported; use a labeled break or an unlabeled continue.",
-                );
+            // A labeled continue of the loop it stands in directly is an
+            // unlabeled one; from a nested loop it jumps to the trampoline
+            // after the outermost loop it leaves.
+            const trampoline = statement.label
+                ? this.labeledContinueTrampoline(context, statement)
+                : undefined;
+            if (trampoline) {
+                writable(trampoline).used = true;
+                context.emit({
+                    kind: "control",
+                    code: `goto ${trampoline.label};`,
+                    transfer: "goto",
+                });
+                return;
             }
-            if (this.completeStaticIteration(statement)) return;
+            if (this.completeStaticIteration(context, statement)) return;
             context.emit({
                 kind: "control",
                 code: "continue;",
@@ -1405,31 +1680,7 @@ export class StatementLowerer {
             }
             return;
         }
-        if (
-            this.containsStaticIterationContinue(statement.thenStatement) ||
-            (statement.elseStatement !== undefined &&
-                this.containsStaticIterationContinue(statement.elseStatement))
-        ) {
-            context.fail(
-                statement.expression,
-                "A continue in a statically unrolled loop requires a generation-known condition.",
-            );
-        }
         if (this.staticIterationCompletions.length > 0) {
-            const control =
-                enclosingLoopControl(statement.thenStatement) ??
-                (statement.elseStatement &&
-                    enclosingLoopControl(statement.elseStatement));
-            if (
-                control &&
-                ts.isBreakStatement(control) &&
-                this.staticIterationForControl(control)
-            ) {
-                context.fail(
-                    statement.expression,
-                    "A break in a statically unrolled resource loop requires a generation-known condition.",
-                );
-            }
             if (
                 firstReturn([statement.thenStatement]) ||
                 (statement.elseStatement &&
@@ -2316,23 +2567,85 @@ export class StatementLowerer {
      * locals. The generator scope pushed here already prefixes each
      * iteration's names uniquely, so flattening cannot collide two of them.
      *
-     * Shared by the three unrollers, because the reason is the loop's shape
+     * Shared by the unrollers, because the reason is the loop's shape
      * rather than which collection it walked.
+     *
+     * A break or continue that only the running program decides cannot
+     * leave flat statements: a jump past them would skip their
+     * initialization. An iteration that takes one is emitted again as a
+     * scope of its own, run as runtime control flow; its continue jumps to
+     * the scope's end and its break past the loop, whose later iterations
+     * are scopes too.
      */
-    private emitUnrolledIteration(
+    private emitUnrolledLoop(
         context: StatementLoweringContext,
         iteration: ts.IterationStatement,
-        body: ts.Statement,
+        binds: Iterable<() => void>,
+    ): void {
+        const loop: UnrolledLoop = {
+            iteration,
+            breakLabel: undefined,
+            scoped: false,
+            runtimeExits: this.mayExitAtRuntime(context, iteration),
+        };
+        for (const bind of binds) {
+            if (this.emitUnrolledIteration(context, loop, bind) === "break")
+                break;
+        }
+        if (loop.breakLabel !== undefined) context.emit(`${loop.breakLabel}:;`);
+    }
+
+    private emitUnrolledIteration(
+        context: StatementLoweringContext,
+        loop: UnrolledLoop,
         bind: () => void,
-    ): "normal" | "break" | "continue" {
-        context.bindings.pushScope(context.allocateBlockPrefix());
-        const completion: {
-            iteration: ts.IterationStatement;
-            completion: "normal" | "break" | "continue";
-        } = { iteration, completion: "normal" };
-        this.staticIterationCompletions.push(completion);
-        context.enterStaticIteration(iteration);
+    ): StaticCompletion {
+        if (loop.scoped || !loop.runtimeExits)
+            return this.emitIterationBody(
+                context,
+                loop,
+                bind,
+                loop.scoped ? "scoped" : "flat",
+            );
         try {
+            return context.probeEmission(
+                () => this.emitIterationBody(context, loop, bind, "probe"),
+                () => true,
+            );
+        } catch (error) {
+            if (
+                !(error instanceof RuntimeLoopExitRequired) ||
+                error.iteration !== loop.iteration
+            )
+                // A refusal inside the attempt: lower the iteration again
+                // where statement recovery sees each statement.
+                return this.emitIterationBody(context, loop, bind, "flat");
+        }
+        return this.emitIterationBody(context, loop, bind, "scoped");
+    }
+
+    private emitIterationBody(
+        context: StatementLoweringContext,
+        loop: UnrolledLoop,
+        bind: () => void,
+        mode: StaticIterationFrame["mode"],
+    ): StaticCompletion {
+        context.bindings.pushScope(context.allocateBlockPrefix());
+        const frame: StaticIterationFrame = {
+            iteration: loop.iteration,
+            completion: "normal",
+            loop,
+            mode,
+            // A scope runs as runtime control flow; its own top level is
+            // what this iteration decides.
+            runtimeDepth: this.runtimeBranchDepth + (mode === "scoped" ? 1 : 0),
+            exited: false,
+            continueLabel: undefined,
+        };
+        this.staticIterationCompletions.push(frame);
+        context.enterStaticIteration(loop.iteration);
+        const body = loop.iteration.statement;
+        const emitStatements = (): void => {
             bind();
             const statements = ts.isBlock(body) ? body.statements : [body];
             for (const nested of statements) {
@@ -2343,12 +2656,61 @@ export class StatementLowerer {
                 )
                     break;
             }
+        };
+        try {
+            if (mode === "scoped") {
+                context.emit({ kind: "open", code: "{" });
+                context.increaseIndent();
+                try {
+                    this.inRuntimeControlFlow(context, emitStatements);
+                } finally {
+                    context.decreaseIndent();
+                }
+                context.emit({ kind: "close", code: "}" });
+                if (frame.continueLabel !== undefined)
+                    context.emit(`${frame.continueLabel}:;`);
+            } else emitStatements();
         } finally {
             context.leaveStaticIteration();
             this.staticIterationCompletions.pop();
             context.bindings.popScope();
         }
-        return completion.completion;
+        return frame.completion;
+    }
+
+    /**
+     * Whether an unrolled body has a break or continue of its own loop under
+     * a condition that is not visibly generation-known.
+     */
+    private mayExitAtRuntime(
+        context: StatementLoweringContext,
+        iteration: ts.IterationStatement,
+    ): boolean {
+        if (enclosingLoopControl(iteration.statement) === undefined)
+            return false;
+        const bindings = new EmissionSet<ts.Symbol>();
+        const initializer =
+            ts.isForStatement(iteration) ||
+            ts.isForOfStatement(iteration) ||
+            ts.isForInStatement(iteration)
+                ? iteration.initializer
+                : undefined;
+        if (initializer && ts.isVariableDeclarationList(initializer))
+            for (const declaration of initializer.declarations)
+                forEachAnalysisNode(declaration.name, (node) => {
+                    if (
+                        !ts.isIdentifier(node) ||
+                        (node !== declaration.name &&
+                            !(
+                                ts.isBindingElement(node.parent) &&
+                                node.parent.name === node
+                            ))
+                    )
+                        return;
+                    const symbol = context.symbols.valueSymbol(node);
+                    if (symbol) bindings.add(symbol);
+                });
+        return !this.hasStaticLoopExits(context, iteration.statement, bindings);
     }
 
     private emitStaticIndexFor(
@@ -2433,25 +2795,18 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
-        const emitIndexIteration = (
-            index: number,
-        ): "normal" | "break" | "continue" => {
-            return this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () => {
-                    context.bindings.bindCompileTimeValue(indexBinding, {
-                        kind: "number",
-                        cpp: `${index}.0`,
-                        staticNumber: index,
-                    });
-                },
-            );
-        };
-        for (let offset = 0; offset < iterations; offset += 1) {
-            if (emitIndexIteration(start + offset) === "break") break;
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            Array.from({ length: iterations }, (_, offset) => () => {
+                const index = start + offset;
+                context.bindings.bindCompileTimeValue(indexBinding, {
+                    kind: "number",
+                    cpp: `${index}.0`,
+                    staticNumber: index,
+                });
+            }),
+        );
         return true;
     }
 
@@ -2554,12 +2909,11 @@ export class StatementLowerer {
                 ? context.dataLowerer.narrowOptional(raw, statement.expression)
                 : raw;
         if (owner.kind === "record") {
-            for (const key of Object.keys(owner.recordProperties ?? {})) {
-                const completed = this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () =>
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                Object.keys(owner.recordProperties ?? {}).map(
+                    (key) => () =>
                         this.bindStaticIterationValue(
                             context,
                             binding,
@@ -2567,9 +2921,8 @@ export class StatementLowerer {
                                 context.cppString(text),
                             ),
                         ),
-                );
-                if (completed === "break") break;
-            }
+                ),
+            );
             return;
         }
         const ownKeys = this.forInOwnKeys(context, owner, statement.expression);
@@ -2946,26 +3299,31 @@ export class StatementLowerer {
             })
         )
             return;
-        if (this.bindsEnclosingLoop(statement.statement)) {
-            context.fail(
-                statement,
-                "break/continue in for...of requires a runtime data container.",
-            );
-        }
         if (executed) {
-            for (const value of executed)
-                this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () =>
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                executed.map(
+                    (value) => () =>
                         this.bindStaticIterationValue(
                             context,
                             declaration.name,
                             value,
                         ),
-                );
+                ),
+            );
             return;
+        }
+        if (
+            this.bindsEnclosingLoop(statement.statement) &&
+            !context.probeStaticArrayLiteral(statement.expression)
+        ) {
+            // An iterated value that does not lower names its own cause.
+            context.compileValue(statement.expression);
+            context.fail(
+                statement,
+                "break/continue in for...of requires a runtime data container.",
+            );
         }
         const values = context.expectStaticArrayLiteral(statement.expression);
         const compiled = this.preferNativeDataIteration(context, statement)
@@ -2996,26 +3354,17 @@ export class StatementLowerer {
         ) {
             return;
         }
-        const emitElementIteration = (
-            element: ts.Expression,
-            index: number,
-        ): void => {
-            this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () => {
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        compiled?.[index] ?? context.compileValue(element),
-                    );
-                },
-            );
-        };
-        for (const [index, element] of values.elements.entries()) {
-            emitElementIteration(element, index);
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            values.elements.map((element, index) => () => {
+                this.bindStaticIterationValue(
+                    context,
+                    declaration.name,
+                    compiled?.[index] ?? context.compileValue(element),
+                );
+            }),
+        );
     }
 
     private emitStaticResourceExitForOf(
@@ -3084,20 +3433,18 @@ export class StatementLowerer {
                 "A static resource-loop exit requires settled iteration values.",
             );
         }
-        for (const value of values) {
-            const completion = this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () =>
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            values.map(
+                (value) => () =>
                     this.bindStaticIterationValue(
                         context,
                         declaration.name,
                         value,
                     ),
-            );
-            if (completion === "break") break;
-        }
+            ),
+        );
         return true;
     }
 
@@ -3304,42 +3651,29 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        if (this.bindsEnclosingLoop(statement.statement)) {
-            context.fail(
-                statement,
-                "break/continue in for...of requires a runtime data container.",
-            );
-        }
-        for (const [index, element] of elements.entries()) {
-            const indexValue: Value = {
-                kind: "number",
-                cpp: doubleLiteral(index),
-                staticNumber: index,
-                dataType: { kind: "number" },
-            };
-            const value: Value =
-                method === "keys"
-                    ? indexValue
-                    : method === "values"
-                      ? element
-                      : {
-                            kind: "tuple",
-                            cpp: "",
-                            tupleElements: [indexValue, element],
-                        };
-            const completion = this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () =>
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        value,
-                    ),
-            );
-            if (completion === "break") break;
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            elements.map((element, index) => () => {
+                const indexValue: Value = {
+                    kind: "number",
+                    cpp: doubleLiteral(index),
+                    staticNumber: index,
+                    dataType: { kind: "number" },
+                };
+                const value: Value =
+                    method === "keys"
+                        ? indexValue
+                        : method === "values"
+                          ? element
+                          : {
+                                kind: "tuple",
+                                cpp: "",
+                                tupleElements: [indexValue, element],
+                            };
+                this.bindStaticIterationValue(context, declaration.name, value);
+            }),
+        );
         return true;
     }
 
@@ -3390,16 +3724,11 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        if (this.bindsEnclosingLoop(statement.statement)) {
-            if (context.dataIterationTarget(statement.expression)) {
-                return false;
-            }
-            if (this.breaksEnclosingLoop(statement.statement)) {
-                context.fail(
-                    statement,
-                    "break in for...of requires a runtime data container.",
-                );
-            }
+        if (
+            this.bindsEnclosingLoop(statement.statement) &&
+            context.dataIterationTarget(statement.expression)
+        ) {
+            return false;
         }
         if (
             this.emitNativeHandleTableForOf(
@@ -3411,20 +3740,17 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        for (const element of elements) {
-            this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () => {
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        element,
-                    );
-                },
-            );
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            elements.map((element) => () => {
+                this.bindStaticIterationValue(
+                    context,
+                    declaration.name,
+                    element,
+                );
+            }),
+        );
         return true;
     }
 
@@ -3770,33 +4096,7 @@ export class StatementLowerer {
                 name: iterator,
                 initializer: `${range}.begin()`,
             });
-            for (let index = 0; index < count; ++index) {
-                const completed = this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () => {
-                        const member =
-                            context.allocateTemporaryCppName("resource_member");
-                        context.emit({
-                            kind: "declaration",
-                            type: "auto",
-                            name: member,
-                            initializer: `*${iterator}`,
-                            attributes: "[[maybe_unused]] ",
-                        });
-                        context.emit({
-                            kind: "expression",
-                            code: `++${iterator};`,
-                        });
-                        context.bindDataIterationVariable(
-                            declaration.name,
-                            member,
-                            target.element,
-                            target.template,
-                        );
-                    },
-                );
+            const unchangedSize = (): void => {
                 if (
                     context.knownCollectionCardinality(statement.expression) !==
                     count
@@ -3806,8 +4106,34 @@ export class StatementLowerer {
                         "A statically expanded resource iteration cannot resize its array.",
                     );
                 }
-                if (completed === "break") break;
-            }
+            };
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                Array.from({ length: count }, () => () => {
+                    unchangedSize();
+                    const member =
+                        context.allocateTemporaryCppName("resource_member");
+                    context.emit({
+                        kind: "declaration",
+                        type: "auto",
+                        name: member,
+                        initializer: `*${iterator}`,
+                        attributes: "[[maybe_unused]] ",
+                    });
+                    context.emit({
+                        kind: "expression",
+                        code: `++${iterator};`,
+                    });
+                    context.bindDataIterationVariable(
+                        declaration.name,
+                        member,
+                        target.element,
+                        target.template,
+                    );
+                }),
+            );
+            unchangedSize();
             return true;
         }
         const item =

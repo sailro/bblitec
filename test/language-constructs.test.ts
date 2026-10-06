@@ -337,6 +337,135 @@ test("switch refuses an absent label over a number", () => {
 });
 
 check(
+    "unrolled-loop-runtime-exits",
+    `
+    interface Template { id: string; weight: number; when?: (n: number) => boolean; }
+    const TEMPLATES: readonly Template[] = [
+        { id: "a", weight: 1 },
+        { id: "b", weight: 2, when: (n) => n > 2 },
+        { id: "c", weight: 4, when: (n) => n > 5 },
+        { id: "d", weight: 8, when: (n) => n !== 7 },
+    ];
+    function pick(n: number, stop: string): string {
+        let text = "";
+        let total = 0;
+        for (const template of TEMPLATES) {
+            if (template.when && !template.when(n)) continue;
+            text += template.id;
+            if (template.id === stop) break;
+            total += template.weight;
+        }
+        return text + total;
+    }
+    function firstHeavy(n: number): string {
+        let found = "-";
+        for (const template of TEMPLATES) {
+            if (template.when && !template.when(n)) continue;
+            if (template.weight < 2) continue;
+            found = template.id;
+            break;
+        }
+        return found;
+    }
+    function labeled(n: number): number {
+        let count = 0;
+        outer: for (const template of TEMPLATES) {
+            if (template.when && !template.when(n)) continue outer;
+            if (template.weight > 4) break outer;
+            count += template.weight;
+        }
+        return count;
+    }
+    if (pick(1, "z") !== "ad9" || pick(3, "c") !== "abd11" || pick(6, "b") !== "ab1" || pick(7, "x") !== "abc7")
+        throw new Error("continue and break " + pick(1, "z") + pick(3, "c") + pick(6, "b") + pick(7, "x"));
+    if (firstHeavy(1) !== "d" || firstHeavy(3) !== "b" || firstHeavy(7) !== "b") throw new Error("static exit after a runtime one");
+    if (labeled(1) !== 1 || labeled(3) !== 3 || labeled(7) !== 7) throw new Error("labeled exits of the loop itself");
+    const stored: Array<typeof pick> = [pick];
+    if (stored[0]!(3, "d") !== "abd3") throw new Error("stored unrolled exits");
+`,
+);
+
+check(
+    "labeled-continue-of-an-outer-loop",
+    `
+    let n = 0;
+    outer: for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            if (j === 1) continue outer;
+            if (i === 2) break outer;
+            n++;
+        }
+    }
+    if (n !== 2) throw new Error("labeled continue " + n);
+    let text = "";
+    outer: for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            for (let k = 0; k < 3; k++) {
+                if (k === 1) continue outer;
+                text += "" + i + j + k + ",";
+            }
+            text += "x";
+        }
+        text += "y";
+    }
+    if (text !== "000,100,200,") throw new Error("deep labeled continue " + text);
+    let i = 0;
+    let sum = 0;
+    scan: while (i < 4) {
+        i++;
+        const values = [1, 2, 3];
+        for (const value of values) {
+            if (value === i) continue scan;
+            sum += value;
+        }
+        sum += 100;
+    }
+    if (sum !== 110) throw new Error("while labeled continue " + sum);
+`,
+);
+
+test("labeled jumps refuse what they cannot leave", () => {
+    const templates =
+        "interface T { id: string; when?: (n: number) => boolean; } const TS: readonly T[] = [{ id: 'a' }, { id: 'b', when: (n) => n > 1 }]; let c = 0;";
+    for (const [source, message] of [
+        [
+            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) continue outer; c++; } }`,
+            /labeled continue of a statically unrolled loop is not lowered/,
+        ],
+        [
+            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) break outer; c++; } }`,
+            /labeled break out of a statically unrolled loop is not lowered/,
+        ],
+        [
+            "let n = 0; outer: for (let i = 0; i < 3; i++) { switch (i) { case 1: for (let j = 0; j < 2; j++) { if (j === 1) continue outer; n++; } break; default: n += 10; } }",
+            /labeled continue cannot leave a switch or try statement/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "for-of-over-a-constructed-collection",
+    `
+    function plan(source: string, hosts: readonly string[] | undefined, known: (key: string) => boolean): string {
+        const out: string[] = [];
+        for (const seed of new Set<string>([source, ...(hosts ?? [])])) {
+            if (!known(seed)) continue;
+            if (seed === "stop") break;
+            out.push(seed);
+        }
+        return out.join();
+    }
+    const plans: Array<typeof plan> = [plan];
+    if (plan("a", ["b", "a", "c"], (key) => key !== "b") !== "a,c" || plans[0]!("a", undefined, () => true) !== "a" ||
+        plans[0]!("a", ["stop", "z"], () => true) !== "a") throw new Error("constructed set");
+    let keys = "";
+    for (const [key, value] of new Map<string, number>([["x", 1], ["y", 2]])) keys += key + value;
+    if (keys !== "x1y2") throw new Error("constructed map");
+`,
+);
+
+check(
     "exponent-compound-assignment",
     `
     const h = [2, 10];
