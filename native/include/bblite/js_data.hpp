@@ -3784,13 +3784,19 @@ template <typename Replacement>
     return string_from_code_units(std::u16string(1, static_cast<char16_t>(code)));
 }
 
-[[nodiscard]] inline std::string string_from_char_codes(std::initializer_list<double> values) {
+/** `String.fromCharCode` over its code units: an argument list or a spread sequence. */
+template <typename Range>
+[[nodiscard]] inline std::string string_from_char_codes(const Range& values) {
     std::string result;
     result.reserve(values.size());
     for (const double value : values) {
         concat_append(result, string_from_char_code(value));
     }
     return result;
+}
+
+[[nodiscard]] inline std::string string_from_char_codes(std::initializer_list<double> values) {
+    return string_from_char_codes<std::initializer_list<double>>(values);
 }
 
 // The padding `padStart`/`padEnd` adds: none once the value reaches the

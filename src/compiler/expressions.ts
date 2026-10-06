@@ -5243,6 +5243,28 @@ export class ExpressionLowerer {
         }
         if (staticOwner === "String" && callee.name.text === "fromCharCode") {
             this.context.reachJsData();
+            // Spread arguments pack, in order with the others, into one list.
+            if (call.arguments.some(ts.isSpreadElement))
+                return {
+                    kind: "data",
+                    cpp: `bbl::js::string_from_char_codes(${
+                        this.context.dataLowerer.compileFunctionArguments(
+                            call,
+                            {
+                                kind: "function",
+                                restParameter: 0,
+                                parameters: [
+                                    {
+                                        kind: "vector",
+                                        element: { kind: "number" },
+                                    },
+                                ],
+                            },
+                            "String.fromCharCode",
+                        )[0]!
+                    })`,
+                    dataType: { kind: "string" },
+                };
             return {
                 kind: "data",
                 cpp:

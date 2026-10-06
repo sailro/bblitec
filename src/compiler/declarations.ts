@@ -2882,8 +2882,10 @@ export class DeclarationLowerer {
                         },
             );
         }
+        // A spread element contributes as many elements as its source holds.
         if (
             ts.isArrayLiteralExpression(initializer) &&
+            !initializer.elements.some(ts.isSpreadElement) &&
             ts.isIdentifier(name) &&
             isNeverResized(this.context.checker, name)
         ) {

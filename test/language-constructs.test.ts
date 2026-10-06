@@ -2561,6 +2561,34 @@ check(
 );
 
 check(
+    "typed-array-spreads-and-reverse",
+    `
+    const floats = new Float32Array([1.5, -2, 3]);
+    const copied = [...floats];
+    copied[0] = 9;
+    const joined = [0, ...new Uint8Array([7, 8]), 9];
+    if (copied.length !== 3 || copied[0] !== 9 || floats[0] !== 1.5 || joined.join() !== "0,7,8,9") throw new Error("array spreads");
+    const text = new Uint8Array([104, 105, 33, 63]);
+    if (String.fromCharCode(...text.subarray(0, 3)) !== "hi!" || String.fromCharCode(72, ...text.subarray(1, 2)) !== "Hi") throw new Error("fromCharCode spreads");
+    let chunked = "";
+    for (let i = 0; i < text.length; i += 3) chunked += String.fromCharCode(...text.subarray(i, i + 3));
+    interface Analysis { errors: Float32Array; }
+    const analysis: Analysis = { errors: new Float32Array([0.5, 2]) };
+    const metadata = { errors: [...analysis.errors] };
+    analysis.errors[0] = 7;
+    if (chunked !== "hi!?" || metadata.errors.join() !== "0.5,2") throw new Error("chunked and record-field spreads");
+    if (Math.max(...floats) !== 3 || Math.min(...floats, ...new Int8Array([-7])) !== -7 || Math.max(...new Float64Array(0)) !== -Infinity) throw new Error("Math spreads");
+    const order = new Float32Array([1, 2, 3, 4]);
+    const reversed = order.reverse();
+    if (reversed !== order || order.join() !== "4,3,2,1") throw new Error("reverse in place");
+    const view = new Int16Array(new ArrayBuffer(10), 2, 3);
+    view.set([1, 2, 3]);
+    view.subarray(1).reverse();
+    if (view.join() !== "1,3,2" || new Int16Array(view.buffer)[2] !== 3) throw new Error("reverse through a view");
+`,
+);
+
+check(
     "typed-array-view-optional-offset",
     `
     interface Layout { byteLength?: number; }

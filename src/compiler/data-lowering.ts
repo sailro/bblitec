@@ -778,14 +778,20 @@ export class DataLowerer {
                             this.context.allocateTemporaryCppName(
                                 "rest_source",
                             );
+                        // A typed array spreads the numbers its elements hold.
+                        const spreadType = this.dataTypeAt(argument.expression);
                         this.context.emit({
                             kind: "declaration",
                             type: "const auto",
                             name: source,
-                            initializer: this.compileForSink(
-                                argument.expression,
-                                parameter,
-                            ),
+                            initializer:
+                                isTypedArrayType(spreadType) &&
+                                parameter.element.kind === "number"
+                                    ? `bbl::js::typed_array_numbers(${this.compileForSink(argument.expression, spreadType)})`
+                                    : this.compileForSink(
+                                          argument.expression,
+                                          parameter,
+                                      ),
                         });
                         const item =
                             this.context.allocateTemporaryCppName("rest_item");
@@ -6024,6 +6030,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         type,
                     );
                 }
+                // A typed array spreads the numbers its elements hold.
+                if (spread.kind === "data" && isTypedArrayType(spread.dataType))
+                    spread = {
+                        kind: "data",
+                        cpp: `bbl::js::typed_array_numbers(${spread.cpp})`,
+                        dataType: { kind: "span", element: { kind: "number" } },
+                    };
                 if (
                     spread.kind !== "data" ||
                     (spread.dataType?.kind !== "vector" &&
@@ -13403,11 +13416,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             : undefined) ??
                         this.compileDataPath(spread.expression, "read") ??
                         this.context.compileValue(spread.expression);
-                    const iterable = this.narrowOptional(
+                    const narrowedIterable = this.narrowOptional(
                         rawIterable,
                         spread.expression,
                         true,
                     );
+                    // A typed array spreads the numbers its elements hold.
+                    const iterable: Value =
+                        narrowedIterable.kind === "data" &&
+                        isTypedArrayType(narrowedIterable.dataType)
+                            ? {
+                                  kind: "data",
+                                  cpp: `bbl::js::typed_array_numbers(${narrowedIterable.cpp})`,
+                                  dataType: {
+                                      kind: "span",
+                                      element: { kind: "number" },
+                                  },
+                              }
+                            : narrowedIterable;
                     this.invalidateRecordArrayFacts(iterable);
                     if (
                         this.context.dataTypes.carriesBorrowedPlatformEvent(
