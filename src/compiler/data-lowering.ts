@@ -3539,14 +3539,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // owns all three.
                 return undefined;
             }
-            const absent = this.absentPropertyRead(owner, dataType, access);
-            if (absent) return absent;
-            const field = this.context.dataTypes.structField(
-                dataType.name,
-                property,
-                access,
-                "accessors",
-            );
+            const stored = this.context.dataTypes
+                .structFields(dataType.name, access, "accessors")
+                .find(
+                    (candidate) =>
+                        candidate.sourceName === property ||
+                        candidate.name === property,
+                );
+            // A property no field stores may be one the record lacks.
+            if (!stored) {
+                const absent = this.absentPropertyRead(owner, dataType, access);
+                if (absent) return absent;
+            }
+            const field =
+                stored ??
+                this.context.dataTypes.structField(
+                    dataType.name,
+                    property,
+                    access,
+                    "accessors",
+                );
             const slot = this.context.dataTypes.isReferenceStruct(dataType.name)
                 ? `${owner.cpp}->${field.name}`
                 : `${owner.cpp}.${field.name}`;

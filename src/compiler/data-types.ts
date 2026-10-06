@@ -4009,19 +4009,12 @@ export class DataTypeRegistry {
                   })()
                 : property.name && propertyNameText(property.name);
             if (names === undefined) return undefined;
-            for (const name of typeof names === "string" ? [names] : names)
-                if (!keys.includes(name)) keys.push(name);
+            keys.push(...(typeof names === "string" ? [names] : names));
         }
-        const index = (key: string): number | undefined =>
-            /^(0|[1-9]\d*)$/.test(key) && Number(key) < 2 ** 32 - 1
-                ? Number(key)
-                : undefined;
-        return [
-            ...keys
-                .filter((key) => index(key) !== undefined)
-                .sort((left, right) => index(left)! - index(right)!),
-            ...keys.filter((key) => index(key) === undefined),
-        ];
+        // An object of these keys orders them as JavaScript does.
+        return Object.keys(
+            Object.fromEntries(keys.map((key) => [key, undefined])),
+        );
     }
 
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
@@ -4029,14 +4022,11 @@ export class DataTypeRegistry {
         const declared = this.checker.getPropertiesOfType(type);
         // A literal's fields follow the order its own keys are created in.
         const order = this.objectLiteralKeyOrder(type);
+        const positions = new Map(order?.map((key, index) => [key, index]));
+        const at = (symbol: ts.Symbol): number =>
+            positions.get(symbol.name) ?? positions.size;
         const properties = order
-            ? [...declared].sort((left, right) => {
-                  const at = (symbol: ts.Symbol): number => {
-                      const position = order.indexOf(symbol.name);
-                      return position < 0 ? order.length : position;
-                  };
-                  return at(left) - at(right);
-              })
+            ? [...declared].sort((left, right) => at(left) - at(right))
             : declared;
         if (!type.isIntersection()) return properties;
         const byName = new Map(

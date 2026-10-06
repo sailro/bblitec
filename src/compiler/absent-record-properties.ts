@@ -20,9 +20,11 @@ export const UNKNOWN_PROPERTIES = "*";
  */
 export class AbsentRecordProperties {
     /** Properties converted records carried beyond the target struct's fields, by target. */
-    private readonly carried = new EmissionMap<string, readonly string[]>();
+    private readonly carried = new EmissionMap<string, ReadonlySet<string>>();
     /** Struct conversions: the source structs whose records reached each target. */
-    private readonly sources = new EmissionMap<string, readonly string[]>();
+    private readonly sources = new EmissionMap<string, ReadonlySet<string>>();
+    /** `carriedInto` by struct, until the next conversion. */
+    private readonly closure = new EmissionMap<string, ReadonlySet<string>>();
     /** Reads answered `undefined` because a struct lacks the property, by `struct.property`. */
     private readonly reads = new EmissionMap<
         string,
@@ -47,12 +49,17 @@ export class AbsentRecordProperties {
         extra: readonly string[],
         source?: string,
     ): void {
-        const carried = this.carried.get(target) ?? [];
-        const added = extra.filter((property) => !carried.includes(property));
-        if (added.length) this.carried.set(target, [...carried, ...added]);
-        const sources = this.sources.get(target) ?? [];
-        if (source !== undefined && !sources.includes(source))
-            this.sources.set(target, [...sources, source]);
+        const carried = this.carried.get(target);
+        const added = extra.filter((property) => !carried?.has(property));
+        if (added.length) {
+            this.carried.set(target, new Set([...(carried ?? []), ...added]));
+            this.closure.clear();
+        }
+        const sources = this.sources.get(target);
+        if (source !== undefined && !sources?.has(source)) {
+            this.sources.set(target, new Set([...(sources ?? []), source]));
+            this.closure.clear();
+        }
     }
 
     /** Records a read of `property`, absent from `struct`'s layout, as `undefined`. */
@@ -82,6 +89,8 @@ export class AbsentRecordProperties {
 
     /** Everything conversions carried into `struct`, directly or through converted structs. */
     private carriedInto(struct: string): ReadonlySet<string> {
+        const known = this.closure.get(struct);
+        if (known) return known;
         const result = new Set<string>();
         const visited = new Set<string>();
         const pending = [struct];
@@ -96,6 +105,7 @@ export class AbsentRecordProperties {
                 result.add(property);
             pending.push(...(this.sources.get(next) ?? []));
         }
+        this.closure.set(struct, result);
         return result;
     }
 }
