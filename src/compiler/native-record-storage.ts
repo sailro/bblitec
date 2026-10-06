@@ -1,5 +1,5 @@
 import type ts from "typescript";
-import { CompileError } from "./compile-error.js";
+import type { RecordJoin } from "./record-components.js";
 
 /** The source type and generic environment that produced a native record. */
 export interface NativeRecordStorageDemand {
@@ -10,33 +10,30 @@ export interface NativeRecordStorageDemand {
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
     /**
-     * Records of this type are constructed in this type's layout: a union or a
-     * record type they were converted into, or the record type a view of them
-     * was converted from. One object then keeps one identity under both types.
+     * Record types a record of this type was stored as where a copy could
+     * be told apart: each joins this type's record component
+     * (`record-components.ts`), so one object keeps one identity under both.
      */
-    layout?: ts.Type;
+    joins?: readonly Omit<RecordJoin, "source">[];
 }
 
-/** Replays strengthen ownership without replacing an already chosen layout. */
+/** Replays strengthen ownership and accumulate the joins lowering met. */
 export function mergeNativeRecordStorage(
     previous: NativeRecordStorageDemand | undefined,
     next: NativeRecordStorageDemand,
 ): NativeRecordStorageDemand {
-    if (previous?.layout && next.layout && previous.layout !== next.layout) {
-        const file = next.node.getSourceFile();
-        const position = file.getLineAndCharacterOfPosition(
-            next.node.getStart(file),
-        );
-        throw new CompileError(
-            file.fileName,
-            position.line + 1,
-            position.character + 1,
-            "A retained record has conflicting shared storage layouts.",
-            "unsupported",
-            next.node,
-        );
-    }
-    return { ...previous, ...next };
+    const joins = [
+        ...(previous?.joins ?? []),
+        ...(next.joins ?? []).filter(
+            (join) =>
+                !(previous?.joins ?? []).some(
+                    (known) =>
+                        known.target === join.target &&
+                        known.kind === join.kind,
+                ),
+        ),
+    ];
+    return { ...previous, ...next, ...(joins.length ? { joins } : {}) };
 }
 
 /** Re-emit earlier storage and aliases after a dynamic boundary demands ownership. */

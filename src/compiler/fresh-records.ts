@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { libraryGlobal } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 
 /**
@@ -20,7 +21,7 @@ export function yieldsFreshObject(
 
 /**
  * Whether every element of an array expression is a fresh record: an array
- * literal of them, or a `map` / `flatMap` whose callback returns only them.
+ * literal of them, or an array `map` whose callback returns only them.
  */
 export function yieldsFreshRecordElements(
     checker: ts.TypeChecker,
@@ -169,4 +170,46 @@ function returnsOnlyFresh(
     } finally {
         active.delete(declaration);
     }
+}
+
+/** Methods and statics that return a new array of the receiver's elements. */
+const ARRAY_COPIES: ReadonlySet<string> = new Set([
+    "concat",
+    "filter",
+    "flat",
+    "flatMap",
+    "map",
+    "slice",
+    "toReversed",
+    "toSorted",
+    "toSpliced",
+    "with",
+    "from",
+    "of",
+    "values",
+]);
+
+/**
+ * Whether an array expression evaluates to an array no other reference
+ * holds: a fresh object, or a copy an array method or `Array`/`Object`
+ * static builds (whose elements may still be shared).
+ */
+export function yieldsNewArray(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const unwrapped = unwrapExpression(expression);
+    return (
+        yieldsFreshObject(checker, unwrapped) ||
+        (ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            ARRAY_COPIES.has(unwrapped.expression.name.text) &&
+            (checker.isArrayLikeType(
+                checker.getTypeAtLocation(unwrapped.expression.expression),
+            ) ||
+                ["Array", "Object"].includes(
+                    libraryGlobal(checker, unwrapped.expression.expression) ??
+                        "",
+                )))
+    );
 }

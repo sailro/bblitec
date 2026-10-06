@@ -17,7 +17,7 @@ import { createCompilerProgram } from "../src/compiler/program.js";
 import {
     parameterIsMutated,
     parameterIsReadOnly,
-} from "../src/compiler/user-functions.js";
+} from "../src/compiler/parameter-effects.js";
 
 function parse(source: string): ts.SourceFile {
     return ts.createSourceFile(

@@ -1,9 +1,8 @@
 import { basename } from "node:path";
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
 import type { DataStructField, DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import type { LibraryGlobal } from "./symbols.js";
+import { programObservations } from "./program-observations.js";
 import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
 import { declaredContextualType } from "./type-facts.js";
 import type { Value } from "./types.js";
@@ -18,166 +17,19 @@ type HomeObjectMember = HomeObjectMethod | ts.AccessorDeclaration;
 /**
  * An object literal's method that reads `this` is called with its home
  * object as receiver as long as its function value never leaves that
- * object: every read of the property is the callee of a member call.
- * These are the program's other reads, which could call it with another
- * receiver (`const f = o.m`, `o.m.call(x)`, `{...o}`, `Object.values(o)`).
+ * object: every read of the property is the callee of a member call. The
+ * program's other reads (`ProgramObservations.namedReads` and
+ * `wholesaleReads`: `const f = o.m`, `o.m.call(x)`, `{...o}`,
+ * `Object.values(o)`) could call it with another receiver.
  */
-interface MethodValueReads {
-    /** Property names read as values, with every read of each in program order. */
-    readonly named: ReadonlyMap<string, readonly NamedRead[]>;
-    /** Objects read wholesale or by a computed key: any property may be read. */
-    readonly wholesale: readonly ts.Node[];
-}
-
-/** One read of a property's value. */
-interface NamedRead {
-    readonly node: ts.Node;
-    /**
-     * What holds the object it reads from: the accessed expression or the
-     * destructured binding pattern. A destructuring assignment target names
-     * no source, so its reads reach every object.
-     */
-    readonly object: ts.Node | undefined;
-}
-
-/** The program's reads, and the read found for each method name and home type. */
 interface ProgramReads {
-    readonly reads: MethodValueReads;
     /** The first wholesale read of each object type, in program order. */
     wholesaleTypes?: ReadonlyMap<ts.Type, ts.Node>;
     readonly answers: Map<string, Map<ts.Type | undefined, ts.Node | null>>;
 }
 
-/** Library functions that read every own property of an argument. */
-const wholesaleReaders: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-    [
-        "Object",
-        new Set([
-            "assign",
-            "entries",
-            "values",
-            "getOwnPropertyDescriptor",
-            "getOwnPropertyDescriptors",
-        ]),
-    ],
-    ["Reflect", new Set(["get", "getOwnPropertyDescriptor", "apply"])],
-]);
-
 /** Reads are a function of the program, so they outlive any emission transaction. */
 const programReads = new WeakMap<ts.Program, ProgramReads>();
-
-/** Whether a member read is a call's callee, a write target or a `typeof`/`delete` operand. */
-function readsOnlyAsMember(access: ts.Expression): boolean {
-    const parent = wrappedParent(access);
-    return (
-        (ts.isCallExpression(parent) &&
-            unwrapExpression(parent.expression) === access) ||
-        (ts.isTaggedTemplateExpression(parent) &&
-            unwrapExpression(parent.tag) === access) ||
-        (ts.isBinaryExpression(parent) &&
-            unwrapExpression(parent.left) === access &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
-        ts.isDeleteExpression(parent) ||
-        ts.isTypeOfExpression(parent)
-    );
-}
-
-/** The property names a destructuring assignment target reads. */
-function assignmentPatternNames(
-    pattern: ts.Expression,
-    names: (name: string, node: ts.Node) => void,
-): void {
-    const target = unwrapExpression(pattern);
-    if (ts.isArrayLiteralExpression(target)) {
-        for (const element of target.elements)
-            assignmentPatternNames(
-                ts.isSpreadElement(element) ? element.expression : element,
-                names,
-            );
-        return;
-    }
-    if (!ts.isObjectLiteralExpression(target)) return;
-    for (const property of target.properties) {
-        if (ts.isShorthandPropertyAssignment(property))
-            names(property.name.text, property);
-        else if (ts.isPropertyAssignment(property)) {
-            const name = propertyNameText(property.name);
-            if (name !== undefined) names(name, property);
-            assignmentPatternNames(property.initializer, names);
-        }
-    }
-}
-
-function collectReads(
-    program: ts.Program,
-    libraryGlobal: LibraryGlobal,
-): MethodValueReads {
-    const named = new Map<string, NamedRead[]>();
-    const wholesale: ts.Node[] = [];
-    const read = (name: string, node: ts.Node, object?: ts.Node): void => {
-        const reads = named.get(name);
-        if (reads) reads.push({ node, object });
-        else named.set(name, [{ node, object }]);
-    };
-    for (const file of program.getSourceFiles()) {
-        if (file.isDeclarationFile) continue;
-        forEachAnalysisNode(
-            file,
-            (node) => {
-                if (ts.isPropertyAccessExpression(node)) {
-                    if (!readsOnlyAsMember(node))
-                        read(node.name.text, node, node.expression);
-                } else if (ts.isElementAccessExpression(node)) {
-                    const key = node.argumentExpression;
-                    if (
-                        ts.isStringLiteralLike(key) ||
-                        ts.isNumericLiteral(key)
-                    ) {
-                        if (!readsOnlyAsMember(node))
-                            read(key.text, node, node.expression);
-                    } else wholesale.push(node.expression);
-                } else if (ts.isBindingElement(node)) {
-                    if (ts.isObjectBindingPattern(node.parent)) {
-                        const name = node.dotDotDotToken
-                            ? undefined
-                            : node.propertyName
-                              ? propertyNameText(node.propertyName)
-                              : ts.isIdentifier(node.name)
-                                ? node.name.text
-                                : undefined;
-                        if (name !== undefined) read(name, node, node.parent);
-                        else wholesale.push(node.parent);
-                    }
-                } else if (
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-                ) {
-                    assignmentPatternNames(node.left, read);
-                } else if (ts.isSpreadAssignment(node)) {
-                    wholesale.push(node.expression);
-                } else if (
-                    ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(node.expression)
-                ) {
-                    const owner = libraryGlobal(node.expression.expression);
-                    if (
-                        owner !== undefined &&
-                        wholesaleReaders
-                            .get(owner)
-                            ?.has(node.expression.name.text) === true
-                    )
-                        wholesale.push(
-                            ...node.arguments.filter(
-                                (argument) => !ts.isSpreadElement(argument),
-                            ),
-                        );
-                }
-            },
-            { types: "skip" },
-        );
-    }
-    return { named, wholesale };
-}
 
 /**
  * Whether an object of type `objectType` can be the home object of method
@@ -244,19 +96,15 @@ function homeObjectType(
  * home type; wholesale reads are tested once per object type.
  */
 function methodValueRead(
-    context: Pick<LoweringServices, "program" | "checker" | "libraryGlobal">,
+    context: Pick<LoweringServices, "program" | "checker">,
     name: string,
     home: ts.Type | undefined,
 ): ts.Node | undefined {
     const { checker } = context;
+    const reads = programObservations(context.program);
     let state = programReads.get(context.program);
     if (!state) {
-        state = {
-            reads: collectReads(context.program, (expression) =>
-                context.libraryGlobal(expression),
-            ),
-            answers: new Map(),
-        };
+        state = { answers: new Map() };
         programReads.set(context.program, state);
     }
     let answers = state.answers.get(name);
@@ -277,14 +125,14 @@ function methodValueRead(
         };
         if (!state.wholesaleTypes) {
             const types = new Map<ts.Type, ts.Node>();
-            for (const node of state.reads.wholesale) {
+            for (const node of reads.wholesaleReads) {
                 const type = checker.getTypeAtLocation(node);
                 if (!types.has(type)) types.set(type, node);
             }
             state.wholesaleTypes = types;
         }
         answer =
-            state.reads.named
+            reads.namedReads
                 .get(name)
                 ?.find(
                     ({ object }) =>
@@ -414,7 +262,6 @@ export function literalSelf(
         LoweringServices,
         | "program"
         | "checker"
-        | "libraryGlobal"
         | "fail"
         | "dataTypes"
         | "allocateTemporaryCppName"

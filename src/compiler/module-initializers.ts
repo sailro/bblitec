@@ -4,13 +4,13 @@ import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
-import { libraryArgumentIsReadOnly } from "./library-call-effects.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import { isSupportedFunction } from "./user-functions.js";
 import {
     callArgumentIsReadOnly,
-    isSupportedFunction,
+    libraryArgumentIsReadOnly,
     parameterIsReadOnly,
-} from "./user-functions.js";
+} from "./parameter-effects.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     accessedPropertySymbol,

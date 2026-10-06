@@ -9,7 +9,9 @@ import {
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import {
+    callbackTakesReceiver,
     mutatingArrayMethods,
+    readOnlyDataMethods,
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
@@ -52,11 +54,7 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import {
-    declarationInDefaultLibrary,
-    libraryGlobal,
-    resolvedSymbol,
-} from "./symbols.js";
+import { resolvedSymbol } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
@@ -176,67 +174,12 @@ function relativeRangeArguments(
     ];
 }
 
-/** Data-container methods whose receiver is not mutated. */
-export const readOnlyDataMethods: ReadonlySet<string> = new EmissionSet([
-    "at",
-    "concat",
-    "entries",
-    "every",
-    "filter",
-    "flat",
-    "flatMap",
-    "find",
-    "findIndex",
-    "findLast",
-    "findLastIndex",
-    "forEach",
-    "get",
-    "has",
-    "includes",
-    "indexOf",
-    "join",
-    "keys",
-    "lastIndexOf",
-    "map",
-    "reduce",
-    "reduceRight",
-    "slice",
-    "some",
-    "toReversed",
-    "toSorted",
-    "values",
-    "with",
-]);
-
 /** The observing methods a numeric tuple shares with a readonly number array. */
 const tupleReadingMethods: ReadonlySet<string> = new EmissionSet(
     [...readOnlyDataMethods].filter(
         (method) => !["entries", "keys", "slice", "values"].includes(method),
     ),
 );
-
-/**
- * Whether an array method's callback takes the receiver itself: the third
- * parameter of `(value, index, array)`, `reduce`'s fourth. A callback that
- * does reaches the receiver under a name of its own.
- */
-export function callbackTakesReceiver(
-    checker: ts.TypeChecker,
-    method: string,
-    callback: ts.Expression | undefined,
-): callback is ts.Expression {
-    const receiverParameter =
-        method === "reduce" || method === "reduceRight" ? 3 : 2;
-    return (
-        callback !== undefined &&
-        checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()
-            .some(
-                (signature) => signature.parameters.length > receiverParameter,
-            )
-    );
-}
 
 /**
  * Whether an array method's callback may change the receiver while the
@@ -339,56 +282,6 @@ export function removedIndexGuard(
     return receiverWalks.get(method)!.removed === "skip"
         ? `if (${index} >= ${source}.size()) continue;`
         : `if (${index} >= ${source}.size()) throw std::runtime_error(${lowerer.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`;
-}
-
-/** Methods that retain argument identity without mutating the argument itself. */
-export const storingDataMethods: ReadonlySet<string> = new EmissionSet([
-    "add",
-    "concat",
-    "fill",
-    "of",
-    "push",
-    "resolve",
-    "set",
-    "splice",
-    "unshift",
-]);
-
-/** Syntactic retention proof used conservatively by the alias analyses. */
-export function isStoringDataCall(
-    node: ts.Node,
-    checker: ts.TypeChecker,
-): node is ts.CallExpression | ts.NewExpression {
-    if (ts.isCallExpression(node)) {
-        const signature = checker.getResolvedSignature(node)?.declaration;
-        // Resolver signatures originate in the default library constructor,
-        // including when the source renames or forwards its executor parameter.
-        const parameter = signature?.parent;
-        const executor = parameter?.parent?.parent;
-        const constructor = executor?.parent;
-        if (
-            signature &&
-            declarationInDefaultLibrary(signature) &&
-            parameter &&
-            ts.isParameter(parameter) &&
-            executor &&
-            ts.isParameter(executor) &&
-            constructor &&
-            ts.isConstructSignatureDeclaration(constructor) &&
-            ts.isInterfaceDeclaration(constructor.parent) &&
-            constructor.parent.name.text === "PromiseConstructor"
-        )
-            return true;
-    }
-    return (
-        (ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            storingDataMethods.has(node.expression.name.text)) ||
-        (ts.isNewExpression(node) &&
-            ["Map", "Set"].includes(
-                libraryGlobal(checker, node.expression) ?? "",
-            ))
-    );
 }
 
 const constantArrayMethods: ReadonlySet<string> = new EmissionSet([

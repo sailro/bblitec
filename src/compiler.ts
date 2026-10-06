@@ -225,9 +225,7 @@ import { HandleCollections } from "./compiler/handle-collections.js";
 import {
     UserFunctionLowerer,
     aliasedMutationScan,
-    callArgumentIsReadOnly,
     isSupportedFunction,
-    parameterIsReadOnly,
     resolveFunctionDeclaration,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
@@ -235,8 +233,13 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
+import {
+    callArgumentIsReadOnly,
+    libraryArgumentIsReadOnly,
+    parameterIsReadOnly,
+} from "./compiler/parameter-effects.js";
+import { recordComponents } from "./compiler/record-components.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
-import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
     bindingNameIdentifiers,
@@ -624,7 +627,8 @@ function compileSourceApplication(
                 if (
                     previous &&
                     previous.proxy === merged.proxy &&
-                    previous.layout === merged.layout
+                    (previous.joins?.length ?? 0) ===
+                        (merged.joins?.length ?? 0)
                 )
                     return false;
                 ownedRecords.set(request.demand.identity, merged);
@@ -1222,7 +1226,18 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
-        this.dataTypes.prepareRecordLayouts(this.ownedRecords.values());
+        this.dataTypes.prepareRecordComponents(
+            recordComponents(
+                this.checker,
+                [...this.ownedRecords.values()].flatMap((demand) =>
+                    (demand.joins ?? []).map((join) => ({
+                        ...join,
+                        source: demand.type,
+                    })),
+                ),
+            ),
+            this.ownedRecords.values(),
+        );
         for (const demand of this.ownedRecords.values())
             this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {

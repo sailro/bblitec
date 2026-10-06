@@ -18,10 +18,8 @@ import type { LoweringServices } from "./lowering-services.js";
 import { ModuleJsonDeclined, runModuleJsonSync } from "./module-json-sync.js";
 import { CompilerSymbols } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
-import {
-    parameterIsReadOnly,
-    tryResolveFunctionDeclaration,
-} from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { parameterIsReadOnly } from "./parameter-effects.js";
 import type { Value } from "./types.js";
 
 interface CanvasReadbackContext extends Pick<

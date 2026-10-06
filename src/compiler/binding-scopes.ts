@@ -52,9 +52,11 @@ import {
 import {
     functionOfDeclaration,
     isSupportedFunction,
+} from "./user-functions.js";
+import {
     parameterIsMutated,
     parameterIsReadOnly,
-} from "./user-functions.js";
+} from "./parameter-effects.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";

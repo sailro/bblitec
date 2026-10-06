@@ -11,7 +11,7 @@ import {
 import { isPrimitiveBrowserValue } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
 import { isNeverResized } from "./data-lowering.js";
-import { isStoringDataCall } from "./data-methods.js";
+import { isStoringDataCall } from "./receiver-methods.js";
 import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
     isOpaqueReference,
@@ -73,16 +73,18 @@ import {
 } from "./uninitialized-handle.js";
 import {
     aliasedMutationScan,
-    engineCallMutatesArgument,
     isSupportedFunction,
-    parameterIsMutated,
-    parameterIsReadOnly,
     recursiveStorageEscapes,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
     type AliasedMutationScan,
     type SupportedFunction,
 } from "./user-functions.js";
+import {
+    engineCallMutatesArgument,
+    parameterIsMutated,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 
 /** What declaration lowering reads of the compiler. */
 interface DeclarationContext
