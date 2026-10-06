@@ -2228,7 +2228,14 @@ export class DataTypeRegistry {
                     erasedParameters.push(index);
                     return [];
                 }
-                if (nullability(declaredType).undefined)
+                // A default initializer makes its parameter optional to callers; the
+                // function's own body supplies the default for an absent argument.
+                const defaulted =
+                    declaration !== undefined &&
+                    ts.isParameter(declaration) &&
+                    declaration.initializer !== undefined &&
+                    !nullability(declaredType).undefined;
+                if (nullability(declaredType).undefined || defaulted)
                     optionalParameters.push(index - erasedParameters.length);
                 const mapped =
                     restArguments && this.isUnknownRestParameter(parameter)
@@ -2275,13 +2282,11 @@ export class DataTypeRegistry {
                 // A function passed through another stored function remains the same
                 // JavaScript function object. Carry its identity across that native
                 // call boundary so an eventual Array/Map/Set comparison can observe it.
-                return mapped
-                    ? [
-                          markIdentityFunctions(
-                              this.ownReadonlyArray(mapped, parameterType),
-                          ),
-                      ]
-                    : [undefined];
+                if (!mapped) return [undefined];
+                const owned = markIdentityFunctions(
+                    this.ownReadonlyArray(mapped, parameterType),
+                );
+                return [defaulted ? this.nullableType(owned, true) : owned];
             });
         if (parameters.some((parameter) => parameter === undefined)) {
             return undefined;
@@ -2360,8 +2365,11 @@ export class DataTypeRegistry {
                 declaration,
                 demand,
                 () =>
+                    // An optional method's declared type also admits undefined.
                     this.fromFunctionType(
-                        this.checker.getTypeAtLocation(declaration),
+                        this.checker.getNonNullableType(
+                            this.checker.getTypeAtLocation(declaration),
+                        ),
                         node,
                         false,
                         demand.parameters,
@@ -2516,7 +2524,10 @@ export class DataTypeRegistry {
                         );
                     return undefined;
                 }
-                return this.checker.getTypeAtLocation(argument);
+                return (
+                    this.caughtErrorType(argument) ??
+                    this.checker.getTypeAtLocation(argument)
+                );
             });
         const restIndex = generic.signature
             .getParameters()
@@ -2586,6 +2597,39 @@ export class DataTypeRegistry {
                 "Recursive stored generic functions require an already represented signature.",
             );
         throw new GenericFunctionStorageRequired(demand, call);
+    }
+
+    /**
+     * A `catch` binding is typed `unknown`, and holds the native Error the
+     * catch received: an argument naming one instantiates a stored
+     * function's parameter with the library Error type.
+     */
+    private caughtErrorType(argument: ts.Expression): ts.Type | undefined {
+        const name = unwrapExpression(argument);
+        if (
+            !ts.isIdentifier(name) ||
+            (this.checker.getTypeAtLocation(name).flags &
+                ts.TypeFlags.Unknown) ===
+                0
+        )
+            return undefined;
+        const declaration = resolvedSymbol(
+            this.checker,
+            name,
+        )?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isCatchClause(declaration.parent)
+        )
+            return undefined;
+        const error = this.checker
+            .getSymbolsInScope(name, ts.SymbolFlags.Interface)
+            .find(
+                (symbol) =>
+                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
+            );
+        return error && this.checker.getDeclaredTypeOfSymbol(error);
     }
 
     private fromUnionType(

@@ -5553,3 +5553,398 @@ test("record spreads with accessors refuse in struct literals", () => {
         /A record with accessors spreads into a compile-time record, not a struct literal/,
     );
 });
+
+check(
+    "literal-methods-read-their-home-object-through-this",
+    `
+    interface Mover {
+        carryBegin(id: number): boolean;
+        prepareBegin(id: number): (() => void) | null;
+        carried(): number;
+        self(): Mover;
+    }
+    function createMover(limit: number): Mover {
+        const carried = new Set<number>();
+        return {
+            carryBegin(id) {
+                const begin = this.prepareBegin(id);
+                if (!begin) return false;
+                begin();
+                return true;
+            },
+            prepareBegin(id) {
+                if (id > limit) return null;
+                return () => { carried.add(id); };
+            },
+            carried() { return carried.size; },
+            self() { return this; },
+        };
+    }
+    interface Ledger { balance: number; grant(amount: number): void; morning(shares: number): number }
+    function createLedger(): Ledger {
+        return {
+            balance: 0,
+            grant(amount) { if (amount > 0) this.balance += amount; },
+            morning: function (shares) { const amount = shares * 2; this.grant(amount); return this.balance; },
+        };
+    }
+    const movers: Array<typeof createMover> = [createMover];
+    const mover = movers[0]!(3);
+    const other = movers[0]!(9);
+    if (!mover.carryBegin(2) || mover.carryBegin(5) || mover.carried() !== 1) throw new Error("sibling through this");
+    if (!other.carryBegin(5) || other.carried() !== 1 || mover.carried() !== 1) throw new Error("separate home objects");
+    if (mover.self() !== mover || other.self() === mover) throw new Error("this identity");
+    mover.prepareBegin = () => null;
+    if (mover.carryBegin(1) || !other.carryBegin(1)) throw new Error("this reads the live field");
+    const ledgers: Array<typeof createLedger> = [createLedger];
+    const ledger = ledgers[0]!();
+    if (ledger.morning(3) !== 6 || ledger.balance !== 6) throw new Error("void sibling and field through this");
+    ledger.balance = 1;
+    if (ledger.morning(1) !== 3) throw new Error("field written outside");
+`,
+);
+
+test("literal methods reading this refuse reads of their function value", () => {
+    const factory = `
+        interface Mover { carryBegin(id: number): boolean; prepareBegin(id: number): boolean }
+        function createMover(): Mover {
+            return { carryBegin(id) { return this.prepareBegin(id); }, prepareBegin(id) { return id > 0; } };
+        }
+        const movers: Array<typeof createMover> = [createMover];
+        const mover = movers[0]!();`;
+    for (const use of [
+        "const extracted = mover.carryBegin; const unused = extracted(1);",
+        "const unused = mover.carryBegin.call(mover, 1);",
+        "const { carryBegin } = mover; const unused = carryBegin(1);",
+        "const copy: Mover = { ...mover }; const unused = copy.carryBegin(1);",
+    ])
+        assert.throws(
+            () => compileSource(`${factory}\n${use}`),
+            /Method 'carryBegin' reads `this`, and .*:\d+ reads its function value, which could call it with another receiver/,
+        );
+});
+
+check(
+    "optional-class-method-call-values",
+    `
+    class Contacts {
+        constructor(private readonly base: number) {}
+        age(a: number, b: number): number { return this.base + a + b; }
+        retains(a: number): boolean { return a > this.base; }
+        envelope(slot?: number): { compact: boolean } { return { compact: slot !== undefined }; }
+        touch(): void { touched++; }
+    }
+    let touched = 0;
+    const pairs = new Map<string, Contacts>();
+    pairs.set("x", new Contacts(10));
+    let evaluated = 0;
+    function argument(value: number): number { evaluated++; return value; }
+    function age(key: string): number { return pairs.get(key)?.age(argument(1), 2) ?? -1; }
+    function retains(key: string, a: number): boolean { return pairs.get(key)?.retains(a) ?? false; }
+    const normal = { compact: false };
+    function envelope(key: string): { compact: boolean } { return pairs.get(key)?.envelope(1) ?? normal; }
+    if (age("x") !== 13 || age("y") !== -1 || evaluated !== 1) throw new Error("optional method value");
+    if (!retains("x", 11) || retains("y", 11) || retains("x", 3)) throw new Error("optional boolean method");
+    if (!envelope("x").compact || envelope("y") !== normal) throw new Error("optional record method");
+    const missing = pairs.get("y")?.age(1, 2);
+    const touchedNone = pairs.get("y")?.touch();
+    const touchedOne = pairs.get("x")?.touch();
+    pairs.get("x")?.age(argument(1), 0);
+    if (missing !== undefined || touchedNone !== undefined || touchedOne !== undefined || touched !== 1 || evaluated !== 2)
+        throw new Error("absent receiver is undefined");
+    const stored: Array<typeof age> = [age];
+    if (stored[0]!("x") !== 13) throw new Error("stored caller");
+`,
+);
+
+check(
+    "error-constructors-called-without-new",
+    `
+    function fail(kind: number): number {
+        if (kind === 0) throw Error("plain");
+        if (kind === 1) throw RangeError("range " + kind);
+        return kind;
+    }
+    let caught = "";
+    for (const kind of [0, 1, 2]) {
+        try { caught += fail(kind); } catch (error) { if (error instanceof Error) caught += error.name + ":" + error.message + ";"; }
+    }
+    if (caught !== "Error:plain;RangeError:range 1;2") throw new Error(caught);
+    const held = TypeError("held");
+    if (held.name !== "TypeError" || held.message !== "held") throw new Error("held error value");
+`,
+);
+
+check(
+    "expression-bodied-recursive-callbacks",
+    `
+    function root(values: readonly number[], index: number): number {
+        const parent = values.slice();
+        const find = (k: number): number => (parent[k] === k ? k : (parent[k] = find(parent[k]!)));
+        return find(index) * 10 + parent[index]!;
+    }
+    const seen: number[] = [];
+    function log(k: number): void { seen.push(k); }
+    function visit(k: number, next: (k: number) => void): void { seen.push(k); if (k > 0) next(k - 1); }
+    function walk(n: number): string {
+        const down = (k: number): void => (k > 0 ? down(k - 1) : log(k));
+        const each = (k: number): void => visit(k, each);
+        down(n);
+        each(n);
+        return seen.join(",");
+    }
+    const roots: Array<typeof root> = [root];
+    const walks: Array<typeof walk> = [walk];
+    if (roots[0]!([1, 1, 1, 2], 3) !== 11 || walks[0]!(2) !== "0,2,1,0") throw new Error("expression-bodied recursion");
+`,
+);
+
+check(
+    "functions-re-entered-through-their-callback-arguments",
+    `
+    interface Extent { pos: number; neg: number }
+    function walkAlternating<T>(firstSide: 1 | -1, step: number, extent: Extent, tryOffset: (offset: number) => T | null): T | null {
+        const first = tryOffset(0);
+        if (first) return first;
+        for (let n = 1; step > 0 && (n * step <= extent.pos || n * step <= extent.neg); n++) {
+            const near = tryOffset(firstSide * n * step);
+            if (near) return near;
+            const far = tryOffset(-firstSide * n * step);
+            if (far) return far;
+        }
+        return null;
+    }
+    function findFreePoint(base: number, blocked: (x: number) => boolean): { x: number } | null {
+        return walkAlternating(1, 1, { pos: 3, neg: 3 }, (offset) => (blocked(base + offset) ? null : { x: base + offset }));
+    }
+    function findHook(side: 1 | -1, blocked: (x: number) => boolean): { x: number; hook: number } | null {
+        return walkAlternating(side, 1, { pos: 2, neg: 2 }, (offset) => {
+            const point = findFreePoint(offset * 10, blocked);
+            return point ? { x: point.x, hook: offset } : null;
+        });
+    }
+    const hooks: Array<typeof findHook> = [findHook];
+    const found = hooks[0]!(1, (x) => x < 11);
+    const reversed = findHook(-1, (x) => x > -9 && x < 30);
+    if (!found || found.x !== 11 || found.hook !== 1) throw new Error("nested walk");
+    if (!reversed || reversed.x !== -10 || reversed.hook !== -1) throw new Error("nested walk from the far side");
+`,
+);
+
+test("module const function aliases call the aliased function", async (t) => {
+    const directory = resolve("artifacts/const-function-aliases");
+    mkdirSync(directory, { recursive: true });
+    const module = `
+        function archKey(x: number, z: number): string { return Math.round(x * 10) + "," + Math.round(z * 10); }
+        const f32 = Math.fround;
+        const quantKey = archKey;
+        const sameKey = quantKey;
+        function append(log: number[]): number { log.push(log.length); return log.length; }
+        const record = append;
+        export function noise(x: number): number { const px = f32(x); return f32(f32(px * px) * f32(3 - f32(2 * px))); }
+        export function loopKey(x: number, z: number): string { return quantKey(x, z) + "~" + sameKey(z, x); }
+        export function aliasIdentity(): boolean { return quantKey === archKey && sameKey === archKey; }
+        export function recordTwice(log: number[]): number { record(log); return record(log); }`;
+    writeFileSync(join(directory, "aliases.ts"), module);
+    const entry = `
+        import { aliasIdentity, loopKey, noise, recordTwice } from "./aliases.js";
+        const x = 0.3, px = Math.fround(x);
+        if (noise(x) !== Math.fround(Math.fround(px * px) * Math.fround(3 - Math.fround(2 * px)))) throw new Error("Math alias");
+        if (loopKey(1, 0.25) !== "10,3~3,10" || !aliasIdentity()) throw new Error("function alias");
+        const log: number[] = [];
+        if (recordTwice(log) !== 2 || log.join(",") !== "0,1") throw new Error("alias calls run once each");
+        const stored: Array<typeof noise> = [noise];
+        if (stored[0]!(x) !== noise(x)) throw new Error("stored alias caller");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    const exported: Record<string, unknown> = {};
+    runInNewContext(commonJs(module), { exports: exported });
+    runInNewContext(commonJs(entry), { exports: {}, require: () => exported });
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "const-function-aliases", result.cpp);
+});
+
+check(
+    "optional-generic-methods-and-caught-errors-in-stored-functions",
+    `
+    interface Deps { run(): void; track?<T>(label: string, work: () => T): T }
+    interface Publication { publish(): void; consequence(): boolean }
+    let ran = 0;
+    let labels = "";
+    function createPublication(deps: Deps): Publication {
+        const track = deps.track ?? (<T>(_label: string, work: () => T): T => work());
+        return {
+            publish() { track("publish", () => deps.run()); },
+            consequence() { return track("consequence", () => ran > 0); },
+        };
+    }
+    interface Options { onUncertain?(command: string, error: unknown): void }
+    interface Ledger { execute(command: string, apply: (command: string) => number): number }
+    function createLedger(options: Options = {}): Ledger {
+        return {
+            execute(command, apply) {
+                try { return apply(command); }
+                catch (error) { options.onUncertain?.(command, error); return -1; }
+            },
+        };
+    }
+    const publications: Array<typeof createPublication> = [createPublication];
+    const plain = publications[0]!({ run: () => { ran++; } });
+    plain.publish();
+    if (!plain.consequence() || ran !== 1) throw new Error("default generic track");
+    const traced = publications[0]!({ run: () => { ran++; }, track: <T>(label: string, work: () => T): T => { labels += label + ";"; return work(); } });
+    traced.publish();
+    if (!traced.consequence() || ran !== 2 || labels !== "publish;consequence;") throw new Error("optional generic method");
+    const ledgers: Array<typeof createLedger> = [createLedger];
+    let seen = "";
+    const ledger = ledgers[0]!({ onUncertain: (command, error) => { seen = command + ":" + (error instanceof Error ? error.message : "?"); } });
+    if (ledger.execute("a", () => 3) !== 3 || seen !== "") throw new Error("applied command");
+    if (ledger.execute("b", () => { throw new Error("broken"); }) !== -1 || seen !== "b:broken") throw new Error("caught error argument");
+    if (ledgers[0]!().execute("c", () => { throw new Error("quiet"); }) !== -1) throw new Error("absent handler");
+`,
+);
+
+check(
+    "immediate-promise-callbacks-destructure-their-value",
+    `
+    interface Pair { wave: number; caustics: number }
+    async function load(n: number): Promise<number> { return n * 2; }
+    async function loadPair(): Promise<Pair> { return { wave: 3, caustics: 4 }; }
+    void Promise.all([load(1), load(2)]).then(([wave, caustics]) => {
+        if (wave !== 2 || caustics !== 4) throw new Error("tuple destructuring");
+    });
+    void loadPair().then(({ wave, caustics: renamed }) => {
+        if (wave !== 3 || renamed !== 4) throw new Error("record destructuring");
+    });
+`,
+);
+
+test("immediate promise callbacks refuse rest parameters", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "async function load(): Promise<number> { return 1; } void load().then((...values) => { const unused = values.length; });",
+            ),
+        /Immediate promise callback accepts zero parameters or one parameter binding/,
+    );
+});
+
+/**
+ * Asynchronous work that needs an owned promise runs in an application
+ * realm; the snippet closes it once its last assertion has run, which both
+ * sides observe.
+ */
+function checkInRealm(name: string, source: string): void {
+    test(name, async (t) => {
+        let closed = false;
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.None,
+                },
+            }).outputText,
+            { close: () => (closed = true) },
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(closed, true);
+        const result = compileSource(source, { fileName: `${name}.ts` });
+        await t.test(
+            "generated C++ executes the same assertions",
+            { skip: !native },
+            () => {
+                runGeneratedProgram(
+                    native!,
+                    `language-constructs/${name}`,
+                    result.cpp,
+                    { defines: ["BBLITE_WORKERS=1"] },
+                );
+            },
+        );
+    });
+}
+
+checkInRealm(
+    "stored-promise-then-finally",
+    `
+    interface Deps { spawn(x: number): Promise<boolean>; despawn(): void }
+    let spawned = 0;
+    let spawning = false;
+    let finished = 0;
+    function createLive(deps: Deps): { start(x: number): void } {
+        return {
+            start(x) {
+                spawning = true;
+                void deps.spawn(x)
+                    .then((ok) => { if (ok) spawned++; else deps.despawn(); })
+                    .finally(() => {
+                        spawning = false;
+                        finished++;
+                        if (spawned !== 1) throw new Error("fulfillment reaction runs before cleanup");
+                        globalThis.close();
+                    });
+            },
+        };
+    }
+    const lives: Array<typeof createLive> = [createLive];
+    lives[0]!({ spawn: async (x) => x > 0, despawn: () => {} }).start(1);
+    if (!spawning || finished !== 0) throw new Error("cleanup waits for settlement");
+`,
+);
+
+checkInRealm(
+    "generic-method-over-a-value-or-promise-union",
+    `
+    type Outcome = { readonly committed: true; readonly created: number } | { readonly committed: false; readonly reason: string };
+    interface Deps { runWorldEdit<T>(operation: () => T | Promise<T>): Promise<T | null>; syncNow(): void }
+    async function runEdit(deps: Deps, command: () => Outcome): Promise<Outcome> {
+        return (await deps.runWorldEdit(async () => {
+            const outcome = command();
+            if (outcome.committed) deps.syncNow();
+            return outcome;
+        })) ?? { committed: false, reason: "transaction" };
+    }
+    let synced = 0;
+    const deps: Deps = { runWorldEdit: async (operation) => await operation(), syncNow: () => { synced++; } };
+    const refusing: Deps = { runWorldEdit: async () => null, syncNow: () => { synced += 10; } };
+    const edits: Array<typeof runEdit> = [runEdit];
+    void (async () => {
+        const created = await edits[0]!(deps, () => ({ committed: true, created: 3 }));
+        const refused = await edits[0]!(refusing, () => ({ committed: true, created: 4 }));
+        if (!created.committed || created.created !== 3 || refused.committed || refused.reason !== "transaction" || synced !== 1)
+            throw new Error("generic edit lane");
+        globalThis.close();
+    })();
+`,
+);
+
+check(
+    "defaulted-parameters-through-stored-method-views",
+    `
+    interface Frame { bind(handle: number, publish: (x: number) => void, localY?: number, datum?: string): number }
+    class HostFrame implements Frame {
+        bind(handle: number, publish: (x: number) => void, localY = 0, datum?: string): number {
+            publish(handle + localY);
+            return datum ? 1 : 0;
+        }
+    }
+    function use(frame: Pick<HostFrame, "bind">): number {
+        let seen = 0;
+        const plain = frame.bind(3, (x) => { seen += x; });
+        const placed = frame.bind(1, (x) => { seen += x * 100; }, 2, "datum");
+        return seen + plain * 1000 + placed * 10000;
+    }
+    function scaled(value: number, factor = 2, offset = factor * 10): number { return value * factor + offset; }
+    const users: Array<typeof use> = [use];
+    const scales: Array<typeof scaled> = [scaled];
+    if (users[0]!(new HostFrame()) !== 10303) throw new Error("defaulted method view");
+    if (scales[0]!(1) !== 22 || scales[0]!(1, 3) !== 33 || scales[0]!(1, 3, 1) !== 4) throw new Error("defaulted stored function");
+`,
+);

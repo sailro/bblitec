@@ -1663,6 +1663,8 @@ export class UserFunctionLowerer {
         }
     >();
     private readonly active = new EmissionSet<SupportedFunction>();
+    /** Call sites whose inlined bodies are being lowered. */
+    private readonly activeCallSites = new EmissionSet<ts.Node>();
     private readonly scalarResults = new FunctionSpecializations<
         Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
     >();
@@ -4686,6 +4688,13 @@ export class UserFunctionLowerer {
         try {
             const compileBody = () =>
                 context.captureManagedClosureLines(() => {
+                    // A literal method's `this` is its home object's shared cell.
+                    const receiver = context.activeThis();
+                    if (
+                        receiver?.sharedStorageCpp !== undefined &&
+                        functionUsesDynamicThis(declaration)
+                    )
+                        context.useNativeValue(receiver);
                     this.bindArgumentsObject(
                         context,
                         ir,
@@ -5336,13 +5345,20 @@ export class UserFunctionLowerer {
             ir.declaration.asteriskToken
         )
             return this.lowerGenerator(context, ir, arguments_, callNode);
-        if (this.active.has(ir.declaration)) {
+        // A function re-entered through a callback its caller passed lowers
+        // again at another call site; re-entering a call site that is still
+        // being lowered is recursion inlining cannot bound.
+        const outermost = !this.active.has(ir.declaration);
+        if (!outermost && this.activeCallSites.has(callNode)) {
             context.fail(
                 callNode,
                 `Recursive call to '${refusalName(ir)}' is not supported.`,
             );
         }
+        const site = !this.activeCallSites.has(callNode);
         this.active.add(ir.declaration);
+        this.activeCallSites.add(callNode);
+        const enclosingInvocation = this.invocations.get(ir.declaration);
         if (ts.isCallExpression(callNode))
             this.invocations.set(ir.declaration, {
                 call: callNode,
@@ -5467,8 +5483,11 @@ export class UserFunctionLowerer {
             return this.lowerReturnedValue(context, ir, ir.returnExpression);
         } finally {
             context.bindings.popScope();
-            this.active.delete(ir.declaration);
-            this.invocations.delete(ir.declaration);
+            if (site) this.activeCallSites.delete(callNode);
+            if (outermost) this.active.delete(ir.declaration);
+            if (enclosingInvocation)
+                this.invocations.set(ir.declaration, enclosingInvocation);
+            else this.invocations.delete(ir.declaration);
         }
     }
 

@@ -568,6 +568,8 @@ export interface LoweringServices {
         },
         owner?: Value,
         prototypeMethod?: boolean,
+        /** What a non-arrow method's `this` reads, when not the owner record itself. */
+        receiver?: Value,
     ): string;
     /**
      * A record accessor as the stored callback of an accessor-backed field:

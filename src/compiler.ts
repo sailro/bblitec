@@ -235,6 +235,7 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
+import { readsHomeObject } from "./compiler/home-object-methods.js";
 import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
@@ -1309,6 +1310,25 @@ class Compiler implements LoweringServices {
                     if (dataType) {
                         this.dataTypes.markStoredObjectReferences(dataType);
                     }
+                } else if (
+                    ts.isObjectLiteralExpression(node) &&
+                    node.properties.some(
+                        (property) =>
+                            readsHomeObject(property) ||
+                            (ts.isPropertyAssignment(property) &&
+                                readsHomeObject(
+                                    this.unwrap(property.initializer),
+                                )),
+                    )
+                ) {
+                    // A method's `this` is the object the literal creates.
+                    const dataType = this.dataTypes.fromTsType(
+                        this.checker.getContextualType(node) ??
+                            this.checker.getTypeAtLocation(node),
+                        node,
+                    );
+                    if (dataType?.kind === "struct")
+                        this.dataTypes.markStoredObjectReferences(dataType);
                 }
             });
         for (const source of this.sourceFiles()) {
@@ -7496,6 +7516,7 @@ class Compiler implements LoweringServices {
         dataType: DataType & { kind: "function" },
         owner?: Value,
         prototypeMethod = false,
+        receiver?: Value,
     ): string {
         if (prototypeMethod && owner?.kind !== "record")
             this.fail(
@@ -7630,7 +7651,7 @@ class Compiler implements LoweringServices {
             return compile();
         }
         return this.withRecordScopes(effectiveOwner, () => {
-            if (!effectiveOwner.recordProperties) {
+            if (!effectiveOwner.recordProperties && !receiver) {
                 // A scope-only owner carries the captured variables of an
                 // inline literal and no receiver; `this` stays whatever the
                 // literal was written under.
@@ -7642,7 +7663,7 @@ class Compiler implements LoweringServices {
             // body would resolve its fields against whichever receiver the
             // enclosing inlined method happened to leave bound.
             const previousThis = this.thisInstance;
-            this.defineThis(effectiveOwner);
+            this.defineThis(receiver ?? effectiveOwner);
             try {
                 return compile();
             } finally {

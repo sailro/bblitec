@@ -756,7 +756,9 @@ export class StaticEvaluator {
                     unwrapped.operand,
                     `Unary numeric input requires a number or string, received ${operand.kind}.`,
                 );
-            return `(${operator}${this.castNumber(operand, precision)})`;
+            const cast = this.castNumber(operand, precision);
+            // `-` before a negative spelling must not read as a decrement.
+            return `(${operator}${cast.startsWith(operator) ? " " : ""}${cast})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {

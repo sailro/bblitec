@@ -2774,94 +2774,12 @@ export class ExpressionLowerer {
             ts.isBinaryExpression(callee) ||
             ts.isConditionalExpression(callee)
         ) {
-            const callable = this.compileValue(callee);
-            if (callable.kind === "callback") {
-                if (callable.intrinsicName) {
-                    return (
-                        this.context.compileRegisteredIntrinsic(
-                            callable.intrinsicName,
-                            call,
-                        ) ??
-                        this.context.fail(
-                            callee,
-                            `Babylon Lite intrinsic '${callable.intrinsicName}' is not supported by this prototype.`,
-                        )
-                    );
-                }
-                const native =
-                    this.context.userFunctions.compileNativeCallbackCall(
-                        this.context,
-                        call,
-                        callable,
-                    );
-                if (native) return native;
-                if (!callable.callbackDeclaration) {
-                    this.context.fail(
-                        callee,
-                        "Returned callback value is missing its declaration.",
-                    );
-                }
-                let declaration = callable.callbackDeclaration;
-                if (ts.isIdentifier(declaration)) {
-                    const definitions =
-                        this.context.symbols.valueSymbol(declaration)
-                            ?.declarations ?? [];
-                    const variable = definitions.find(
-                        (candidate): candidate is ts.VariableDeclaration =>
-                            ts.isVariableDeclaration(candidate) &&
-                            candidate.initializer !== undefined,
-                    );
-                    const initializer = variable?.initializer
-                        ? this.context.unwrap(variable.initializer)
-                        : undefined;
-                    if (
-                        initializer &&
-                        (ts.isArrowFunction(initializer) ||
-                            ts.isFunctionExpression(initializer))
-                    ) {
-                        declaration = initializer;
-                    }
-                }
-                const invoke = (): Value => {
-                    if (ts.isFunctionDeclaration(declaration)) {
-                        if (!declaration.name) {
-                            this.context.fail(
-                                declaration,
-                                "Returned function declaration must be named.",
-                            );
-                        }
-                        return this.context.userFunctions.compile(
-                            this.context,
-                            call,
-                            declaration.name,
-                        )!;
-                    }
-                    return this.context.userFunctions.compileCallbackWithValues(
-                        this.context,
-                        declaration,
-                        call.arguments.map((argument) =>
-                            this.compileValue(argument),
-                        ),
-                        call,
-                    );
-                };
-                return callable.callbackRecordOwner
-                    ? this.context.withRecordScopes(
-                          callable.callbackRecordOwner,
-                          invoke,
-                      )
-                    : invoke();
-            }
-            if (
-                callable.kind === "data" &&
-                callable.dataType?.kind === "function"
-            ) {
-                return this.context.dataLowerer.compileStoredCall(
-                    call,
-                    callable.cpp,
-                    callable.dataType,
-                );
-            }
+            const called = this.compileCallableValueCall(
+                call,
+                callee,
+                this.compileValue(callee),
+            );
+            if (called) return called;
         }
         if (ts.isElementAccessExpression(callee)) {
             let callable = this.compileValue(call.expression);
@@ -3115,6 +3033,13 @@ export class ExpressionLowerer {
             this.context.expectArgumentCount(call, 1, 1);
             return this.compileNumberConversion(argumentAt(call, 0));
         }
+        // `Error(message)` called without `new` constructs exactly as
+        // `new Error(message)` does, for every native Error constructor.
+        const errorName = errorConstructor(call, (expression) =>
+            this.context.libraryGlobal(expression),
+        );
+        if (errorName)
+            return compileErrorConstruction(this.context, call, errorName);
         if (this.context.libraryGlobal(callee) === "Boolean") {
             // `Boolean(x)` is x's truthiness, which the condition lowering
             // already spells for every kind.
@@ -3183,6 +3108,10 @@ export class ExpressionLowerer {
                 bound.cpp,
                 bound.dataType,
             );
+        }
+        if (!bound) {
+            const aliased = this.compileConstAliasCall(call, callee);
+            if (aliased) return aliased;
         }
 
         // `await HavokPhysics({ locateFile: ... })` -- the browser's own
@@ -3286,6 +3215,154 @@ export class ExpressionLowerer {
         this.context.fail(
             callee,
             `Call '${callee.text}' does not resolve to a supported Babylon intrinsic or local function declaration.`,
+        );
+    }
+
+    /**
+     * A call through a function value the callee expression evaluated:
+     * an intrinsic, a native recursive callback, a source function the
+     * value names, or native function storage.
+     */
+    private compileCallableValueCall(
+        call: ts.CallExpression,
+        callee: ts.Expression,
+        callable: Value,
+    ): Value | undefined {
+        if (callable.kind === "callback") {
+            if (callable.intrinsicName) {
+                return (
+                    this.context.compileRegisteredIntrinsic(
+                        callable.intrinsicName,
+                        call,
+                    ) ??
+                    this.context.fail(
+                        callee,
+                        `Babylon Lite intrinsic '${callable.intrinsicName}' is not supported by this prototype.`,
+                    )
+                );
+            }
+            const native = this.context.userFunctions.compileNativeCallbackCall(
+                this.context,
+                call,
+                callable,
+            );
+            if (native) return native;
+            if (!callable.callbackDeclaration) {
+                this.context.fail(
+                    callee,
+                    "Returned callback value is missing its declaration.",
+                );
+            }
+            let declaration = callable.callbackDeclaration;
+            if (ts.isIdentifier(declaration)) {
+                const definitions =
+                    this.context.symbols.valueSymbol(declaration)
+                        ?.declarations ?? [];
+                const variable = definitions.find(
+                    (candidate): candidate is ts.VariableDeclaration =>
+                        ts.isVariableDeclaration(candidate) &&
+                        candidate.initializer !== undefined,
+                );
+                const initializer = variable?.initializer
+                    ? this.context.unwrap(variable.initializer)
+                    : undefined;
+                if (
+                    initializer &&
+                    (ts.isArrowFunction(initializer) ||
+                        ts.isFunctionExpression(initializer))
+                ) {
+                    declaration = initializer;
+                }
+            }
+            const invoke = (): Value => {
+                if (ts.isFunctionDeclaration(declaration)) {
+                    if (!declaration.name) {
+                        this.context.fail(
+                            declaration,
+                            "Returned function declaration must be named.",
+                        );
+                    }
+                    return this.context.userFunctions.compile(
+                        this.context,
+                        call,
+                        declaration.name,
+                    )!;
+                }
+                return this.context.userFunctions.compileCallbackWithValues(
+                    this.context,
+                    declaration,
+                    call.arguments.map((argument) =>
+                        this.compileValue(argument),
+                    ),
+                    call,
+                );
+            };
+            return callable.callbackRecordOwner
+                ? this.context.withRecordScopes(
+                      callable.callbackRecordOwner,
+                      invoke,
+                  )
+                : invoke();
+        }
+        if (callable.kind === "data" && callable.dataType?.kind === "function")
+            return this.context.dataLowerer.compileStoredCall(
+                call,
+                callable.cpp,
+                callable.dataType,
+            );
+        return undefined;
+    }
+
+    /**
+     * A call through a module `const` that aliases a function
+     * (`const f32 = Math.fround`, `const key = archKey`). The binding is
+     * immutable and reading it has no effect, so the call is a call of the
+     * aliased function itself: the alias chain is followed to the function
+     * it names, a Math member keeps its direct native spelling and a source
+     * function is called as a direct call of it would be.
+     */
+    private compileConstAliasCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        let target: ts.Expression = callee;
+        for (;;) {
+            if (!ts.isIdentifier(target)) break;
+            const declaration =
+                this.context.symbols.valueSymbol(target)?.valueDeclaration;
+            if (
+                !declaration ||
+                !ts.isVariableDeclaration(declaration) ||
+                !declaration.initializer ||
+                !ts.isVariableDeclarationList(declaration.parent) ||
+                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                this.context.bindings.lookupOptional(target) ||
+                this.context.resolveStaticExpression(target) === target
+            )
+                break;
+            const next = this.context.unwrap(declaration.initializer);
+            if (!ts.isIdentifier(next) && !ts.isPropertyAccessExpression(next))
+                break;
+            target = next;
+        }
+        if (target === callee) return undefined;
+        if (ts.isPropertyAccessExpression(target)) {
+            const math = this.context.dataLowerer.compileMathCall(call, target);
+            if (math) return math;
+        } else if (
+            ts.isIdentifier(target) &&
+            !this.context.bindings.lookupOptional(target) &&
+            tryResolveFunctionDeclaration(this.context.checker, target)
+        )
+            return this.context.userFunctions.compile(
+                this.context,
+                call,
+                target,
+            );
+        return this.compileCallableValueCall(
+            call,
+            callee,
+            this.compileValue(target),
         );
     }
 
@@ -5813,12 +5890,14 @@ export class ExpressionLowerer {
                         ? `static_cast<bool>(${instance.cpp})`
                         : undefined);
                 if (optionalCall && optionalFound !== undefined) {
-                    if (!ts.isExpressionStatement(call.parent)) {
-                        this.context.fail(
+                    if (!ts.isExpressionStatement(call.parent))
+                        return this.compileOptionalMethodValue(
                             call,
-                            "Optional class method calls returning a value are not lowered.",
+                            callee.name.text,
+                            instance,
+                            declaration,
+                            optionalFound,
                         );
-                    }
                     this.context.emit({
                         kind: "open",
                         code: `if (${optionalFound}) {`,
@@ -5830,13 +5909,9 @@ export class ExpressionLowerer {
                         call,
                         declaration,
                     );
-                    if (result.kind !== "void") {
-                        this.context.fail(
-                            call,
-                            "Optional class method calls returning a value are not lowered.",
-                        );
-                    }
-                    if (result.cpp) {
+                    if (result.kind !== "void")
+                        this.context.emitDiscardedValue(result);
+                    else if (result.cpp) {
                         this.context.emit({
                             kind: "expression",
                             code: `${result.cpp};`,
@@ -5854,5 +5929,75 @@ export class ExpressionLowerer {
                 );
             }
         }
+    }
+
+    /**
+     * `receiver?.method(...)` as a value: the method runs, its arguments
+     * evaluated, only when the receiver is present, and the call is
+     * `undefined` otherwise, so the result is the call's nullable type (a
+     * `void` method's call is `undefined` either way).
+     */
+    private compileOptionalMethodValue(
+        call: ts.CallExpression,
+        method: string,
+        instance: Value,
+        declaration: ts.ClassDeclaration,
+        found: string,
+    ): Value {
+        const type = this.context.dataLowerer.dataTypeAt(call);
+        const slot =
+            type && !isUndefinedDataType(type)
+                ? {
+                      type,
+                      cpp: this.context.allocateTemporaryCppName(
+                          "optional_method_result",
+                      ),
+                  }
+                : undefined;
+        const lines = this.context.captureEmittedStatements(() =>
+            this.inRuntimeControlFlow(() => {
+                const result = this.context.classLowerer.compileMethodCall(
+                    instance,
+                    method,
+                    call,
+                    declaration,
+                );
+                if (!slot) {
+                    this.context.emitDiscardedValue(result);
+                    return;
+                }
+                if (result.kind === "void")
+                    this.context.fail(
+                        call,
+                        "An optional method call's value requires the method's represented result.",
+                    );
+                this.context.emit({
+                    kind: "expression",
+                    code: `${slot.cpp} = ${this.context.dataLowerer.compileKnownValueForSink(result, slot.type, call)};`,
+                });
+            }),
+        );
+        if (slot)
+            this.context.emit({
+                kind: "declaration",
+                type: this.context.dataTypes.cppType(slot.type),
+                name: slot.cpp,
+                initializer: this.context.dataTypes.absentValue(slot.type),
+            });
+        const binding = slot
+            ? this.context.registerNativeBinding(slot.cpp)
+            : undefined;
+        this.context.emit({ kind: "open", code: `if (${found}) {` });
+        this.context.increaseIndent();
+        this.context.emitCapturedStatements(lines);
+        this.context.decreaseIndent();
+        this.context.emit({ kind: "close", code: "}" });
+        return slot && binding
+            ? {
+                  ...this.context.dataLowerer.leafValue(slot.cpp, slot.type),
+                  nativeBinding: true,
+                  nativeCaptures: [binding],
+              }
+            : { kind: "json-null", cpp: "std::nullopt" };
     }
 }

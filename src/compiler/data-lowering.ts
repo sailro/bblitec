@@ -138,6 +138,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
+import { homeObjectReceiver, readsHomeObject } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 
 /**
@@ -279,6 +280,8 @@ interface DataLoweringContext extends Pick<
     | "options"
     | "expectArgumentCount"
     | "sourceFile"
+    | "program"
+    | "activeThis"
     | "admissions"
     | "asyncActivations"
     | "libraryGlobal"
@@ -5988,11 +5991,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * Compiles JavaScript Math member calls with runtime arguments.
      */
-    public compileMathCall(call: ts.CallExpression): Value | undefined {
+    /** `target` is the Math member the call reaches, when a `const` alias names it. */
+    public compileMathCall(
+        call: ts.CallExpression,
+        target: ts.Expression = call.expression,
+    ): Value | undefined {
         // Resolved, not spelled: a scene's own binding named `Math` is not
         // the library object, however the compiler came to know it.
         const callee = mathMemberAccess(
-            this.context.unwrap(call.expression),
+            this.context.unwrap(target),
             (expression) => this.context.libraryGlobal(expression),
         );
         if (!callee) {
@@ -8781,6 +8788,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Struct literals support plain property assignments.",
             );
         }
+        const home = homeObjectReceiver(
+            this.context,
+            dataType,
+            fields.flatMap((field) => {
+                const provider = provided.get(field.sourceName);
+                const method =
+                    provider && !ts.isMethodDeclaration(provider)
+                        ? this.context.unwrap(provider)
+                        : provider;
+                return method && readsHomeObject(method)
+                    ? [{ name: field.sourceName, method }]
+                    : [];
+            }),
+            literal,
+        );
         const parts = fields.map((field) => {
             const initializer = provided.get(field.sourceName);
             if (!initializer) {
@@ -8814,6 +8836,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const callback = this.context.compileStoredDataFunction(
                     initializer,
                     field.type,
+                    undefined,
+                    false,
+                    home && readsHomeObject(initializer) ? home : undefined,
                 );
                 return this.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -8829,6 +8854,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field,
                     initializer,
                 );
+            const method = this.context.unwrap(initializer);
+            if (
+                home &&
+                readsHomeObject(method) &&
+                field.type.kind === "function"
+            )
+                return this.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    this.context.compileStoredDataFunction(
+                        method,
+                        field.type,
+                        undefined,
+                        false,
+                        home,
+                    ),
+                );
             return this.context.dataTypes.structFieldInitializerCpp(
                 field,
                 this.compileForSink(initializer, field.type),
@@ -8839,6 +8880,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 literal,
                 `Struct literal has unknown field '${[...provided.keys()][0]}'.`,
             );
+        }
+        if (home) {
+            this.context.emit({
+                kind: "expression",
+                code: `${home.cpp} = ${this.structAggregate(dataType, parts)};`,
+            });
+            return home.cpp;
         }
         return this.structAggregate(dataType, parts);
     }
