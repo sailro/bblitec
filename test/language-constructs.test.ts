@@ -8647,3 +8647,53 @@ check(
     if (rows[0]!.x !== 1 || rows[1]!.x !== 0) throw new Error("row field " + rows[0]!.x);
 `,
 );
+
+// The checks accumulate into a string: passing an array to a call is an
+// escape of its own, which would hide the one under test.
+check(
+    "arrays-escaping-into-other-owners-stay-one-array",
+    `
+    let failed = "";
+    const fielded = [1, 2];
+    const holder = { items: fielded };
+    holder.items.push(4);
+    if (fielded.length !== 3 || fielded[2] !== 4) failed += "field;";
+    const nested = [1, 2];
+    const deep = { outer: { inner: nested } };
+    deep.outer.inner.push(5);
+    if (nested.length !== 3) failed += "nested literal;";
+    const element = [1, 2];
+    const lists = [element, [9]];
+    lists[0]!.push(6);
+    if (element.length !== 3) failed += "array element;";
+    const written = [1, 2];
+    const wrapper = { items: written };
+    wrapper.items[0] = 7;
+    if (written[0] !== 7) failed += "element write through a field;";
+    function grow(target: { items: number[] }): void { target.items.push(8); }
+    const passed = [1, 2];
+    grow({ items: passed });
+    if (passed.length !== 3) failed += "argument to a callee that pushes;";
+    const captured = [1, 2];
+    const read = (): number[] => captured;
+    read().push(9);
+    const append = (value: number): void => { captured.push(value); };
+    append(10);
+    if (captured.length !== 4 || captured[3] !== 10) failed += "captured closure;";
+    const returned = [1, 2];
+    function make(): { items: number[] } { return { items: returned }; }
+    make().items.push(11);
+    if (returned.length !== 3) failed += "returned record;";
+    class Bag { constructor(public items: number[]) {} }
+    const constructed = [1, 2];
+    new Bag(constructed).items.push(12);
+    if (constructed.length !== 3) failed += "constructor argument;";
+    let flag = true;
+    const selected = [1, 2];
+    const chosen = { items: flag ? selected : [0] };
+    chosen.items.pop();
+    if (selected.length !== 1) failed += "selected field;";
+    flag = false;
+    if (failed) throw new Error(failed);
+`,
+);

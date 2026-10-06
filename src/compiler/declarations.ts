@@ -3189,15 +3189,86 @@ export class DeclarationLowerer {
             : undefined;
     }
 
-    /** Alias writes, mutating methods and call escapes require owning array storage. */
+    /**
+     * Alias writes, mutating methods and escapes require owning array
+     * storage: an array reaching another owner -- a call or construction
+     * argument, a field, an element, a default, or a return out of the
+     * function declaring it -- can be written through that owner, and
+     * JavaScript keeps one array for both.
+     */
     private inferredArrayIsMutated(identifier: ts.Identifier): boolean {
+        const declaringFunction = ts.findAncestor(
+            identifier.parent,
+            ts.isFunctionLike,
+        );
+        /** Whether `expression`'s value is a tracked alias itself. */
+        const valueNamesAlias = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
+            const value = this.context.unwrap(expression);
+            if (ts.isConditionalExpression(value))
+                return (
+                    valueNamesAlias(value.whenTrue, scan) ||
+                    valueNamesAlias(value.whenFalse, scan)
+                );
+            if (ts.isBinaryExpression(value)) {
+                const operator = value.operatorToken.kind;
+                if (operator === ts.SyntaxKind.CommaToken)
+                    return valueNamesAlias(value.right, scan);
+                if (
+                    operator === ts.SyntaxKind.QuestionQuestionToken ||
+                    operator === ts.SyntaxKind.BarBarToken ||
+                    operator === ts.SyntaxKind.AmpersandAmpersandToken
+                )
+                    return (
+                        valueNamesAlias(value.left, scan) ||
+                        valueNamesAlias(value.right, scan)
+                    );
+            }
+            return scan.namesAlias(value);
+        };
+        const escapes = (node: ts.Node, scan: AliasedMutationScan): boolean =>
+            (ts.isPropertyAssignment(node) &&
+                valueNamesAlias(node.initializer, scan)) ||
+            (ts.isShorthandPropertyAssignment(node) &&
+                scan.namesAlias(node.name)) ||
+            (ts.isArrayLiteralExpression(node) &&
+                node.elements.some(
+                    (element) =>
+                        !ts.isSpreadElement(element) &&
+                        !ts.isOmittedExpression(element) &&
+                        valueNamesAlias(element, scan),
+                )) ||
+            (ts.isNewExpression(node) &&
+                (node.arguments ?? []).some(scan.containsAlias)) ||
+            ((ts.isPropertyDeclaration(node) ||
+                ts.isParameter(node) ||
+                ts.isBindingElement(node)) &&
+                node.initializer !== undefined &&
+                valueNamesAlias(node.initializer, scan)) ||
+            (ts.isYieldExpression(node) &&
+                node.expression !== undefined &&
+                valueNamesAlias(node.expression, scan)) ||
+            (ts.isExportAssignment(node) &&
+                valueNamesAlias(node.expression, scan)) ||
+            (((ts.isReturnStatement(node) &&
+                node.expression !== undefined &&
+                valueNamesAlias(node.expression, scan)) ||
+                (ts.isArrowFunction(node) &&
+                    !ts.isBlock(node.body) &&
+                    valueNamesAlias(node.body, scan))) &&
+                (ts.isArrowFunction(node)
+                    ? node
+                    : ts.findAncestor(node, ts.isFunctionLike)) !==
+                    declaringFunction);
         return aliasedMutationScan(
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
             {
                 aliasingInitializer: (initializer, scan) => {
                     const value = this.context.unwrap(initializer);
-                    if (scan.namesAlias(value)) return true;
+                    if (valueNamesAlias(value, scan)) return true;
                     const callee = ts.isCallExpression(value)
                         ? this.context.unwrap(value.expression)
                         : undefined;
@@ -3244,6 +3315,7 @@ export class DeclarationLowerer {
                     return aliases;
                 },
                 mutates: (node, scan) => {
+                    if (escapes(node, scan)) return true;
                     if (
                         ts.isElementAccessExpression(node) &&
                         scan.namesAlias(this.context.unwrap(node.expression)) &&
