@@ -7316,8 +7316,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         name: kept,
                         initializer: `bbl::js::snapshot_value(${source}[${index}])`,
                     });
+                // `Boolean` only tests the element's truthiness and keeps
+                // nothing, so it reads the slot in place.
+                const inPlace =
+                    !kept && this.context.libraryGlobal(callback) === "Boolean";
                 const snapshotCpp =
-                    kept ?? `bbl::js::snapshot_value(${source}[${index}])`;
+                    kept ??
+                    (inPlace
+                        ? `${source}[${index}]`
+                        : `bbl::js::snapshot_value(${source}[${index}])`);
                 const callbackValue = this.leafValue(
                     snapshotCpp,
                     dataType.element,
@@ -7325,7 +7332,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const callbackArguments: Value[] = [
                     {
                         ...callbackValue,
-                        ...(!kept && callbackValue.cpp === snapshotCpp
+                        ...(!kept &&
+                        !inPlace &&
+                        callbackValue.cpp === snapshotCpp
                             ? { nativeOwnedRvalue: true as const }
                             : {}),
                         nativeCaptures: kept
