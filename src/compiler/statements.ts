@@ -64,9 +64,13 @@ import { emitStringAppend } from "./expressions.js";
 import {
     commonResourceValue,
     isStringValue,
+    optionalPresentCpp,
+    optionalValueCpp,
     staticStringValue,
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { isNullishLiteral } from "./symbols.js";
+import { absenceKind } from "./type-facts.js";
 import {
     emitReachableStatements,
     enclosingLoopControl,
@@ -686,6 +690,16 @@ export class StatementLowerer {
                 });
                 return;
             }
+            const switchEnd = this.switchBreakTarget(statement);
+            if (switchEnd) {
+                writable(switchEnd).used = true;
+                context.emit({
+                    kind: "control",
+                    code: `goto ${switchEnd.label};`,
+                    transfer: "goto",
+                });
+                return;
+            }
             if (this.completeStaticIteration(statement)) return;
             context.emit({
                 kind: "control",
@@ -873,42 +887,107 @@ export class StatementLowerer {
     ): void {
         const discriminant = context.allocateTemporaryCppName("switch");
         const value = context.compileValue(statement.expression);
-        if (value.staticString !== undefined) {
-            const staticDiscriminant = context.cppString(value.staticString);
-            const clauses = statement.caseBlock.clauses;
-            let matched = false;
-            for (const clause of clauses) {
-                if (ts.isDefaultClause(clause)) {
-                    if (clause !== clauses.at(-1))
-                        context.fail(
-                            clause,
-                            "A switch default clause must be last.",
-                        );
-                    matched = true;
-                } else if (!matched) {
-                    matched =
-                        this.compileStaticSwitchString(
-                            context,
-                            clause.expression,
-                        ) === staticDiscriminant;
-                }
-                // Empty labels fall through to the next body. Only the reached
-                // body participates in feature selection and specialization.
-                if (matched && clause.statements.length > 0) {
+        const clauses = statement.caseBlock.clauses;
+        const nullishLabel = clauses.find(
+            (clause) =>
+                ts.isCaseClause(clause) &&
+                isNullishLiteral(context.checker, clause.expression),
+        );
+        // A case label matches before the default wherever it stands;
+        // labels evaluate in order until one matches. A generation-known
+        // absent value matches only the label of its own absence, which its
+        // declared type must name.
+        const staticString = value.staticString;
+        const absentLabelMatches = (
+            clause: ts.CaseOrDefaultClause,
+        ): boolean => {
+            if (
+                !ts.isCaseClause(clause) ||
+                !isNullishLiteral(context.checker, clause.expression)
+            )
+                return false;
+            const absence = absenceKind(
+                context.checker,
+                value,
+                statement.expression,
+            );
+            if (absence === "either" || typeof absence === "object")
+                context.fail(
+                    clause,
+                    "A null or undefined case label requires a discriminant that holds null and undefined apart.",
+                );
+            return (
+                (context.unwrap(clause.expression).kind ===
+                    ts.SyntaxKind.NullKeyword) ===
+                (absence === "null")
+            );
+        };
+        const staticSelection =
+            staticString !== undefined
+                ? clauses.findIndex(
+                      (clause) =>
+                          ts.isCaseClause(clause) &&
+                          !isNullishLiteral(
+                              context.checker,
+                              clause.expression,
+                          ) &&
+                          this.compileStaticSwitchString(
+                              context,
+                              clause.expression,
+                          ) === context.cppString(staticString),
+                  )
+                : value.kind === "json-null"
+                  ? clauses.findIndex(absentLabelMatches)
+                  : undefined;
+        if (staticSelection !== undefined) {
+            const selected =
+                staticSelection === -1
+                    ? clauses.findIndex(ts.isDefaultClause)
+                    : staticSelection;
+            // Empty labels fall through to the next body. Only the reached
+            // bodies participate in feature selection and specialization.
+            const run =
+                selected === -1 ? [] : switchFallthroughRun(clauses, selected);
+            if (run.length === 1) {
+                context.emit({ kind: "open", code: "{" });
+                this.emitSwitchBody(context, run[0]!);
+                context.emit({ kind: "close", code: "}" });
+            } else if (run.length > 1) {
+                this.withSwitchBreakTarget(context, statement, () => {
                     context.emit({ kind: "open", code: "{" });
-                    this.emitSwitchBody(context, clause);
+                    this.emitScopedStatements(
+                        context,
+                        run.flatMap((clause) => [...clause.statements]),
+                    );
                     context.emit({ kind: "close", code: "}" });
-                    return;
-                }
+                });
             }
             return;
         }
-        const stringSwitch = isStringValue(value);
-        const enumSwitch =
-            value.kind === "data" && value.dataType?.kind === "enum";
+        // A maybe-absent discriminant never equals a present label: absent,
+        // it takes the default clause. A document compares strictly with
+        // each label, null and undefined included.
+        const optional =
+            value.kind === "data" &&
+            value.dataType?.kind === "optional" &&
+            value.optionalFoundCpp === undefined &&
+            ["string", "enum", "number"].includes(value.dataType.inner.kind)
+                ? value.dataType.inner
+                : undefined;
+        const document = isJsonValue(value);
+        const stringSwitch =
+            isStringValue(value) || optional?.kind === "string";
+        const enumType =
+            optional?.kind === "enum"
+                ? optional
+                : value.kind === "data" && value.dataType?.kind === "enum"
+                  ? value.dataType
+                  : undefined;
         if (
+            !document &&
             !stringSwitch &&
-            !enumSwitch &&
+            !enumType &&
+            optional?.kind !== "number" &&
             value.kind !== "number" &&
             !(value.kind === "data" && value.dataType?.kind === "number")
         ) {
@@ -917,46 +996,110 @@ export class StatementLowerer {
                 `Switch discriminants must be numbers or strings, received ${value.kind}.`,
             );
         }
+        // Which absence an optional discriminant's empty storage stands for.
+        const absence = optional
+            ? absenceKind(context.checker, value, statement.expression)
+            : undefined;
+        if (
+            nullishLabel &&
+            !document &&
+            (absence === undefined ||
+                absence === "either" ||
+                typeof absence === "object")
+        )
+            context.fail(
+                nullishLabel,
+                "A null or undefined case label requires a discriminant that holds null and undefined apart.",
+            );
         context.emit({ kind: "open", code: "{" });
         context.increaseIndent();
-        if (stringSwitch) {
+        const storage = `${discriminant}_storage`;
+        if (stringSwitch || optional || document) {
             // The view must not outlive its characters: a discriminant such
             // as `prefix + "x"` is a temporary, so its storage is bound first.
             context.emit({
                 kind: "declaration",
                 type: "const auto&",
-                name: `${discriminant}_storage`,
+                name: storage,
                 initializer: value.cpp,
             });
+        }
+        if (stringSwitch && !optional) {
             context.emit({
                 kind: "declaration",
                 type: "const std::string_view",
                 name: discriminant,
-                initializer: `${discriminant}_storage`,
+                initializer: storage,
             });
-        } else {
+        } else if (!stringSwitch && !optional && !document) {
             context.emit(
-                enumSwitch
+                enumType
                     ? `const auto ${discriminant} = ${value.cpp};`
                     : `const double ${discriminant} = ${value.cpp};`,
             );
         }
-        const clauses = statement.caseBlock.clauses;
+        // The test that one clause's label matches, or undefined for a
+        // label this invocation cannot hold.
+        const labelTest = (clause: ts.CaseClause): string | undefined => {
+            if (document) {
+                return (
+                    context.dataLowerer.jsonStrictEquality(
+                        storage,
+                        clause.expression,
+                    ) ??
+                    context.fail(
+                        clause.expression,
+                        "A switch over a document requires scalar or nullish case labels.",
+                    )
+                );
+            }
+            if (
+                optional &&
+                isNullishLiteral(context.checker, clause.expression)
+            )
+                // Empty storage is one absence; the other label never matches.
+                return (context.unwrap(clause.expression).kind ===
+                    ts.SyntaxKind.NullKeyword) ===
+                    (absence === "null")
+                    ? `!${optionalPresentCpp(storage)}`
+                    : undefined;
+            const label = stringSwitch
+                ? this.compileStaticSwitchString(context, clause.expression)
+                : enumType
+                  ? context.compileEnumSwitchLabel(clause.expression, enumType)
+                  : context.compileNumber(clause.expression, "double");
+            if (label === undefined) return undefined;
+            if (!optional) return `${discriminant} == ${label}`;
+            return `(${optionalPresentCpp(storage)} && ${optionalValueCpp(storage)} == ${label})`;
+        };
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
-        if (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) {
-            context.fail(
-                clauses[defaultIndex]!,
-                "A switch default clause must be last.",
+        if (
+            (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) ||
+            clauses.some(
+                (clause, index) =>
+                    index < clauses.length - 1 &&
+                    clause.statements.length > 0 &&
+                    !switchClauseCompletes(clause),
+            )
+        ) {
+            this.emitFallthroughSwitch(
+                context,
+                statement,
+                discriminant,
+                labelTest,
             );
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+            return;
         }
         let emittedBranch = false;
-        let pendingLabels: string[] = [];
+        let pendingTests: string[] = [];
         for (const clause of clauses) {
             if (ts.isDefaultClause(clause)) {
                 // Empty cases immediately before the final default share
                 // its body. The emitted final `else` already selects every
                 // value not handled above, including those pending labels.
-                pendingLabels = [];
+                pendingTests = [];
                 context.emit(emittedBranch ? "} else {" : "{");
                 this.inRuntimeControlFlow(context, () =>
                     this.emitSwitchBody(context, clause),
@@ -964,42 +1107,27 @@ export class StatementLowerer {
                 emittedBranch = true;
                 continue;
             }
-            const label = stringSwitch
-                ? this.compileStaticSwitchString(context, clause.expression)
-                : enumSwitch
-                  ? context.compileEnumSwitchLabel(
-                        clause.expression,
-                        value.dataType,
-                    )
-                  : context.compileNumber(clause.expression, "double");
+            const test = labelTest(clause);
             // An inlined function may receive a narrower string-literal
             // union than its declared parameter. Labels outside that union
             // are unreachable for this invocation.
-            if (label === undefined) {
+            if (test === undefined) {
                 continue;
             }
-            pendingLabels.push(label);
+            pendingTests.push(test);
             if (clause.statements.length === 0) {
                 continue;
             }
-            const condition = pendingLabels
-                .map((label) => `${discriminant} == ${label}`)
-                .join(" || ");
             context.emit(
-                `${emittedBranch ? "} else if" : "if"} (${condition}) {`,
+                `${emittedBranch ? "} else if" : "if"} (${pendingTests.join(" || ")}) {`,
             );
             this.inRuntimeControlFlow(context, () =>
                 this.emitSwitchBody(context, clause),
             );
             emittedBranch = true;
-            pendingLabels = [];
+            pendingTests = [];
         }
-        if (pendingLabels.length > 0) {
-            context.fail(
-                statement,
-                "Trailing case clauses without a body are not supported.",
-            );
-        }
+        // Trailing labels without a body select nothing to run.
         if (emittedBranch) {
             context.emit({ kind: "close", code: "}" });
         }
@@ -1025,9 +1153,10 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         clause: ts.CaseClause | ts.DefaultClause,
     ): void {
+        // The callers hand one clause that completes (or is the last, which
+        // completes the switch by finishing); fallthrough is lowered apart.
         const statements = [...clause.statements];
         let last = statements.at(-1);
-        let terminalBreakRemoved = false;
         // A braced case body (`case x: { ... break; }`) gives its locals a
         // lexical scope but the break still belongs to the switch. Each
         // lowered branch already owns a scope, so flatten that final block
@@ -1038,17 +1167,9 @@ export class StatementLowerer {
                 statements.pop();
                 statements.push(...last.statements.slice(0, -1));
                 last = statements.at(-1);
-                terminalBreakRemoved = true;
             }
         }
-        if (last && ts.isBreakStatement(last)) {
-            statements.pop();
-        } else if (!terminalBreakRemoved && (!last || !terminatesFlow(last))) {
-            context.fail(
-                clause,
-                "Non-empty switch cases must end with break or return.",
-            );
-        }
+        if (last && ts.isBreakStatement(last)) statements.pop();
         const nestedBreak = statements
             .map((statement) => this.findSwitchBoundBreak(statement))
             .find((candidate) => candidate !== undefined);
@@ -1081,6 +1202,116 @@ export class StatementLowerer {
                 context.decreaseIndent();
                 context.emit({ kind: "close", code: "} while (false);" });
             }
+        } finally {
+            context.bindings.popScope();
+            context.decreaseIndent();
+        }
+    }
+
+    /**
+     * A switch whose clauses fall into one another, or whose default is not
+     * last: the matching clause's index is selected first (case labels in
+     * order, then the default), and every body from it onward runs in
+     * source order until a break jumps to the switch's end.
+     */
+    private emitFallthroughSwitch(
+        context: StatementLoweringContext,
+        statement: ts.SwitchStatement,
+        discriminant: string,
+        labelTest: (clause: ts.CaseClause) => string | undefined,
+    ): void {
+        const clauses = statement.caseBlock.clauses;
+        const defaultIndex = clauses.findIndex(ts.isDefaultClause);
+        const tests: Array<{ condition: string; index: number }> = [];
+        clauses.forEach((clause, index) => {
+            if (!ts.isCaseClause(clause)) return;
+            const condition = labelTest(clause);
+            if (condition !== undefined) tests.push({ condition, index });
+        });
+        const selected = `${discriminant}_selected`;
+        context.emit({
+            kind: "declaration",
+            type: "const int",
+            name: selected,
+            initializer: tests.reduceRight(
+                (rest, { condition, index }) =>
+                    `(${condition}) ? ${index} : ${rest}`,
+                String(defaultIndex === -1 ? clauses.length : defaultIndex),
+            ),
+        });
+        this.withSwitchBreakTarget(context, statement, () => {
+            clauses.forEach((clause, index) => {
+                if (clause.statements.length === 0) return;
+                context.emit({
+                    kind: "open",
+                    code: `if (${selected} <= ${index}) {`,
+                });
+                this.inRuntimeControlFlow(context, () =>
+                    this.emitScopedStatements(context, clause.statements),
+                );
+                context.emit({ kind: "close", code: "}" });
+            });
+        });
+    }
+
+    /** Unlabeled breaks of the switches lowered with an end label. */
+    private readonly switchBreakTargets = emissionArray<{
+        readonly statement: ts.SwitchStatement;
+        readonly label: string;
+        readonly used: boolean;
+    }>([]);
+
+    /** Emit a switch body whose breaks jump to a label after it. */
+    private withSwitchBreakTarget(
+        context: StatementLoweringContext,
+        statement: ts.SwitchStatement,
+        emitBody: () => void,
+    ): void {
+        const target = {
+            statement,
+            label: context.allocateTemporaryCppName("switch_end"),
+            used: false,
+        };
+        this.switchBreakTargets.push(target);
+        try {
+            emitBody();
+        } finally {
+            this.switchBreakTargets.pop();
+        }
+        if (target.used) context.emit(`${target.label}:;`);
+    }
+
+    /** The end label an unlabeled break of a fallthrough switch jumps to. */
+    private switchBreakTarget(
+        statement: ts.BreakStatement,
+    ): (typeof this.switchBreakTargets)[number] | undefined {
+        for (
+            let parent: ts.Node | undefined = statement.parent;
+            parent;
+            parent = parent.parent
+        ) {
+            if (
+                ts.isFunctionLike(parent) ||
+                ts.isIterationStatement(parent, false)
+            )
+                return undefined;
+            if (ts.isSwitchStatement(parent))
+                return this.switchBreakTargets.find(
+                    (target) => target.statement === parent,
+                );
+        }
+        return undefined;
+    }
+
+    /** One scope holding statements, emitted until one leaves it. */
+    private emitScopedStatements(
+        context: StatementLoweringContext,
+        statements: readonly ts.Statement[],
+    ): void {
+        context.increaseIndent();
+        context.bindings.pushScope(context.allocateBlockPrefix());
+        try {
+            this.emitReachableBody(context, statements);
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();
@@ -4684,6 +4915,26 @@ export class StatementLowerer {
  * True when a branch always leaves the surrounding iteration or
  * function, so code after the branch never observes its effects.
  */
+/** Whether a case clause leaves the switch at its end instead of falling on. */
+function switchClauseCompletes(clause: ts.CaseOrDefaultClause): boolean {
+    const last = clause.statements.at(-1);
+    return last !== undefined && terminatesFlow(last);
+}
+
+/** The non-empty clauses a match at `start` runs: through one that completes. */
+function switchFallthroughRun(
+    clauses: readonly ts.CaseOrDefaultClause[],
+    start: number,
+): ts.CaseOrDefaultClause[] {
+    const run: ts.CaseOrDefaultClause[] = [];
+    for (const clause of clauses.slice(start)) {
+        if (clause.statements.length === 0) continue;
+        run.push(clause);
+        if (switchClauseCompletes(clause)) break;
+    }
+    return run;
+}
+
 function terminatesFlow(
     statement: ts.Statement,
     lowered: (node: ts.Statement) => boolean = () => false,

@@ -272,6 +272,71 @@ check(
 );
 
 check(
+    "switch-fallthrough-and-final-clauses",
+    `
+    function final(k: number): number { let r = 0; switch (k) { case 1: r = 1; break; default: r = 2; } return r; }
+    function through(k: number): number { let r = 0; switch (k) { case 1: r += 1; case 2: r += 10; break; default: r = 100; } return r; }
+    function middle(k: number): string { let r = ""; switch (k) { case 1: r += "a"; default: r += "d"; case 2: r += "b"; break; case 3: r += "c"; } return r; }
+    function early(k: string): number { let r = 0; switch (k) { case "a": r += 1; case "b": if (r > 0) break; r += 2; case "c": r += 4; } return r; }
+    function trailing(k: number): number { let r = 0; switch (k) { case 1: r = 1; break; case 2: case 3: } return r; }
+    if (final(1) !== 1 || final(3) !== 2) throw new Error("final clause");
+    if (through(1) !== 11 || through(2) !== 10 || through(3) !== 100) throw new Error("fallthrough");
+    if (middle(1) + middle(2) + middle(3) + middle(9) !== "adbbcdb") throw new Error("default in the middle");
+    if (early("a") !== 1 || early("b") !== 6 || early("c") !== 4 || early("z") !== 0) throw new Error("early break");
+    if (trailing(1) !== 1 || trailing(2) !== 0) throw new Error("trailing labels");
+    const kind: string = "a";
+    let folded = 0;
+    switch (kind) { case "a": folded += 1; case "b": folded += 2; break; case "c": folded += 4; }
+    if (folded !== 3) throw new Error("static fallthrough");
+    let n = 0;
+    for (let i = 0; i < 4; i++) {
+        switch (i % 3) { case 0: n += 1; case 1: if (i === 1) continue; n += 10; break; default: n += 100; }
+        n += 1000;
+    }
+    if (n !== 3122) throw new Error("continue through a fallthrough switch " + n);
+    const stored: Array<typeof middle> = [middle];
+    if (stored[0]!(1) !== "adb" || stored[0]!(9) !== "db") throw new Error("stored fallthrough");
+`,
+);
+
+check(
+    "switch-maybe-absent-discriminants",
+    `
+    type Reason = "wet" | "dry" | "far";
+    function text(reason: string | null): number { switch (reason) { case null: return 0; case "prop": case "tree": return 1; default: return 2; } }
+    function pick(reason: Reason | null | undefined): Reason | null { switch (reason) { case "wet": case "dry": return reason; default: return null; } }
+    function both(reason: Reason | null | undefined): number { switch (reason) { case "wet": return 1; case null: return 2; case undefined: return 3; default: return 4; } }
+    function field(input: { by?: Reason | null; wood: boolean }): string { switch (input.by) { case "wet": return "w"; case "far": return input.wood ? "f" : "g"; default: return "-"; } }
+    function count(value?: number): number { switch (value) { case undefined: return 0; case 1: return 10; default: return -1; } }
+    const texts: Array<typeof text> = [text];
+    const picks: Array<typeof pick> = [pick];
+    const boths: Array<typeof both> = [both];
+    const fields: Array<typeof field> = [field];
+    const counts: Array<typeof count> = [count];
+    if (text("tree") !== 1 || text(null) !== 0 || text("x") !== 2) throw new Error("inline nullable string");
+    if (texts[0]!("prop") !== 1 || texts[0]!(null) !== 0 || texts[0]!("x") !== 2) throw new Error("stored nullable string");
+    if (pick("wet") !== "wet" || pick(null) !== null || picks[0]!("dry") !== "dry" || picks[0]!(undefined) !== null || picks[0]!("far") !== null) throw new Error("optional union");
+    const all: Array<Reason | null | undefined> = ["wet", null, undefined, "dry"];
+    let order = "";
+    for (const reason of all) order += both(reason) + "" + boths[0]!(reason);
+    if (order !== "11223344") throw new Error("null and undefined labels " + order);
+    if (field({ by: "wet", wood: false }) !== "w" || field({ wood: true }) !== "-" || fields[0]!({ by: "far", wood: true }) !== "f" ||
+        fields[0]!({ by: null, wood: true }) !== "-" || fields[0]!({ wood: false }) !== "-") throw new Error("optional field");
+    if (count() !== 0 || counts[0]!() !== 0 || counts[0]!(1) !== 10 || counts[0]!(2) !== -1) throw new Error("optional number");
+`,
+);
+
+test("switch refuses an absent label over a number", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(v: number): number { switch (v) { case null: return 0; default: return 1; } } const unused = f(2);",
+            ),
+        /null or undefined case label requires a discriminant that holds null and undefined apart/,
+    );
+});
+
+check(
     "exponent-compound-assignment",
     `
     const h = [2, 10];
