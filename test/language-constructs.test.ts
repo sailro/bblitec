@@ -4914,3 +4914,43 @@ test("module const function aliases call the aliased function", async (t) => {
     await executeGeneratedAssertions(t, "const-function-aliases", result.cpp);
 });
 
+check(
+    "optional-generic-methods-and-caught-errors-in-stored-functions",
+    `
+    interface Deps { run(): void; track?<T>(label: string, work: () => T): T }
+    interface Publication { publish(): void; consequence(): boolean }
+    let ran = 0;
+    let labels = "";
+    function createPublication(deps: Deps): Publication {
+        const track = deps.track ?? (<T>(_label: string, work: () => T): T => work());
+        return {
+            publish() { track("publish", () => deps.run()); },
+            consequence() { return track("consequence", () => ran > 0); },
+        };
+    }
+    interface Options { onUncertain?(command: string, error: unknown): void }
+    interface Ledger { execute(command: string, apply: (command: string) => number): number }
+    function createLedger(options: Options = {}): Ledger {
+        return {
+            execute(command, apply) {
+                try { return apply(command); }
+                catch (error) { options.onUncertain?.(command, error); return -1; }
+            },
+        };
+    }
+    const publications: Array<typeof createPublication> = [createPublication];
+    const plain = publications[0]!({ run: () => { ran++; } });
+    plain.publish();
+    if (!plain.consequence() || ran !== 1) throw new Error("default generic track");
+    const traced = publications[0]!({ run: () => { ran++; }, track: <T>(label: string, work: () => T): T => { labels += label + ";"; return work(); } });
+    traced.publish();
+    if (!traced.consequence() || ran !== 2 || labels !== "publish;consequence;") throw new Error("optional generic method");
+    const ledgers: Array<typeof createLedger> = [createLedger];
+    let seen = "";
+    const ledger = ledgers[0]!({ onUncertain: (command, error) => { seen = command + ":" + (error instanceof Error ? error.message : "?"); } });
+    if (ledger.execute("a", () => 3) !== 3 || seen !== "") throw new Error("applied command");
+    if (ledger.execute("b", () => { throw new Error("broken"); }) !== -1 || seen !== "b:broken") throw new Error("caught error argument");
+    if (ledgers[0]!().execute("c", () => { throw new Error("quiet"); }) !== -1) throw new Error("absent handler");
+`,
+);
+
