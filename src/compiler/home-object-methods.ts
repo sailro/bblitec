@@ -306,6 +306,31 @@ export function readsHomeObject(node: ts.Node): node is HomeObjectMethod {
     return ts.isObjectLiteralExpression(owner) && functionUsesDynamicThis(node);
 }
 
+/**
+ * An object literal's own accessor whose body reads `this`. A property read
+ * or write runs it with the object holding it as receiver, and no lowered
+ * form hands its function out, so its `this` is the object the literal
+ * creates (a Proxy target's accessors take their receiver instead).
+ */
+export function readsHomeObjectAccessor(
+    node: ts.Node | undefined,
+): node is ts.AccessorDeclaration {
+    return (
+        node !== undefined &&
+        (ts.isGetAccessorDeclaration(node) ||
+            ts.isSetAccessorDeclaration(node)) &&
+        ts.isObjectLiteralExpression(node.parent) &&
+        functionUsesDynamicThis(node)
+    );
+}
+
+/** A literal's own accessors reading `this`. */
+export function homeObjectAccessors(
+    literal: ts.ObjectLiteralExpression,
+): ReadonlySet<ts.AccessorDeclaration> {
+    return new Set(literal.properties.filter(readsHomeObjectAccessor));
+}
+
 /** A literal's own methods reading `this`, by property name. */
 export function homeObjectMethods(
     literal: ts.ObjectLiteralExpression,
@@ -357,13 +382,15 @@ export function withLiteralSelfBinding<T>(
 
 /**
  * The object an object literal creates, allocated before the closures of
- * its methods capture it: the `this` of its own methods reading `this`,
- * and the value of the binding it initializes when its methods name that
- * binding. The literal's fields are stored into it once lowered.
+ * its methods and accessors capture it: the `this` of its own methods and
+ * accessors reading `this`, and the value of the binding it initializes
+ * when its methods name that binding. The literal's fields are stored into
+ * it once lowered.
  */
 export interface LiteralSelf {
     readonly value: Value;
     readonly methods: ReadonlyMap<string, HomeObjectMethod>;
+    readonly accessors: ReadonlySet<ts.AccessorDeclaration>;
 }
 
 /**
@@ -390,17 +417,18 @@ export function literalSelf(
     dataType: DataType<"struct">,
     methods: ReadonlyMap<string, HomeObjectMethod>,
     node: ts.Node,
+    accessors: ReadonlySet<ts.AccessorDeclaration> = new Set(),
 ): LiteralSelf | undefined {
     const literal = ts.isExpression(node) ? unwrapExpression(node) : undefined;
     const binding =
         literal && ts.isObjectLiteralExpression(literal)
             ? selfBindings.get(literal)
             : undefined;
-    if (!methods.size && !binding) return undefined;
+    if (!methods.size && !accessors.size && !binding) return undefined;
     if (!context.dataTypes.isReferenceStruct(dataType.name))
         context.fail(
             node,
-            "An object literal method reading `this` requires shared native object storage.",
+            `An object literal ${methods.size || !accessors.size ? "method" : "accessor"} reading \`this\` requires shared native object storage.`,
         );
     for (const [name, method] of methods) {
         const read = methodValueRead(
@@ -435,16 +463,25 @@ export function literalSelf(
         ],
     };
     if (binding) context.bindings.defineVariable(binding.name, value);
-    return { value, methods };
+    return { value, methods, accessors };
 }
 
-/** The receiver a literal's method `name` is lowered with: its self object when it is that method. */
+/**
+ * The receiver a literal's method `name` or accessor is lowered with: its
+ * self object when it is one of the literal's members reading `this`.
+ */
 export function homeReceiver(
     self: LiteralSelf | undefined,
     name: string,
-    method: ts.Node,
+    member: ts.Node,
 ): Value | undefined {
-    return self?.methods.get(name) === method ? self.value : undefined;
+    return self?.methods.get(name) === member ||
+        (self !== undefined &&
+            (ts.isGetAccessorDeclaration(member) ||
+                ts.isSetAccessorDeclaration(member)) &&
+            self.accessors.has(member))
+        ? self.value
+        : undefined;
 }
 
 /**

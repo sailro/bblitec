@@ -3582,7 +3582,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.PropertyAccessExpression,
     ): Value | undefined {
         const property = access.name.text;
-        const symbol = this.context.checker.getSymbolAtLocation(access.name);
+        const symbol = accessedPropertySymbol(this.context.checker, access);
         if (
             !symbol ||
             ((symbol.flags & ts.SymbolFlags.Optional) === 0 &&

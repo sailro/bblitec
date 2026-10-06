@@ -287,11 +287,14 @@ export function requiresDefaultParameterBinding(
 type Fail = (node: ts.Node, message: string) => never;
 
 /** A syntactic fact of each declaration, so it outlives any emission transaction. */
-const dynamicThisUses = new WeakMap<SupportedFunction, boolean>();
+const dynamicThisUses = new WeakMap<
+    SupportedFunction | ts.AccessorDeclaration,
+    boolean
+>();
 
 /** Dynamic `this` belongs to the nearest non-arrow function. */
 export function functionUsesDynamicThis(
-    declaration: SupportedFunction,
+    declaration: SupportedFunction | ts.AccessorDeclaration,
 ): boolean {
     let uses = dynamicThisUses.get(declaration);
     if (uses === undefined) {

@@ -156,8 +156,13 @@ export function structOwnEntries(
                   node,
               );
         const original = owner.recordProperties?.[key];
+        // A key own by tags alone may hold an empty slot while own.
         const definitelyPresent =
-            presentCpp !== undefined ||
+            (presentCpp !== undefined &&
+                context.dataTypes.ownPresenceHoldsValue(
+                    dataType.name,
+                    field,
+                )) ||
             (original &&
                 original.kind !== "json-null" &&
                 original.dataType?.kind !== "optional");

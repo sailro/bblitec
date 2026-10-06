@@ -7981,6 +7981,167 @@ test("record conversions refuse what neither a copy nor a shared layout holds", 
     );
 });
 
+check(
+    "arrays-of-records-lent-to-reading-callees",
+    `
+    interface Emit { x: number; y: number; z: number }
+    interface Wheel { x: number; z: number; label?: string }
+    class Marks {
+        total = 0;
+        trails: { x: number }[] = [];
+        update(wheels: readonly Wheel[]): void {
+            if (this.trails.length !== wheels.length) this.trails = wheels.map(() => ({ x: 0 }));
+            for (let i = 0; i < wheels.length; i++) this.total += wheels[i]!.x * 10 + wheels[i]!.z;
+            wheels.forEach((wheel) => { this.total += wheel.label === undefined ? 1 : 0; });
+            for (const wheel of wheels) { const point = wheel; this.total += point.x; }
+        }
+    }
+    const marks = new Marks();
+    const points: Emit[] = [{ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 }];
+    marks.update(points);
+    points.push({ x: 7, y: 8, z: 9 });
+    marks.update(points);
+    if (marks.total !== 219 || marks.trails.length !== 3) throw new Error("lent array " + marks.total);
+    const seen = new Set<Emit>(points);
+    if (!seen.has(points[2]!) || points.length !== 3) throw new Error("original array");
+`,
+);
+
+test("arrays of records are lent only to callees that keep neither them nor their elements", () => {
+    const shapes = `interface Emit { x: number; y: number; z: number }
+        interface Wheel { x: number; z: number; label?: string }`;
+    const copied =
+        /'Emit' record stored as 'Wheel' would be a copy of the one object JavaScript keeps, and the array holding them is one shared array/;
+    // The callee keeps an element.
+    assert.throws(
+        () =>
+            compileSource(`${shapes}
+            class Keeper {
+                kept: Wheel | undefined;
+                keep(wheels: readonly Wheel[]): void { this.kept = wheels[0]; }
+            }
+            const keeper = new Keeper();
+            const points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+            keeper.keep(points);
+            points.push({ x: 4, y: 5, z: 6 });
+            keeper.keep(points);
+            const unused = keeper.kept?.x;`),
+        copied,
+    );
+    // The call grows the original array while the callee reads the copy.
+    assert.throws(
+        () =>
+            compileSource(`${shapes}
+            class Store {
+                points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+                grow(): void { this.points.push({ x: 0, y: 0, z: 0 }); }
+            }
+            class Summer {
+                total = 0;
+                sum(wheels: readonly Wheel[], store: Store): void { store.grow(); for (const wheel of wheels) this.total += wheel.x; }
+            }
+            const store = new Store();
+            const summer = new Summer();
+            summer.sum(store.points, store);
+            summer.sum(store.points, store);
+            const unused = summer.total;`),
+        copied,
+    );
+});
+
+check(
+    "awaited-records-keep-their-record-type",
+    `
+    interface Grid { section: string; columns: number }
+    interface Sheet { texture: number; grids: Map<string, Grid>; grid: (section: string) => Grid }
+    async function loadSheet(texture: number): Promise<Sheet> {
+        const grids = new Map<string, Grid>();
+        grids.set("main", { section: "main", columns: texture });
+        return { texture, grids, grid: (section) => grids.get(section)! };
+    }
+    interface Sheets { terrain: Sheet; hills: Sheet }
+    async function main(): Promise<void> {
+        const [terrain, hills] = await Promise.all([loadSheet(1), loadSheet(2)]);
+        const sheets: Sheets = { terrain, hills };
+        if (sheets.terrain !== terrain || sheets.hills.grid("main").columns !== 2) throw new Error("awaited sheets");
+        const seen = new Set<Sheet>([terrain]);
+        if (!seen.has(sheets.terrain) || seen.has(hills)) throw new Error("awaited identity");
+    }
+    void main();
+`,
+);
+
+check(
+    "readonly-record-views-share-the-written-layout",
+    `
+    interface Vec { x: number; y: number; z: number }
+    interface Rest {
+        readonly transforms: ReadonlyArray<{
+            readonly position: { readonly x: number; readonly y: number; readonly z: number };
+            readonly rotation: { readonly x: number; readonly y: number; readonly z: number; readonly w: number };
+        }>;
+        launched: boolean;
+    }
+    const meshes: Vec[] = [{ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 }];
+    const state: Rest = {
+        transforms: meshes.map((mesh) => ({
+            position: { x: mesh.x, y: mesh.y, z: mesh.z },
+            rotation: { x: 0, y: 0, z: 0, w: 1 },
+        })),
+        launched: false,
+    };
+    const live = { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    live.position = { x: 7, y: 8, z: 9 };
+    const rest = state.transforms[1]!;
+    if (rest.position.y !== 5 || rest.rotation.w !== 1 || live.position.z !== 9) throw new Error("readonly views");
+`,
+);
+
+check(
+    "union-arm-fields-own-while-undefined",
+    `
+    type Shape = { kind: "a"; x: number | undefined } | { kind: "b"; y: number };
+    const shapes: Shape[] = [{ kind: "a", x: undefined }, { kind: "b", y: 2 }, { kind: "a", x: 4 }];
+    let total = 0;
+    let numbers = 0;
+    let undefinedOwn = 0;
+    let keys = "";
+    for (const shape of shapes) {
+        for (const [key, value] of Object.entries(shape)) {
+            keys += key;
+            if (typeof value === "number") { numbers++; total += value; }
+        }
+        const copy = { ...shape };
+        if (copy.kind === "a" && "x" in copy && copy.x === undefined) undefinedOwn++;
+        if (copy.kind === "a" && copy.x !== undefined) total += copy.x * 10;
+    }
+    if (total !== 46 || numbers !== 2 || undefinedOwn !== 1 || keys !== "kindxkindykindx") throw new Error("own arm fields " + total + " " + numbers + " " + undefinedOwn + " " + keys);
+`,
+);
+
+check(
+    "literal-accessors-read-the-object-the-literal-creates",
+    `
+    interface Box { w: number; readonly width: number; grow(): void }
+    const box: Box = { w: 1, get width(): number { return this.w; }, grow(): void { this.w += 1; } };
+    box.grow();
+    if (box.width !== 2) throw new Error("getter after a method write " + box.width);
+    box.w = 5;
+    if (box.width !== 5) throw new Error("getter after a field write " + box.width);
+    interface Gauge { level: number; readonly doubled: number; percent: number }
+    const gauge: Gauge = {
+        level: 1,
+        get doubled(): number { return this.level * 2; },
+        get percent(): number { return this.level * 100; },
+        set percent(value: number) { this.level = value / 100; },
+    };
+    gauge.level = 3;
+    if (gauge.doubled !== 6) throw new Error("getter-only literal " + gauge.doubled);
+    gauge.percent = 250;
+    if (gauge.level !== 2.5 || gauge.doubled !== 5 || gauge.percent !== 250) throw new Error("setter writes the live field");
+`,
+);
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

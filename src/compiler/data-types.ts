@@ -1474,8 +1474,10 @@ export class DataTypeRegistry {
      * type's records (`layoutAbsentFields`). Returns when the copy is
      * unobservable; otherwise throws the layout demand or refuses. Records
      * read out of a shared
-     * array (`sharedArray`) are never copied: a copy needs a second array.
-     * A copy handed to a call as `argument` needs only the call's writes.
+     * array (`sharedArray`) are never copied: a copy needs a second array,
+     * except one lent to a callee that only reads it (`lentForCall`) where
+     * no shared layout holds both types. A copy handed to a call as
+     * `argument` needs only the call's writes.
      */
     public storeRecordAs(
         sourceType: DataType<"struct">,
@@ -1484,8 +1486,13 @@ export class DataTypeRegistry {
         sources: readonly ts.SourceFile[],
         {
             sharedArray = false,
+            lentForCall = false,
             argument,
-        }: { sharedArray?: boolean; argument?: ts.Node | undefined } = {},
+        }: {
+            sharedArray?: boolean;
+            lentForCall?: boolean;
+            argument?: ts.Node | undefined;
+        } = {},
     ): void {
         const source = this.nativeRecordSources.get(sourceType.name);
         const target = this.nativeRecordSources.get(targetType.name);
@@ -1554,37 +1561,39 @@ export class DataTypeRegistry {
             (source.type.flags & RECORD_TYPE_FLAGS) !== 0 &&
             !this.isClassStruct(sourceType.name) &&
             !this.isClassStruct(targetType.name);
-        const demand = (
-            owner: NativeRecordStorageDemand,
-            layout: ts.Type,
-        ): never => {
+        const demand = (owner: NativeRecordStorageDemand, layout: ts.Type) => {
             // A replay that still converts this type was not redirected:
             // another source type shares its storage.
-            if (this.sharedRecordLayouts.has(this.structIdentity(owner.type)))
+            if (!this.sharedRecordLayouts.has(this.structIdentity(owner.type)))
+                throw new NativeRecordStorageRequired({ ...owner, layout });
+            if (!lentForCall)
                 this.fail(
                     node,
                     `Record type '${this.checker.typeToString(owner.type)}' shares its storage with another type that keeps a separate layout.`,
                 );
-            throw new NativeRecordStorageRequired({ ...owner, layout });
         };
+        const targetRecord = (target?.type.flags ?? 0) & RECORD_TYPE_FLAGS;
         // The target's other fields are held absent in the source's records.
         if (
             plain &&
-            (union || (target.type.flags & RECORD_TYPE_FLAGS) !== 0) &&
+            (union || targetRecord) &&
             fits(sourceFields, targetFields)
         )
             demand(source, target.type);
+        else if (
+            plain &&
+            !union &&
+            targetRecord &&
+            fits(targetFields, sourceFields)
+        )
+            demand(target, source.type);
+        // A copy lent to a callee that only reads it lives for the call.
+        if (lentForCall) return;
         if (union)
             this.fail(
                 node,
                 "A retained record union requires one shared layout preserving its original fields and storage kinds.",
             );
-        if (
-            plain &&
-            (target.type.flags & RECORD_TYPE_FLAGS) !== 0 &&
-            fits(targetFields, sourceFields)
-        )
-            demand(target, source.type);
         return this.fail(
             node,
             `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
@@ -1622,7 +1631,60 @@ export class DataTypeRegistry {
             return dataTypesEqual(source.element, target.element);
         if (source.kind === "optional" && target.kind === "optional")
             return this.sharedUnionFieldStorage(source.inner, target.inner);
+        // A nested record of the same layout (`readonly` aside) is stored as
+        // it is; a record kept elsewhere is judged where it is stored.
+        if (source.kind === "struct" && target.kind === "struct")
+            return this.sameRecordLayout(source.name, target.name, new Set());
         return false;
+    }
+
+    /**
+     * Whether two structs hold the same fields in the same storage, the
+     * `readonly` modifiers of their record types aside.
+     */
+    private sameRecordLayout(
+        left: string,
+        right: string,
+        seen: Set<string>,
+    ): boolean {
+        if (left === right || seen.has(`${left}|${right}`)) return true;
+        seen.add(`${left}|${right}`);
+        const leftFields = this.structsByName.get(left)?.fields;
+        const rightFields = this.structsByName.get(right)?.fields;
+        const sameStorage = (a: DataType, b: DataType): boolean =>
+            dataTypesEqual(a, b) ||
+            (a.kind === "optional" &&
+                b.kind === "optional" &&
+                sameStorage(a.inner, b.inner)) ||
+            (a.kind === "struct" &&
+                b.kind === "struct" &&
+                this.sameRecordLayout(a.name, b.name, seen));
+        return (
+            leftFields !== undefined &&
+            rightFields !== undefined &&
+            leftFields.length === rightFields.length &&
+            this.isReferenceStruct(left) === this.isReferenceStruct(right) &&
+            !this.isClassStruct(left) &&
+            !this.isClassStruct(right) &&
+            leftFields.every((field) => {
+                const other = rightFields.find(
+                    (candidate) => candidate.sourceName === field.sourceName,
+                );
+                return (
+                    other !== undefined &&
+                    !field.accessor &&
+                    !other.accessor &&
+                    field.name === other.name &&
+                    field.optionalProperty === other.optionalProperty &&
+                    field.defaultWhenMissing === other.defaultWhenMissing &&
+                    field.uncheckedProperty === other.uncheckedProperty &&
+                    field.sharedAbsent === other.sharedAbsent &&
+                    JSON.stringify(field.presentForTags) ===
+                        JSON.stringify(other.presentForTags) &&
+                    sameStorage(field.type, other.type)
+                );
+            })
+        );
     }
 
     /** A checked object can use its declared layout only when no source field is lost or widened. */
@@ -4286,6 +4348,37 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether `ownPropertyPresentCpp`'s test of `field` passes only while
+     * its storage holds a value. A key own by its record's tags alone is
+     * not: a union arm declaring `x: T | undefined` holds an empty slot
+     * while `x` is own.
+     */
+    public ownPresenceHoldsValue(
+        structName: string,
+        field: DataStructField,
+    ): boolean {
+        return (
+            this.ownPropertyPresence(
+                structName,
+                field,
+                this.presenceByTags(structName, field),
+            ) !== "own"
+        );
+    }
+
+    /** Whether the record's tags decide whether `field` is an own key. */
+    private presenceByTags(
+        structName: string,
+        field: DataStructField,
+    ): boolean {
+        return (
+            this.structsByName.has(structName) &&
+            field.presentForTags !== undefined &&
+            !field.accessor
+        );
+    }
+
+    /**
      * The run-time test that a record's tags select a union arm declaring
      * `field`, read beside it; undefined for a field every arm declares.
      */
@@ -4296,11 +4389,16 @@ export class DataTypeRegistry {
         access: "->" | ".",
     ): string | undefined {
         const definition = this.structsByName.get(structName);
-        if (!definition || !field.presentForTags || field.accessor)
+        const alternatives = field.presentForTags;
+        if (
+            !definition ||
+            !alternatives ||
+            !this.presenceByTags(structName, field)
+        )
             return undefined;
         return this.tagConditionCpp(
             definition,
-            field.presentForTags,
+            alternatives,
             (tag) => `${ownerCpp}${access}${tag.name}`,
             "bblscene::",
         );
