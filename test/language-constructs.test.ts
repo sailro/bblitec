@@ -8254,6 +8254,62 @@ check(
 );
 
 check(
+    "array-callbacks-shrinking-the-receiver-through-a-wider-alias",
+    `
+    const queue: number[] = [];
+    queue.push(1, 2, 3, 4);
+    const view: unknown[] = queue;
+    const seen: number[] = [];
+    queue.forEach((value) => { seen.push(value); view.length = 2; });
+    if (seen.join() !== "1,2" || queue.length !== 2) throw new Error("an unknown[] alias truncates the receiver");
+    function drain<L extends number[]>(list: L, alias: L): number {
+        let visits = 0;
+        list.forEach(() => { alias.pop(); visits++; });
+        return visits;
+    }
+    const items: number[] = [];
+    items.push(5, 6, 7, 8);
+    if (drain(items, items) !== 2 || items.length !== 2) throw new Error("a type-parameter alias pops the receiver");
+    function clear<T>(list: T[], alias: T[]): T[] {
+        return list.filter(() => { alias.length = 1; return true; });
+    }
+    const words: string[] = [];
+    words.push("a", "b", "c");
+    if (clear(words, words).join() !== "a" || words.length !== 1) throw new Error("a generic alias truncates the receiver");
+    const scores: number[] = [];
+    scores.push(3, 1, 2);
+    const loose: unknown[] = scores;
+    const sorted = scores.sort((a, b) => { if (loose.length > 2) loose.pop(); return a - b; });
+    if (sorted !== scores || scores.join() !== "1,2,3") throw new Error("an unknown[] alias shrinks the sorted receiver");
+`,
+);
+
+check(
+    "array-callbacks-writing-other-objects-walk-the-receiver",
+    `
+    interface Item { id: string; weight: number; disposed: boolean }
+    class Model {
+        public total = 0;
+        public disposed = false;
+        add(values: number[]): void { values.forEach((x) => (this.total += x)); }
+        dispose(): void { this.disposed = true; }
+    }
+    const items: Item[] = [{ id: "a", weight: 1, disposed: false }, { id: "b", weight: 2, disposed: false }];
+    const byId = items.reduce((acc, item) => { acc[item.id] = item; return acc; }, {} as Record<string, Item>);
+    byId["b"]!.weight = 7;
+    if (items[1]!.weight !== 7) throw new Error("the accumulator keeps the element identity");
+    const models = [new Model(), new Model()];
+    models.forEach((m) => m.dispose());
+    models[0]!.add([1, 2, 3]);
+    const heavy = items.filter((item) => { item.weight += 1; return item.weight > 2; });
+    const counts = new Map<string, number>();
+    items.forEach((item) => counts.set(item.id, item.weight));
+    if (!models[1]!.disposed || models[0]!.total !== 6 || heavy.length !== 1 || heavy[0] !== items[1] || counts.get("a") !== 2)
+        throw new Error("callbacks writing records, instances and maps");
+`,
+);
+
+check(
     "spreads-and-sequence-copies-read-one-iteration-protocol",
     `
     type Vec3 = [number, number, number];

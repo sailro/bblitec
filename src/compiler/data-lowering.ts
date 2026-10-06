@@ -135,10 +135,13 @@ import {
     isJsonRootedExpression,
 } from "./json-bridge.js";
 import {
-    callbackMayWriteReceiver,
     callbackTakesReceiver,
     compileDataMethodCall,
+    declareWalkedReceiver,
     readOnlyDataMethods,
+    receiverWalks,
+    removedIndexGuard,
+    type ReceiverWalkMethod,
 } from "./data-methods.js";
 import { resizingArrayMethods } from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
@@ -6906,17 +6909,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /** Emit the shared callback protocol for reached JavaScript array methods. */
     public emitArrayCallbackLoop(
         call: ts.CallExpression,
-        method:
-            | "find"
-            | "findIndex"
-            | "findLast"
-            | "findLastIndex"
-            | "filter"
-            | "some"
-            | "every"
-            | "map"
-            | "flatMap"
-            | "forEach",
+        method: Exclude<ReceiverWalkMethod, "reduce" | "reduceRight">,
         narrowed: Value,
         dataType: DataType & { kind: "vector" | "span" },
         snapshotLength: boolean,
@@ -6946,20 +6939,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? callback
                 : undefined;
         const label = method === "forEach" ? "for_each" : method;
-        // A callback that may change the receiver walks the receiver and
-        // the length read at the call, checking each index against the
-        // live length (`callbackMayWriteReceiver`).
-        const writable = callbackMayWriteReceiver(this, call, callback);
-        if (writable) this.invalidateStaticElements(narrowed);
-        const holdsReceiver = writable && !narrowed.nativeVectorData;
         const source = this.context.allocateTemporaryCppName(`${label}_source`);
         const index = this.context.allocateTemporaryCppName(`${label}_index`);
-        this.context.emit({
-            kind: "declaration",
-            type: holdsReceiver ? "auto" : "auto&&",
-            name: source,
-            initializer: narrowed.cpp,
-        });
+        // A callback that may change the receiver walks the receiver and
+        // the length read at the call, checking each index against the
+        // live length.
+        const { writable, held } = declareWalkedReceiver(
+            this,
+            call,
+            callback,
+            narrowed,
+            source,
+        );
         const sourceType =
             narrowed.nativeCollectionCppType ??
             (dataType.kind === "vector" && !narrowed.nativeVectorData
@@ -6970,7 +6961,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             false,
             false,
             sourceType &&
-                `${!holdsReceiver && narrowed.readOnly ? "const " : ""}${sourceType}`,
+                `${!held && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
         const storedCallback = identity
             ? undefined
@@ -7016,34 +7007,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
-                // An index the callback removed is skipped as JavaScript
-                // skips an absent element; `find*` would read it as
-                // undefined and `map` would leave a hole, which the
-                // element type and a dense result cannot hold.
                 if (writable)
                     this.context.emit(
-                        [
-                            "forEach",
-                            "some",
-                            "every",
-                            "filter",
-                            "flatMap",
-                        ].includes(method)
-                            ? `if (${index} >= ${source}.size()) continue;`
-                            : `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
+                        removedIndexGuard(this, method, index, source),
                     );
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
-                // A method that keeps the element keeps the value the
-                // callback was given, read before the callback could
-                // replace or remove it.
                 const kept =
-                    writable &&
-                    (method === "find" ||
-                        method === "findLast" ||
-                        method === "filter")
+                    writable && receiverWalks.get(method)!.keepsElement
                         ? this.context.allocateTemporaryCppName(
                               `${label}_element`,
                           )
