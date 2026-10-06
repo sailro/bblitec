@@ -5773,22 +5773,42 @@ check(
 `,
 );
 
-test("numeric tuples refuse writable array parameters that resize or outgrow them", () => {
-    for (const body of [
-        "function grow(out: number[]): void { out.push(1); }",
-        "function grow(out: number[]): void { out[3] = 1; }",
-        "function grow(out: number[]): void { out.length = 1; }",
-        "function grow(out: number[]): void { out[0] = 1; resize(out); } function resize(values: number[]): void { values.pop(); }",
+check(
+    "numeric-tuple-bindings-grown-through-array-parameters-take-array-storage",
+    `
+    function push(out: number[]): void { out.push(1); }
+    function beyond(out: number[]): void { (out[3]) = 1; }
+    function truncate(out: number[]): void { out.length = 1; }
+    function pop(values: number[]): void { values.pop(); }
+    function nested(out: number[]): void { out[0] = 1; pop(out); }
+    function viaPush(): number { const t: [number, number, number] = [0, 0, 0]; push(t); return t.length * 10 + t[0]; }
+    function viaBeyond(): number { const t: [number, number, number] = [0, 0, 0]; beyond(t); return t.length * 10 + t[0]; }
+    function viaTruncate(): number { const t: [number, number, number] = [0, 0, 0]; truncate(t); return t.length * 10 + t[0]; }
+    function viaNested(): number { const t: [number, number, number] = [0, 0, 0]; nested(t); return t.length * 10 + t[0]; }
+    const frames: Array<() => number> = [viaPush, viaBeyond, viaTruncate, viaNested];
+    const lengths = frames.map((frame) => frame());
+    if (lengths.join() !== "40,40,10,21") throw new Error(lengths.join());
+`,
+);
+
+test("numeric tuples outside a binding refuse array parameters that may grow them", () => {
+    for (const source of [
+        `interface Holder { lanes: [number, number, number] }
+        function make(): Holder { return { lanes: [0, 0, 0] }; }
+        const holder = make();
+        push(holder.lanes);`,
+        `function frame(t: [number, number, number]): void { push(t); }
+        const frames: Array<typeof frame> = [frame];
+        const lanes: [number, number, number] = [0, 0, 0];
+        frames[0]!(lanes);`,
     ])
         assert.throws(
             () =>
                 compileSource(
-                    `${body}
-                    function frame(): number { const t: [number, number, number] = [0, 0, 0]; grow(t); return t[0]; }
-                    const roots: Array<typeof frame> = [frame];
-                    if (roots[0]!() !== 0) throw new Error("frame");`,
+                    `function push(out: number[]): void { out.push(1); }
+                    ${source}`,
                 ),
-            /By-reference data arguments require a matching addressable local or path/,
+            /fixed-length tuple stored as a number array could grow through that array/,
         );
 });
 

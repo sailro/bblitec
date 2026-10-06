@@ -25,6 +25,14 @@ export const mutatingArrayMethods: ReadonlySet<string> = new EmissionSet([
     "sort",
 ]);
 
+/** Array methods that change the receiver in place and keep its length. */
+export const lengthPreservingArrayMethods: ReadonlySet<string> =
+    new EmissionSet(
+        [...mutatingArrayMethods].filter(
+            (method) => !resizingArrayMethods.has(method),
+        ),
+    );
+
 /**
  * The methods that change the container they are called on: every
  * mutating array method plus the Map/Set writers. A name outside this set

@@ -1062,7 +1062,9 @@ export class NativeFunctionLowerer {
      * numeric tuple lends its storage when the callee provably keeps the
      * parameter's length and writes only lanes the tuple has
      * (`fixedLengthParameterWrites`), so the caller's tuple sees the
-     * callee's writes.
+     * callee's writes. A callee that may grow it needs growable storage,
+     * as storing the tuple as a number array does: a tuple binding takes
+     * array storage, a fresh tuple is adopted, any other refuses.
      */
     private adaptedReferenceArgument(
         value: Value,
@@ -1093,17 +1095,25 @@ export class NativeFunctionLowerer {
             value.kind !== "data" ||
             value.dataType?.kind !== "tuple" ||
             dataType.kind !== "vector" ||
-            dataType.element.kind !== "number" ||
-            !callee
+            dataType.element.kind !== "number"
         )
             return undefined;
-        const written = fixedLengthParameterWrites(
-            this.context.checker,
-            callee,
-            parameter.name,
-        );
+        const written =
+            callee &&
+            fixedLengthParameterWrites(
+                this.context.checker,
+                callee,
+                parameter.name,
+            );
         if (written === undefined || written > value.dataType.arity)
-            return undefined;
+            return name(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    expression,
+                ),
+                dataType,
+            );
         this.context.dataLowerer.invalidateEscapingCollection(value);
         this.context.reachJsData();
         return name(
