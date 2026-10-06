@@ -225,16 +225,12 @@ function valueVector(
                 value.dataType.element,
                 dataType.element,
                 node,
-                lowerer.context.program.getSourceFiles(),
+                lowerer.context,
                 {
                     sharedArray: true,
                     lentForCall:
                         array !== undefined &&
-                        arrayLentForCall(
-                            lowerer.context.checker,
-                            lowerer.context.program.getSourceFiles(),
-                            array,
-                        ),
+                        arrayLentForCall(lowerer.context, array),
                 },
             );
         const projected = lowerer.compileMemberForSink(

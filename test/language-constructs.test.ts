@@ -6635,6 +6635,21 @@ function checkInRealm(name: string, source: string): void {
 }
 
 checkInRealm(
+    "async-callees-read-records-past-the-call",
+    `
+    interface Wide { x: number; y: number; tag: string }
+    interface Narrow { x: number; y: number }
+    const third: Wide = { x: 1, y: 2, tag: "c" };
+    async function readLater(p: Narrow): Promise<number> { await Promise.resolve(); return p.x; }
+    void (async () => {
+        const pending = readLater(third);
+        third.x = 50;
+        if ((await pending) !== 50) throw new Error("an async callee reads the original after the call returns");
+        globalThis.close();
+    })();
+`,
+);
+checkInRealm(
     "stored-promise-then-finally",
     `
     interface Deps { spawn(x: number): Promise<boolean>; despawn(): void }
@@ -8048,6 +8063,44 @@ test("arrays of records are lent only to callees that keep neither them nor thei
         copied,
     );
 });
+
+check(
+    "records-lent-to-reading-callees-see-writes-the-call-runs",
+    `
+    interface Wide { x: number; y: number; tag: string }
+    interface Narrow { x: number; y: number }
+    const first: Wide = { x: 1, y: 2, tag: "a" };
+    function bump(): void { first.x += 10; }
+    function readAfterCallback(p: Narrow): number { [0].forEach(bump); return p.x; }
+    if (readAfterCallback(first) !== 11) throw new Error("a callback handed to forEach writes the original");
+    const second: Wide = { x: 1, y: 2, tag: "b" };
+    class Probe {
+        stored = 0;
+        get reading(): number { second.x += 100; return 0; }
+        get writing(): number { return this.stored; }
+        set writing(value: number) { this.stored = value; second.y = value; }
+    }
+    function readAfterGetter(probe: Probe, p: Narrow): number { return probe.reading + p.x; }
+    if (readAfterGetter(new Probe(), second) !== 101) throw new Error("a getter writes the original");
+    function readAfterSetter(probe: Probe, p: Narrow): number { probe.writing = 7; return p.y; }
+    if (readAfterSetter(new Probe(), second) !== 7) throw new Error("a setter writes the original");
+`,
+);
+
+check(
+    "any-assertions-leave-record-copies-unobservable",
+    `
+    interface Source { a: number; extra: number }
+    interface Target { a: number; note?: string }
+    interface Other { z: number }
+    const source: Source = { a: 1, extra: 2 };
+    const target: Target = source;
+    const raw = source as any;
+    const left: Other = { z: 1 };
+    const right: Other = { z: 2 };
+    if (left === right || target.a !== 1 || raw === null) throw new Error("an any assertion keeps the copy unobservable");
+`,
+);
 
 check(
     "awaited-records-keep-their-record-type",

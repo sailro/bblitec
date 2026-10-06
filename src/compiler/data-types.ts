@@ -55,7 +55,10 @@ import {
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
-import { recordCopyObservation } from "./record-observations.js";
+import {
+    recordCopyObservation,
+    type RecordObservationContext,
+} from "./record-observations.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
@@ -1483,7 +1486,7 @@ export class DataTypeRegistry {
         sourceType: DataType<"struct">,
         targetType: DataType<"struct">,
         node: ts.Node,
-        sources: readonly ts.SourceFile[],
+        observation: RecordObservationContext,
         {
             sharedArray = false,
             lentForCall = false,
@@ -1521,8 +1524,7 @@ export class DataTypeRegistry {
                   : union && this.isReferenceStruct(sourceType.name)
                     ? "a union view shares its arm's storage"
                     : recordCopyObservation(
-                          this.checker,
-                          sources,
+                          observation,
                           source.type,
                           target.type,
                           targetFields.map((field) => field.sourceName),

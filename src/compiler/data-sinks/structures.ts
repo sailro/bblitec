@@ -478,7 +478,7 @@ function valueStruct(
                 sourceType,
                 dataType,
                 node,
-                lowerer.context.program.getSourceFiles(),
+                lowerer.context,
                 { argument: recordExpression(lowerer, value, node) },
             );
         const sourceFields = new EmissionMap(

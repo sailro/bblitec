@@ -66,6 +66,18 @@ interface Access {
 /** What one function body touches itself, and the functions it runs. */
 interface DirectAccess extends Access {
     readonly callees: Set<Unit>;
+    /**
+     * It runs program code the analysis cannot follow (a function value it
+     * cannot name, an overridable accessor, an `await`), not only an engine
+     * body that does.
+     */
+    opaque: boolean;
+}
+
+/** Record program code the analysis cannot follow. */
+function cannotFollow(access: DirectAccess): void {
+    touchEverything(access);
+    access.opaque = true;
 }
 
 /** Code a call runs: a function body, or a class field's initializer. */
@@ -689,6 +701,34 @@ export class EvaluationOrder {
     }
 
     /**
+     * The program code evaluating `node` runs, transitively: the function
+     * bodies of its calls and constructions (every override a method
+     * dispatches to, a class's field initializers), the accessors its
+     * property reads and writes run, and the callbacks it hands library
+     * functions. `opaque` when it runs program code the analysis cannot
+     * follow (a function value it cannot name, an overridable accessor, an
+     * `await`), which may write anything. An engine call is not followed:
+     * what it writes of the program's objects is what it is handed.
+     */
+    public reachedCode(node: ts.Node): {
+        readonly units: ReadonlySet<ts.Node>;
+        readonly opaque: boolean;
+    } {
+        const direct = this.walk([node], undefined);
+        let opaque = direct.opaque;
+        const units = new Set<ts.Node>();
+        const pending = [...direct.callees];
+        for (let next = pending.pop(); next; next = pending.pop()) {
+            if (units.has(next)) continue;
+            units.add(next);
+            const access = this.directAccess(next);
+            opaque ||= access.opaque;
+            pending.push(...access.callees);
+        }
+        return { units, opaque };
+    }
+
+    /**
      * Whether a value built from `built` must be read before a call to
      * `callee` runs, rather than where the callee reads it: building it has
      * an effect, or the callee (with everything it reaches) writes storage
@@ -809,6 +849,7 @@ export class EvaluationOrder {
             reads: emptyStorage(),
             writes: emptyStorage(),
             callees: new Set(),
+            opaque: false,
         };
         const visit = (current: ts.Node): "skip" | void => {
             const targets = isAssignmentExpression(current)
@@ -824,7 +865,7 @@ export class EvaluationOrder {
                 ts.isAwaitExpression(current) ||
                 ts.isTaggedTemplateExpression(current)
             ) {
-                touchEverything(access);
+                cannotFollow(access);
             } else if (
                 ts.isCallExpression(current) ||
                 ts.isNewExpression(current)
@@ -923,7 +964,7 @@ export class EvaluationOrder {
             (ts.isClassDeclaration(accessor.parent) &&
                 this.hierarchy.subclasses(accessor.parent).length > 0)
         ) {
-            touchEverything(access);
+            cannotFollow(access);
             return;
         }
         access.callees.add(accessor);
@@ -950,7 +991,7 @@ export class EvaluationOrder {
             this.libraryCall(access, call, unit);
             return;
         }
-        if (!units) touchEverything(access);
+        if (!units) cannotFollow(access);
         else units.forEach((callee) => access.callees.add(callee));
     }
 
@@ -1045,7 +1086,7 @@ export class EvaluationOrder {
                     continue;
                 const declaration = this.namedFunction(expression);
                 if (declaration) access.callees.add(declaration);
-                else touchEverything(access);
+                else cannotFollow(access);
                 continue;
             }
             if (
