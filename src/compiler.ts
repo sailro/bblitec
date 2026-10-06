@@ -2143,6 +2143,13 @@ class Compiler implements LoweringServices {
 
     public emitAssignment(expression: ts.BinaryExpression): void {
         traceSourceNode(expression.left);
+        this.dataLowerer.withStoreKeysHeld(expression, () =>
+            this.emitStore(expression),
+        );
+    }
+
+    /** `emitAssignment` once its target's keys are read. */
+    private emitStore(expression: ts.BinaryExpression): void {
         if (emitWindowLocationAssignment(this.dataLowerer, expression)) return;
         this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);

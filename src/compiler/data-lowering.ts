@@ -677,6 +677,95 @@ export class DataLowerer {
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             return undefined;
         }
+        return this.withStoreKeysHeld(expression, () =>
+            this.compileStoredAssignmentValue(expression),
+        );
+    }
+
+    /**
+     * Lowers the member store `expression` with the keys of its target read
+     * first, as JavaScript reads them: each computed key of the target's
+     * access chain (`a[i++] = i`, `rows[k].x = f()`) that the right side
+     * could change or observe -- or that changes what the right side reads
+     * -- is held in a temporary every compile entry point reads back
+     * (`assigned`). A native store evaluates its right operand first and the
+     * right side's statements run before the store, so either would
+     * otherwise overtake the key. A key an enclosing store already holds
+     * stays held.
+     */
+    public withStoreKeysHeld<T>(
+        expression: ts.BinaryExpression,
+        lower: () => T,
+    ): T {
+        const keys: ts.Expression[] = [];
+        for (
+            let target = this.context.unwrap(expression.left);
+            ts.isPropertyAccessExpression(target) ||
+            ts.isElementAccessExpression(target);
+            target = this.context.unwrap(target.expression)
+        )
+            if (ts.isElementAccessExpression(target))
+                keys.unshift(target.argumentExpression);
+        if (
+            keys.length === 0 ||
+            this.context.browserErasure.isBrowserOnlyExpression(expression.left)
+        )
+            return lower();
+        const pins = this.context.evaluationOrder.operandsToPin([
+            ...keys,
+            expression.right,
+        ]);
+        // A compound store reads its target before writing it, so a key
+        // with effects runs once for both.
+        const compound =
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken;
+        const held: ts.Expression[] = [];
+        try {
+            keys.forEach((key, index) => {
+                const node = this.context.unwrap(key);
+                if (
+                    !(pins[index] || (compound && expressionHasEffects(key))) ||
+                    this.assignedRights.has(node)
+                )
+                    return;
+                this.assignedRights.set(
+                    node,
+                    pinOperand(
+                        this.context,
+                        this.context.compileValue(key),
+                        key,
+                        "store_key",
+                    ),
+                );
+                held.push(node);
+            });
+            return lower();
+        } finally {
+            for (const node of held) this.assignedRights.delete(node);
+        }
+    }
+
+    /** Whether evaluating a store's target runs code beyond its held keys. */
+    private storeTargetRunsCode(target: ts.Expression): boolean {
+        return someAnalysisNode(
+            target,
+            (node) =>
+                ts.isCallExpression(node) ||
+                ts.isNewExpression(node) ||
+                ts.isAwaitExpression(node) ||
+                isUpdateExpression(node) ||
+                isAssignmentExpression(node),
+            {
+                skip: (node) =>
+                    ts.isExpression(node) && this.assignedRights.has(node),
+            },
+        );
+    }
+
+    /** `compileAssignmentValue` once its target's keys are read. */
+    private compileStoredAssignmentValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
         const left = this.context.unwrap(expression.left);
         const inPlace =
             ts.isPropertyAccessExpression(left) ||
@@ -718,9 +807,10 @@ export class DataLowerer {
 
     /**
      * The right side of each assignment used as a value whose store is
-     * lowering, by its unwrapped expression. The compile entry points
-     * (`compileValue`, `compileNumber`, `compileBoolean`, `compileCondition`,
-     * `compileForSink`) answer it through `assigned`.
+     * lowering, and each store key held ahead of its right side
+     * (`withStoreKeysHeld`), by its unwrapped expression. The compile entry
+     * points (`compileValue`, `compileNumber`, `compileBoolean`,
+     * `compileCondition`, `compileForSink`) answer it through `assigned`.
      */
     private readonly assignedRights = new EmissionMap<
         ts.Expression,
@@ -836,6 +926,11 @@ export class DataLowerer {
     /** Whether `expression` is the right side of an assignment used as a value. */
     private isAssignedRight(expression: ts.Expression): boolean {
         return this.assignedRights.has(this.context.unwrap(expression));
+    }
+
+    /** Whether `expression` reads back a store key held ahead of its right side. */
+    public isHeldStoreKey(expression: ts.Expression): boolean {
+        return this.isAssignedRight(expression);
     }
 
     /** A plain number or boolean slot (no setter, no typed-array store). */
@@ -4877,7 +4972,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : owner.cpp;
         this.context.reachJsData();
         // Only proven arms use it: a proven counter is a non-negative integer.
-        const counter = this.integerCounterIndex(access.argumentExpression);
+        // A held store key is the counter's value before the right side,
+        // which the live counter no longer is.
+        const counter = this.isHeldStoreKey(access.argumentExpression)
+            ? undefined
+            : this.integerCounterIndex(access.argumentExpression);
         const nativeIndex = counter
             ? `static_cast<std::size_t>(${counter})`
             : `bbl::js::array_index(${index})`;
@@ -11830,6 +11929,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         initializer: `static_cast<double>(${targetCpp})`,
                     });
                 }
+            } else if (
+                operator !== "=" &&
+                !this.storeTargetRunsCode(left) &&
+                this.context.evaluationOrder.operandsToPin([
+                    left,
+                    expression.right,
+                ])[0]
+            ) {
+                // `a[i] += f()` reads the old value before the right side,
+                // which may write it.
+                previous =
+                    this.context.allocateTemporaryCppName("compound_previous");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: previous,
+                    initializer: target.cpp,
+                });
             }
             const right = this.context.compileNumber(
                 expression.right,
@@ -11856,7 +11973,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.emit({
                 kind: "expression",
                 code:
-                    compound && !compound.native
+                    compound && (!compound.native || previous !== target.cpp)
                         ? `${target.cpp} = ${compound.cpp};`
                         : `${target.cpp} ${operator} ${right};`,
             });

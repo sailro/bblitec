@@ -8537,3 +8537,60 @@ check(
     if (kept.length !== 2 || sum !== 6) throw new Error("in-range writes keep the length");
 `,
 );
+
+check(
+    "element-store-keys-evaluate-before-the-right-side",
+    `
+    const order: string[] = [];
+    function key(name: string, value: number): number { order.push(name); return value; }
+    function right(name: string, value: number): number { order.push(name); return value; }
+    const names: string[] = ["a", "b", "c"];
+    let j = 0;
+    names[j++] = String(j);
+    if (names.join() !== "1,b,c" || j !== 1) throw new Error("array " + names.join());
+    const yielded = (names[j++] = String(j));
+    if (yielded !== "2" || names.join() !== "1,2,c") throw new Error("array value " + names.join());
+    const numbers = [10, 20, 30];
+    numbers[key("k", 1)] = right("r", 5);
+    if (order.join() !== "k,r" || numbers.join() !== "10,5,30") throw new Error("call order " + order.join());
+    const floats = new Float32Array(3);
+    let k = 0;
+    floats[k++] = k + 10;
+    if (floats[0] !== 11 || floats[1] !== 0) throw new Error("typed " + Array.from(floats).join());
+    const table: Record<string, number> = {};
+    let m = 0;
+    table["k" + m++] = m;
+    if (table["k0"] !== 1 || table["k1"] !== undefined) throw new Error("record " + JSON.stringify(table));
+    const slots: Record<"left" | "right", number> = { left: 0, right: 0 };
+    let side: "left" | "right" = "left";
+    function flip(): number { side = "right"; return 4; }
+    slots[side] = flip();
+    if (slots.left !== 4 || slots.right !== 0) throw new Error("keyed fields " + slots.left + "," + slots.right);
+    const tuple: [number, number] = [0, 0];
+    let n = 0;
+    tuple[n++] = n;
+    if (tuple[0] !== 1 || tuple[1] !== 0) throw new Error("tuple " + tuple.join());
+    const counts = [1, 2, 3];
+    let p = 0;
+    function bump(): number { p += 5; return 100; }
+    counts[p++] += bump();
+    if (counts.join() !== "101,2,3" || p !== 6) throw new Error("compound " + counts.join() + " " + p);
+    const powers = [2, 3];
+    let q = 0;
+    powers[q++] **= 2;
+    if (powers.join() !== "4,3" || q !== 1) throw new Error("helper compound " + powers.join() + " " + q);
+    const totals = [1, 1];
+    function reset(): number { totals[0] = 50; return 1; }
+    totals[0] += reset();
+    if (totals[0] !== 2) throw new Error("compound reads before the right side " + totals.join());
+    const grid = [[0, 0], [0, 0]];
+    let c = 0;
+    grid[1]![c++] = c;
+    if (grid[1]!.join() !== "1,0") throw new Error("nested " + grid[1]!.join());
+    interface Row { x: number }
+    const rows: Row[] = [{ x: 0 }, { x: 0 }];
+    let r = 0;
+    rows[r++]!.x = r;
+    if (rows[0]!.x !== 1 || rows[1]!.x !== 0) throw new Error("row field " + rows[0]!.x);
+`,
+);

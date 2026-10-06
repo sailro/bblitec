@@ -509,6 +509,10 @@ export class ExpressionLowerer {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
+        // An operand already evaluated once (an assigned right side, a held
+        // store key) reads back wherever the lowering reaches it.
+        const held = this.context.dataLowerer.assignedValue(expression);
+        if (held) return held;
         if (
             this.context.options.workers &&
             ts.isAwaitExpression(unwrapExpression(expression))
