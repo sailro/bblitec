@@ -161,7 +161,7 @@ import {
 import { recordAt } from "./record-access.js";
 import {
     completeLiteralSelf,
-    homeObjectMethods,
+    homeObjectMembers,
     homeReceiver,
     literalSelf,
 } from "./home-object-methods.js";
@@ -9341,7 +9341,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const self = literalSelf(
             this.context,
             dataType,
-            homeObjectMethods(literal),
+            homeObjectMembers(literal),
             literal,
         );
         const parts = fields.map((field) => {
@@ -9379,7 +9379,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field.type,
                     undefined,
                     false,
-                    homeReceiver(self, field.sourceName, initializer),
+                    homeReceiver(self, initializer),
                 );
                 return this.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -9396,7 +9396,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer,
                 );
             const method = this.context.unwrap(initializer);
-            const receiver = homeReceiver(self, field.sourceName, method);
+            const receiver = homeReceiver(self, method);
             if (
                 receiver &&
                 ts.isFunctionExpression(method) &&

@@ -26,9 +26,6 @@ import {
     completeLiteralSelf,
     homeReceiver,
     literalSelf,
-    readsHomeObject,
-    readsHomeObjectAccessor,
-    type HomeObjectMethod,
     type LiteralSelf,
 } from "../home-object-methods.js";
 import { returnedRecordLocal } from "../record-observations.js";
@@ -367,33 +364,24 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
+        // The members lowered into function slots, and the accessors of
+        // slots without a receiver, may read `this` as the object the
+        // literal creates.
         const self = literalSelf(
             lowerer.context,
             dataType,
-            new Map(
-                fields.flatMap((field): [string, HomeObjectMethod][] => {
-                    const method =
-                        field.type.kind === "function"
-                            ? value.recordMethods?.[field.sourceName]
-                            : undefined;
-                    return method && readsHomeObject(method)
-                        ? [[field.sourceName, method]]
-                        : [];
-                }),
-            ),
+            fields.flatMap((field) => [
+                ...(field.type.kind === "function"
+                    ? [value.recordMethods?.[field.sourceName]]
+                    : []),
+                ...(field.accessor && !field.accessorReceiver
+                    ? [
+                          value.recordGetters?.[field.sourceName],
+                          value.recordSetters?.[field.sourceName],
+                      ]
+                    : []),
+            ]),
             node,
-            // An accessor slot without a receiver reads `this` as the
-            // object the literal creates.
-            new Set(
-                fields.flatMap((field) =>
-                    field.accessor && !field.accessorReceiver
-                        ? [
-                              value.recordGetters?.[field.sourceName],
-                              value.recordSetters?.[field.sourceName],
-                          ].filter(readsHomeObjectAccessor)
-                        : [],
-                ),
-            ),
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
@@ -421,7 +409,7 @@ function valueStruct(
                                 value,
                                 ts.isMethodDeclaration(method) &&
                                     ts.isClassDeclaration(method.parent),
-                                homeReceiver(self, field.sourceName, method),
+                                homeReceiver(self, method),
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
@@ -700,7 +688,7 @@ function accessorSlot(
               setter,
               field.type,
               receiver,
-              homeReceiver(self, field.sourceName, setter),
+              homeReceiver(self, setter),
           )
         : "{}";
     return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(
@@ -708,7 +696,7 @@ function accessorSlot(
         getter,
         field.type,
         receiver,
-        homeReceiver(self, field.sourceName, getter),
+        homeReceiver(self, getter),
     )}, ${set})`;
 }
 
