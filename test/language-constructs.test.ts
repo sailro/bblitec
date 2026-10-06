@@ -6237,6 +6237,30 @@ check(
 );
 
 check(
+    "readonly-array-slices-are-owned-copies",
+    `
+    function root(values: readonly number[], index: number): number {
+        const parent = values.slice();
+        const find = (k: number): number => (parent[k] === k ? k : (parent[k] = find(parent[k]!)));
+        return find(index) * 10 + parent[index]!;
+    }
+    const roots: Array<typeof root> = [root];
+    if (roots[0]!([1, 1, 1, 2], 3) !== 11) throw new Error("stored");
+    if (root([1, 1, 1, 2], 3) !== 11) throw new Error("direct");
+    const table: readonly number[] = [0, 0, 1, 2];
+    if (root(table, 3) !== 0 || roots[0]!(table, 2) !== 0) throw new Error("named table");
+    function grown(values: readonly number[]): number[] {
+        const copy = values.slice(1);
+        copy.push(values.length);
+        return copy;
+    }
+    const sources: readonly number[] = [5, 6];
+    const grownCopies = [grown];
+    if (grown(sources).join(",") !== "6,2" || grownCopies[0]!(sources).join(",") !== "6,2" || sources.length !== 2) throw new Error("owned slice");
+`,
+);
+
+check(
     "records-stored-as-another-record-type-stay-one-object",
     `
     interface Wide { a: number; b: number }
