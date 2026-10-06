@@ -2760,6 +2760,7 @@ template <typename T> using Span = std::span<T>;
  */
 template <std::size_t N> class Tuple {
 public:
+    using value_type = double;
     using Storage = std::array<double, N>;
     using RetainedStorage = std::vector<double>;
     using iterator = typename RetainedStorage::iterator;
@@ -2791,6 +2792,7 @@ public:
     [[nodiscard]] double& operator[](std::size_t index) { return (*values_)[index]; }
     [[nodiscard]] const double& operator[](std::size_t index) const { return (*values_)[index]; }
     [[nodiscard]] constexpr std::size_t size() const { return N; }
+    [[nodiscard]] constexpr bool empty() const { return N == 0; }
     [[nodiscard]] const void* identity() const { return values_.get(); }
     [[nodiscard]] bool operator==(const Tuple& other) const { return values_ == other.values_; }
     [[nodiscard]] bool operator==(const Array<double>& other) const {
@@ -3964,6 +3966,35 @@ template <typename Values, typename T>
     return value ? array_index_of(values, *value) : -1.0;
 }
 
+/** `indexOf(value, fromIndex)`: the search starts at the relative index. */
+template <typename Values>
+[[nodiscard]] inline double array_index_of(const Values& values,
+                                           const typename Values::value_type& value, double from) {
+    for (std::size_t index = relative_index(values.size(), from); index < values.size(); ++index) {
+        if (values[index] == value)
+            return static_cast<double>(index);
+    }
+    return -1.0;
+}
+
+/** `includes(value, fromIndex)`: SameValueZero from the relative index. */
+template <typename Values>
+[[nodiscard]] inline bool array_includes(const Values& values,
+                                         const typename Values::value_type& value, double from) {
+    for (std::size_t index = relative_index(values.size(), from); index < values.size(); ++index) {
+        if (detail::same_value_zero(static_cast<typename Values::value_type>(values[index]), value))
+            return true;
+    }
+    return false;
+}
+
+template <typename Values, typename T>
+    requires std::is_enum_v<T>
+[[nodiscard]] inline double array_index_of(const Values& values, const Nullable<T>& value,
+                                           double from) {
+    return value ? array_index_of(values, *value, from) : -1.0;
+}
+
 // `array.pop()!` — the non-null assertion states the array is not empty. A
 // nullable element is its own absent state; any other element has none, so an
 // empty pop refuses by name in every build configuration instead of reading
@@ -4060,6 +4091,37 @@ template <typename T> inline Array<T>& array_reverse(Array<T>& values) {
 template <typename T> inline Array<T> array_reverse(Array<T>&& values) {
     array_reverse(values);
     return std::move(values);
+}
+
+/** `array.toReversed()`: a fresh array of the receiver's elements in reverse order. */
+template <typename Values>
+[[nodiscard]] inline Array<std::remove_cv_t<typename Values::value_type>>
+array_to_reversed(const Values& values) {
+    Array<std::remove_cv_t<typename Values::value_type>> result;
+    result.reserve(values.size());
+    for (std::size_t index = values.size(); index > 0; --index)
+        result.push_back(values[index - 1]);
+    return result;
+}
+
+/** `array.with(index, value)`: a fresh copy with one relative index replaced. */
+template <typename Values, typename T>
+[[nodiscard]] inline Array<std::remove_cv_t<typename Values::value_type>>
+array_with(const Values& values, double index, const T& value) {
+    const double length = static_cast<double>(values.size());
+    double relative = std::isnan(index) ? 0.0 : std::trunc(index);
+    if (relative < 0.0)
+        relative += length;
+    if (!(relative >= 0.0 && relative < length))
+        throw NamedError("RangeError", "Invalid index : " + number_to_string(index));
+    Array<std::remove_cv_t<typename Values::value_type>> result(values.begin(), values.end());
+    result[static_cast<std::size_t>(relative)] = value;
+    return result;
+}
+
+/** `reduce`/`reduceRight` without an initial value over an empty array. */
+[[noreturn]] inline void throw_empty_reduce() {
+    throw NamedError("TypeError", "Reduce of empty array with no initial value");
 }
 
 /**

@@ -811,6 +811,12 @@ export class EvaluationOrder {
                 const symbol = resolvedSymbol(this.checker, current);
                 if (symbol && this.isWrittenVariable(symbol))
                     access.reads.variables.add(symbol);
+            } else if (
+                ts.isSpreadElement(current) &&
+                !this.isFresh(current.expression, unit)
+            ) {
+                // An iterable spread reads the elements it copies.
+                access.reads.heap = true;
             }
         };
         roots.forEach((root) =>

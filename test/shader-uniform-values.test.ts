@@ -40,3 +40,28 @@ test("writes a typed-array uniform value lane by lane after the pinned length ch
         /set_scene_shader_uniform_value\([^;]*v_state\.load\(0u\), v_state\.load\(1u\), v_state\.load\(2u\), v_state\.load\(3u\)\)/,
     );
 });
+
+test("spreads a numeric tuple into a uniform default lane by lane", () => {
+    const spread = source
+        .replace(
+            "async function main() {",
+            `function tinted(tint: [number, number, number]) {
+        return createShaderMaterial({
+            vertexSource,
+            fragmentSource,
+            attributes: ["position"],
+            uniforms: ["worldViewProjection", { name: "uTint", type: "vec4<f32>", defaultValue: [...tint, 1] }],
+        });
+    }
+    async function main() {`,
+        )
+        .replace(
+            "box.material = material;",
+            "box.material = tinted([Math.random(), 0.5, 0.75]);",
+        );
+    const { cpp } = compileSource(spread);
+    assert.match(
+        cpp,
+        /set_shader_uniform_value\([^;]*static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), 1\.0f\)/,
+    );
+});

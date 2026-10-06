@@ -37,6 +37,7 @@ import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
     borrowsReferenceParameter,
+    fixedLengthParameterWrites,
     isSupportedFunction,
     parameterIsReadOnly,
     requiresDefaultParameterBinding,
@@ -1013,6 +1014,14 @@ export class NativeFunctionLowerer {
                           expression,
                       )
                     : rawValue;
+            const adapted = this.adaptedReferenceArgument(
+                value,
+                parameter,
+                dataType,
+                expression,
+                directKernel,
+            );
+            if (adapted !== undefined) return adapted;
             if (
                 value?.kind !== "data" ||
                 !value.dataType ||
@@ -1033,6 +1042,62 @@ export class NativeFunctionLowerer {
         // narrowed stored object. Both arms decline such calls before
         // reaching here (argumentPreservesObjectIdentity).
         return this.context.dataLowerer.compileForSink(expression, dataType);
+    }
+
+    /**
+     * An array value a mutable array parameter can still alias: a fresh
+     * array literal is materialized as the argument's own array, and a
+     * numeric tuple lends its storage when the callee provably keeps the
+     * parameter's length and writes only lanes the tuple has
+     * (`fixedLengthParameterWrites`), so the caller's tuple sees the
+     * callee's writes.
+     */
+    private adaptedReferenceArgument(
+        value: Value,
+        parameter: NativeFunctionSignature["parameters"][number],
+        dataType: DataType,
+        expression: ts.Expression,
+        callee: SupportedFunction | undefined,
+    ): string | undefined {
+        const name = (cpp: string, type: DataType): string =>
+            this.context.bindings.pinValueToTemporary(
+                this.context.dataLowerer.leafValue(cpp, type),
+                "array_argument",
+            ).cpp;
+        if (
+            value.kind === "tuple" &&
+            ts.isArrayLiteralExpression(this.context.unwrap(expression)) &&
+            (dataType.kind === "vector" || dataType.kind === "tuple")
+        )
+            return name(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    expression,
+                ),
+                dataType,
+            );
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "tuple" ||
+            dataType.kind !== "vector" ||
+            dataType.element.kind !== "number" ||
+            !callee
+        )
+            return undefined;
+        const written = fixedLengthParameterWrites(
+            this.context.checker,
+            callee,
+            parameter.name,
+        );
+        if (written === undefined || written > value.dataType.arity)
+            return undefined;
+        this.context.dataLowerer.invalidateEscapingCollection(value);
+        this.context.reachJsData();
+        return name(
+            `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`,
+            dataType,
+        );
     }
 
     /**

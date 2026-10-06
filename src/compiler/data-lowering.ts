@@ -98,6 +98,7 @@ import {
     TYPED_ARRAY_KINDS,
     typedArrayStem,
     typedArrayStoreExpression,
+    tupleComponents,
     type DataIterationElement,
     type DataStructField,
     type DataType,
@@ -726,6 +727,19 @@ export class DataLowerer {
                 `${label} expects at most ${sourceParameterCount} arguments.`,
             );
         }
+        // `f(...lanes)` against fixed parameters: every argument in order,
+        // each numeric tuple spread expanded into its lanes.
+        const spreadSlots =
+            functionType.restParameter === undefined &&
+            erased.size === 0 &&
+            arguments_.some(ts.isSpreadElement)
+                ? this.spreadArgumentValues(arguments_, label)
+                : undefined;
+        if (spreadSlots && spreadSlots.length > sourceParameterCount)
+            this.context.fail(
+                call,
+                `${label} expects at most ${sourceParameterCount} arguments.`,
+            );
         const argumentsCpp: string[] = [];
         let runtimeIndex = 0;
         for (
@@ -733,7 +747,18 @@ export class DataLowerer {
             sourceIndex < sourceParameterCount;
             sourceIndex += 1
         ) {
-            const argument = arguments_[sourceIndex];
+            const slot = spreadSlots?.[sourceIndex];
+            if (slot) {
+                argumentsCpp.push(
+                    this.compileKnownValueForSink(
+                        slot.value,
+                        functionType.parameters[runtimeIndex++]!,
+                        slot.node,
+                    ),
+                );
+                continue;
+            }
+            const argument = spreadSlots ? undefined : arguments_[sourceIndex];
             if (erased.has(sourceIndex)) {
                 if (argument) {
                     const argumentType =
@@ -832,6 +857,46 @@ export class DataLowerer {
             argumentsCpp.push(this.context.dataTypes.absentValue(parameter));
         }
         return argumentsCpp;
+    }
+
+    /**
+     * Call arguments with spreads, evaluated in source order and read
+     * once each: a numeric tuple spread supplies one argument per lane.
+     */
+    private spreadArgumentValues(
+        arguments_: readonly ts.Expression[],
+        label: string,
+    ): { value: Value; node: ts.Expression }[] {
+        return arguments_.flatMap((argument) => {
+            if (!ts.isSpreadElement(argument))
+                return [
+                    {
+                        value: this.context.bindings.pinValueToTemporary(
+                            this.context.compileValue(argument),
+                            "call_argument",
+                            argument,
+                        ),
+                        node: argument,
+                    },
+                ];
+            const lanes =
+                this.spreadTupleLanes(
+                    this.context.compileValue(argument.expression),
+                    argument,
+                ) ??
+                this.context.fail(
+                    argument,
+                    `${label} spread arguments expand a numeric tuple.`,
+                );
+            return lanes.map((lane) => ({
+                value: this.context.bindings.pinValueToTemporary(
+                    lane,
+                    "spread_lane",
+                    argument,
+                ),
+                node: argument,
+            }));
+        });
     }
 
     /** Container root each live alias refers into, for invalidation. */
@@ -2236,6 +2301,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             case "vector":
             case "span":
+                // A numeric tuple is a number array with the same identity.
+                if (
+                    !staticOnly &&
+                    value.kind === "data" &&
+                    value.dataType?.kind === "tuple"
+                )
+                    return (
+                        sink.kind === "vector" && sink.element.kind === "number"
+                    );
                 return (
                     value.kind === "tuple" &&
                     (value.tupleElements ?? []).every((entry) =>
@@ -2868,8 +2942,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (
                 left.kind === "data" &&
-                left.dataType?.kind === "struct" &&
-                fallback.kind === "record"
+                ((left.dataType?.kind === "struct" &&
+                    fallback.kind === "record") ||
+                    ((left.dataType?.kind === "tuple" ||
+                        left.dataType?.kind === "vector") &&
+                        fallback.kind === "tuple"))
             ) {
                 const type = left.dataType;
                 return {
@@ -5663,6 +5740,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             const source = this.context.compileValue(argumentAt(call, 0));
             this.invalidateRecordArrayFacts(source);
+            const copied = this.arrayFromSequence(call, source);
+            if (copied) return copied;
             if (
                 source.kind !== "data" ||
                 (source.dataType?.kind !== "vector" &&
@@ -5704,6 +5783,52 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Array.from mapper results must belong to the native data model.",
             );
         return this.compileArrayFromMapped(call, type);
+    }
+
+    /**
+     * `Array.from(source)` over a sequence that is not itself an array: a
+     * numeric tuple's lanes, a typed array's numbers, a string's code
+     * points. Each is a fresh array.
+     */
+    private arrayFromSequence(
+        call: ts.CallExpression,
+        source: Value,
+    ): Value | undefined {
+        const fresh = (cpp: string, element: DataType): Value => {
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp,
+                dataType: { kind: "vector", element },
+                freshData: true,
+            };
+        };
+        if (source.kind === "tuple") {
+            const type = this.dataTypeAt(call);
+            return type?.kind === "vector"
+                ? fresh(
+                      this.compileKnownValueForSink(source, type, call),
+                      type.element,
+                  )
+                : undefined;
+        }
+        if (isStringValue(source))
+            return fresh(`bbl::js::string_characters(${source.cpp})`, {
+                kind: "string",
+            });
+        if (source.kind !== "data") return undefined;
+        if (source.dataType?.kind === "tuple")
+            return fresh(
+                `bbl::js::array_from_iterable<double>(${source.cpp})`,
+                {
+                    kind: "number",
+                },
+            );
+        if (isTypedArrayType(source.dataType))
+            return fresh(`bbl::js::typed_array_number_list(${source.cpp})`, {
+                kind: "number",
+            });
+        return undefined;
     }
 
     /**
@@ -6054,13 +6179,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         element: DataType,
         method: "indexOf" | "includes" | "lastIndexOf",
     ): Value {
-        if (
-            call.arguments.length !== 1 &&
-            !(method === "lastIndexOf" && call.arguments.length === 2)
-        ) {
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
             this.context.fail(
                 call,
-                `Array.${method} expects one argument; the fromIndex form is outside the supported subset.`,
+                `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
         if (
@@ -6107,7 +6229,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 { kind: "number" },
             );
         }
-        const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
+        // A fromIndex is evaluated after the search value, which is read
+        // first into a named value.
+        let needle = value;
+        let from = "";
+        if (call.arguments[1]) {
+            needle = this.context.allocateTemporaryCppName("search_needle");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: needle,
+                initializer: value,
+            });
+            from = `, ${this.context.compileNumber(call.arguments[1], "double")}`;
+        }
+        const index = `bbl::js::array_index_of(${owner.cpp}, ${needle}${from})`;
         if (method === "indexOf")
             return { kind: "number", cpp: index, dataType: { kind: "number" } };
         // `includes` is SameValueZero, which differs from `indexOf`'s strict
@@ -6116,7 +6252,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "boolean",
             cpp:
                 element.kind === "number"
-                    ? `bbl::js::array_includes(${owner.cpp}, ${value})`
+                    ? `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`
                     : `${index} >= 0.0`,
             dataType: { kind: "boolean" },
         };
@@ -6207,6 +6343,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         method:
             | "find"
             | "findIndex"
+            | "findLast"
+            | "findLastIndex"
             | "filter"
             | "some"
             | "every"
@@ -6273,8 +6411,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} requires a represented callback.`,
             );
         initialize(source);
+        // `findLast` and `findLastIndex` visit the length read at the call
+        // from its last index down.
+        const reverse = method === "findLast" || method === "findLastIndex";
         let bound = `${source}.size()`;
-        if (snapshotLength) {
+        if (snapshotLength || reverse) {
             const count = this.context.allocateTemporaryCppName(
                 `${label}_count`,
             );
@@ -6288,7 +6429,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.context.emit({
             kind: "open",
-            code: `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
+            code: reverse
+                ? `for (std::size_t ${index} = ${bound}; ${index}-- > 0;) {`
+                : `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
             iteration: true,
         });
         this.context.increaseIndent();
@@ -6306,6 +6449,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (receiverPolicy.skipRemoved)
                     this.context.emit(
                         `if (${index} >= ${source}.size()) continue;`,
+                    );
+                // JavaScript would pass undefined for an index the callback
+                // removed before the walk reached it.
+                if (reverse)
+                    this.context.emit(
+                        `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
                     );
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
@@ -6343,6 +6492,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const predicateMethod = [
                     "find",
                     "findIndex",
+                    "findLast",
+                    "findLastIndex",
                     "filter",
                     "some",
                     "every",
@@ -6377,10 +6528,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                       cpp: `!(${elementValue.cpp}).empty()`,
                                       dataType: { kind: "boolean" as const },
                                   }
-                                : this.context.fail(
-                                      callback,
-                                      `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
-                                  )
+                                : {
+                                      kind: "boolean" as const,
+                                      cpp:
+                                          this.truthinessCondition(
+                                              elementValue,
+                                          ) ??
+                                          this.context.fail(
+                                              callback,
+                                              `Boolean array callbacks require elements with a JavaScript truthiness, not ${dataType.element.kind}.`,
+                                          ),
+                                      dataType: { kind: "boolean" as const },
+                                  }
                         : predicate
                           ? this.context.compilePredicateWithValues(
                                 local!,
@@ -7887,10 +8046,80 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * The lanes a numeric tuple spreads into an array literal: a
+     * compile-time tuple's own elements, or a native tuple's elements as
+     * they are when the literal is built, each read once.
+     */
+    public spreadTupleLanes(
+        spread: Value,
+        node: ts.Expression,
+    ): readonly Value[] | undefined {
+        if (spread.kind === "tuple") return spread.tupleElements ?? [];
+        if (spread.kind !== "data" || spread.dataType?.kind !== "tuple")
+            return undefined;
+        const arity = spread.dataType.arity;
+        const tuple = this.context.bindings.bindDataTuple(
+            spread,
+            arity,
+            "spread_tuple",
+        );
+        return tupleComponents(tuple, arity, "double").map((cpp) =>
+            this.context.bindings.pinValueToTemporary(
+                { kind: "number", cpp, dataType: { kind: "number" } },
+                "spread_lane",
+                node,
+            ),
+        );
+    }
+
     public spanLikeForSink(
         expression: ts.Expression,
         dataType: DataType,
     ): string {
+        // `[...head, tail]` into a fixed tuple: every lane in source order.
+        if (
+            dataType.kind === "tuple" &&
+            ts.isArrayLiteralExpression(expression) &&
+            expression.elements.length > 1 &&
+            expression.elements.some(ts.isSpreadElement)
+        ) {
+            const lanes: string[] = [];
+            for (const element of expression.elements) {
+                const values = ts.isSpreadElement(element)
+                    ? (this.spreadTupleLanes(
+                          this.context.compileValue(element.expression),
+                          element,
+                      ) ??
+                      this.context.fail(
+                          element,
+                          "Tuple spread requires a numeric tuple.",
+                      ))
+                    : [this.context.compileValue(element)];
+                for (const value of values)
+                    lanes.push(
+                        this.context.bindings.pinValueToTemporary(
+                            this.leafValue(
+                                this.compileKnownValueForSink(
+                                    value,
+                                    { kind: "number" },
+                                    element,
+                                ),
+                                { kind: "number" },
+                            ),
+                            "tuple_lane",
+                            element,
+                        ).cpp,
+                    );
+            }
+            if (lanes.length !== dataType.arity)
+                this.context.fail(
+                    expression,
+                    `Expected ${dataType.arity} tuple elements.`,
+                );
+            this.context.reachJsData();
+            return `bbl::js::Tuple<${dataType.arity}>{${lanes.join(", ")}}`;
+        }
         if (
             dataType.kind === "tuple" &&
             ts.isArrayLiteralExpression(expression)
@@ -7975,6 +8204,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (this.spanCompatible(value.dataType, dataType)) {
             return value.cpp;
         }
+        // A numeric tuple is read through the readonly view of its storage.
+        if (
+            dataType.kind === "span" &&
+            dataType.element.kind === "number" &&
+            value.dataType.kind === "tuple"
+        )
+            return value.cpp;
         if (dataType.kind === "tuple" && value.dataType.kind === "vector")
             return this.compileKnownValueForSink(value, dataType, expression);
         if (
@@ -9991,13 +10227,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (owner?.kind === "data") {
                 const narrowed = this.narrowOptional(owner, left.expression);
                 if (narrowed.dataType?.kind === "vector") {
-                    if (operator !== "=") {
-                        this.context.fail(
-                            expression,
-                            "Array length supports plain assignment only.",
-                        );
-                    }
                     this.context.reachJsData();
+                    if (operator !== "=") {
+                        // `xs.length -= n` reads the length before the
+                        // right side runs, then stores the combined length.
+                        const previous =
+                            this.context.allocateTemporaryCppName(
+                                "length_previous",
+                            );
+                        this.context.emit({
+                            kind: "declaration",
+                            type: "const double",
+                            name: previous,
+                            initializer: `static_cast<double>(${narrowed.cpp}.size())`,
+                        });
+                        const right = this.context.compileNumber(
+                            expression.right,
+                            "double",
+                        );
+                        const helper =
+                            COMPOUND_ASSIGNMENT_HELPERS.get(operator);
+                        const length = helper
+                            ? `bbl::js::${helper}(${previous}, ${right})`
+                            : `(${previous} ${operator.slice(0, -1)} ${right})`;
+                        this.invalidateStaticElements(narrowed);
+                        this.invalidateAliases(narrowed.cpp);
+                        this.context.emit(
+                            `bbl::js::array_truncate(${narrowed.cpp}, ${length});`,
+                        );
+                        return true;
+                    }
                     // Truncation shrinks the array, so the exact
                     // element snapshot no longer describes it — and the
                     // static in-bounds proof over the snapshot's length
@@ -13251,13 +13510,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             borrowedData: true,
                         };
                     }
-                    const sourceElement =
-                        iterable.dataType?.kind === "set" ||
-                        iterable.dataType?.kind === "iterator" ||
-                        iterable.dataType?.kind === "vector" ||
-                        iterable.dataType?.kind === "span"
-                            ? iterable.dataType.element
-                            : undefined;
+                    // A string spreads its code points.
+                    if (
+                        isStringValue(iterable) &&
+                        dataType.element.kind === "string"
+                    ) {
+                        this.context.reachJsData();
+                        return {
+                            ...this.leafValue(
+                                `bbl::js::string_characters(${iterable.cpp})`,
+                                dataType,
+                            ),
+                            freshSpread: true,
+                        };
+                    }
+                    const sourceElement: DataType | undefined =
+                        iterable.dataType?.kind === "tuple"
+                            ? { kind: "number" }
+                            : iterable.dataType?.kind === "set" ||
+                                iterable.dataType?.kind === "iterator" ||
+                                iterable.dataType?.kind === "vector" ||
+                                iterable.dataType?.kind === "span"
+                              ? iterable.dataType.element
+                              : undefined;
                     // Lanes of another scalar spelling, or records seen
                     // through the target's record type (projected as a
                     // readonly view's elements are), convert one by one.

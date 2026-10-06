@@ -4696,3 +4696,254 @@ check(
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
 `,
 );
+
+check(
+    "array-search-from-index-and-last-callbacks",
+    `
+    const values = [1, 2, 1, Number.NaN, 2];
+    if (values.indexOf(1, 1) !== 2 || values.indexOf(2, -1) !== 4 || values.indexOf(1, 9) !== -1 || values.indexOf(1, Number.NaN) !== 0)
+        throw new Error("indexOf fromIndex");
+    if (!values.includes(Number.NaN, -2) || values.includes(Number.NaN, 4) || !values.includes(1, -5) || values.includes(1, 3))
+        throw new Error("includes fromIndex");
+    const names = ["a", "b", "a"];
+    let from = 0;
+    function start(): number { from++; return 1; }
+    if (names.indexOf("a", start()) !== 2 || from !== 1 || names.includes("b", 2)) throw new Error("string fromIndex");
+    const visited: number[] = [];
+    const last = values.findLast((value, index) => { visited.push(index); return value === 1; });
+    if (last !== 1 || visited.join(",") !== "4,3,2") throw new Error("findLast order");
+    if (values.findLastIndex((value) => value === 2) !== 4 || values.findLastIndex((value) => value > 5) !== -1)
+        throw new Error("findLastIndex");
+    if (values.findLast((value) => value > 5) !== undefined) throw new Error("findLast miss");
+    function lastEven(input: readonly number[]): number | undefined { return input.findLast((value) => value % 2 === 0); }
+    function lastOddIndex(input: number[]): number { return input.findLastIndex((value) => value % 2 === 1); }
+    const stored: Array<typeof lastEven> = [lastEven];
+    if (stored[0]!([2, 3, 4, 5]) !== 4 || lastOddIndex([1, 2, 3, 4]) !== 2 || stored[0]!([1]) !== undefined)
+        throw new Error("findLast through parameters");
+    const lanes = new Float32Array([0.5, 1.5, 2.5]);
+    if (lanes.findLast((value) => value < 2) !== 1.5 || lanes.findLastIndex((value) => value > 9) !== -1)
+        throw new Error("typed findLast");
+    const records = [{ id: 1, on: true }, { id: 2, on: false }, { id: 3, on: true }];
+    if (records.findLast((record) => record.on)?.id !== 3) throw new Error("record findLast");
+`,
+);
+
+check(
+    "array-copying-methods",
+    `
+    const source = [3, 1, 2];
+    const ascending = source.toSorted((a, b) => a - b);
+    const lexical = [10, 9, 1].toSorted();
+    if (ascending.join() !== "1,2,3" || source.join() !== "3,1,2" || lexical.join() !== "1,10,9") throw new Error("toSorted");
+    const reversed = source.toReversed();
+    reversed.push(7);
+    if (reversed.join() !== "2,1,3,7" || source.length !== 3) throw new Error("toReversed");
+    const replaced = source.with(-1, 9);
+    if (replaced.join() !== "3,1,9" || source[2] !== 2 || source.with(0, 5)[0] !== 5) throw new Error("with");
+    let name = "";
+    try { source.with(3, 0); } catch (error) { name = (error as Error).name; }
+    if (name !== "RangeError") throw new Error("with range");
+    function sortedNames(input: readonly string[]): string[] { return input.toSorted(); }
+    function flipped(input: readonly number[]): number[] { return input.toReversed(); }
+    const words = ["pear", "apple"];
+    if (sortedNames(words).join() !== "apple,pear" || words[0] !== "pear" || flipped([1, 2]).join() !== "2,1")
+        throw new Error("readonly copies");
+    const flags = [true, false];
+    if (flags.with(1, true).join() !== "true,true" || flags[1] !== false) throw new Error("boolean with");
+`,
+);
+
+check(
+    "array-reduce-without-initial-value-and-right",
+    `
+    const values = [4, 1, 3];
+    if (values.reduce((sum, value) => sum + value) !== 8) throw new Error("reduce without initial value");
+    if (values.reduce((best, value) => (value < best ? value : best)) !== 1) throw new Error("reduce pick");
+    const letters = ["a", "b", "c"];
+    if (letters.reduceRight((text, letter) => text + letter, "") !== "cba") throw new Error("reduceRight");
+    if (letters.reduceRight((text, letter) => text + letter) !== "cba") throw new Error("reduceRight without initial value");
+    const indexes: number[] = [];
+    letters.reduceRight((count, _letter, index) => { indexes.push(index); return count + 1; }, 0);
+    if (indexes.join() !== "2,1,0") throw new Error("reduceRight order");
+    if ([7].reduce((sum, value) => sum + value) !== 7) throw new Error("single element");
+    let name = "";
+    const empty: number[] = [];
+    try { empty.reduce((sum, value) => sum + value); } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("empty reduce");
+    name = "";
+    try { empty.reduceRight((sum, value) => sum + value); } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("empty reduceRight");
+    function smallest(input: readonly number[]): number { return input.reduce((best, value) => Math.min(best, value)); }
+    const stored: Array<typeof smallest> = [smallest];
+    if (stored[0]!([5, 2, 8]) !== 2) throw new Error("readonly reduce");
+    const lanes = new Float32Array([1, 2, 4]);
+    if (lanes.reduceRight((text, value) => text + value, "") !== "421") throw new Error("typed reduceRight");
+`,
+);
+
+check(
+    "numeric-tuple-observing-methods",
+    `
+    type Vec3 = [number, number, number];
+    function summary(v: Vec3): string {
+        const doubled = v.map((value) => value * 2);
+        return \`\${v.join("/")};\${v.indexOf(2)};\${v.lastIndexOf(2)};\${v.includes(3, 2)};\${v.at(-1)};\` +
+            \`\${doubled.join()};\${v.filter((value) => value > 1).length};\${v.concat([9]).length};\` +
+            \`\${v.toSorted((a, b) => b - a).join()};\${v.reduce((sum, value) => sum + value)};\${v.findLast((value) => value < 3)}\`;
+    }
+    const stored: Array<typeof summary> = [summary];
+    if (stored[0]!([1, 2, 3]) !== "1/2/3;1;1;true;3;2,4,6;2;4;3,2,1;6;2") throw new Error(stored[0]!([1, 2, 3]));
+    function reset(v: Vec3): Vec3 { v.fill(0, 1); return v; }
+    const lanes: Vec3 = [4, 5, 6];
+    if (reset(lanes) !== lanes || lanes.join() !== "4,0,0") throw new Error("tuple fill");
+`,
+);
+
+check(
+    "numeric-tuples-as-arrays",
+    `
+    type Vec3 = [number, number, number];
+    function writeInto(x: number, out: number[]): void { out[0] = x; out[2] = x * 2; }
+    function frameInto(x: number, outU: number[], outV: number[]): void { writeInto(x, outU); writeInto(x + 1, outV); }
+    function dot(a: readonly number[], b: readonly number[]): number { return a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!; }
+    function sum(values: ArrayLike<number>): number { let total = 0; for (let i = 0; i < values.length; i++) total += values[i]!; return total; }
+    function frame(x: number, brick: { v: Vec3 }): Vec3 { const u: Vec3 = [0, 0, 0]; frameInto(x, u, brick.v as number[]); return u; }
+    const stored: Array<typeof frame> = [frame];
+    const brick = { v: [0, 0, 0] as Vec3 };
+    const u = stored[0]!(3, brick);
+    if (u.join() !== "3,0,6" || brick.v.join() !== "4,0,8") throw new Error("tuple written through an array parameter");
+    const direct: Vec3 = [1, 1, 1];
+    frameInto(5, direct, brick.v);
+    if (direct.join() !== "5,1,10" || brick.v.join() !== "6,0,12") throw new Error("direct tuple arguments");
+    if (dot(u, brick.v) !== 90 || sum(u) !== 9) throw new Error("tuple read through array views");
+    function first2(out: number[]): number { out[0] = 1; return out[0] + out.length; }
+    const counted: Array<typeof first2> = [first2];
+    if (counted[0]!([5, 6]) !== 3 || first2([7]) !== 2) throw new Error("array literal argument");
+    function normal(x: number, out: Vec3 = [0, 0, 0]): Vec3 { out[0] = x; out[1] = x + 1; return out; }
+    const scratch: Vec3 = [9, 9, 9];
+    const first = normal(1), second = normal(2), shared = normal(5, scratch);
+    if (first === second || first.join() !== "1,2,0" || second[0] !== 2 || shared !== scratch || scratch.join() !== "5,6,9")
+        throw new Error("defaulted tuple out-parameter");
+    const fog: [number, number, number, number] = [1, 2, 3, 4];
+    fog.fill(0, 2);
+    if (fog.join() !== "1,2,0,0") throw new Error("tuple fill range");
+    fog.fill(7);
+    fog[3] = 1;
+    fog.copyWithin(0, 3);
+    if (fog.join() !== "1,7,7,1") throw new Error("tuple fill and copyWithin");
+    const albedo: Vec3 = [0.5, 0.25, 1];
+    const uniform = { name: "albedo", defaultValue: [...albedo] };
+    albedo[0] = 2;
+    if (uniform.defaultValue[0] !== 0.5 || uniform.defaultValue.length !== 3) throw new Error("spread copies tuple lanes");
+    function corner(x: number, z: number): [number, number] { return [x, z]; }
+    const outline: number[] = [...corner(1, 2), ...corner(3, 4), 5];
+    if (outline.join() !== "1,2,3,4,5") throw new Error("tuple spreads into an array");
+    function withAlpha(rgb: Vec3): [number, number, number, number] { return [...rgb, 1]; }
+    if (withAlpha(albedo).join() !== "2,0.25,1,1") throw new Error("tuple spread into a wider tuple");
+    function waterY(x: number, z: number): number { return x * 10 + z; }
+    function sampler(ax: number, dx: number, at3: (x: number, z: number) => number): (t: number) => number {
+        const at = (t: number): [number, number] => [ax + dx * t, ax - dx * t];
+        return (t: number): number => at3(...at(t));
+    }
+    if (sampler(1, 2, waterY)(1) !== 29) throw new Error("tuple spread into a function value");
+    interface Batch { shift(seq: number, dx: number, dz: number): number }
+    const batch: Batch = { shift: (seq, dx, dz) => seq + dx * 10 + dz * 100 };
+    const delta: readonly [number, number] = [2, 3];
+    if (batch.shift(1, ...delta) !== 321) throw new Error("tuple spread into a method");
+`,
+);
+
+check(
+    "array-sequences-length-updates-and-boolean-callbacks",
+    `
+    const lanes: [number, number, number] = [7, 8, 9];
+    const copied = Array.from(lanes);
+    copied.push(1);
+    if (copied.length !== 4 || lanes.length !== 3 || Array.from([1, 2]).length !== 2) throw new Error("Array.from tuple");
+    const matrices = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const row = Array.from(matrices.subarray(3, 6));
+    if (row.join() !== "4,5,6" || new Set(Array.from(new Int32Array([4, 5, 4]))).size !== 2) throw new Error("Array.from typed array");
+    const text = ["a😀b"][0]!;
+    if ([...text].length !== 3 || Array.from(text)[1] !== "😀" || [...text, "c"].join("") !== "a😀bc") throw new Error("string code points");
+    const tones: Array<[number, number, number]> = [[1, 2, 3]];
+    function tone(index: number): [number, number, number] { return tones[index] ?? ([0.5, 0.5, 0.5] as [number, number, number]); }
+    if (tone(0)[0] !== 1 || tone(4)[2] !== 0.5) throw new Error("missed search tuple fallback");
+    const run = [1, 2, 3, 4, 5];
+    run.length -= 2;
+    if (run.join() !== "1,2,3") throw new Error("length subtraction");
+    let reads = 0;
+    function shrink(): number { reads++; run.pop(); return 1; }
+    run.length -= shrink();
+    if (run.length !== 2 || reads !== 1) throw new Error("length read before the right side");
+    const worlds = new Map<string, number>([["b", 2]]);
+    const found = ["a", "b"].map((key) => worlds.get(key)).find(Boolean);
+    if (found !== 2) throw new Error("find(Boolean) over optional elements");
+    function anyMasked(mask: Array<boolean | undefined> | undefined): boolean { return mask?.some(Boolean) === true; }
+    if (!anyMasked([undefined, true]) || anyMasked([undefined, false]) || anyMasked(undefined)) throw new Error("some(Boolean)");
+`,
+);
+
+test("numeric tuples refuse writable array parameters that resize or outgrow them", () => {
+    for (const body of [
+        "function grow(out: number[]): void { out.push(1); }",
+        "function grow(out: number[]): void { out[3] = 1; }",
+        "function grow(out: number[]): void { out.length = 1; }",
+        "function grow(out: number[]): void { out[0] = 1; resize(out); } function resize(values: number[]): void { values.pop(); }",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${body}
+                    function frame(): number { const t: [number, number, number] = [0, 0, 0]; grow(t); return t[0]; }
+                    const roots: Array<typeof frame> = [frame];
+                    if (roots[0]!() !== 0) throw new Error("frame");`,
+                ),
+            /By-reference data arguments require a matching addressable local or path/,
+        );
+});
+
+check(
+    "parsed-document-array-destructuring",
+    `
+    interface RawNode { translation?: number[]; rotation?: number[] }
+    function sum(node: RawNode): number {
+        const [tx, ty, tz] = node.translation ?? [0, 0, 0];
+        const [qx, , , qw] = node.rotation ?? [0, 0, 0, 1];
+        return tx! + ty! + tz! + qx! + qw!;
+    }
+    const doc = JSON.parse('{"nodes":[{"translation":[1,2,3]},{"rotation":[0.5,0,0,2]}]}') as { nodes: RawNode[] };
+    if (sum(doc.nodes[0]!) !== 7 || sum(doc.nodes[1]!) !== 2.5) throw new Error("document lanes");
+    const [first, second] = JSON.parse('"ab"') as unknown as string[];
+    if (first !== "a" || second !== "b") throw new Error("document string");
+    const [one, missing] = JSON.parse("[1]") as number[];
+    if (one !== 1 || missing !== undefined) throw new Error("document lane past the end");
+    let name = "";
+    try { const [lane] = JSON.parse("{}") as number[]; if (lane === 0) name = "zero"; } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("document not iterable");
+    function parse(value: unknown): [number, number, number] | null {
+        if (!Array.isArray(value) || value.length !== 3) return null;
+        const ok = (v: unknown): v is number => typeof v === "number" && v >= 0;
+        const [r, g, b] = value as unknown[];
+        if (!ok(r) || !ok(g) || !ok(b)) return null;
+        return [r, g, b];
+    }
+    const parsed = parse(JSON.parse("[1,2,3]"));
+    if (!parsed || parsed[2] !== 3 || parse(JSON.parse('[1,"2",3]')) !== null) throw new Error("unknown lanes");
+`,
+);
+
+check(
+    "numeric-tuples-in-array-sinks",
+    `
+    interface Decl { name: string; defaultValue?: number | number[] }
+    const cloud: [number, number, number, number] = [1, 2, 3, 4];
+    const decls: Decl[] = [{ name: "cloud", defaultValue: cloud }, { name: "scale", defaultValue: 2 }];
+    cloud[0] = 9;
+    const value = decls[0]!.defaultValue;
+    if (!Array.isArray(value) || value[0] !== 9 || value.length !== 4) throw new Error("tuple keeps identity in a union field");
+    const lanes: [number, number, number] = [1, 2, 3];
+    const record = { copy: [...lanes], list: [...[4, 5], ...lanes] };
+    lanes[0] = 7;
+    if (record.copy[0] !== 1 || record.list.join() !== "4,5,1,2,3") throw new Error("spreads copy where the record is built");
+`,
+);
