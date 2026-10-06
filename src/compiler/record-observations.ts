@@ -554,7 +554,7 @@ function calledInPlace(
                     0
               ? scope.parent.name
               : undefined;
-    const symbol = name && checker.getSymbolAtLocation(name);
+    const symbol = name && declaredSymbol(checker, name);
     if (!symbol) return false;
     let called = true;
     forEachAnalysisNode(callee.body!, (node) => {
@@ -562,7 +562,7 @@ function calledInPlace(
         if (
             ts.isIdentifier(node) &&
             node !== name &&
-            checker.getSymbolAtLocation(node) === symbol
+            declaredSymbol(checker, node) === symbol
         )
             called =
                 ts.isCallExpression(node.parent) &&
@@ -918,7 +918,7 @@ export function returnedRecordLocal(
         )
     )
         return false;
-    const symbol = checker.getSymbolAtLocation(unwrapped);
+    const symbol = declaredSymbol(checker, unwrapped);
     const declaration = symbol?.valueDeclaration;
     if (
         !symbol ||
@@ -937,7 +937,7 @@ export function returnedRecordLocal(
             !ts.isIdentifier(node) ||
             node === unwrapped ||
             node === declaration.name ||
-            checker.getSymbolAtLocation(node) !== symbol
+            declaredSymbol(checker, node) !== symbol
         )
             return;
         const reference = climb(node);
