@@ -6613,6 +6613,29 @@ check(
 );
 
 check(
+    "for-in-over-conditional-keys-with-nested-exits",
+    `
+    const gate = new Float32Array([0, 1]);
+    const record = { name: "a", ...(gate[1]! > 0 ? { extra: 4 } : {}), ...(gate[0]! > 0 ? { skipped: 1 } : {}), tail: true };
+    let visited = "";
+    for (const key in record) {
+        let inner = 0;
+        for (let i = 0; i < 4; i++) {
+            if (i === 1) continue;
+            if (i === 3) break;
+            inner += i;
+        }
+        switch (key.length) {
+            case 4: visited += "4"; break;
+            default: visited += "d";
+        }
+        visited += key + inner;
+    }
+    if (visited !== "4name2dextra24tail2") throw new Error("for in with nested exits " + visited);
+`,
+);
+
+check(
     "conditional-spread-prepared-arms",
     `
     const gate = new Float32Array([0, 1]);

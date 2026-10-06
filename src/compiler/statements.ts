@@ -2687,11 +2687,15 @@ export class StatementLowerer {
      * scope of its own, run as runtime control flow; its continue jumps to
      * the scope's end and its break past the loop, whose later iterations
      * are scopes too.
+     *
+     * `guard` names the runtime condition an iteration runs under, when
+     * only the running program knows whether it runs.
      */
     private emitUnrolledLoop(
         context: StatementLoweringContext,
         iteration: ts.IterationStatement,
-        binds: Iterable<() => void>,
+        binds: readonly (() => void)[],
+        guard?: (index: number) => string | undefined,
     ): void {
         const loop: UnrolledLoop = {
             iteration,
@@ -2699,11 +2703,34 @@ export class StatementLowerer {
             scoped: false,
             runtimeExits: this.mayExitAtRuntime(context, iteration),
         };
-        for (const bind of binds) {
-            if (this.emitUnrolledIteration(context, loop, bind) === "break")
+        for (const [index, bind] of binds.entries()) {
+            const condition = guard?.(index);
+            const emit = (): StaticCompletion =>
+                this.emitUnrolledIteration(context, loop, bind);
+            if (
+                (condition
+                    ? this.guarded(context, condition, emit)
+                    : emit()) === "break"
+            )
                 break;
         }
         this.placeLabel(context, loop.breakLabel);
+    }
+
+    /** Emit under `if (condition)`, as runtime control flow. */
+    private guarded<T>(
+        context: StatementLoweringContext,
+        condition: string,
+        emit: () => T,
+    ): T {
+        context.emit({ kind: "open", code: `if (${condition}) {` });
+        context.increaseIndent();
+        try {
+            return this.inRuntimeControlFlow(context, emit);
+        } finally {
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        }
     }
 
     private emitUnrolledIteration(
@@ -3022,69 +3049,42 @@ export class StatementLowerer {
                 : raw;
         if (owner.kind === "record") {
             // A key a conditional spread wrote is visited while it is own;
-            // a runtime skip cannot carry a static loop exit.
+            // a runtime skip cannot carry a static loop exit, so each key's
+            // iteration stands alone under its guard.
             const entries = Object.entries(owner.recordProperties ?? {});
-            const conditional = entries.some(
-                ([, value]) => value.conditionalOwnKey,
-            );
             if (
-                conditional &&
-                someAnalysisNode(
-                    statement.statement,
-                    (node) =>
-                        ts.isBreakStatement(node) ||
-                        ts.isContinueStatement(node) ||
-                        ts.isReturnStatement(node),
-                    { functions: "skip" },
-                )
+                entries.some(([, value]) => value.conditionalOwnKey) &&
+                (enclosingLoopControl(statement.statement) ??
+                    firstReturn([statement.statement]))
             )
                 context.fail(
                     statement,
                     "for...in over a record whose keys a conditional spread decides cannot leave the loop early.",
                 );
-            const bindKey = (key: string) => () =>
-                this.bindStaticIterationValue(
-                    context,
-                    binding,
-                    staticStringValue(key, (text) => context.cppString(text)),
-                );
-            if (!conditional) {
-                this.emitUnrolledLoop(
-                    context,
-                    statement,
-                    entries.map(([key]) => bindKey(key)),
-                );
-            } else {
-                for (const [key, value] of entries) {
-                    const present = value.conditionalOwnKey
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                entries.map(
+                    ([key]) =>
+                        () =>
+                            this.bindStaticIterationValue(
+                                context,
+                                binding,
+                                staticStringValue(key, (text) =>
+                                    context.cppString(text),
+                                ),
+                            ),
+                ),
+                (index) => {
+                    const value = entries[index]![1];
+                    return value.conditionalOwnKey
                         ? context.dataLowerer.conditionalKeyPresentCpp(
                               value,
                               statement.expression,
                           )
                         : undefined;
-                    if (present) {
-                        context.emit({
-                            kind: "open",
-                            code: `if (${present}) {`,
-                        });
-                        context.increaseIndent();
-                        context.enterRuntimeControlFlow();
-                    }
-                    try {
-                        // No exit leaves this loop (refused above), so each
-                        // key's iteration stands alone under its guard.
-                        this.emitUnrolledLoop(context, statement, [
-                            bindKey(key),
-                        ]);
-                    } finally {
-                        if (present) {
-                            context.leaveRuntimeControlFlow();
-                            context.decreaseIndent();
-                            context.emit({ kind: "close", code: "}" });
-                        }
-                    }
-                }
-            }
+                },
+            );
             return;
         }
         const ownKeys = this.forInOwnKeys(context, owner, statement.expression);
