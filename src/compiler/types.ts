@@ -1354,6 +1354,11 @@ export type ValueKind =
      * nothing native and the assignment to `group.mask` is what emits.
      */
     | "animation-group-mask"
+    /**
+     * A typed array's `constructor`, read off a value whose storage kind
+     * fixes it; `new` and the static factories accept it as the class.
+     */
+    | "typed-array-constructor"
     | "animation-manager"
     | "asset-entity"
     | "asset-root"
@@ -1747,6 +1752,7 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         // The mask a group is about to be given: names and a mode, both
         // known at generation.
         kind === "animation-group-mask" ||
+        kind === "typed-array-constructor" ||
         // A BSP solid. It never reaches the runtime: `createMeshFromCsg`
         // replays the plan it carries against the pin's own modules and
         // bakes the geometry, so the binding declares nothing native.

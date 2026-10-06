@@ -2623,6 +2623,31 @@ check(
 `,
 );
 
+check(
+    "typed-array-constructor-values",
+    `
+    function grow<T extends Uint8Array | Int32Array | Float32Array>(value: T, length: number): T {
+        const Constructor = value.constructor as { new (length: number): T };
+        const next = new Constructor(length);
+        next.set(value);
+        return next;
+    }
+    const bytes = grow(new Uint8Array([1, 255]), 3);
+    const floats = grow(new Float32Array([0.5]), 2);
+    const words = grow(new Int32Array([-7]), 1);
+    if (!(bytes instanceof Uint8Array) || bytes.join() !== "1,255,0" || !(floats instanceof Float32Array) || floats.join() !== "0.5,0" || words[0] !== -7) throw new Error("constructor of each kind");
+    const source = new Uint16Array([70000, 3]);
+    const Same = source.constructor as { new (length: number): Uint16Array; from(values: ArrayLike<number>): Uint16Array };
+    const copied = Same.from([1, 65537]);
+    if (copied.join() !== "1,1" || new Same(2).length !== 2 || copied === source) throw new Error("constructor statics");
+    function factory(value: Float64Array): () => Float64Array {
+        const Kind = value.constructor as { new (length: number): Float64Array };
+        return () => new Kind(3);
+    }
+    if (factory(new Float64Array(1))().length !== 3) throw new Error("constructor captured by a closure");
+`,
+);
+
 test("typed-array unions and views refuse what they do not represent", () => {
     const pick =
         "function pick(text: boolean): Float32Array | string { return text ? 'ab' : new Float32Array(2); }";
@@ -2646,6 +2671,10 @@ test("typed-array unions and views refuse what they do not represent", () => {
         [
             "const t = new Float32Array(2); const u = t.reverse(1 as never); const unused = u.length;",
             /TypedArray\.reverse expects no arguments/,
+        ],
+        [
+            "const C = new Float32Array(1).constructor; const unused: string = C.name;",
+            /Unsupported property value 'C\.name' \(owner typed-array-constructor/,
         ],
     ] as const)
         assert.throws(() => compileSource(source), message);

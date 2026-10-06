@@ -31,6 +31,7 @@ export {
     isBinaryDataType,
     isNumericSequenceType,
     isTypedArrayType,
+    typedArrayConstructorName,
     typedArrayStem,
     typedArrayElement,
     typedArrayStoreExpression,

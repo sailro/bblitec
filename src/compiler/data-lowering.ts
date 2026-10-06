@@ -98,6 +98,7 @@ import {
     passesByReference,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
+    typedArrayConstructorName,
     typedArrayStem,
     typedArrayStoreExpression,
     type DataIterationElement,
@@ -3420,6 +3421,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
             }
         }
+        // The storage kind fixes the class of every value it holds.
+        if (isTypedArrayType(dataType) && property === "constructor") {
+            if (expressionMayRunCode(access.expression))
+                this.context.emitDiscardedValue(owner);
+            return {
+                kind: "typed-array-constructor",
+                cpp: "",
+                typedArrayConstructor: dataType.kind,
+            };
+        }
         if (dataType.kind === "arraybuffer" && property === "byteLength") {
             return {
                 kind: "number",
@@ -5878,7 +5889,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (callee.name.text !== "from" && callee.name.text !== "of")
         )
             return undefined;
-        const name = this.context.libraryGlobal(callee.expression);
+        const name = this.typedArrayClass(callee.expression);
         const kind =
             name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) return undefined;
@@ -7264,10 +7275,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * The typed-array class a `new` or static-factory callee names: the
+     * global itself, or a binding holding a typed array's `constructor`.
+     */
+    private typedArrayClass(callee: ts.Expression): string | undefined {
+        const name = this.context.libraryGlobal(callee);
+        if (name !== undefined)
+            return TYPED_ARRAY_KINDS.has(name) ? name : undefined;
+        const unwrapped = this.context.unwrap(callee);
+        const declaration = ts.isIdentifier(unwrapped)
+            ? declaredSymbol(this.context.checker, unwrapped)?.valueDeclaration
+            : undefined;
+        const read =
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer
+                ? this.context.unwrap(declaration.initializer)
+                : undefined;
+        const constructorRead =
+            read !== undefined &&
+            ts.isPropertyAccessExpression(read) &&
+            read.name.text === "constructor";
+        const bound =
+            constructorRead && ts.isIdentifier(unwrapped)
+                ? this.context.bindings.lookupOptional(unwrapped)
+                : undefined;
+        return bound?.kind === "typed-array-constructor" &&
+            bound.typedArrayConstructor
+            ? typedArrayConstructorName(bound.typedArrayConstructor)
+            : undefined;
+    }
+
     public compileTypedArrayNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        const name = this.context.libraryGlobal(expression.expression);
+        const name = this.typedArrayClass(expression.expression);
         const kind =
             name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) {

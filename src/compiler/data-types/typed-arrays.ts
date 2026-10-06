@@ -135,6 +135,11 @@ export function isBinaryDataType(
     );
 }
 
+/** The global constructor of a typed-array kind: `Float32Array`, ... */
+export function typedArrayConstructorName(kind: TypedArrayKind): string {
+    return TYPED_ARRAYS[kind].constructor;
+}
+
 export function typedArrayStem(kind: TypedArrayKind): string {
     return TYPED_ARRAYS[kind].stem;
 }
