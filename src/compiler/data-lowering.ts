@@ -1169,6 +1169,11 @@ export class DataLowerer {
         string,
         { readonly root: string; readonly container: string }
     >();
+    /** The aliases ever registered into each root, which a mutation of it scans. */
+    private readonly aliasesByRoot = new EmissionMap<
+        string,
+        EmissionSet<string>
+    >();
 
     /** Container locals whose length generation knows; see below. */
     private readonly fixedLengths = new EmissionMap<string, number>();
@@ -1200,10 +1205,14 @@ export class DataLowerer {
      */
     public registerAlias(cppName: string, containerCpp: string): void {
         this.ownership.set(cppName, "alias");
-        this.aliasContainers.set(cppName, {
-            root: cppRootName(containerCpp),
-            container: containerCpp,
-        });
+        const root = cppRootName(containerCpp);
+        this.aliasContainers.set(cppName, { root, container: containerCpp });
+        let aliases = this.aliasesByRoot.get(root);
+        if (!aliases) {
+            aliases = new EmissionSet();
+            this.aliasesByRoot.set(root, aliases);
+        }
+        aliases.add(cppName);
     }
 
     /**
@@ -1215,10 +1224,12 @@ export class DataLowerer {
      */
     public invalidateAliases(containerCpp: string): void {
         const root = cppRootName(containerCpp);
-        for (const [name, alias] of this.aliasContainers) {
+        for (const name of this.aliasesByRoot.get(root) ?? []) {
+            // A name registered again since may now alias another root.
+            const alias = this.aliasContainers.get(name);
             if (
                 this.ownership.get(name) === "alias" &&
-                alias.root === root &&
+                alias?.root === root &&
                 !disjointMemberPaths(alias.container, containerCpp)
             ) {
                 this.ownership.set(name, "poisoned");
