@@ -234,6 +234,35 @@ export function lazyStaticAccessor(options: {
  */
 export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+const cppName = cppIdentifierPattern.source.slice(1, -1);
+
+/**
+ * A native variable or member path: a name, namespace-qualified or not,
+ * then the `.`/`->` fields read through it.
+ */
+const cppPathPattern = new RegExp(
+    `^${cppName}(?:::${cppName})*(?:(?:\\.|->)${cppName})*$`,
+);
+
+/** Whether `cpp` is a native variable or member path: it reads, and runs nothing. */
+export function isCppPath(cpp: string): boolean {
+    return cppPathPattern.test(cpp);
+}
+
+/** The names a member path reads, root first; undefined for any other spelling. */
+export function cppMemberPath(cpp: string): readonly string[] | undefined {
+    if (!cppPathPattern.test(cpp)) return undefined;
+    const names = cpp.split(/\.|->/);
+    return names.length > 1 ? names : undefined;
+}
+
+const cppRootPattern = new RegExp(`^${cppName}`);
+
+/** The variable a native spelling starts with, or the spelling itself. */
+export function cppRootName(cpp: string): string {
+    return cppRootPattern.exec(cpp)?.[0] ?? cpp;
+}
+
 /**
  * A string as a C++ literal.
  *

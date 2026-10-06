@@ -71,7 +71,13 @@ import {
     renderClosure,
     type NativeCaptureBinding,
 } from "./closure-captures.js";
-import { cppIdentifierPattern, doubleCpp } from "../cpp-literals.js";
+import {
+    cppIdentifierPattern,
+    cppMemberPath,
+    cppRootName,
+    doubleCpp,
+    isCppPath,
+} from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
@@ -172,19 +178,15 @@ const REASSIGNED_SHARED_KINDS: ReadonlySet<DataType["kind"]> = new Set([
     "set",
 ]);
 
-/** A plain member path: an identifier followed by `.` or `->` field names. */
-const memberPathPattern = /^[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*)+$/;
-
 /**
  * Two member paths from one root, neither extending the other, name
  * different fields of that object; other spellings may denote the same
  * storage.
  */
 function disjointMemberPaths(left: string, right: string): boolean {
-    if (!memberPathPattern.test(left) || !memberPathPattern.test(right))
-        return false;
-    const leftFields = left.split(/\.|->/);
-    const rightFields = right.split(/\.|->/);
+    const leftFields = cppMemberPath(left);
+    const rightFields = cppMemberPath(right);
+    if (!leftFields || !rightFields) return false;
     const common = Math.min(leftFields.length, rightFields.length);
     return leftFields
         .slice(0, common)
@@ -207,11 +209,6 @@ function namesStableOwner(owner: Value): boolean {
         owner.stableOwnerCpp !== undefined ||
         cppIdentifierPattern.test(owner.cpp)
     );
-}
-
-/** A native variable or member path, which evaluates without effects. */
-function isPathCpp(cpp: string): boolean {
-    return /^[\w:]+(?:(?:->|\.)\w+)*$/.test(cpp);
 }
 
 /**
@@ -1182,8 +1179,15 @@ export class DataLowerer {
         });
     }
 
-    /** Container path each live alias refers into, for invalidation. */
-    private readonly aliasContainers = new EmissionMap<string, string>();
+    /**
+     * Container path each alias refers into, and its root, for invalidation.
+     * A poisoned alias keeps its entry: a terminating branch's restore
+     * (`withPreservedAliasState`) can make it an alias again.
+     */
+    private readonly aliasContainers = new EmissionMap<
+        string,
+        { readonly root: string; readonly container: string }
+    >();
 
     /** Container locals whose length generation knows; see below. */
     private readonly fixedLengths = new EmissionMap<string, number>();
@@ -1215,7 +1219,10 @@ export class DataLowerer {
      */
     public registerAlias(cppName: string, containerCpp: string): void {
         this.ownership.set(cppName, "alias");
-        this.aliasContainers.set(cppName, containerCpp);
+        this.aliasContainers.set(cppName, {
+            root: cppRootName(containerCpp),
+            container: containerCpp,
+        });
     }
 
     /**
@@ -1226,12 +1233,12 @@ export class DataLowerer {
      * object name disjoint fields, so resizing one leaves the others.
      */
     public invalidateAliases(containerCpp: string): void {
-        const root = this.rootName(containerCpp);
-        for (const [name, aliasContainer] of this.aliasContainers) {
+        const root = cppRootName(containerCpp);
+        for (const [name, alias] of this.aliasContainers) {
             if (
-                this.rootName(aliasContainer) === root &&
-                !disjointMemberPaths(aliasContainer, containerCpp) &&
-                this.ownership.get(name) === "alias"
+                this.ownership.get(name) === "alias" &&
+                alias.root === root &&
+                !disjointMemberPaths(alias.container, containerCpp)
             ) {
                 this.ownership.set(name, "poisoned");
             }
@@ -1243,17 +1250,12 @@ export class DataLowerer {
         this.ownership.withRestoredChanges(work);
     }
 
-    private rootName(cpp: string): string {
-        const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(cpp);
-        return match ? match[0] : cpp;
-    }
-
     public markEscaped(value: Value): void {
         this.invalidateRecordArrayFacts(value);
         if (value.kind !== "data" || this.sharesObjectStorage(value.dataType)) {
             return;
         }
-        const root = this.rootName(value.cpp);
+        const root = cppRootName(value.cpp);
         if (this.ownership.get(root) === "owned") {
             this.ownership.set(root, "escaped");
         }
@@ -1408,7 +1410,7 @@ export class DataLowerer {
                 }
                 return undefined;
             }
-            const state = this.ownership.get(this.rootName(bound.cpp));
+            const state = this.ownership.get(cppRootName(bound.cpp));
             // A poisoned alias is unusable in either direction: its
             // container was structurally mutated after the binding, so
             // the reference no longer denotes the same element.
@@ -3564,7 +3566,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
         )
             return undefined;
-        if (owner.impure || !isPathCpp(owner.cpp)) return undefined;
+        if (owner.impure || !isCppPath(owner.cpp)) return undefined;
         if (
             !this.context.dataTypes.absentRecordProperty(
                 dataType.name,
@@ -3743,7 +3745,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner.staticElementsOwner?.collectionCardinality;
             const fixed = cardinality?.untrackedAliases
                 ? undefined
-                : this.fixedLengths.get(this.rootName(owner.cpp));
+                : this.fixedLengths.get(cppRootName(owner.cpp));
             return {
                 kind: "number",
                 cpp: `bbl::js::array_length(${owner.cpp})`,
@@ -9995,7 +9997,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner?.kind === "data" &&
                 owner.dataType?.kind === "struct" &&
                 !owner.impure &&
-                isPathCpp(owner.cpp) &&
+                isCppPath(owner.cpp) &&
                 this.context.dataTypes.lacksRecordProperty(
                     owner.dataType.name,
                     target.name.text,
@@ -14361,7 +14363,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
                 define(binding.name, value);
                 if (value.kind === "data") {
-                    this.registerLocal(this.rootName(value.cpp), "copy");
+                    this.registerLocal(cppRootName(value.cpp), "copy");
                 }
             });
             return;
@@ -14477,7 +14479,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 define(binding.name, value);
                 if (value.kind === "data") {
-                    this.registerLocal(this.rootName(value.cpp), "copy");
+                    this.registerLocal(cppRootName(value.cpp), "copy");
                 }
             }
             return;
