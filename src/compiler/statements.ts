@@ -127,8 +127,6 @@ interface StatementLoweringContext extends Pick<
     | "registerNativeBindingType"
     | "activeNativeReturnType"
     | "prefersNativeDataIteration"
-    | "activeInlineWrapper"
-    | "activeInlineReturnLabel"
     | "trackResourceLoopEarlyReturn"
     | "isRuntimeResourceConstruction"
     | "emitNativeReturn"
@@ -211,14 +209,14 @@ interface StatementLoweringContext extends Pick<
  * writes its body out once per iteration, FLAT into the scope the loop stood
  * in (`emitUnrolledIteration`), so the yields become a run of sequential
  * yields — exactly the shape the continuation re-queue already lowers, one
- * nested `defer_start_continuation` per marker. `unrolled` is the set of
- * loops currently being emitted that way, so this asks the question the
+ * nested `defer_start_continuation` per marker. `unrolled` asks whether a
+ * loop is currently being emitted that way, so this asks the question the
  * emission answers rather than the one the source AST shows: every enclosing
  * loop written out is no loop at all by the time the marker lands.
  */
 function frameYieldInsideLoop(
     node: ts.Node,
-    unrolled: readonly { iteration: ts.IterationStatement }[],
+    unrolled: (loop: ts.IterationStatement) => boolean,
 ): boolean {
     for (
         let parent: ts.Node | undefined = node.parent;
@@ -232,8 +230,7 @@ function frameYieldInsideLoop(
             ts.isForInStatement(parent) ||
             ts.isDoStatement(parent)
         ) {
-            if (!unrolled.some(({ iteration }) => iteration === parent))
-                return true;
+            if (!unrolled(parent)) return true;
         }
     }
     return false;
@@ -338,7 +335,7 @@ type StaticCompletion = "normal" | "break" | "continue" | "jumped";
 interface UnrolledLoop {
     readonly iteration: ts.IterationStatement;
     /** The label after the last iteration, once a runtime break needs it. */
-    readonly breakLabel: string | undefined;
+    readonly breakLabel: JumpLabel | undefined;
     /** Later iterations are scopes: a runtime break may pass over them. */
     readonly scoped: boolean;
     /** Whether the body may leave the loop under a runtime condition. */
@@ -360,7 +357,7 @@ interface StaticIterationFrame {
     readonly runtimeDepth: number;
     /** A runtime exit was emitted: what follows is conditional. */
     readonly exited: boolean;
-    readonly continueLabel: string | undefined;
+    readonly continueLabel: JumpLabel | undefined;
 }
 
 /** The first runtime exit of a speculatively flat iteration. */
@@ -370,11 +367,94 @@ class RuntimeLoopExitRequired extends Error {
     }
 }
 
-/** Where labeled continues of an outer loop leave an inner one. */
-interface ContinueTrampoline {
-    readonly loop: ts.IterationStatement;
-    readonly label: string;
+/** A label a jump goes to, emitted after its construct once a jump used it. */
+interface JumpLabel {
+    readonly name: string;
     readonly used: boolean;
+}
+
+/**
+ * A construct being emitted that a break, continue or bare return binds, on
+ * the one stack every such jump lowers against. A jump resolves to the
+ * construct the language binds it to (`jumpBinding`); the entries above that
+ * construct's are the ones it crosses. It lowers as a native C++ jump when no
+ * crossed construct is itself a C++ breakable, as a goto to a label after a
+ * construct, or, for a loop being unrolled, as the end of an iteration that
+ * generation settles.
+ */
+interface JumpTarget {
+    /** A loop, a switch, a labeled statement or an inlined function. */
+    readonly node: ts.Node;
+    /** A `do {} while (false)` stands for it: a native break leaves it. */
+    readonly breakable: boolean;
+    /** The label after it that a jump leaving it goes to. */
+    readonly exit: JumpLabel | undefined;
+    /** After this loop: where labeled continues of the enclosing loop land. */
+    readonly continueAfter: JumpLabel | undefined;
+    /** The iteration being emitted, while the loop is unrolled. */
+    readonly iteration: StaticIterationFrame | undefined;
+    /** The loop's body is emitted inside a runtime iteration. */
+    readonly iterating: boolean;
+}
+
+/** Whether a native break emitted inside binds the C++ construct emitted for it. */
+function nativelyBreakable(target: JumpTarget): boolean {
+    return (
+        target.breakable ||
+        (ts.isIterationStatement(target.node, false) &&
+            target.iteration === undefined)
+    );
+}
+
+function jumpTarget(
+    node: ts.Node,
+    fields: Partial<Omit<JumpTarget, "node">> = {},
+): JumpTarget {
+    return {
+        node,
+        breakable: fields.breakable ?? false,
+        exit: fields.exit,
+        continueAfter: fields.continueAfter,
+        iteration: fields.iteration,
+        iterating: fields.iterating ?? false,
+    };
+}
+
+/**
+ * The construct a jump binds by the language's rule: a bare return its
+ * function, a labeled jump its labeled statement, a continue the nearest
+ * loop and a break the nearest loop or switch.
+ */
+function jumpBinding(
+    statement: ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
+): ts.Node | undefined {
+    if (ts.isReturnStatement(statement))
+        return ts.findAncestor(statement.parent, ts.isFunctionLike);
+    for (
+        let parent: ts.Node | undefined = statement.parent;
+        parent && !ts.isFunctionLike(parent);
+        parent = parent.parent
+    ) {
+        if (statement.label) {
+            if (
+                ts.isLabeledStatement(parent) &&
+                parent.label.text === statement.label.text
+            )
+                return parent;
+        } else if (
+            ts.isIterationStatement(parent, false) ||
+            (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
+        )
+            return parent;
+    }
+    return undefined;
+}
+
+/** The statement a label names, through any further labels on it. */
+function labeledBody(statement: ts.LabeledStatement): ts.Statement {
+    let body = statement.statement;
+    while (ts.isLabeledStatement(body)) body = body.statement;
+    return body;
 }
 
 export class StatementLowerer {
@@ -437,15 +517,8 @@ export class StatementLowerer {
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
     /** Expression statements of a never-typed expression: they throw. */
     private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
-    private readonly labels: Array<{
-        readonly source: string;
-        readonly target: string;
-        /** A labeled break jumps to the label after the statement. */
-        readonly used: boolean;
-    }> = emissionArray([]);
-    /** Source loops whose current iteration is being emitted statically. */
-    private readonly staticIterationCompletions: StaticIterationFrame[] =
-        emissionArray([]);
+    /** The constructs jumps can bind, innermost last. */
+    private readonly jumpTargets = emissionArray<JumpTarget>([]);
     /** Runtime branches being emitted: an exit below one is not settled. */
     @journaled private accessor runtimeBranchDepth = 0;
 
@@ -515,37 +588,211 @@ export class StatementLowerer {
         iteration?: ts.IterationStatement,
     ): T {
         context.enterRuntimeIteration();
-        if (iteration) this.nativeLoops.push(iteration);
+        const target = iteration
+            ? writable(this.targetOf(iteration))
+            : undefined;
+        const iterating = target?.iterating ?? false;
+        if (target) target.iterating = true;
         try {
             return iteration &&
                 !context.isInParameterizedResourceLoop(iteration)
                 ? context.emitNativeDataIteration(iteration, emitBody)
                 : emitBody();
         } finally {
-            if (iteration) this.nativeLoops.pop();
+            if (target) target.iterating = iterating;
             context.leaveRuntimeIteration();
         }
     }
 
-    /** The frame of the unrolled loop a break or continue binds, if any. */
-    private staticIterationForControl(
-        statement: ts.BreakStatement | ts.ContinueStatement,
-    ): StaticIterationFrame | undefined {
-        for (
-            let parent: ts.Node | undefined = statement.parent;
-            parent;
-            parent = parent.parent
-        ) {
-            if (ts.isFunctionLike(parent)) return undefined;
-            if (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
-                return undefined;
-            if (ts.isIterationStatement(parent, false)) {
-                return this.staticIterationCompletions.find(
-                    ({ iteration }) => iteration === parent,
-                );
-            }
+    /** Emit a construct whose jumps lower against `target`. */
+    private withJumpTarget<T>(target: JumpTarget, emit: () => T): T {
+        this.jumpTargets.push(target);
+        try {
+            return emit();
+        } finally {
+            this.jumpTargets.pop();
         }
-        return undefined;
+    }
+
+    /** The innermost entry of a construct being emitted. */
+    private targetOf(node: ts.Node): JumpTarget {
+        for (let index = this.jumpTargets.length - 1; index >= 0; index--) {
+            const target = this.jumpTargets[index]!;
+            if (target.node === node) return target;
+        }
+        throw new Error("A construct is lowered outside its jump target.");
+    }
+
+    /** Whether a loop's iteration is being emitted statically. */
+    private isUnrolled(loop: ts.Node): boolean {
+        return this.jumpTargets.some(
+            (target) => target.node === loop && target.iteration !== undefined,
+        );
+    }
+
+    private jumpLabel(
+        context: StatementLoweringContext,
+        hint: string,
+    ): JumpLabel {
+        return { name: context.allocateTemporaryCppName(hint), used: false };
+    }
+
+    private goto(context: StatementLoweringContext, label: JumpLabel): void {
+        writable(label).used = true;
+        context.emit({
+            kind: "control",
+            code: `goto ${label.name};`,
+            transfer: "goto",
+        });
+    }
+
+    /** A label after its construct, once a jump went to it. */
+    private placeLabel(
+        context: StatementLoweringContext,
+        label: JumpLabel | undefined,
+    ): void {
+        if (label?.used) context.emit(`${label.name}:;`);
+    }
+
+    /**
+     * A break, continue or bare return, lowered against the construct it
+     * binds; false for a return of a function no inlined body emits.
+     */
+    private jump(
+        context: StatementLoweringContext,
+        statement:
+            ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
+    ): boolean {
+        const binding = jumpBinding(statement);
+        let index = this.jumpTargets.length - 1;
+        while (index >= 0 && this.jumpTargets[index]!.node !== binding) index--;
+        if (index < 0) {
+            if (ts.isReturnStatement(statement)) return false;
+            context.fail(
+                statement,
+                !statement.label
+                    ? "A jump has no active target."
+                    : ts.isBreakStatement(statement)
+                      ? "Labeled break has no active target."
+                      : "A labeled jump has no enclosing label.",
+            );
+        }
+        const target = this.jumpTargets[index]!;
+        const crossed = this.jumpTargets.slice(index + 1);
+        if (ts.isReturnStatement(statement)) {
+            // A jump out of an unrolled loop would skip the initialization of
+            // its flat iterations.
+            if (crossed.some(({ iteration }) => iteration))
+                context.fail(
+                    statement,
+                    "An early return out of a statically unrolled loop is not lowered.",
+                );
+            this.leave(context, statement, target, crossed);
+            return true;
+        }
+        const kind = ts.isBreakStatement(statement) ? "break" : "continue";
+        if (!ts.isLabeledStatement(target.node)) {
+            this.jumpTo(context, statement, kind, target, crossed);
+            return true;
+        }
+        // A labeled jump of the loop it stands in directly is that loop's
+        // own. One leaving further loops would skip the initialization of
+        // flat unrolled iterations, so it refuses past an unrolled one.
+        const body = labeledBody(target.node);
+        const own = crossed.findIndex((entry) => entry.node === body);
+        const loop = ts.isIterationStatement(body, false)
+            ? crossed[own]
+            : undefined;
+        const inside = crossed.slice(own + 1);
+        const left = inside.filter((entry) =>
+            ts.isIterationStatement(entry.node, false),
+        );
+        if (kind === "continue") {
+            if (!loop)
+                context.fail(statement, "A labeled continue must name a loop.");
+            if (left.length === 0) {
+                this.jumpTo(context, statement, kind, loop, inside);
+                return true;
+            }
+            if (left.some(({ iteration }) => iteration))
+                context.fail(
+                    statement,
+                    "A labeled continue out of a statically unrolled loop is not lowered.",
+                );
+            // The outermost loop it leaves continues this one after itself.
+            this.goto(
+                context,
+                left[0]!.continueAfter ??
+                    context.fail(
+                        statement,
+                        "A labeled continue has no trampoline after the loop it leaves.",
+                    ),
+            );
+            return true;
+        }
+        if (
+            loop?.iteration &&
+            left.length === 0 &&
+            !inside.some((entry) => ts.isSwitchStatement(entry.node))
+        ) {
+            this.jumpTo(context, statement, kind, loop, inside);
+            return true;
+        }
+        if ([...left, loop].some((entry) => entry?.iteration))
+            context.fail(
+                statement,
+                "A labeled break out of a statically unrolled loop is not lowered.",
+            );
+        this.leave(context, statement, target, crossed);
+        return true;
+    }
+
+    /** A break or continue of the loop or switch `target`. */
+    private jumpTo(
+        context: StatementLoweringContext,
+        statement: ts.BreakStatement | ts.ContinueStatement,
+        kind: "break" | "continue",
+        target: JumpTarget,
+        crossed: readonly JumpTarget[],
+    ): void {
+        if (target.iteration) {
+            this.completeIteration(context, statement, target.iteration, kind);
+            return;
+        }
+        if (kind === "break") {
+            this.leave(context, statement, target, crossed);
+            return;
+        }
+        // A native continue would bind the innermost C++ breakable instead.
+        if (crossed.some(nativelyBreakable))
+            context.fail(
+                statement,
+                "A switch case with an early break cannot also continue an enclosing loop.",
+            );
+        context.emit({
+            kind: "control",
+            code: "continue;",
+            transfer: "continue",
+        });
+    }
+
+    /** A break or bare return leaving `target`. */
+    private leave(
+        context: StatementLoweringContext,
+        statement: ts.Statement,
+        target: JumpTarget,
+        crossed: readonly JumpTarget[],
+    ): void {
+        if (target.exit) {
+            this.goto(context, target.exit);
+            return;
+        }
+        if (!nativelyBreakable(target) || crossed.some(nativelyBreakable))
+            context.fail(
+                statement,
+                "A jump has no lowering out of the construct it leaves.",
+            );
+        context.emit({ kind: "control", code: "break;", transfer: "break" });
     }
 
     /**
@@ -553,16 +800,15 @@ export class StatementLowerer {
      * iteration settles, it completes the iteration at generation; under a
      * runtime branch, or after an exit the program decides, it jumps.
      */
-    private completeStaticIteration(
+    private completeIteration(
         context: StatementLoweringContext,
         statement: ts.BreakStatement | ts.ContinueStatement,
-    ): boolean {
-        const frame = this.staticIterationForControl(statement);
-        if (!frame) return false;
-        const exit = ts.isBreakStatement(statement) ? "break" : "continue";
+        frame: StaticIterationFrame,
+        exit: "break" | "continue",
+    ): void {
         if (this.runtimeBranchDepth <= frame.runtimeDepth && !frame.exited) {
             writable(frame).completion = exit;
-            return true;
+            return;
         }
         if (frame.mode === "probe")
             throw new RuntimeLoopExitRequired(frame.iteration);
@@ -573,139 +819,35 @@ export class StatementLowerer {
                     ? "A break in a statically unrolled resource loop requires a generation-known condition."
                     : "A continue in a statically unrolled loop requires a generation-known condition.",
             );
-        let label: string;
+        let label: JumpLabel;
         if (exit === "break") {
             // Every later iteration is a scope the jump passes over.
             const loop = writable(frame.loop);
-            label = loop.breakLabel ??=
-                context.allocateTemporaryCppName("unrolled_break");
+            label = loop.breakLabel ??= this.jumpLabel(
+                context,
+                "unrolled_break",
+            );
             loop.scoped = true;
         } else {
-            label = writable(frame).continueLabel ??=
-                context.allocateTemporaryCppName("unrolled_continue");
+            label = writable(frame).continueLabel ??= this.jumpLabel(
+                context,
+                "unrolled_continue",
+            );
         }
         writable(frame).exited = true;
         // At the iteration's own level nothing after the jump runs.
         if (this.runtimeBranchDepth <= frame.runtimeDepth)
             writable(frame).completion = "jumped";
-        context.emit({
-            kind: "control",
-            code: `goto ${label};`,
-            transfer: "goto",
-        });
-        return true;
-    }
-
-    /** The loops a labeled jump leaves inside its target, innermost first. */
-    private loopsLeftByLabeledJump(
-        context: StatementLoweringContext,
-        statement: ts.BreakStatement | ts.ContinueStatement,
-    ): { loops: ts.IterationStatement[]; target: ts.Statement } {
-        const loops: ts.IterationStatement[] = [];
-        for (
-            let parent: ts.Node | undefined = statement.parent;
-            parent && !ts.isFunctionLike(parent);
-            parent = parent.parent
-        ) {
-            if (
-                ts.isLabeledStatement(parent) &&
-                parent.label.text === statement.label?.text
-            ) {
-                let target = parent.statement;
-                while (ts.isLabeledStatement(target)) target = target.statement;
-                return {
-                    loops: loops.filter((loop) => loop !== target),
-                    target,
-                };
-            }
-            if (ts.isIterationStatement(parent, false)) loops.push(parent);
-        }
-        context.fail(statement, "A labeled jump has no enclosing label.");
+        this.goto(context, label);
     }
 
     /**
-     * A labeled break of the unrolled loop it stands in directly is that
-     * loop's break; a jump past other unrolled iterations would skip their
-     * statements' initialization, so it refuses.
+     * Emit a loop, the target of its own breaks and continues. Labeled
+     * continues of its enclosing loop leave it to a label after it, where
+     * that loop continues natively; nothing between the two loops may hold
+     * its own breakable or cleanup scope.
      */
-    private labeledBreakOfUnrolledLoop(
-        context: StatementLoweringContext,
-        statement: ts.BreakStatement,
-    ): boolean {
-        const { loops, target } = this.loopsLeftByLabeledJump(
-            context,
-            statement,
-        );
-        const unrolled = (loop: ts.Statement): boolean =>
-            this.staticIterationCompletions.some(
-                (frame) => frame.iteration === loop,
-            );
-        if (
-            loops.length === 0 &&
-            unrolled(target) &&
-            this.staticIterationForControl(statement)?.iteration === target
-        )
-            return this.completeStaticIteration(context, statement);
-        if ([...loops, target].some(unrolled))
-            context.fail(
-                statement,
-                "A labeled break out of a statically unrolled loop is not lowered.",
-            );
-        return false;
-    }
-
-    /**
-     * The trampoline a labeled continue from a nested loop jumps to, or
-     * undefined when the label names the loop the continue stands in.
-     */
-    private labeledContinueTrampoline(
-        context: StatementLoweringContext,
-        statement: ts.ContinueStatement,
-    ): ContinueTrampoline | undefined {
-        const { loops, target } = this.loopsLeftByLabeledJump(
-            context,
-            statement,
-        );
-        if (!ts.isIterationStatement(target, false))
-            context.fail(statement, "A labeled continue must name a loop.");
-        if (loops.length === 0) return undefined;
-        if (
-            loops.some((loop) =>
-                this.staticIterationCompletions.some(
-                    (frame) => frame.iteration === loop,
-                ),
-            )
-        )
-            context.fail(
-                statement,
-                "A labeled continue out of a statically unrolled loop is not lowered.",
-            );
-        const outermost = loops.at(-1)!;
-        return (
-            this.continueTrampolines.find(
-                (trampoline) => trampoline.loop === outermost,
-            ) ??
-            context.fail(
-                statement,
-                "A labeled continue has no trampoline after the loop it leaves.",
-            )
-        );
-    }
-
-    /** Source loops lowered as native C++ loops, innermost last. */
-    private readonly nativeLoops = emissionArray<ts.IterationStatement>([]);
-
-    /** Labeled continues of an outer loop, by the inner loop they leave. */
-    private readonly continueTrampolines = emissionArray<ContinueTrampoline>(
-        [],
-    );
-
-    /**
-     * Emit a loop that labeled continues of its enclosing loop leave: they
-     * jump past it to a `continue` of that loop. Nothing between the two
-     * loops may hold its own breakable or cleanup scope.
-     */
-    private emitWithContinueTrampoline(
+    private emitLoop(
         context: StatementLoweringContext,
         loop: ts.IterationStatement,
         emitLoop: () => void,
@@ -741,60 +883,82 @@ export class StatementLowerer {
                     labels.has(node.label.text),
                 { functions: "skip" },
             );
-        if (!continues || !enclosing) {
-            emitLoop();
-            return;
+        if (enclosing && continues) {
+            if (crossed)
+                context.fail(
+                    crossed,
+                    "A labeled continue cannot leave a switch or try statement.",
+                );
+            if (this.isUnrolled(enclosing))
+                context.fail(
+                    loop,
+                    "A labeled continue of a statically unrolled loop is not lowered.",
+                );
         }
-        if (crossed)
-            context.fail(
-                crossed,
-                "A labeled continue cannot leave a switch or try statement.",
-            );
-        if (
-            this.staticIterationCompletions.some(
-                (frame) => frame.iteration === enclosing,
-            )
-        )
-            context.fail(
-                loop,
-                "A labeled continue of a statically unrolled loop is not lowered.",
-            );
-        const trampoline: ContinueTrampoline = {
-            loop,
-            label: context.allocateTemporaryCppName("labeled_continue"),
-            used: false,
-        };
-        this.continueTrampolines.push(trampoline);
-        try {
-            emitLoop();
-        } finally {
-            this.continueTrampolines.pop();
-        }
-        if (!trampoline.used) return;
-        if (this.nativeLoops.at(-1) !== enclosing)
+        const continueAfter =
+            enclosing && continues
+                ? this.jumpLabel(context, "labeled_continue")
+                : undefined;
+        this.withJumpTarget(jumpTarget(loop, { continueAfter }), emitLoop);
+        if (!continueAfter?.used) return;
+        let iterating: ts.Node | undefined;
+        for (const target of this.jumpTargets)
+            if (target.iterating) iterating = target.node;
+        if (iterating !== enclosing)
             context.fail(
                 loop,
                 "A labeled continue requires its loop to run as a native loop.",
             );
-        const skip = context.allocateTemporaryCppName("labeled_continue_skip");
-        context.emit({
-            kind: "control",
-            code: `goto ${skip};`,
-            transfer: "goto",
-        });
-        context.emit(`${trampoline.label}:;`);
+        const skip = this.jumpLabel(context, "labeled_continue_skip");
+        this.goto(context, skip);
+        this.placeLabel(context, continueAfter);
         context.emit({
             kind: "control",
             code: "continue;",
             transfer: "continue",
         });
-        context.emit(`${skip}:;`);
+        this.placeLabel(context, skip);
     }
 
     private staticIterationCompleted(): boolean {
-        return this.staticIterationCompletions.some(
-            ({ completion }) => completion !== "normal",
+        return this.jumpTargets.some(
+            ({ iteration }) =>
+                iteration !== undefined && iteration.completion !== "normal",
         );
+    }
+
+    /**
+     * An inlined function body whose bare early returns leave it: a
+     * `do {} while (false)` they break out of, or, when one stands inside a
+     * loop or switch, a scope with a label after it.
+     */
+    public emitInlinedBody<T>(
+        context: StatementLoweringContext,
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label",
+        emitBody: () => T,
+    ): T {
+        const wrapper = returns === "break";
+        const target = jumpTarget(
+            declaration,
+            wrapper
+                ? { breakable: true }
+                : { exit: this.jumpLabel(context, "inline_return") },
+        );
+        context.emit(
+            wrapper
+                ? { kind: "open", code: "do {", breaks: true }
+                : { kind: "open", code: "{" },
+        );
+        context.increaseIndent();
+        const result = this.withJumpTarget(target, emitBody);
+        context.decreaseIndent();
+        context.emit({
+            kind: "close",
+            code: wrapper ? "} while (false);" : "}",
+        });
+        this.placeLabel(context, target.exit);
+        return result;
     }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
@@ -915,7 +1079,7 @@ export class StatementLowerer {
             return;
         }
         if (ts.isIterationStatement(statement, false)) {
-            this.emitWithContinueTrampoline(context, statement, () => {
+            this.emitLoop(context, statement, () => {
                 if (ts.isForStatement(statement))
                     this.emitFor(context, statement);
                 else if (ts.isDoStatement(statement))
@@ -930,130 +1094,39 @@ export class StatementLowerer {
             return;
         }
         if (ts.isSwitchStatement(statement)) {
-            this.emitSwitch(context, statement);
+            this.withJumpTarget(jumpTarget(statement), () =>
+                this.emitSwitch(context, statement),
+            );
             return;
         }
         if (ts.isLabeledStatement(statement)) {
-            const target = context.allocateTemporaryCppName(
-                `label_${statement.label.text}`,
+            // A labeled break goes to the label after the statement.
+            const target = jumpTarget(statement, {
+                exit: this.jumpLabel(context, `label_${statement.label.text}`),
+            });
+            this.withJumpTarget(target, () =>
+                this.emit(context, statement.statement),
             );
-            const label = { source: statement.label.text, target, used: false };
-            this.labels.push(label);
-            try {
-                this.emit(context, statement.statement);
-            } finally {
-                this.labels.pop();
-            }
-            if (label.used) context.emit(`${target}:;`);
-            return;
-        }
-        if (ts.isBreakStatement(statement)) {
-            if (this.completeCleanupJump(context, statement)) return;
-            if (statement.label) {
-                const label = this.labels
-                    .slice()
-                    .reverse()
-                    .find(({ source }) => source === statement.label!.text);
-                if (!label) {
-                    context.fail(
-                        statement,
-                        "Labeled break has no active target.",
-                    );
-                }
-                if (this.labeledBreakOfUnrolledLoop(context, statement)) return;
-                writable(label).used = true;
-                context.emit({
-                    kind: "control",
-                    code: `goto ${label.target};`,
-                    transfer: "goto",
-                });
-                return;
-            }
-            const switchEnd = this.switchBreakTarget(statement);
-            if (switchEnd) {
-                writable(switchEnd).used = true;
-                context.emit({
-                    kind: "control",
-                    code: `goto ${switchEnd.label};`,
-                    transfer: "goto",
-                });
-                return;
-            }
-            if (this.completeStaticIteration(context, statement)) return;
-            context.emit({
-                kind: "control",
-                code: "break;",
-                transfer: "break",
-            });
-            return;
-        }
-        if (ts.isContinueStatement(statement)) {
-            if (this.completeCleanupJump(context, statement)) return;
-            // A labeled continue of the loop it stands in directly is an
-            // unlabeled one; from a nested loop it jumps to the trampoline
-            // after the outermost loop it leaves.
-            const trampoline = statement.label
-                ? this.labeledContinueTrampoline(context, statement)
-                : undefined;
-            if (trampoline) {
-                writable(trampoline).used = true;
-                context.emit({
-                    kind: "control",
-                    code: `goto ${trampoline.label};`,
-                    transfer: "goto",
-                });
-                return;
-            }
-            if (this.completeStaticIteration(context, statement)) return;
-            context.emit({
-                kind: "control",
-                code: "continue;",
-                transfer: "continue",
-            });
-            return;
-        }
-        const inlineReturn =
-            ts.isReturnStatement(statement) && !statement.expression
-                ? context.activeInlineReturnLabel()
-                : undefined;
-        if (inlineReturn) {
-            // An early bare return of an inlined body jumps past it. A jump
-            // out of an unrolled loop of the same body would skip the
-            // initialization of its flat iterations.
-            const owner = ts.findAncestor(statement, ts.isFunctionLike);
-            if (
-                this.staticIterationCompletions.some(
-                    (frame) =>
-                        ts.findAncestor(frame.iteration, ts.isFunctionLike) ===
-                        owner,
-                )
-            )
-                context.fail(
-                    statement,
-                    "An early return out of a statically unrolled loop is not lowered.",
-                );
-            writable(inlineReturn).used = true;
-            context.emit({
-                kind: "control",
-                code: `goto ${inlineReturn.label};`,
-                transfer: "goto",
-            });
+            this.placeLabel(context, target.exit);
             return;
         }
         if (
-            ts.isReturnStatement(statement) &&
-            !statement.expression &&
-            context.activeInlineWrapper()
+            ts.isBreakStatement(statement) ||
+            ts.isContinueStatement(statement)
         ) {
-            // Early bare return of an inlined function: leave the
-            // breakable wrapper emitted around the inline body.
-            context.emit({
-                kind: "control",
-                code: "break;",
-                transfer: "break",
-            });
+            if (!this.completeCleanupJump(context, statement))
+                this.jump(context, statement);
             return;
         }
+        // An early bare return of an inlined body leaves it; a native
+        // function's own return is its native one.
+        if (
+            ts.isReturnStatement(statement) &&
+            !statement.expression &&
+            context.activeNativeReturnType() === undefined &&
+            this.jump(context, statement)
+        )
+            return;
         if (
             ts.isReturnStatement(statement) &&
             returnsNever(context.checker, statement)
@@ -1529,25 +1602,30 @@ export class StatementLowerer {
                 );
             }
         }
+        // The switch itself was lowered to an if/else chain. A
+        // single-iteration scope restores the one missing control boundary
+        // so an early case `break` still skips the rest of that case
+        // without escaping an enclosing loop.
+        const wrapper = nestedBreak
+            ? writable(this.targetOf(clause.parent.parent))
+            : undefined;
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            if (nestedBreak) {
-                // The switch itself was lowered to an if/else chain. A
-                // single-iteration scope restores the one missing control
-                // boundary so an early case `break` still skips the rest of
-                // that case without escaping an enclosing loop.
+            if (wrapper) {
                 context.emit({ kind: "open", code: "do {", breaks: true });
                 context.increaseIndent();
+                wrapper.breakable = true;
             }
             for (const statement of statements) {
                 this.emit(context, statement);
             }
-            if (nestedBreak) {
+            if (wrapper) {
                 context.decreaseIndent();
                 context.emit({ kind: "close", code: "} while (false);" });
             }
         } finally {
+            if (wrapper) wrapper.breakable = false;
             context.bindings.popScope();
             context.decreaseIndent();
         }
@@ -1599,53 +1677,16 @@ export class StatementLowerer {
         });
     }
 
-    /** Unlabeled breaks of the switches lowered with an end label. */
-    private readonly switchBreakTargets = emissionArray<{
-        readonly statement: ts.SwitchStatement;
-        readonly label: string;
-        readonly used: boolean;
-    }>([]);
-
     /** Emit a switch body whose breaks jump to a label after it. */
     private withSwitchBreakTarget(
         context: StatementLoweringContext,
         statement: ts.SwitchStatement,
         emitBody: () => void,
     ): void {
-        const target = {
-            statement,
-            label: context.allocateTemporaryCppName("switch_end"),
-            used: false,
-        };
-        this.switchBreakTargets.push(target);
-        try {
-            emitBody();
-        } finally {
-            this.switchBreakTargets.pop();
-        }
-        if (target.used) context.emit(`${target.label}:;`);
-    }
-
-    /** The end label an unlabeled break of a fallthrough switch jumps to. */
-    private switchBreakTarget(
-        statement: ts.BreakStatement,
-    ): (typeof this.switchBreakTargets)[number] | undefined {
-        for (
-            let parent: ts.Node | undefined = statement.parent;
-            parent;
-            parent = parent.parent
-        ) {
-            if (
-                ts.isFunctionLike(parent) ||
-                ts.isIterationStatement(parent, false)
-            )
-                return undefined;
-            if (ts.isSwitchStatement(parent))
-                return this.switchBreakTargets.find(
-                    (target) => target.statement === parent,
-                );
-        }
-        return undefined;
+        const exit = this.jumpLabel(context, "switch_end");
+        writable(this.targetOf(statement)).exit = exit;
+        emitBody();
+        this.placeLabel(context, exit);
     }
 
     /** One scope holding statements, emitted until one leaves it. */
@@ -1755,7 +1796,7 @@ export class StatementLowerer {
             }
             return;
         }
-        if (this.staticIterationCompletions.length > 0) {
+        if (this.jumpTargets.some(({ iteration }) => iteration)) {
             if (
                 firstReturn([statement.thenStatement]) ||
                 (statement.elseStatement &&
@@ -2331,10 +2372,11 @@ export class StatementLowerer {
     ): string[] {
         // A pending break/continue leaves the try only after every cleanup
         // statement runs. An abrupt cleanup completion can replace it.
-        const completions = this.staticIterationCompletions.map((frame) => ({
-            frame,
-            completion: frame.completion,
-        }));
+        const completions = this.jumpTargets.flatMap(({ iteration }) =>
+            iteration
+                ? [{ frame: iteration, completion: iteration.completion }]
+                : [],
+        );
         for (const { frame } of completions)
             writable(frame).completion = "normal";
         context.bindings.pushScope(context.allocateBlockPrefix());
@@ -2676,7 +2718,7 @@ export class StatementLowerer {
             if (this.emitUnrolledIteration(context, loop, bind) === "break")
                 break;
         }
-        if (loop.breakLabel !== undefined) context.emit(`${loop.breakLabel}:;`);
+        this.placeLabel(context, loop.breakLabel);
     }
 
     private emitUnrolledIteration(
@@ -2726,7 +2768,9 @@ export class StatementLowerer {
             exited: false,
             continueLabel: undefined,
         };
-        this.staticIterationCompletions.push(frame);
+        const target = writable(this.targetOf(loop.iteration));
+        const enclosing = target.iteration;
+        target.iteration = frame;
         context.enterStaticIteration(loop.iteration);
         const body = loop.iteration.statement;
         const emitStatements = (): void => {
@@ -2751,12 +2795,11 @@ export class StatementLowerer {
                     context.decreaseIndent();
                 }
                 context.emit({ kind: "close", code: "}" });
-                if (frame.continueLabel !== undefined)
-                    context.emit(`${frame.continueLabel}:;`);
+                this.placeLabel(context, frame.continueLabel);
             } else emitStatements();
         } finally {
             context.leaveStaticIteration();
-            this.staticIterationCompletions.pop();
+            target.iteration = enclosing;
             context.bindings.popScope();
         }
         return frame.completion;
@@ -4782,7 +4825,7 @@ export class StatementLowerer {
             // Recognize it before ordinary call inlining reaches the
             // browser-only constructor in the helper's return expression.
             if (
-                frameYieldInsideLoop(unwrapped, this.staticIterationCompletions)
+                frameYieldInsideLoop(unwrapped, (loop) => this.isUnrolled(loop))
             ) {
                 context.fail(
                     unwrapped,
@@ -4860,7 +4903,7 @@ export class StatementLowerer {
             // each iteration would silently turn it into none, so it
             // refuses; a written-out one is N sequential yields.
             if (
-                frameYieldInsideLoop(unwrapped, this.staticIterationCompletions)
+                frameYieldInsideLoop(unwrapped, (loop) => this.isUnrolled(loop))
             ) {
                 context.fail(
                     unwrapped,

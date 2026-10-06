@@ -440,6 +440,10 @@ test("labeled jumps refuse what they cannot leave", () => {
             "let n = 0; outer: for (let i = 0; i < 3; i++) { switch (i) { case 1: for (let j = 0; j < 2; j++) { if (j === 1) continue outer; n++; } break; default: n += 10; } }",
             /labeled continue cannot leave a switch or try statement/,
         ],
+        [
+            "let n = 0; loop: for (let i = 0; i < 3; i++) { switch (i) { case 0: if (n > 0) break; n++; continue loop; default: n += 10; } n++; }",
+            /switch case with an early break cannot also continue an enclosing loop/,
+        ],
     ] as const)
         assert.throws(() => compileSource(source), message);
 });

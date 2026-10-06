@@ -25,7 +25,6 @@ import {
     writable,
 } from "./compiler/emission-transaction.js";
 import type {
-    InlineReturnLabel,
     LoweringServices,
     LoweringStatement,
     NativeFunctionBodyOptions,
@@ -804,8 +803,6 @@ class Compiler implements LoweringServices {
           } & NativeFunctionBodyOptions)
         | {
               kind: "inline";
-              wrapped: boolean;
-              returnLabel?: InlineReturnLabel;
               engineScopeDepth: number;
           }
     > = emissionArray([]);
@@ -6223,16 +6220,24 @@ class Compiler implements LoweringServices {
         if (binding) this.useNativeBinding(binding);
     }
 
-    public beginInlineFrame(
-        wrapped: boolean,
-        returnLabel?: InlineReturnLabel,
-    ): void {
+    public beginInlineFrame(): void {
         this.returnFrames.push({
             kind: "inline",
-            wrapped,
-            ...(returnLabel ? { returnLabel } : {}),
             engineScopeDepth: this.bindings.variableScopes.length,
         });
+    }
+
+    public emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label",
+        emitBody: () => T,
+    ): T {
+        return this.statements.emitInlinedBody(
+            this,
+            declaration,
+            returns,
+            emitBody,
+        );
     }
 
     public endInlineFrame(): void {
@@ -6305,16 +6310,6 @@ class Compiler implements LoweringServices {
     public activeNativeReturnType(): DataType | "void" | undefined {
         const top = this.returnFrames.at(-1);
         return top?.kind === "native" ? top.type : undefined;
-    }
-
-    public activeInlineWrapper(): boolean {
-        const top = this.returnFrames.at(-1);
-        return top?.kind === "inline" && top.wrapped;
-    }
-
-    public activeInlineReturnLabel(): InlineReturnLabel | undefined {
-        const top = this.returnFrames.at(-1);
-        return top?.kind === "inline" ? top.returnLabel : undefined;
     }
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {
