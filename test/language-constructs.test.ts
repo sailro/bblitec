@@ -8049,6 +8049,28 @@ test("arrays of records are lent only to callees that keep neither them nor thei
     );
 });
 
+check(
+    "awaited-records-keep-their-record-type",
+    `
+    interface Grid { section: string; columns: number }
+    interface Sheet { texture: number; grids: Map<string, Grid>; grid: (section: string) => Grid }
+    async function loadSheet(texture: number): Promise<Sheet> {
+        const grids = new Map<string, Grid>();
+        grids.set("main", { section: "main", columns: texture });
+        return { texture, grids, grid: (section) => grids.get(section)! };
+    }
+    interface Sheets { terrain: Sheet; hills: Sheet }
+    async function main(): Promise<void> {
+        const [terrain, hills] = await Promise.all([loadSheet(1), loadSheet(2)]);
+        const sheets: Sheets = { terrain, hills };
+        if (sheets.terrain !== terrain || sheets.hills.grid("main").columns !== 2) throw new Error("awaited sheets");
+        const seen = new Set<Sheet>([terrain]);
+        if (!seen.has(sheets.terrain) || seen.has(hills)) throw new Error("awaited identity");
+    }
+    void main();
+`,
+);
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>
