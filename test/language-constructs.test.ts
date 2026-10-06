@@ -8097,6 +8097,28 @@ check(
 `,
 );
 
+check(
+    "union-arm-fields-own-while-undefined",
+    `
+    type Shape = { kind: "a"; x: number | undefined } | { kind: "b"; y: number };
+    const shapes: Shape[] = [{ kind: "a", x: undefined }, { kind: "b", y: 2 }, { kind: "a", x: 4 }];
+    let total = 0;
+    let numbers = 0;
+    let undefinedOwn = 0;
+    let keys = "";
+    for (const shape of shapes) {
+        for (const [key, value] of Object.entries(shape)) {
+            keys += key;
+            if (typeof value === "number") { numbers++; total += value; }
+        }
+        const copy = { ...shape };
+        if (copy.kind === "a" && "x" in copy && copy.x === undefined) undefinedOwn++;
+        if (copy.kind === "a" && copy.x !== undefined) total += copy.x * 10;
+    }
+    if (total !== 46 || numbers !== 2 || undefinedOwn !== 1 || keys !== "kindxkindykindx") throw new Error("own arm fields " + total + " " + numbers + " " + undefinedOwn + " " + keys);
+`,
+);
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

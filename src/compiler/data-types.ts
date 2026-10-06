@@ -4348,6 +4348,37 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether `ownPropertyPresentCpp`'s test of `field` passes only while
+     * its storage holds a value. A key own by its record's tags alone is
+     * not: a union arm declaring `x: T | undefined` holds an empty slot
+     * while `x` is own.
+     */
+    public ownPresenceHoldsValue(
+        structName: string,
+        field: DataStructField,
+    ): boolean {
+        return (
+            this.ownPropertyPresence(
+                structName,
+                field,
+                this.presenceByTags(structName, field),
+            ) !== "own"
+        );
+    }
+
+    /** Whether the record's tags decide whether `field` is an own key. */
+    private presenceByTags(
+        structName: string,
+        field: DataStructField,
+    ): boolean {
+        return (
+            this.structsByName.has(structName) &&
+            field.presentForTags !== undefined &&
+            !field.accessor
+        );
+    }
+
+    /**
      * The run-time test that a record's tags select a union arm declaring
      * `field`, read beside it; undefined for a field every arm declares.
      */
@@ -4358,11 +4389,16 @@ export class DataTypeRegistry {
         access: "->" | ".",
     ): string | undefined {
         const definition = this.structsByName.get(structName);
-        if (!definition || !field.presentForTags || field.accessor)
+        const alternatives = field.presentForTags;
+        if (
+            !definition ||
+            !alternatives ||
+            !this.presenceByTags(structName, field)
+        )
             return undefined;
         return this.tagConditionCpp(
             definition,
-            field.presentForTags,
+            alternatives,
             (tag) => `${ownerCpp}${access}${tag.name}`,
             "bblscene::",
         );
