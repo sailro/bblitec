@@ -2601,6 +2601,28 @@ check(
 `,
 );
 
+check(
+    "binary-asserted-and-default-absent-values",
+    `
+    const worldOf = new Map<number, Float32Array>();
+    worldOf.set(1, new Float32Array([4, 5]));
+    interface Root { name: string; world: Float32Array; }
+    function root(inherited: Root | null, starts: boolean): Root | null {
+        return starts ? { name: "n", world: worldOf.get(1)! } : inherited;
+    }
+    const made = root(null, true);
+    if (!made || made.world !== worldOf.get(1) || root(made, false) !== made || root(null, false) !== null) throw new Error("asserted map value in a record");
+    made.world[0] = 9;
+    if (worldOf.get(1)![0] !== 9) throw new Error("asserted value aliases the stored array");
+    function first(n: number, policies: Uint8Array | undefined = undefined): number { return policies ? policies[0]! : n; }
+    function count(values: number[] | undefined = undefined): number { return values ? values.length : -1; }
+    const firsts: Array<typeof first> = [first];
+    const counts: Array<typeof count> = [count];
+    if (firsts[0]!(2) !== 2 || firsts[0]!(2, new Uint8Array([7])) !== 7 || firsts[0]!(3, undefined) !== 3) throw new Error("undefined default of a stored function");
+    if (counts[0]!() !== -1 || counts[0]!([1, 2]) !== 2) throw new Error("undefined default of an array parameter");
+`,
+);
+
 test("typed-array unions and views refuse what they do not represent", () => {
     const pick =
         "function pick(text: boolean): Float32Array | string { return text ? 'ab' : new Float32Array(2); }";

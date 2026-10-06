@@ -79,7 +79,7 @@ function expressionEnum(
 function expressionStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     if (
@@ -142,7 +142,7 @@ function expressionStruct(
             return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
         }
     }
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.ownedCpp ?? value.cpp;
 }
@@ -150,13 +150,13 @@ function expressionStruct(
 function expressionEnummap(
     dataType: DataType<"enummap">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     if (ts.isObjectLiteralExpression(unwrapped)) {
         return lowerer.enumMapLiteral(unwrapped, dataType);
     }
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.cpp;
 }

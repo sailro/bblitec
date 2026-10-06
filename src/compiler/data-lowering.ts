@@ -127,6 +127,7 @@ import { isTrsVectorName } from "./assignments.js";
 import {
     isAssignmentExpression,
     expressionMayRunCode,
+    hasNonNullAssertion,
     isUpdateExpression,
     iteratorMethodCall,
     rootExpression,
@@ -8267,15 +8268,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return false;
     }
 
+    /**
+     * The data value `expression` produces for a `dataType` sink. `source`
+     * is the expression as written, whose `!` asserts the value present.
+     */
     public requireDataValue(
         expression: ts.Expression,
         dataType: DataType,
+        source: ts.Expression = expression,
     ): Value {
         const raw =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
         const value =
-            raw.kind === "data" ? this.narrowOptional(raw, expression) : raw;
+            raw.kind === "data"
+                ? this.narrowOptional(
+                      raw,
+                      expression,
+                      hasNonNullAssertion(source),
+                  )
+                : raw;
         if (
             value.kind === "data" &&
             value.dataType &&

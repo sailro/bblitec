@@ -65,6 +65,7 @@ import {
     CompilerSymbols,
     declarationInDefaultLibrary,
     declaredSymbol,
+    isGlobalUndefined,
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
@@ -6305,6 +6306,13 @@ export class UserFunctionLowerer {
                 (storage.kind === "struct" &&
                     context.dataTypes.isReferenceStruct(storage.name)));
         if (storage.kind !== "optional" && !referenceAbsence) return argument;
+        // A default of `undefined` keeps an optional argument as passed,
+        // absent or not.
+        if (
+            storage.kind === "optional" &&
+            isGlobalUndefined(this.checker, initializer)
+        )
+            return argument;
         if (absent.null) {
             if (!mayBeUndefined) return argument;
             return context.fail(

@@ -26,7 +26,7 @@ function expressionVector(
 function expressionMapOrSet(
     dataType: DataType<"map" | "set">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     if (dataType.kind === "map" && ts.isObjectLiteralExpression(unwrapped)) {
@@ -47,7 +47,7 @@ function expressionMapOrSet(
             return created.cpp;
         }
     }
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.cpp;
 }
@@ -351,9 +351,9 @@ const identityContainerSink = {
     expression: (
         type: DataType<"iterator" | "arguments">,
         lowerer: DataSinkHost,
-        _expression: ts.Expression,
+        expression: ts.Expression,
         unwrapped: ts.Expression,
-    ) => lowerer.requireDataValue(unwrapped, type).cpp,
+    ) => lowerer.requireDataValue(unwrapped, type, expression).cpp,
     value: (
         type: DataType<"iterator" | "arguments">,
         _lowerer: DataSinkHost,

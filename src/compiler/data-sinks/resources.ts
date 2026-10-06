@@ -131,10 +131,10 @@ function expressionHandle(
 function expressionArraybufferOrDataview(
     dataType: DataType<"arraybuffer" | "dataview">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.cpp;
 }
@@ -208,7 +208,7 @@ function numericViewValue(
 function expressionTypedArray(
     dataType: DataType<TypedArrayKind>,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     if (ts.isNewExpression(unwrapped)) {
@@ -217,7 +217,7 @@ function expressionTypedArray(
             return value.cpp;
         }
     }
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.cpp;
 }
