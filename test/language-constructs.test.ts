@@ -587,6 +587,22 @@ check(
 `,
 );
 
+test("an exponent compound assignment with a static exponent spells std::pow as ** does", () => {
+    const { cpp } = compileSource(`
+    const h = new Float64Array([3, 2]);
+    let x = h[0]!;
+    x **= 2;
+    const o = { v: h[1]! };
+    o.v **= 3;
+    h[0] **= 0.5;
+    let y = h[1]!;
+    y = y ** 2;
+    if (x + o.v + h[0]! + y === 0) throw new Error("read");
+    `);
+    assert.doesNotMatch(cpp, /power_js/);
+    assert.equal(cpp.match(/std::pow\(/g)?.length, 4);
+});
+
 check(
     "numeric-updates-on-optional-and-entry-places",
     `
@@ -1057,6 +1073,30 @@ check(
     if(numbers[1] !== 5 || numbers[2] !== 6 || numbers[3] !== 8) throw new Error('spread arguments evaluated before mutation');
     numbers.push(...numbers);
     if(numbers.length !== 8 || numbers[5] !== 5) throw new Error('self spread');
+`,
+);
+
+check(
+    "push-spreads-what-an-array-literal-spreads",
+    `
+    const gate = new Float32Array([1]);
+    const letters: string[] = ["<"];
+    letters.push(..."ab", ...new Set(["c", "c", "d"]));
+    const tags = new Map<string, number>([["x", 1], ["y", 2]]);
+    letters.push(...tags.keys());
+    if (letters.join("") !== "<abcdxy") throw new Error("string, Set and iterator spreads");
+    const numbers: number[] = [0];
+    numbers.push(...new Float32Array([0.5, 1.5]), ...new Set([2, 2, 3]), ...tags.values());
+    if (numbers.join(",") !== "0,0.5,1.5,2,3,1,2") throw new Error("typed array, Set and iterator spreads");
+    const pairs: [string, number][] = [];
+    pairs.push(...tags);
+    if (pairs.length !== 2 || pairs[1]![0] !== "y" || pairs[1]![1] !== 2) throw new Error("Map entry spread");
+    numbers.length = 1;
+    numbers.push(...numbers.map((v) => v + gate[0]!), ...numbers);
+    if (numbers.join(",") !== "0,1,0") throw new Error("receiver read before the push");
+    const points: string[] = [];
+    points.push(..."a\u{1F600}");
+    if (points.length !== 2 || points[1] !== "\u{1F600}") throw new Error("code points");
 `,
 );
 
@@ -7055,6 +7095,45 @@ check(
 `,
 );
 
+check(
+    "assignment-values-yield-the-right-side-for-every-target",
+    `
+    const gate = new Float32Array([0, 1]);
+    let text = "a";
+    let other = "b";
+    const chained = (text = other = "z" + gate[1]!);
+    if (chained !== "z1" || text !== "z1" || other !== "z1") throw new Error("string locals");
+    interface Labelled { label: string }
+    function labelled(): Labelled {
+        let held = "";
+        return { get label() { return "<" + held + ">"; }, set label(next: string) { held = next.trim(); } };
+    }
+    const target = labelled();
+    const shown = (target.label = " hi ");
+    if (shown !== " hi " || target.label !== "<hi>") throw new Error("accessor record");
+    class Gauge {
+        private level = 0;
+        get value(): number { return this.level; }
+        set value(next: number) { this.level = Math.max(0, Math.min(1, next)); }
+    }
+    const gauges = [new Gauge(), new Gauge()];
+    let g = 1;
+    const level = (gauges[g--]!.value = 7 * gate[1]!);
+    if (level !== 7 || g !== 0 || gauges[1]!.value !== 1 || gauges[0]!.value !== 0) throw new Error("class setter through an element");
+    interface Bag { items: number[]; count: number }
+    const bags: Bag[] = [{ items: [], count: 0 }, { items: [], count: 0 }];
+    let r = 0;
+    const items = (bags[r++]!.items = [1, 2]);
+    items.push(3);
+    const count = (bags[r++]!.count = 5);
+    if (r !== 2 || bags[0]!.items.length !== 3 || bags[0]!.items !== items || count !== 5 || bags[1]!.count !== 5) throw new Error("record fields through elements");
+    let picked: Bag | null = null;
+    const assigned = (picked = bags[1]!);
+    assigned.count = 6;
+    if (picked!.count !== 6 || assigned !== bags[1]) throw new Error("record local keeps identity");
+`,
+);
+
 test("conditional record values refuse unrepresented key and absence shapes", () => {
     for (const [source, message] of [
         [
@@ -8280,6 +8359,62 @@ check(
     const ordered: number[] = [3, 1, 2];
     const sorted = ordered.sort((a, b) => { if (ordered.length > 2) ordered.pop(); return a - b; });
     if (sorted !== ordered || ordered.join() !== "1,2,3") throw new Error("sort writes back the values it collected");
+`,
+);
+
+check(
+    "array-callbacks-shrinking-the-receiver-through-a-wider-alias",
+    `
+    const queue: number[] = [];
+    queue.push(1, 2, 3, 4);
+    const view: unknown[] = queue;
+    const seen: number[] = [];
+    queue.forEach((value) => { seen.push(value); view.length = 2; });
+    if (seen.join() !== "1,2" || queue.length !== 2) throw new Error("an unknown[] alias truncates the receiver");
+    function drain<L extends number[]>(list: L, alias: L): number {
+        let visits = 0;
+        list.forEach(() => { alias.pop(); visits++; });
+        return visits;
+    }
+    const items: number[] = [];
+    items.push(5, 6, 7, 8);
+    if (drain(items, items) !== 2 || items.length !== 2) throw new Error("a type-parameter alias pops the receiver");
+    function clear<T>(list: T[], alias: T[]): T[] {
+        return list.filter(() => { alias.length = 1; return true; });
+    }
+    const words: string[] = [];
+    words.push("a", "b", "c");
+    if (clear(words, words).join() !== "a" || words.length !== 1) throw new Error("a generic alias truncates the receiver");
+    const scores: number[] = [];
+    scores.push(3, 1, 2);
+    const loose: unknown[] = scores;
+    const sorted = scores.sort((a, b) => { if (loose.length > 2) loose.pop(); return a - b; });
+    if (sorted !== scores || scores.join() !== "1,2,3") throw new Error("an unknown[] alias shrinks the sorted receiver");
+`,
+);
+
+check(
+    "array-callbacks-writing-other-objects-walk-the-receiver",
+    `
+    interface Item { id: string; weight: number; disposed: boolean }
+    class Model {
+        public total = 0;
+        public disposed = false;
+        add(values: number[]): void { values.forEach((x) => (this.total += x)); }
+        dispose(): void { this.disposed = true; }
+    }
+    const items: Item[] = [{ id: "a", weight: 1, disposed: false }, { id: "b", weight: 2, disposed: false }];
+    const byId = items.reduce((acc, item) => { acc[item.id] = item; return acc; }, {} as Record<string, Item>);
+    byId["b"]!.weight = 7;
+    if (items[1]!.weight !== 7) throw new Error("the accumulator keeps the element identity");
+    const models = [new Model(), new Model()];
+    models.forEach((m) => m.dispose());
+    models[0]!.add([1, 2, 3]);
+    const heavy = items.filter((item) => { item.weight += 1; return item.weight > 2; });
+    const counts = new Map<string, number>();
+    items.forEach((item) => counts.set(item.id, item.weight));
+    if (!models[1]!.disposed || models[0]!.total !== 6 || heavy.length !== 1 || heavy[0] !== items[1] || counts.get("a") !== 2)
+        throw new Error("callbacks writing records, instances and maps");
 `,
 );
 

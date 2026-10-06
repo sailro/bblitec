@@ -2466,6 +2466,8 @@ class Compiler implements LoweringServices {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        const assigned = this.dataLowerer.assignedValue(expression);
+        if (assigned) return assigned;
         traceSourceNode(expression);
         this.asyncActivations.requirePendingActivationRealm(expression);
         this.checkNodeGeometryMutation(expression);
@@ -3350,7 +3352,11 @@ class Compiler implements LoweringServices {
     }
 
     public compileBoolean(expression: ts.Expression): string {
-        return this.evaluator.compileBoolean(expression);
+        return (
+            this.dataLowerer.assignedCondition(expression, () =>
+                this.compileBoolean(expression),
+            ) ?? this.evaluator.compileBoolean(expression)
+        );
     }
 
     /** Nonzero while a frame callback's statements are being lowered. */
@@ -3384,7 +3390,10 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
         precision: "float" | "double" = "float",
     ): string {
-        return this.evaluator.compileNumber(expression, precision);
+        return (
+            this.dataLowerer.assignedNumber(expression, precision) ??
+            this.evaluator.compileNumber(expression, precision)
+        );
     }
 
     public compileEnumSwitchLabel(
@@ -6206,28 +6215,27 @@ class Compiler implements LoweringServices {
         if (binding) this.useNativeBinding(binding);
     }
 
-    public beginInlineFrame(): void {
+    public emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label" | undefined,
+        emitBody: () => T,
+    ): T {
         this.returnFrames.push({
             kind: "inline",
             engineScopeDepth: this.bindings.variableScopes.length,
         });
-    }
-
-    public emitInlinedBody<T>(
-        declaration: ts.SignatureDeclaration,
-        returns: "break" | "label",
-        emitBody: () => T,
-    ): T {
-        return this.statements.emitInlinedBody(
-            this,
-            declaration,
-            returns,
-            emitBody,
-        );
-    }
-
-    public endInlineFrame(): void {
-        this.validateResourceLoopReturn(this.returnFrames.pop());
+        try {
+            return returns
+                ? this.statements.emitInlinedBody(
+                      this,
+                      declaration,
+                      returns,
+                      emitBody,
+                  )
+                : emitBody();
+        } finally {
+            this.validateResourceLoopReturn(this.returnFrames.pop());
+        }
     }
 
     private checkpointResourceConstruction(): ResourceConstructionCheckpoint {

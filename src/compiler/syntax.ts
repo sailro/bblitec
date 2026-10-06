@@ -39,6 +39,22 @@ export function expressionMayRunCode(expression: ts.Expression): boolean {
     );
 }
 
+/**
+ * Whether evaluating `expression` twice could repeat an effect: it calls,
+ * constructs, awaits, updates or assigns. Property reads count as none.
+ */
+export function expressionHasEffects(expression: ts.Expression): boolean {
+    return someAnalysisNode(
+        expression,
+        (node) =>
+            ts.isCallExpression(node) ||
+            ts.isNewExpression(node) ||
+            ts.isAwaitExpression(node) ||
+            isUpdateExpression(node) ||
+            isAssignmentExpression(node),
+    );
+}
+
 interface UnwrapOptions {
     /**
      * Strip `await` as well. Only a reader that already knows the awaited

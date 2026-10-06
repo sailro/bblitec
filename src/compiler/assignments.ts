@@ -1862,8 +1862,17 @@ export function emitPropertyAssignment(
     if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
         // The owner is compiled rather than looked up, so a mesh read
         // out of the data model (a handle stored in a struct or array)
-        // writes its transform exactly like a mesh local.
-        const mesh = context.compileValue(left.expression.expression);
+        // writes its transform exactly like a mesh local. Every lane write
+        // below names it again, so one with effects is read once.
+        const owner = left.expression.expression;
+        const compiled = context.compileValue(owner);
+        const mesh = expressionHasEffects(owner)
+            ? context.bindings.pinValueToTemporary(
+                  compiled,
+                  "transform_owner",
+                  owner,
+              )
+            : compiled;
         const axis = trsAxisIndex(left.name.text);
         if (axis === undefined) {
             context.fail(
@@ -2283,7 +2292,7 @@ function requireSimpleAssignment(
 }
 
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, expressionHasEffects } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitBrowserFileAssignment } from "./browser-file.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";

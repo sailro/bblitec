@@ -7203,7 +7203,7 @@ test("spreads a runtime numeric tuple into a numeric array", () => {
 
     assert.match(
         result.cpp,
-        /\.insert\([^,]+\.end\(\), [^.]+\.begin\(\), [^.]+\.end\(\)\)/,
+        /auto (v_bblite_push_spread_\d+) = bbl::js::array_from_iterable<double>\([^;]+\);\s*[^;]*bbl::js::array_append\(v_values, \1\)/,
     );
 });
 
@@ -8481,11 +8481,11 @@ test("folds browser query predicates inside a runtime condition", () => {
     assert.match(queried.cpp, /\.position\.x = 3\.0/);
 });
 
-test("an assignment used as a value constructs once and reads the target", () => {
+test("an assignment used as a value constructs once and yields what it stored", () => {
     // `const camera = (scene.camera = createArcRotateCamera(...))` is an
     // assignment in expression position. Compiling the right-hand side a
     // second time to produce the value would construct a second camera, so
-    // the value comes from reading the target back.
+    // the store binds the camera it constructs and the value is that binding.
     const result = compileSource(`
         import {
             createArcRotateCamera,
@@ -8511,28 +8511,39 @@ test("an assignment used as a value constructs once and reads the target", () =>
         1,
         "the camera factory must be emitted exactly once",
     );
-    assert.match(result.cpp, /\.camera = bbl::create_arc_rotate_camera\(/);
-    assert.match(result.cpp, /auto v_camera = v_scene\.camera;/);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_assigned_\d+) = bbl::create_arc_rotate_camera\([^;]*;\s*v_scene\.camera = \1;\s*\[\[maybe_unused\]\] auto& v_camera = \1;/,
+    );
     assertCameraScalarWrite(result.cpp, "radius", /6\.0/);
 });
 
-test("an engine-property assignment used as a value refuses a target that runs code", () => {
-    // The engine store runs as its statement and its target is read back, so
-    // `index++` in the target would run twice.
-    assert.throws(
-        () =>
-            compileSource(`
-        import { createBox, createEngine } from "@babylonjs/lite";
+test("an engine-property assignment used as a value evaluates its target once and yields the assigned value", () => {
+    // The store runs as its statement and binds the right side it consumes;
+    // the value is that binding, never the property read back, and the
+    // owner `boxes[index++]` is read once for every lane the store writes.
+    const result = compileSource(`
+        import { createBox, createEngine, createHemisphericLight } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
             const boxes = [createBox(engine), createBox(engine)];
             let index = 0;
-            const visible = (boxes[index++]!.isVisible = false);
-            boxes[1]!.isVisible = visible;
+            const x = (boxes[index++]!.position.x = 3);
+            boxes[1]!.position.y = x + index;
+            const light = createHemisphericLight([0, 1, 0], 1);
+            const intensity = (light.intensity = 0.25);
+            boxes[1]!.position.z = intensity;
         }
-    `),
-        /a target that runs code must be bound to a local first/,
+    `);
+    assert.equal(result.cpp.match(/v_index\+\+/g)?.length, 1);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_transform_owner_\d+) = [^;]*\(v_index\+\+\)[^;]*;\s*\[\[maybe_unused\]\] const double (v_bblite_assigned_\d+) = 3\.0;\s*[^;]*\1\)\.position\.x = \2;\s*bbl::mark_mesh_dirty\(v_engine, \1\);\s*\[\[maybe_unused\]\] auto& v_x = \2;/,
+    );
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_assigned_\d+) = 0\.25;\s*[^;]*\.intensity = \1;\s*\[\[maybe_unused\]\] auto& v_intensity = \1;/,
     );
 });
 

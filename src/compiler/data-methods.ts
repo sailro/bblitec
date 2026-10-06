@@ -247,7 +247,7 @@ export function callbackTakesReceiver(
  * length read at the call and checks each index against the live length.
  * A callback that cannot change the receiver needs none of that.
  */
-export function callbackMayWriteReceiver(
+function callbackMayWriteReceiver(
     lowerer: DataLowerer,
     call: ts.CallExpression,
     callback: ts.Expression,
@@ -260,6 +260,85 @@ export function callbackMayWriteReceiver(
         callback,
         root && resolvedSymbol(lowerer.context.checker, root),
     );
+}
+
+/** The array methods that walk their receiver with a callback. */
+export type ReceiverWalkMethod =
+    | "find"
+    | "findIndex"
+    | "findLast"
+    | "findLastIndex"
+    | "filter"
+    | "some"
+    | "every"
+    | "map"
+    | "flatMap"
+    | "forEach"
+    | "reduce"
+    | "reduceRight";
+
+/**
+ * How each walk treats a receiver its callback may change
+ * (`callbackMayWriteReceiver`): an index the callback removed is skipped as
+ * JavaScript skips an absent element, or refuses at run time where `find*`
+ * would read it as undefined and `map` would leave a hole, which the element
+ * type and a dense result cannot hold; a method that keeps the visited
+ * element keeps the value its callback was given, read before it ran.
+ */
+export const receiverWalks: ReadonlyMap<
+    ReceiverWalkMethod,
+    { readonly removed: "skip" | "throw"; readonly keepsElement: boolean }
+> = new EmissionMap([
+    ["forEach", { removed: "skip", keepsElement: false }],
+    ["some", { removed: "skip", keepsElement: false }],
+    ["every", { removed: "skip", keepsElement: false }],
+    ["filter", { removed: "skip", keepsElement: true }],
+    ["flatMap", { removed: "skip", keepsElement: false }],
+    ["reduce", { removed: "skip", keepsElement: false }],
+    ["reduceRight", { removed: "skip", keepsElement: false }],
+    ["find", { removed: "throw", keepsElement: true }],
+    ["findLast", { removed: "throw", keepsElement: true }],
+    ["findIndex", { removed: "throw", keepsElement: false }],
+    ["findLastIndex", { removed: "throw", keepsElement: false }],
+    ["map", { removed: "throw", keepsElement: false }],
+]);
+
+/**
+ * Declares `source`, the receiver an array method walks with `callback`.
+ * JavaScript fixes the receiver when the walk starts: one the callback may
+ * change (`callbackMayWriteReceiver`) is held by value, so rebinding its
+ * variable cannot move the walk, and loses its static element snapshot;
+ * any other is referenced. Native vector data is already a held view.
+ */
+export function declareWalkedReceiver(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callback: ts.Expression,
+    narrowed: Value,
+    source: string,
+): { readonly writable: boolean; readonly held: boolean } {
+    const writable = callbackMayWriteReceiver(lowerer, call, callback);
+    if (writable) lowerer.invalidateStaticElements(narrowed);
+    const held = writable && !narrowed.nativeVectorData;
+    lowerer.context.emit({
+        kind: "declaration",
+        type: held ? "auto" : "auto&&",
+        name: source,
+        initializer: narrowed.cpp,
+    });
+    return { writable, held };
+}
+
+/** What a walk over a receiver its callback may shrink checks before visiting `index`. */
+export function removedIndexGuard(
+    lowerer: DataLowerer,
+    method: ReceiverWalkMethod,
+    index: string,
+    source: string,
+): string {
+    return receiverWalks.get(method)!.removed === "skip"
+        ? `if (${index} >= ${source}.size()) continue;`
+        : `if (${index} >= ${source}.size()) throw std::runtime_error(${lowerer.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`;
 }
 
 /** Methods that retain argument identity without mutating the argument itself. */
@@ -1868,7 +1947,7 @@ function compileArraySort(
         );
         lowerer.context.emit({
             kind: "expression",
-            code: `std::copy(${result}.begin(), ${result}.end(), ${receiver}.begin());`,
+            code: `std::move(${result}.begin(), ${result}.end(), ${receiver}.begin());`,
         });
     }
     if (!copy) lowerer.invalidateStaticElements(narrowed, true);
@@ -2162,16 +2241,13 @@ function compileArrayReduce(
     const index = lowerer.context.allocateTemporaryCppName("reduce_index");
     const accumulator =
         lowerer.context.allocateTemporaryCppName("reduce_result");
-    // A callback that may change the receiver walks it as
-    // `emitArrayCallbackLoop` does (`callbackMayWriteReceiver`).
-    const writable = callbackMayWriteReceiver(lowerer, call, callback);
-    if (writable) lowerer.invalidateStaticElements(narrowed);
-    lowerer.context.emit({
-        kind: "declaration",
-        type: writable && !narrowed.nativeVectorData ? "auto" : "auto&&",
-        name: source,
-        initializer: narrowed.cpp,
-    });
+    const { writable } = declareWalkedReceiver(
+        lowerer,
+        call,
+        callback,
+        narrowed,
+        source,
+    );
     const storedCallback = lowerer.prepareCallbackValue(callback, "reduce");
     lowerer.context.emit({
         kind: "declaration",
@@ -2208,7 +2284,7 @@ function compileArrayReduce(
     });
     lowerer.context.increaseIndent();
     if (writable)
-        lowerer.context.emit(`if (${index} >= ${source}.size()) continue;`);
+        lowerer.context.emit(removedIndexGuard(lowerer, method, index, source));
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
@@ -2753,74 +2829,24 @@ function compileArrayPush(state: ArrayMethodState): Value {
     }
     const pushes = call.arguments.map((argument, index) => {
         if (ts.isSpreadElement(argument)) {
-            const spread = lowerer.context.compileValue(argument.expression);
-            if (
-                lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                    dataType.element,
-                )
-            ) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(
-                    spread,
-                    argument,
-                    "Array.push spread",
-                );
-            }
-            if (spread.kind === "tuple" && spread.tupleElements) {
-                const values = spread.tupleElements.map((value) =>
-                    lowerer.compileKnownValueForSink(
-                        value,
-                        dataType.element,
-                        argument,
-                    ),
-                );
-                const source =
-                    lowerer.context.allocateTemporaryCppName("push_spread");
-                lowerer.context.emit({
-                    kind: "declaration",
-                    type: lowerer.context.dataTypes.cppType(dataType),
-                    name: source,
-                    initializer: values.join(", "),
-                    initialization: "direct",
-                });
-                return `${receiver}.insert(${receiver}.end(), ${source}.begin(), ${source}.end())`;
-            }
-            let source: string;
-            if (isJsonValue(spread) && dataType.element.kind === "json") {
-                source = `${spread.cpp}.elements()`;
-            } else if (
-                spread.kind === "handle-collection" &&
-                spread.handleCollection &&
-                dataType.element.kind === "handle" &&
-                spread.handleCollection.elementKind === dataType.element.handle
-            ) {
-                source = spread.handleCollection.containerCpp;
-            } else if (
-                spread.kind === "data" &&
-                (((spread.dataType?.kind === "vector" ||
-                    spread.dataType?.kind === "span") &&
-                    dataTypesEqual(
-                        spread.dataType.element,
-                        dataType.element,
-                    )) ||
-                    (spread.dataType?.kind === "tuple" &&
-                        dataType.element.kind === "number"))
-            ) {
-                source = spread.cpp;
-            } else {
-                lowerer.context.fail(
-                    argument,
-                    `Array.push spread must contain values of the destination element type ${JSON.stringify(dataType.element)}; received ${spread.kind} ${spread.dataType ? JSON.stringify(spread.dataType) : "without a data type"}.`,
-                );
-            }
+            // What `[...x]` appends, copied before any element is pushed:
+            // JavaScript reads every argument first, the receiver's own
+            // elements included.
+            const source = lowerer.spreadSource(argument, {
+                kind: "vector",
+                element: dataType.element,
+            });
             const copy =
                 lowerer.context.allocateTemporaryCppName("push_spread");
             lowerer.context.emit({
                 kind: "declaration",
                 type: "auto",
                 name: copy,
-                initializer: `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source})`,
+                initializer: source.freshSpread
+                    ? source.cpp
+                    : `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`,
             });
-            return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
+            return `bbl::js::array_append(${receiver}, ${copy})`;
         }
         if (
             pushedValues &&
