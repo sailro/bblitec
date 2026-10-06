@@ -85,6 +85,7 @@ import {
 import {
     ASSIGNMENT_OPERATORS,
     COMPOUND_ASSIGNMENT_HELPERS,
+    compoundAssignmentValueCpp,
 } from "./statements.js";
 import {
     dataTypesEqual,
@@ -314,6 +315,31 @@ interface DataLoweringContext extends Pick<
  *   later use would read through a dangling reference.
  */
 type LocalOwnership = "owned" | "copy" | "escaped" | "alias" | "poisoned";
+
+/** Where a numeric read-modify-write stores its result. */
+type NumericUpdatePlace =
+    /** A native number lvalue: C++ `++`/`--`/`op=` apply directly. */
+    | { kind: "scalar"; cpp: string; target: Value }
+    /** An optional-number slot, absent until written. */
+    | {
+          kind: "optional";
+          target: Value & { dataType: DataType & { kind: "optional" } };
+      }
+    /** A Map/Record entry with a number value, absent until set. */
+    | {
+          kind: "entry";
+          owner: Value;
+          dataType: DataType & { kind: "map" };
+          keyCpp: string;
+      };
+
+/** The new value of `++`/`--` from the old one, already ToNumeric. */
+function updateStepCpp(
+    expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
+    previous: string,
+): string {
+    return `${previous} ${expression.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-"} 1.0`;
+}
 
 /**
  * Lowers the plain-data subset: struct paths, dynamic arrays, static tables,
@@ -9877,6 +9903,64 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { owner: owner.cpp, key };
     }
 
+    /**
+     * `document === other` for a document already bound to `documentCpp`:
+     * strict, so it holds only a value of that very type, and null and
+     * undefined only themselves.
+     */
+    public jsonStrictEquality(
+        documentCpp: string,
+        other: ts.Expression,
+    ): string | undefined {
+        return compileJsonStrictComparison(
+            this.context,
+            documentCpp,
+            other,
+            isNullishLiteral(this.context.checker, other),
+            (value) => this.compileForSink(value, { kind: "string" }),
+            (value, node) =>
+                this.compileKnownValueForSink(value, { kind: "json" }, node),
+        );
+    }
+
+    /**
+     * The Map an indexed write `owner[key]` stores an entry of. This first
+     * resolution only asks whether the target is a Map. Resolving a
+     * call-shaped owner emits its call, so the speculative emission is
+     * discarded when the answer is no and the normal element-target path
+     * performs the source's one evaluation.
+     */
+    private indexedMapOwner(
+        left: ts.ElementAccessExpression,
+    ): (Value & { dataType: DataType & { kind: "map" } }) | undefined {
+        return this.context.probeEmission(() => {
+            const owner = this.compileDataPath(left.expression, "read");
+            const candidate =
+                owner?.kind === "data"
+                    ? this.narrowOptional(owner, left.expression)
+                    : undefined;
+            return candidate?.dataType?.kind === "map"
+                ? { ...candidate, dataType: candidate.dataType }
+                : undefined;
+        });
+    }
+
+    /**
+     * A direct write to `root.field` invalidates that field's static fact,
+     * not unrelated fields on the same object. The property snapshot object
+     * is shared by aliases, so deleting in place updates every view while
+     * preserving immutable dimensions/constants.
+     */
+    private invalidateRecordFieldSnapshot(left: ts.Expression): void {
+        if (!ts.isPropertyAccessExpression(left)) return;
+        const owner = this.context.unwrap(left.expression);
+        if (!ts.isIdentifier(owner)) return;
+        const root = this.context.bindings.lookupOptional(owner);
+        if (root?.dataType?.kind === "struct" && root.recordProperties) {
+            delete writable(root.recordProperties)[left.name.text];
+        }
+    }
+
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
@@ -10077,29 +10161,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 return true;
             }
-            // This first resolution only asks whether the target is a Map.
-            // Resolving a call-shaped owner emits its call, so discard that
-            // speculative emission when the answer is no and let the normal
-            // element-target path below perform the source's one evaluation.
-            const narrowed = this.context.probeEmission(() => {
-                const owner = this.compileDataPath(left.expression, "read");
-                const candidate =
-                    owner?.kind === "data"
-                        ? this.narrowOptional(owner, left.expression)
-                        : undefined;
-                return candidate?.dataType?.kind === "map"
-                    ? {
-                          ...candidate,
-                          dataType: candidate.dataType,
-                      }
-                    : undefined;
-            });
+            const narrowed = this.indexedMapOwner(left);
             if (narrowed) {
                 if (operator !== "=") {
-                    this.context.fail(
-                        expression,
-                        "Indexed Record entries support plain assignment only.",
+                    if (narrowed.dataType.value.kind !== "number")
+                        this.context.fail(
+                            expression,
+                            "Compound assignment to an indexed Record entry requires a number value.",
+                        );
+                    this.emitNumericUpdate(
+                        {
+                            kind: "entry",
+                            owner: narrowed,
+                            dataType: narrowed.dataType,
+                            keyCpp: this.compileKnownValueForSink(
+                                this.context.compileValue(
+                                    left.argumentExpression,
+                                ),
+                                narrowed.dataType.key,
+                                left.argumentExpression,
+                            ),
+                        },
+                        left,
+                        (previous) =>
+                            compoundAssignmentValueCpp(
+                                operator,
+                                previous,
+                                this.context.compileNumber(
+                                    expression.right,
+                                    "double",
+                                ),
+                            ),
                     );
+                    return true;
                 }
                 const keyValue = this.context.compileValue(
                     left.argumentExpression,
@@ -10176,10 +10270,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const entry = this.dictionaryEntry(left);
             if (entry) {
                 if (operator !== "=") {
-                    this.context.fail(
-                        expression,
-                        "Dictionary members support plain assignment only.",
+                    if (entry.dataType.value.kind !== "number")
+                        this.context.fail(
+                            expression,
+                            "Compound assignment to a dictionary member requires a number value.",
+                        );
+                    this.emitNumericUpdate(
+                        { kind: "entry", ...entry },
+                        left,
+                        (previous) =>
+                            compoundAssignmentValueCpp(
+                                operator,
+                                previous,
+                                this.context.compileNumber(
+                                    expression.right,
+                                    "double",
+                                ),
+                            ),
                     );
+                    return true;
                 }
                 const assigned = this.context.compileValue(expression.right);
                 const value = this.compileKnownValueForSink(
@@ -10227,23 +10336,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const targetRoot = rootExpression(left, (chain) =>
             this.context.unwrap(chain),
         );
-        const invalidateRootRecordSnapshot = (): void => {
-            if (
-                !ts.isPropertyAccessExpression(left) ||
-                !ts.isIdentifier(targetRoot) ||
-                !ts.isIdentifier(this.context.unwrap(left.expression))
-            ) {
-                return;
-            }
-            const root = this.context.bindings.lookupOptional(targetRoot);
-            if (root?.dataType?.kind === "struct" && root.recordProperties) {
-                // A direct write invalidates that field's static fact, not
-                // unrelated fields on the same object. The property snapshot
-                // object is shared by aliases, so deleting in place updates
-                // every view while preserving immutable dimensions/constants.
-                delete writable(root.recordProperties)[left.name.text];
-            }
-        };
+        const invalidateRootRecordSnapshot = (): void =>
+            this.invalidateRecordFieldSnapshot(left);
         if (
             target.dataType &&
             this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
@@ -10354,6 +10448,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (operator === "+=" && target.dataType.kind === "string") {
                 emitStringAppend(this.context, target.cpp, expression.right);
                 invalidateRootRecordSnapshot();
+                return true;
+            }
+            if (
+                operator !== "=" &&
+                !target.freshData &&
+                target.dataType.kind === "optional" &&
+                target.dataType.inner.kind === "number"
+            ) {
+                this.emitNumericUpdate(
+                    {
+                        kind: "optional",
+                        target: { ...target, dataType: target.dataType },
+                    },
+                    left,
+                    (previous) =>
+                        compoundAssignmentValueCpp(
+                            operator,
+                            previous,
+                            this.context.compileNumber(
+                                expression.right,
+                                "double",
+                            ),
+                        ),
+                );
                 return true;
             }
             if (operator !== "=") {
@@ -11161,101 +11279,244 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public emitPostfixUnary(expression: ts.PostfixUnaryExpression): boolean {
         if (this.compileJsonUpdate(expression)) return true;
-        if (
-            !ts.isPropertyAccessExpression(
-                this.context.unwrap(expression.operand),
-            ) &&
-            !ts.isElementAccessExpression(
-                this.context.unwrap(expression.operand),
-            ) &&
-            !ts.isIdentifier(this.context.unwrap(expression.operand))
-        ) {
-            return false;
+        const place = this.numericUpdatePlace(expression.operand, true);
+        if (!place) return false;
+        if (place.kind === "scalar") {
+            this.context.emit(
+                `${place.cpp}${
+                    expression.operator === ts.SyntaxKind.PlusPlusToken
+                        ? "++"
+                        : "--"
+                };`,
+            );
+            return true;
         }
-        const operand = this.context.unwrap(expression.operand);
-        const rawTarget =
-            this.compileDataPath(expression.operand, "write") ??
-            (ts.isIdentifier(operand)
-                ? this.context.bindings.lookupOptional(operand)
-                : undefined);
-        const target = rawTarget
-            ? this.narrowOptional(rawTarget, expression.operand)
-            : undefined;
-        if (target?.kind !== "number") {
-            return false;
-        }
-        this.context.emit(
-            `${target.cpp}${
-                expression.operator === ts.SyntaxKind.PlusPlusToken
-                    ? "++"
-                    : "--"
-            };`,
+        this.emitNumericUpdate(place, expression.operand, (previous) =>
+            updateStepCpp(expression, previous),
         );
         return true;
     }
 
-    /** Post-increment/decrement where the expression's old value is used. */
-    public compilePostfixValue(
-        expression: ts.PostfixUnaryExpression,
+    /**
+     * `x++`, `x--`, `++x` and `--x` where the expression's value is used:
+     * the old value after ToNumeric for a postfix form, the new one for a
+     * prefix form. The operand's place is resolved once.
+     */
+    public compileUpdateValue(
+        expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
     ): Value | undefined {
-        if (
-            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
-            expression.operator !== ts.SyntaxKind.MinusMinusToken
-        ) {
-            return undefined;
-        }
+        if (!isUpdateExpression(expression)) return undefined;
         const json = this.compileJsonUpdate(expression);
         if (json) return json;
-        const operand = this.context.unwrap(expression.operand);
-        const target =
-            this.compileDataPath(expression.operand, "write") ??
-            (ts.isIdentifier(operand)
-                ? this.context.bindings.lookupOptional(operand)
-                : undefined);
-        if (target?.kind !== "number") {
-            return undefined;
-        }
-        const value: Value = {
-            ...target,
-            cpp: `(${target.cpp}${
+        const place = this.numericUpdatePlace(expression.operand, false);
+        if (!place) return undefined;
+        const postfix = ts.isPostfixUnaryExpression(expression);
+        if (place.kind === "scalar") {
+            const operator =
                 expression.operator === ts.SyntaxKind.PlusPlusToken
                     ? "++"
-                    : "--"
-            })`,
+                    : "--";
+            const value: Value = {
+                ...place.target,
+                cpp: postfix
+                    ? `(${place.cpp}${operator})`
+                    : `(${operator}${place.cpp})`,
+                impure: true,
+            };
+            delete writable(value).staticNumber;
+            return value;
+        }
+        const update = this.emitNumericUpdate(
+            place,
+            expression.operand,
+            (previous) => updateStepCpp(expression, previous),
+        );
+        return {
+            kind: "number",
+            cpp: postfix ? update.previous : update.next,
+            dataType: { kind: "number" },
             impure: true,
         };
-        delete writable(value).staticNumber;
-        return value;
     }
 
-    /** Pre-increment/decrement where the expression's new value is used. */
-    public compilePrefixValue(
-        expression: ts.PrefixUnaryExpression,
-    ): Value | undefined {
+    /**
+     * The storage a numeric update writes, resolved once: a native number
+     * (`x++` applies directly), an optional number slot, or a dictionary
+     * entry. Undefined, with nothing emitted, for any other operand.
+     */
+    private numericUpdatePlace(
+        operandExpression: ts.Expression,
+        narrowScalar: boolean,
+    ): NumericUpdatePlace | undefined {
+        const operand = this.context.unwrap(operandExpression);
         if (
-            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
-            expression.operator !== ts.SyntaxKind.MinusMinusToken
+            !ts.isPropertyAccessExpression(operand) &&
+            !ts.isElementAccessExpression(operand) &&
+            !ts.isIdentifier(operand)
         ) {
             return undefined;
         }
-        const json = this.compileJsonUpdate(expression);
-        if (json) return json;
-        const operand = this.context.unwrap(expression.operand);
-        const target =
-            this.compileDataPath(expression.operand, "write") ??
-            (ts.isIdentifier(operand)
-                ? this.context.bindings.lookupOptional(operand)
-                : undefined);
-        if (target?.kind !== "number") {
-            return undefined;
+        // A Record entry is a Map entry, as the assignment lowering writes
+        // it; an entry of another value type is no numeric place.
+        if (
+            ts.isElementAccessExpression(operand) &&
+            this.context.probeEmission(
+                () => this.indexedMapOwner(operand) !== undefined,
+                () => false,
+            )
+        ) {
+            return this.context.probeEmission(
+                (): NumericUpdatePlace | undefined => {
+                    const owner = this.indexedMapOwner(operand);
+                    if (owner?.dataType.value.kind !== "number")
+                        return undefined;
+                    return {
+                        kind: "entry",
+                        owner,
+                        dataType: owner.dataType,
+                        keyCpp: this.compileKnownValueForSink(
+                            this.context.compileValue(
+                                operand.argumentExpression,
+                            ),
+                            owner.dataType.key,
+                            operand.argumentExpression,
+                        ),
+                    };
+                },
+            );
         }
-        const value: Value = {
-            ...target,
-            cpp: `(${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${target.cpp})`,
-            impure: true,
-        };
-        delete writable(value).staticNumber;
-        return value;
+        if (ts.isPropertyAccessExpression(operand)) {
+            const entry = this.context.probeEmission(() => {
+                const found = this.dictionaryEntry(operand);
+                return found?.dataType.value.kind === "number"
+                    ? found
+                    : undefined;
+            });
+            if (entry) return { kind: "entry", ...entry };
+        }
+        return this.context.probeEmission(
+            (): NumericUpdatePlace | undefined => {
+                const rawTarget =
+                    this.compileDataPath(operandExpression, "write") ??
+                    (ts.isIdentifier(operand)
+                        ? this.context.bindings.lookupOptional(operand)
+                        : undefined);
+                if (!rawTarget) return undefined;
+                const target = narrowScalar
+                    ? this.narrowOptional(rawTarget, operandExpression)
+                    : rawTarget;
+                if (target.kind === "number")
+                    return { kind: "scalar", cpp: target.cpp, target };
+                if (
+                    target.kind === "data" &&
+                    !target.freshData &&
+                    target.dataType?.kind === "optional" &&
+                    target.dataType.inner.kind === "number"
+                )
+                    return {
+                        kind: "optional",
+                        target: { ...target, dataType: target.dataType },
+                    };
+                return undefined;
+            },
+        );
+    }
+
+    /**
+     * Reads, updates and stores one optional-number slot or dictionary
+     * entry, in JavaScript's order: the place, its old value (ToNumeric: an
+     * absent undefined reads NaN, an absent null 0), then whatever `next`
+     * evaluates, then the store.
+     */
+    private emitNumericUpdate(
+        place: Exclude<NumericUpdatePlace, { kind: "scalar" }>,
+        operand: ts.Expression,
+        next: (previous: string) => string,
+    ): { previous: string; next: string } {
+        const previous =
+            this.context.allocateTemporaryCppName("update_previous");
+        const stored = this.context.allocateTemporaryCppName("update_next");
+        if (place.kind === "entry") {
+            this.context.reachJsData();
+            const owner = this.context.allocateTemporaryCppName("update_owner");
+            const key = this.context.allocateTemporaryCppName("update_key");
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: owner,
+                initializer: place.owner.cpp,
+            });
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: key,
+                initializer: place.keyCpp,
+            });
+            this.context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: previous,
+                initializer: `bbl::js::number_from_optional(${owner}.get(${key}))`,
+            });
+            this.context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: stored,
+                initializer: next(previous),
+            });
+            this.context.emit({
+                kind: "expression",
+                code: `${owner}.set(${key}, ${stored});`,
+            });
+            this.context.bindings.invalidateRecordProperties(place.owner);
+            return { previous, next: stored };
+        }
+        const absence = absenceKind(
+            this.context.checker,
+            place.target,
+            this.context.unwrap(operand),
+        );
+        if (absence === "either")
+            this.context.fail(
+                operand,
+                "A numeric update requires distinguishable null and undefined storage.",
+            );
+        this.context.reachJsData();
+        const slot = this.context.allocateTemporaryCppName("update_slot");
+        this.context.emit({
+            kind: "declaration",
+            type: "auto&&",
+            name: slot,
+            initializer: place.target.cpp,
+        });
+        const fallback =
+            absence === "null"
+                ? ", 0.0"
+                : typeof absence === "object"
+                  ? `, (${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
+                  : "";
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: previous,
+            initializer: `bbl::js::number_from_optional(${slot}${fallback})`,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: stored,
+            initializer: next(previous),
+        });
+        this.context.emit({
+            kind: "expression",
+            code: `${slot} = ${this.compileKnownValueForSink(
+                this.leafValue(stored, { kind: "number" }),
+                place.target.dataType,
+                operand,
+            )};`,
+        });
+        this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
+        return { previous, next: stored };
     }
 
     private compileJsonUpdate(

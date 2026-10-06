@@ -4408,6 +4408,14 @@ template <typename T>
     return std::fmod(left, right);
 }
 
+// JavaScript `**`: a NaN exponent, or a base of magnitude 1 under an infinite
+// exponent, is NaN where C pow answers 1.
+[[nodiscard]] inline double power_js(double base, double exponent) {
+    if (std::isnan(exponent) || (std::isinf(exponent) && std::fabs(base) == 1.0))
+        return std::numeric_limits<double>::quiet_NaN();
+    return std::pow(base, exponent);
+}
+
 // Numeric `a || b`: 0 and NaN fall through to the fallback.
 [[nodiscard]] inline double or_number(double value, double fallback) {
     return (value != 0.0 && !std::isnan(value)) ? value : fallback;

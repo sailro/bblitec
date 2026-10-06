@@ -272,6 +272,84 @@ check(
 );
 
 check(
+    "exponent-compound-assignment",
+    `
+    const h = [2, 10];
+    let p = h[0]! ** h[1]!;
+    p **= 0.5;
+    if (p !== 32) throw new Error("local");
+    const o = { v: 3 };
+    o.v **= 2;
+    const a = [2];
+    a[0]! **= 3;
+    if (o.v !== 9 || a[0] !== 8) throw new Error("field and element");
+    const edge = [1, -1, NaN, Infinity, 0];
+    let one = edge[0]!;
+    one **= edge[2]!;
+    let minus = edge[1]!;
+    minus **= edge[3]!;
+    if (!Number.isNaN(one) || !Number.isNaN(minus) || !Number.isNaN(edge[0]! ** edge[3]!) || edge[2]! ** edge[4]! !== 1)
+        throw new Error("JavaScript exponent edges");
+`,
+);
+
+check(
+    "numeric-updates-on-optional-and-entry-places",
+    `
+    type Job = "none" | "a" | "b";
+    const JOBS = ["a", "b"] as const;
+    type Counts = Record<Exclude<Job, "none">, number>;
+    function empty(): Counts { const counts = {} as Counts; for (const job of JOBS) counts[job] = 0; return counts; }
+    function living(villagers: readonly { job?: Job }[]): Counts {
+        const counts = empty();
+        for (const v of villagers) { if (!v.job || v.job === "none") continue; counts[v.job]++; }
+        return counts;
+    }
+    const stored: Array<typeof living> = [living];
+    const census = stored[0]!([{ job: "a" }, { job: "none" }, {}, { job: "a" }, { job: "b" }]);
+    if (census.a !== 2 || census.b !== 1) throw new Error("optional field increments");
+    const sparse = {} as Counts;
+    sparse.a = 4;
+    const before = sparse.a++;
+    const after = ++sparse.a;
+    const missing = sparse.b++;
+    if (before !== 4 || after !== 6 || !Number.isNaN(missing) || !Number.isNaN(sparse.b)) throw new Error("optional slot values");
+    sparse.a -= 1;
+    sparse.a **= 2;
+    if (sparse.a !== 25) throw new Error("optional slot compound");
+    const tally: Record<string, number> = {};
+    let reads = 0;
+    function key(name: string): string { reads++; return name; }
+    for (const word of ["x", "y", "x"]) { tally[word] = tally[word] ?? 0; tally[key(word)]!++; }
+    const old = tally["x"]!--;
+    const fresh = ++tally["y"]!;
+    tally["z"] = 1;
+    tally["z"]! += 4;
+    tally.w = 2;
+    tally.w! *= 3;
+    const absent = tally["q"]!++;
+    if (reads !== 3 || old !== 2 || tally["x"] !== 1 || fresh !== 2 || tally["z"] !== 5 || tally["w"] !== 6 ||
+        !Number.isNaN(absent) || !Number.isNaN(tally["q"])) throw new Error("dictionary entries");
+    const slots = new Map<string, { batch: number; next: number }>();
+    slots.set("k", { batch: 7, next: 0 });
+    const assigned: { slot: number }[] = [{ slot: -1 }, { slot: -1 }, { slot: -1 }];
+    for (let i = 0; i < assigned.length; i++) { const g = slots.get("k")!; assigned[i]!.slot = g.next++; }
+    if (assigned.map((item) => item.slot).join() !== "0,1,2" || slots.get("k")!.next !== 3) throw new Error("field postfix value");
+`,
+);
+
+test("numeric updates refuse places without a number", () => {
+    for (const source of [
+        "const t: Record<string, number | string> = {}; t['k'] = 1; (t['k'] as number)++;",
+        "function f(o: { v?: number | null }): number { return o.v!++; } const fs: Array<typeof f> = [f]; const unused = fs[0]!({ v: 1 });",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /increment or decrement requires a number, optional number or dictionary entry/,
+        );
+});
+
+check(
     "integer-loop-counters",
     `
     const values: number[] = [5, 7, 11, 13];

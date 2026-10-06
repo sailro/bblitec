@@ -280,11 +280,24 @@ function bodyStatements(
 export const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
     new EmissionMap([
         ["%=", "remainder_js"],
+        ["**=", "power_js"],
         ...[...JS_BITWISE_FUNCTIONS].map(([kind, helper]): [string, string] => [
             `${ts.tokenToString(kind)}=`,
             helper,
         ]),
     ]);
+
+/** The number `previous op= right` stores; a helper form reaches JS data. */
+export function compoundAssignmentValueCpp(
+    operator: string,
+    previous: string,
+    right: string,
+): string {
+    const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
+    return helper
+        ? `bbl::js::${helper}(${previous}, ${right})`
+        : `(${previous} ${operator.slice(0, -1)} ${right})`;
+}
 
 /** `=` and the compound assignments the lowerings accept, by spelling. */
 export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
@@ -295,6 +308,7 @@ export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
         [ts.SyntaxKind.AsteriskEqualsToken, "*="],
         [ts.SyntaxKind.SlashEqualsToken, "/="],
         [ts.SyntaxKind.PercentEqualsToken, "%="],
+        [ts.SyntaxKind.AsteriskAsteriskEqualsToken, "**="],
         [ts.SyntaxKind.AmpersandEqualsToken, "&="],
         [ts.SyntaxKind.BarEqualsToken, "|="],
         [ts.SyntaxKind.CaretEqualsToken, "^="],
