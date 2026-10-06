@@ -5,7 +5,6 @@ import {
     objectTruthinessCpp,
     optionalPresentCpp,
     optionalValueCpp,
-    presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
     statedTruthinessCpp,
@@ -120,6 +119,7 @@ import {
     deleteRecordProperty,
     setRecordProperty,
     structOwnEntries,
+    type OwnEntry,
 } from "./object-statics.js";
 import {
     compileJsonStrictComparison,
@@ -3540,14 +3540,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // owns all three.
                 return undefined;
             }
-            const absent = this.absentPropertyRead(owner, dataType, access);
-            if (absent) return absent;
-            const field = this.context.dataTypes.structField(
-                dataType.name,
-                property,
-                access,
-                "accessors",
-            );
+            const stored = this.context.dataTypes
+                .structFields(dataType.name, access, "accessors")
+                .find(
+                    (candidate) =>
+                        candidate.sourceName === property ||
+                        candidate.name === property,
+                );
+            // A property no field stores may be one the record lacks.
+            if (!stored) {
+                const absent = this.absentPropertyRead(owner, dataType, access);
+                if (absent) return absent;
+            }
+            const field =
+                stored ??
+                this.context.dataTypes.structField(
+                    dataType.name,
+                    property,
+                    access,
+                    "accessors",
+                );
             const slot = this.context.dataTypes.isReferenceStruct(dataType.name)
                 ? `${owner.cpp}->${field.name}`
                 : `${owner.cpp}.${field.name}`;
@@ -8958,14 +8970,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 initializer: source.cpp,
                             });
                             const entries = structOwnEntries(
-                                {
-                                    moduleNamespaces:
-                                        this.context.moduleNamespaces,
-                                    dataTypes: this.context.dataTypes,
-                                    dataLowerer: this,
-                                    fail: (node, message) =>
-                                        this.context.fail(node, message),
-                                },
+                                this.ownObjectContext(),
                                 { ...source, cpp: snapshot },
                                 source.dataType,
                                 property,
@@ -9327,6 +9332,200 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * Emits `store` under the test that a key is own, or bare for a key that
+     * always is.
+     */
+    private emitWhileOwn(
+        presentCpp: string | undefined,
+        store: () => void,
+    ): void {
+        if (presentCpp === undefined) return store();
+        this.context.emit({ kind: "open", code: `if (${presentCpp}) {` });
+        this.context.increaseIndent();
+        store();
+        this.context.decreaseIndent();
+        this.context.emit({ kind: "close", code: "}" });
+    }
+
+    /**
+     * A compile-time record member's own entry: a member a conditional
+     * spread wrote (`Value.conditionalOwnKey`) is own while its storage holds
+     * a value, and then holds what that storage holds.
+     */
+    public recordMemberEntry(
+        key: string,
+        member: Value,
+        node: ts.Node,
+    ): OwnEntry {
+        if (!member.conditionalOwnKey) return { key, value: member };
+        this.context.useNativeValue(member);
+        const presentCpp =
+            presenceFlagCpp(member) ??
+            (member.dataType &&
+                this.context.dataTypes.slotPresentCpp(
+                    member.dataType,
+                    member.cpp,
+                ));
+        if (!presentCpp)
+            return this.context.fail(
+                node,
+                "A record key a conditional spread decides needs a represented absent value.",
+            );
+        return {
+            key,
+            value:
+                member.dataType?.kind === "optional"
+                    ? this.presentOptionalValue(member, member.dataType.inner)
+                    : member,
+            presentCpp,
+            slot: member,
+        };
+    }
+
+    /**
+     * Copies a struct's own properties into the fields of the struct
+     * `target` names, as an object spread, `Object.assign` and an object
+     * rest do. The source is read once (a local in place); a property
+     * whose storage decides whether it is own is copied while it is; and
+     * the copy is recorded as a conversion, so a property a record
+     * converted into the source carried is known to be possibly present in
+     * the target too. A field a shared layout holds for a wider record type
+     * (`sharedAbsent`) is carried that way when the source's own type (at
+     * `source`) lacks it, and present when that type declares it required.
+     * A `?` field that also admits null cannot say whether its empty
+     * storage is absent or null; into a target field still holding its
+     * absent default (`fresh`) the storage copies as it is, exact either
+     * way. Returns the target fields every run writes.
+     */
+    public copyStructOwnProperties(
+        target: { cpp: string; type: DataType<"struct"> },
+        sourceValue: Value,
+        sourceType: DataType<"struct">,
+        source: ts.Node,
+        operation: "spread" | "Object.assign" | "rest",
+        options: {
+            excludedKeys?: ReadonlySet<string>;
+            fresh?: (field: string) => boolean;
+        } = {},
+    ): ReadonlySet<string> {
+        this.context.dataTypes.noteRecordConversion(
+            target.type,
+            [],
+            sourceType,
+        );
+        // A local is read in place: no store into the target rebinds it.
+        const owner = cppIdentifierPattern.test(sourceValue.cpp)
+            ? sourceValue
+            : this.context.bindings.pinValueToTemporary(
+                  sourceValue,
+                  "copy_source",
+                  ts.isExpression(source) ? source : undefined,
+              );
+        const declaredType = this.context.checker.getTypeAtLocation(source);
+        const sourceFields = new EmissionMap(
+            this.context.dataTypes
+                .structFields(sourceType.name, source, "accessors")
+                .map((field) => [field.sourceName, field]),
+        );
+        const targetFields = new EmissionMap(
+            this.context.dataTypes
+                .structFields(target.type.name, source)
+                .map((field) => [field.sourceName, field]),
+        );
+        const member = this.context.dataTypes.isReferenceStruct(
+            target.type.name,
+        )
+            ? "->"
+            : ".";
+        const sourceMember = this.context.dataTypes.isReferenceStruct(
+            sourceType.name,
+        )
+            ? "->"
+            : ".";
+        const assigned = new EmissionSet<string>();
+        for (const entry of structOwnEntries(
+            this.ownObjectContext(),
+            owner,
+            sourceType,
+            source,
+            options.excludedKeys,
+        )) {
+            const sourceField = sourceFields.get(entry.key)!;
+            const targetField = targetFields.get(entry.key);
+            const declared = declaredType.getProperty(entry.key);
+            if (!targetField) {
+                if (sourceField.sharedAbsent && !declared) {
+                    this.context.dataTypes.noteRecordConversion(target.type, [
+                        entry.key,
+                    ]);
+                    continue;
+                }
+                this.context.fail(
+                    source,
+                    `${operation === "spread" ? "Spread" : operation === "rest" ? "Object rest" : operation} property '${entry.key}' cannot be retained in the narrower '${target.type.name}' storage.`,
+                );
+            }
+            this.context.refuseBorrowedPlatformEventEscape(
+                entry.value,
+                source,
+                operation === "Object.assign"
+                    ? operation
+                    : `object ${operation}`,
+            );
+            const raw =
+                entry.presentCpp !== undefined &&
+                !sourceField.presentForTags &&
+                targetField.type.kind === "optional" &&
+                options.fresh?.(targetField.name) === true &&
+                this.context.dataTypes.ownPropertyPresence(
+                    sourceType.name,
+                    sourceField,
+                ) === "nullable";
+            // The source's own type declares the field required, so its
+            // records hold it, absent-capable storage or not.
+            const presentCpp =
+                raw ||
+                (sourceField.sharedAbsent &&
+                    declared !== undefined &&
+                    (declared.flags & ts.SymbolFlags.Optional) === 0)
+                    ? undefined
+                    : entry.presentCpp;
+            const value = raw
+                ? {
+                      ...this.leafValue(
+                          `${owner.cpp}${sourceMember}${sourceField.name}`,
+                          sourceField.type,
+                      ),
+                      nativeCaptures: owner.nativeCaptures ?? [],
+                  }
+                : entry.value;
+            this.emitWhileOwn(presentCpp, () =>
+                this.context.emit({
+                    kind: "expression",
+                    code: `${target.cpp}${member}${targetField.name} = ${this.compileKnownValueForSink(value, targetField.type, source)};`,
+                }),
+            );
+            // A possibly absent source property cannot by itself satisfy a
+            // required target field.
+            if (
+                (presentCpp === undefined && !raw) ||
+                targetField.type.kind === "optional"
+            )
+                assigned.add(targetField.name);
+        }
+        return assigned;
+    }
+
+    /** The own-object services the struct entry walks read. */
+    private ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
+        return {
+            dataTypes: this.context.dataTypes,
+            dataLowerer: this,
+            fail: (node, message) => this.context.fail(node, message),
+        };
+    }
+
+    /**
      * Emits a declaration for an object literal with spread parts:
      * a default object followed by source-ordered field writes. Compile-time
      * records contribute only the keys they actually carry; a native struct
@@ -9398,35 +9597,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         // A key a conditional spread decides is stored only
                         // while it is own, keeping an earlier value
                         // otherwise; an unwritten `?` field is already
-                        // absent, so its value stores as it is.
+                        // absent, so its storage stores as it is.
                         const field = this.context.dataTypes.structField(
                             dataType.name,
                             name,
                             property,
                         );
-                        if (
-                            !value.conditionalOwnKey ||
-                            !assigned.has(field.name)
-                        ) {
+                        if (!assigned.has(field.name)) {
                             assign(name, value, property);
                             continue;
                         }
-                        const held = this.context.bindings.pinValueToTemporary(
-                            value,
-                            "spread_member",
-                            property.expression,
+                        const entry = this.recordMemberEntry(
+                            name,
+                            value.conditionalOwnKey
+                                ? this.context.bindings.pinValueToTemporary(
+                                      value,
+                                      "spread_member",
+                                      property.expression,
+                                  )
+                                : value,
+                            property,
                         );
-                        this.context.emit({
-                            kind: "open",
-                            code: `if (${this.conditionalKeyPresentCpp(held, property)}) {`,
-                        });
-                        this.context.increaseIndent();
-                        this.context.emit({
-                            kind: "expression",
-                            code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(this.conditionalKeyValue(held), field.type, property)};`,
-                        });
-                        this.context.decreaseIndent();
-                        this.context.emit({ kind: "close", code: "}" });
+                        this.emitWhileOwn(entry.presentCpp, () =>
+                            this.context.emit({
+                                kind: "expression",
+                                code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(entry.value, field.type, property)};`,
+                            }),
+                        );
                     }
                     // Methods are own properties a spread copies too.
                     for (const [name, method] of Object.entries(
@@ -9498,95 +9695,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
-                    // A spread copies every own property, including any a
-                    // record converted into the source storage carried.
-                    this.context.dataTypes.noteRecordConversion(
-                        dataType,
-                        [],
+                    for (const name of this.copyStructOwnProperties(
+                        { cpp: cppName, type: dataType },
+                        spread,
                         spread.dataType,
-                    );
-                    const sourceMember =
-                        this.context.dataTypes.isReferenceStruct(
-                            spread.dataType.name,
-                        )
-                            ? "->"
-                            : ".";
-                    const targetFields = new EmissionMap(
-                        this.context.dataTypes
-                            .structFields(dataType.name, property)
-                            .map((field) => [field.sourceName, field]),
-                    );
-                    for (const sourceField of this.context.dataTypes.structFields(
-                        spread.dataType.name,
-                        property,
-                    )) {
-                        const targetField = targetFields.get(
-                            sourceField.sourceName,
-                        );
-                        // A field a shared layout holds for a wider record
-                        // type is absent from records of the spread's own
-                        // type; a wider record carries it past the target.
-                        const declared = this.context.checker
-                            .getTypeAtLocation(property.expression)
-                            .getProperty(sourceField.sourceName);
-                        if (
-                            !targetField &&
-                            sourceField.sharedAbsent &&
-                            !declared
-                        ) {
-                            this.context.dataTypes.noteRecordConversion(
-                                dataType,
-                                [sourceField.sourceName],
-                            );
-                            continue;
-                        }
-                        if (!targetField)
-                            this.context.fail(
-                                property,
-                                `Spread property '${sourceField.sourceName}' cannot be retained in the narrower '${dataType.name}' storage.`,
-                            );
-                        const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
-                        // The spread's own type declares the field required,
-                        // so its records hold it, absent-capable storage or not.
-                        if (
-                            sourceField.type.kind === "optional" &&
-                            sourceField.sharedAbsent &&
-                            targetField.type.kind !== "optional" &&
-                            declared !== undefined &&
-                            (declared.flags & ts.SymbolFlags.Optional) === 0
-                        ) {
-                            this.context.emit({
-                                kind: "expression",
-                                code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(`*${sourceCpp}`, sourceField.type.inner), targetField.type, property)};`,
-                            });
-                            assigned.add(targetField.name);
-                            continue;
-                        }
-                        if (sourceField.type.kind === "optional") {
-                            this.context.emit({
-                                kind: "open",
-                                code: `if (${optionalPresentCpp(sourceCpp)}) {`,
-                            });
-                            this.context.increaseIndent();
-                            this.context.emit({
-                                kind: "expression",
-                                code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(`*${sourceCpp}`, sourceField.type.inner), targetField.type, property)};`,
-                            });
-                            this.context.decreaseIndent();
-                            this.context.emit({ kind: "close", code: "}" });
-                            // A possibly absent source property cannot by
-                            // itself satisfy a required target field.
-                            if (targetField.type.kind === "optional") {
-                                assigned.add(targetField.name);
-                            }
-                            continue;
-                        }
-                        this.context.emit({
-                            kind: "expression",
-                            code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(sourceCpp, sourceField.type), targetField.type, property)};`,
-                        });
-                        assigned.add(targetField.name);
-                    }
+                        property.expression,
+                        "spread",
+                        { fresh: (field) => !assigned.has(field) },
+                    ))
+                        assigned.add(name);
                     continue;
                 }
                 this.context.fail(
@@ -9918,43 +10035,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
                 return;
             const field = this.compileDataPath(target, "write");
-            if (
-                field?.dataType?.kind === "function" ||
-                (field?.dataType?.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(
-                        field.dataType.name,
-                    ))
-            ) {
+            if (field) {
                 const property = this.context.checker.getPropertyOfType(
                     this.context.checker.getTypeAtLocation(target.expression),
                     target.name.text,
                 );
-                if (
-                    property &&
-                    (property.flags & ts.SymbolFlags.Optional) !== 0
-                ) {
-                    this.context.emit({
-                        kind: "expression",
-                        code: `${field.cpp} = {};`,
-                    });
-                    this.invalidateStaticElements(field);
-                    return;
-                }
-            }
-            if (field?.kind === "data" && field.dataType?.kind === "optional") {
-                this.context.reachJsData();
-                this.context.emit({
-                    kind: "expression",
-                    code: `${field.cpp} = std::nullopt;`,
-                });
-                this.invalidateStaticElements(field);
-                return;
-            }
-            if (field) {
-                this.context.fail(
+                this.deleteSlot(
+                    field,
+                    property !== undefined &&
+                        (property.flags & ts.SymbolFlags.Optional) !== 0,
+                    target.name.text,
                     target,
-                    `'${target.name.text}' is a required field of its type; only an optional field can be deleted.`,
                 );
+                return;
             }
         }
         this.context.fail(
@@ -9971,27 +10064,49 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         node: ts.Node,
     ): void {
         const field = this.context.dataTypes.structField(type.name, key, node);
-        const slot = `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`;
-        if (field.type.kind === "optional") {
-            this.context.reachJsData();
-            this.context.emit({
-                kind: "expression",
-                code: `${slot} = std::nullopt;`,
-            });
-        } else if (
-            field.optionalProperty &&
-            (field.type.kind === "function" ||
-                (field.type.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(field.type.name)))
+        this.deleteSlot(
+            this.leafValue(
+                `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`,
+                field.type,
+            ),
+            field.optionalProperty === true,
+            key,
+            node,
+        );
+        this.context.bindings.invalidateRecordProperties(owner);
+    }
+
+    /**
+     * Empties the slot of a deleted property, which is then absent: optional
+     * storage empties, and a `?` property's shared object or function becomes
+     * its null. Storage with no absent state for the property refuses.
+     */
+    private deleteSlot(
+        slot: Value,
+        optionalProperty: boolean,
+        key: string,
+        node: ts.Node,
+    ): void {
+        const type = slot.dataType;
+        if (
+            type?.kind !== "optional" &&
+            !(
+                optionalProperty &&
+                (type?.kind === "function" ||
+                    (type?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(type.name)))
+            )
         )
-            this.context.emit({ kind: "expression", code: `${slot} = {};` });
-        else
-            this.context.fail(
+            return this.context.fail(
                 node,
                 `'${key}' is a required field of its type; only an optional field can be deleted.`,
             );
-        this.invalidateStaticElements(this.leafValue(slot, field.type));
-        this.context.bindings.invalidateRecordProperties(owner);
+        if (type.kind === "optional") this.context.reachJsData();
+        this.context.emit({
+            kind: "expression",
+            code: `${slot.cpp} = ${this.context.dataTypes.absentValue(type)};`,
+        });
+        this.invalidateStaticElements(slot);
     }
 
     /** `key in object` as a condition. */
@@ -10126,8 +10241,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // A key a conditional spread wrote is own while its value is.
             const ownWhile = (key: string): string | undefined => {
                 const property = narrowed.recordProperties?.[key];
-                return property?.conditionalOwnKey
-                    ? this.conditionalKeyPresentCpp(property, ownerNode)
+                return property
+                    ? this.recordMemberEntry(key, property, ownerNode)
+                          .presentCpp
                     : undefined;
             };
             const inherited = (key: string): boolean =>
@@ -10248,10 +10364,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         field: DataStructField,
         node: ts.Node,
     ): string {
-        const access = this.context.dataTypes.isReferenceStruct(structName)
-            ? "->"
-            : ".";
-        const slot = `${ownerCpp}${access}${field.name}`;
         // A union arm's field is own when the record's tags select an arm
         // declaring it.
         if (field.presentForTags && field.type.kind === "undefined")
@@ -10262,7 +10374,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const present = this.context.dataTypes.ownPropertyPresentCpp(
             structName,
             field,
-            slot,
+            ownerCpp,
+            this.context.dataTypes.isReferenceStruct(structName) ? "->" : ".",
             node,
         );
         if (present === undefined) return "true";
@@ -10584,38 +10697,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             },
         );
         return this.leafValue(result, type);
-    }
-
-    /**
-     * Whether a record member a conditional spread wrote
-     * (`Value.conditionalOwnKey`) is an own key: its stored value is present.
-     */
-    public conditionalKeyPresentCpp(value: Value, node: ts.Node): string {
-        this.context.useNativeValue(value);
-        const present = presenceCpp(value);
-        if (present !== undefined) return present;
-        const type = value.dataType;
-        if (type?.kind === "json") return `!${value.cpp}.is_undefined()`;
-        if (
-            type?.kind === "function" ||
-            (type?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(type.name))
-        )
-            return `static_cast<bool>(${value.cpp})`;
-        return this.context.fail(
-            node,
-            "A record key a conditional spread decides needs a represented absent value.",
-        );
-    }
-
-    /**
-     * The value of a present conditional record member: the one its
-     * nullable storage holds.
-     */
-    public conditionalKeyValue(value: Value): Value {
-        return value.dataType?.kind === "optional"
-            ? this.presentOptionalValue(value, value.dataType.inner)
-            : value;
     }
 
     /**

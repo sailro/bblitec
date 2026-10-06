@@ -38,10 +38,14 @@ type ObjectStaticContext = Pick<
     | "emitUiDatasetProperty"
 >;
 
-type OwnObjectContext = Pick<
+/** What the own-entry walks read. */
+type OwnEntryContext = Pick<
     ObjectStaticContext,
-    "dataTypes" | "dataLowerer" | "fail" | "moduleNamespaces"
+    "dataTypes" | "dataLowerer" | "fail"
 >;
+
+type OwnObjectContext = OwnEntryContext &
+    Pick<ObjectStaticContext, "moduleNamespaces">;
 
 /** Raw descriptor order, with JavaScript's integer keys first. */
 export function recordPropertyKeys(owner: Value): string[] {
@@ -88,29 +92,31 @@ function stringCpp(
 }
 
 /**
- * One own property of a struct: its key, its value and, for a `?` field
- * whose storage decides whether it is own, the run-time test that it is.
- * The value of a tested optional field is its held value.
+ * One own property of a compile-time record or a struct: its key, its
+ * value and, for a key whose storage decides whether it is own, the
+ * run-time test that it is; the value of such a key is the one it holds
+ * while it is own.
  */
-export interface StructOwnEntry {
+export interface OwnEntry {
     key: string;
     value: Value;
     presentCpp?: string;
     /**
-     * The field's stored value, when `presentCpp` is exactly that storage's
-     * engagement: a `?` field present while its value is.
+     * The storage whose engagement `presentCpp` is exactly, when it is: a
+     * key a compile-time record can hold as a member own while its storage
+     * holds a value (`Value.conditionalOwnKey`).
      */
-    stored?: Value;
+    slot?: Value;
 }
 
 /** Read current field storage, using proven own keys when a record snapshot names them. */
 export function structOwnEntries(
-    context: OwnObjectContext,
+    context: OwnEntryContext,
     owner: Value,
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
     excludedKeys?: ReadonlySet<string>,
-): StructOwnEntry[] {
+): OwnEntry[] {
     refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.isReferenceStruct(dataType.name)
         ? "->"
@@ -145,7 +151,8 @@ export function structOwnEntries(
             : context.dataTypes.ownPropertyPresentCpp(
                   dataType.name,
                   field,
-                  slot,
+                  owner.cpp,
+                  access,
                   node,
               );
         const original = owner.recordProperties?.[key];
@@ -158,9 +165,7 @@ export function structOwnEntries(
             presentCpp !== undefined &&
             !field.accessorReceiver &&
             context.dataTypes.ownPropertyPresence(dataType.name, field) ===
-                "stored"
-                ? { ...value, nativeCaptures: owner.nativeCaptures ?? [] }
-                : undefined;
+                "stored";
         return {
             key,
             value: {
@@ -175,37 +180,98 @@ export function structOwnEntries(
                 nativeCaptures: owner.nativeCaptures ?? [],
             },
             ...(presentCpp ? { presentCpp } : {}),
-            ...(stored ? { stored } : {}),
+            ...(stored
+                ? {
+                      slot: {
+                          ...value,
+                          nativeCaptures: owner.nativeCaptures ?? [],
+                      },
+                  }
+                : {}),
         };
     });
 }
 
 /**
- * A struct's own keys, values or `[key, value]` entries as a fresh array,
- * built at run time so a `?` field joins it only while it is own.
- * Undefined when every field is always own.
+ * The own entries of a compile-time record or a struct, in key order;
+ * undefined for another owner. A record's methods and accessors are not
+ * among them.
  */
-export function structOwnArray(
-    context: OwnObjectContext &
+export function ownEntries(
+    context: OwnEntryContext,
+    owner: Value,
+    node: ts.Node,
+): OwnEntry[] | undefined {
+    if (owner.kind === "record")
+        return Object.entries(owner.recordProperties ?? {}).map(
+            ([key, member]) =>
+                context.dataLowerer.recordMemberEntry(key, member, node),
+        );
+    if (owner.kind === "data" && owner.dataType?.kind === "struct")
+        return structOwnEntries(context, owner, owner.dataType, node);
+    return undefined;
+}
+
+/**
+ * Whether every own key of a compile-time record or a struct is known at
+ * generation: no record member a conditional spread wrote, no struct
+ * field whose storage or tags decide it, unless a record snapshot proved
+ * the struct's keys.
+ */
+export function ownKeysKnown(
+    context: Pick<OwnObjectContext, "dataTypes">,
+    owner: Value,
+    node: ts.Node,
+): boolean {
+    if (owner.kind === "record")
+        return !Object.values(owner.recordProperties ?? {}).some(
+            (member) => member.conditionalOwnKey,
+        );
+    return (
+        owner.dataType?.kind !== "struct" ||
+        owner.recordOwnKeys !== undefined ||
+        context.dataTypes.ownKeysDecided(owner.dataType.name, node)
+    );
+}
+
+/**
+ * The own keys, values or `[key, value]` entries of a compile-time record
+ * or a struct as a fresh array, built at run time so a key joins it only
+ * while it is own. Undefined when every key is known (a fixed list).
+ */
+export function ownArray(
+    context: OwnEntryContext &
         Pick<
             ObjectStaticContext,
             "cppString" | "captureEmittedLines" | "reachJsData"
         >,
     owner: Value,
-    dataType: DataType<"struct">,
     resultType: DataType<"vector">,
     projection: "keys" | "values" | "entries",
     node: ts.Node,
 ): Value | undefined {
-    // The owner is read once; the fields are read through that reference.
-    const entries = structOwnEntries(
-        context,
-        { ...owner, cpp: "own_owner" },
-        dataType,
-        node,
-    );
-    if (entries.every((entry) => entry.presentCpp === undefined))
+    const struct = owner.kind === "data" && owner.dataType?.kind === "struct";
+    if (
+        (!struct && owner.kind !== "record") ||
+        ownKeysKnown(context, owner, node)
+    )
         return undefined;
+    if (
+        !struct &&
+        (Object.keys(owner.recordMethods ?? {}).length > 0 ||
+            Object.keys(owner.recordGetters ?? {}).length > 0 ||
+            Object.keys(owner.recordSetters ?? {}).length > 0)
+    )
+        context.fail(
+            node,
+            "A record with methods or accessors and keys a conditional spread decides does not enumerate.",
+        );
+    // A struct is read once; its fields are read through that reference.
+    const entries = ownEntries(
+        context,
+        struct ? { ...owner, cpp: "own_owner" } : owner,
+        node,
+    )!;
     context.reachJsData();
     const element = resultType.element;
     const pushes: string[] = [];
@@ -231,114 +297,37 @@ export function structOwnArray(
     if (emitted.length > 0)
         context.fail(
             node,
-            "A struct's own properties enumerate as an array when each value converts to its element in place.",
+            `A ${struct ? "struct" : "record"}'s own properties enumerate as an array when each value converts to its element in place.`,
         );
+    const build = `${context.dataTypes.cppType(resultType)} own; ${pushes.join(" ")} return own;`;
     return {
         kind: "data",
-        cpp: `[](const auto& own_owner) { ${context.dataTypes.cppType(resultType)} own; ${pushes.join(" ")} return own; }(${owner.cpp})`,
+        cpp: struct
+            ? `[](const auto& own_owner) { ${build} }(${owner.cpp})`
+            : `[&]() { ${build} }()`,
         dataType: resultType,
         freshData: true,
     };
-}
-
-/** A struct's own properties as a fixed list, which a `?` field's run-time presence refuses. */
-function structEntries(
-    context: OwnObjectContext,
-    owner: Value,
-    dataType: DataType & { kind: "struct" },
-    node: ts.Node,
-): Array<[string, Value]> {
-    const entries = structOwnEntries(context, owner, dataType, node);
-    if (entries.some((entry) => entry.presentCpp !== undefined))
-        context.fail(
-            node,
-            "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays.",
-        );
-    return entries.map(({ key, value }) => [key, value]);
-}
-
-/** A compile-time record's properties as a fixed list, which a key a conditional spread decides refuses. */
-function recordEntries(
-    context: OwnObjectContext,
-    owner: Value,
-    node: ts.Node,
-): Array<[string, Value]> {
-    const entries = Object.entries(owner.recordProperties ?? {});
-    if (entries.some(([, value]) => value.conditionalOwnKey))
-        context.fail(
-            node,
-            "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays.",
-        );
-    return entries;
 }
 
 /**
- * A compile-time record's own keys, values or `[key, value]` entries as a
- * fresh array, built at run time so a key a conditional spread wrote joins
- * it only while it is own. Undefined when every key is always own.
+ * A compile-time record's or a struct's own properties as a fixed list,
+ * which a key decided at run time refuses; undefined for another owner.
  */
-export function recordOwnArray(
-    context: OwnObjectContext &
-        Pick<
-            ObjectStaticContext,
-            "cppString" | "captureEmittedLines" | "reachJsData"
-        >,
+function fixedOwnEntries(
+    context: OwnEntryContext,
     owner: Value,
-    resultType: DataType<"vector">,
-    projection: "keys" | "values" | "entries",
-    node: ts.Expression,
-): Value | undefined {
-    if (owner.kind !== "record") return undefined;
-    const entries = Object.entries(owner.recordProperties ?? {});
-    if (!entries.some(([, value]) => value.conditionalOwnKey)) return undefined;
-    if (
-        Object.keys(owner.recordMethods ?? {}).length > 0 ||
-        Object.keys(owner.recordGetters ?? {}).length > 0 ||
-        Object.keys(owner.recordSetters ?? {}).length > 0
-    )
+    node: ts.Node,
+): Array<[string, Value]> | undefined {
+    const entries = ownEntries(context, owner, node);
+    if (entries?.some((entry) => entry.presentCpp !== undefined))
         context.fail(
             node,
-            "A record with methods or accessors and keys a conditional spread decides does not enumerate.",
+            owner.kind === "record"
+                ? "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays."
+                : "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays.",
         );
-    context.reachJsData();
-    const element = resultType.element;
-    const pushes: string[] = [];
-    const emitted = context.captureEmittedLines(() => {
-        for (const [key, value] of entries) {
-            const keyValue = staticStringValue(key, (text) =>
-                context.cppString(text),
-            );
-            const present = value.conditionalOwnKey
-                ? context.dataLowerer.conditionalKeyPresentCpp(value, node)
-                : undefined;
-            const held = value.conditionalOwnKey
-                ? context.dataLowerer.conditionalKeyValue(value)
-                : value;
-            const projected: Value =
-                projection === "keys"
-                    ? keyValue
-                    : projection === "values"
-                      ? held
-                      : {
-                            kind: "tuple",
-                            cpp: "",
-                            tupleElements: [keyValue, held],
-                        };
-            const push = `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
-            pushes.push(present ? `if (${present}) ${push}` : push);
-        }
-    });
-    if (emitted.length > 0)
-        context.fail(
-            node,
-            "A record's own properties enumerate as an array when each value converts to its element in place.",
-        );
-    return {
-        kind: "data",
-        cpp: `[&]() { ${context.dataTypes.cppType(resultType)} own; ${pushes.join(" ")} return own; }()`,
-        dataType: resultType,
-        freshData: true,
-    };
+    return entries?.map(({ key, value }) => [key, value]);
 }
 
 /** Common own-property projection for Object keys, values, entries and assign. */
@@ -350,9 +339,8 @@ export function ownObjectEntries(
     refuseErrorReflection(context, owner, node);
     const namespace = context.moduleNamespaces.entries(owner, node);
     if (namespace) return namespace;
-    if (owner.kind === "record") return recordEntries(context, owner, node);
-    if (owner.kind === "data" && owner.dataType?.kind === "struct")
-        return structEntries(context, owner, owner.dataType, node);
+    const entries = fixedOwnEntries(context, owner, node);
+    if (entries) return entries;
     if (
         owner.kind === "data" &&
         owner.dataType?.kind === "enummap" &&
@@ -518,31 +506,11 @@ function compileObjectEntries(
             ? context.dataLowerer.narrowOptional(raw, argumentAt(call, 0))
             : raw;
     const resultType = context.dataLowerer.dataTypeAt(call);
-    if (
-        owner.kind === "data" &&
-        owner.dataType?.kind === "struct" &&
+    const array =
         resultType?.kind === "vector"
-    ) {
-        const array = structOwnArray(
-            context,
-            owner,
-            owner.dataType,
-            resultType,
-            "entries",
-            call,
-        );
-        if (array) return array;
-    }
-    if (resultType?.kind === "vector") {
-        const array = recordOwnArray(
-            context,
-            owner,
-            resultType,
-            "entries",
-            call,
-        );
-        if (array) return array;
-    }
+            ? ownArray(context, owner, resultType, "entries", call)
+            : undefined;
+    if (array) return array;
     if (isJsonValue(owner)) {
         // A document's values are documents too, also where TypeScript
         // types them `any` (the entries of an `object`).
@@ -679,52 +647,6 @@ function compileObjectFromEntries(
 }
 
 /**
- * One struct source of `Object.assign` into a struct target: the source is
- * read once, and each `?` field is stored only while it is an own property.
- */
-function assignOptionalStructFields(
-    context: ObjectStaticContext,
-    target: Value,
-    targetType: DataType<"struct">,
-    source: Value,
-    sourceType: DataType<"struct">,
-    node: ts.Expression,
-): void {
-    const owner = context.bindings.pinValueToTemporary(
-        source,
-        "assign_source",
-        node,
-    );
-    const access = context.dataTypes.isReferenceStruct(targetType.name)
-        ? "->"
-        : ".";
-    for (const { key, value, presentCpp } of structOwnEntries(
-        context,
-        owner,
-        sourceType,
-        node,
-    )) {
-        context.refuseBorrowedPlatformEventEscape(value, node, "Object.assign");
-        const field = context.dataTypes.structField(targetType.name, key, node);
-        let stored = "";
-        const emitted = context.captureEmittedLines(() => {
-            stored = context.dataLowerer.compileKnownValueForSink(
-                value,
-                field.type,
-                node,
-            );
-        });
-        if (emitted.length > 0)
-            context.fail(
-                node,
-                "Object.assign copies a struct's optional fields when each converts to its target field in place.",
-            );
-        const store = `${target.cpp}${access}${field.name} = ${stored};`;
-        context.emit(presentCpp ? `if (${presentCpp}) ${store}` : store);
-    }
-}
-
-/**
  * `Object.assign(target, ...sources)`: an empty literal target merges its
  * sources into a fresh compile-time record, as an object spread does; a
  * struct target stores each source field in place. Sources are compile-time
@@ -760,22 +682,13 @@ function compileObjectAssign(
                     "Object.assign copies plain properties; a source with methods or accessors is not represented.",
                 );
             }
-            return recordEntries(context, value, source);
         }
-        if (value.kind === "data" && value.dataType?.kind === "struct") {
-            // The copy includes any property a record converted into the
-            // source storage carried.
-            if (target.kind === "data" && target.dataType?.kind === "struct")
-                context.dataTypes.noteRecordConversion(
-                    target.dataType,
-                    [],
-                    value.dataType,
-                );
-            return structEntries(context, value, value.dataType, source);
-        }
-        return context.fail(
-            source,
-            "Object.assign sources are compile-time records, object literals or structs.",
+        return (
+            fixedOwnEntries(context, value, source) ??
+            context.fail(
+                source,
+                "Object.assign sources are compile-time records, object literals or structs.",
+            )
         );
     };
     // An existing target keeps what it receives, as a field store does.
@@ -896,21 +809,14 @@ function compileObjectAssign(
             const sourceValue = context.compileValue(source);
             if (
                 sourceValue.kind === "data" &&
-                sourceValue.dataType?.kind === "struct" &&
-                structOwnEntries(
-                    context,
-                    sourceValue,
-                    sourceValue.dataType,
-                    source,
-                ).some((entry) => entry.presentCpp !== undefined)
+                sourceValue.dataType?.kind === "struct"
             ) {
-                assignOptionalStructFields(
-                    context,
-                    target,
-                    structType,
+                context.dataLowerer.copyStructOwnProperties(
+                    { cpp: target.cpp, type: structType },
                     sourceValue,
                     sourceValue.dataType,
                     source,
+                    "Object.assign",
                 );
                 continue;
             }

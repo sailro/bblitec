@@ -88,6 +88,7 @@ import {
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
+import { ownEntries, ownKeysKnown } from "./object-statics.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 import { renderNativeEmission } from "./native-statements.js";
 
@@ -3041,9 +3042,9 @@ export class StatementLowerer {
             // A key a conditional spread wrote is visited while it is own;
             // a runtime skip cannot carry a static loop exit, so each key's
             // iteration stands alone under its guard.
-            const entries = Object.entries(owner.recordProperties ?? {});
+            const conditional = !ownKeysKnown(context, owner, statement);
             if (
-                entries.some(([, value]) => value.conditionalOwnKey) &&
+                conditional &&
                 (enclosingLoopControl(statement.statement) ??
                     firstReturn([statement.statement]))
             )
@@ -3051,11 +3052,17 @@ export class StatementLowerer {
                     statement,
                     "for...in over a record whose keys a conditional spread decides cannot leave the loop early.",
                 );
+            const entries = conditional
+                ? ownEntries(context, owner, statement.expression)!
+                : Object.keys(owner.recordProperties ?? {}).map((key) => ({
+                      key,
+                      presentCpp: undefined,
+                  }));
             this.emitUnrolledLoop(
                 context,
                 statement,
                 entries.map(
-                    ([key]) =>
+                    ({ key }) =>
                         () =>
                             this.bindStaticIterationValue(
                                 context,
@@ -3065,15 +3072,7 @@ export class StatementLowerer {
                                 ),
                             ),
                 ),
-                (index) => {
-                    const value = entries[index]![1];
-                    return value.conditionalOwnKey
-                        ? context.dataLowerer.conditionalKeyPresentCpp(
-                              value,
-                              statement.expression,
-                          )
-                        : undefined;
-                },
+                (index) => entries[index]!.presentCpp,
             );
             return;
         }
@@ -3194,7 +3193,8 @@ export class StatementLowerer {
                 present: context.dataTypes.ownPropertyPresentCpp(
                     dataType.name,
                     field,
-                    `${object}${access}${field.name}`,
+                    object,
+                    access,
                     node,
                 ),
             }));

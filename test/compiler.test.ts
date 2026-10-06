@@ -2743,10 +2743,11 @@ test("spreads a native partial struct into a wider struct", () => {
         }
         const options: Options = { label: "ready" };
         const item: Item = { id: 3, ...options };
+        options.enabled = item.label !== undefined;
     `);
 
     assert.match(result.cpp, /if \(v_options\.label\.has_value\(\)\) \{/);
-    assert.match(result.cpp, /v_item\.label = \*v_options\.label;/);
+    assert.match(result.cpp, /v_item\.label = \(\*v_options\.label\);/);
     assert.match(result.cpp, /if \(v_options\.enabled\.has_value\(\)\) \{/);
 });
 

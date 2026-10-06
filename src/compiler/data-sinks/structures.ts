@@ -17,6 +17,7 @@ import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
+import { recordPropertyKeys } from "../object-statics.js";
 import {
     yieldsFreshObject,
     yieldsFreshRecordElements,
@@ -351,18 +352,11 @@ function valueStruct(
                 throw new DynamicBindingStorageRequired(declaration, "source");
         }
         lowerer.context.dataTypes.cppType(dataType);
+        const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
             dataType,
-            [
-                ...new Set([
-                    ...Object.keys(value.recordProperties ?? {}),
-                    ...Object.keys(value.recordMethods ?? {}),
-                    ...Object.keys(value.recordGetters ?? {}),
-                    ...Object.keys(value.recordSetters ?? {}),
-                ]),
-            ].filter(
-                (property) =>
-                    !fields.some((field) => field.sourceName === property),
+            recordPropertyKeys(value).filter(
+                (property) => !stored.has(property),
             ),
         );
         const home = homeObjectReceiver(
@@ -479,11 +473,11 @@ function valueStruct(
             node,
             "accessors",
         );
+        const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
             dataType,
             [...sourceFields.keys()].filter(
-                (property) =>
-                    !fields.some((field) => field.sourceName === property),
+                (property) => !stored.has(property),
             ),
             sourceType,
         );

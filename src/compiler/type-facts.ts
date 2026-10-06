@@ -66,11 +66,18 @@ export function slotHoldsOnlyNull(type: ts.Type): boolean {
  * both), so only the native representation can say.
  */
 export type Absence =
-    | "undefined"
-    | "null"
-    | "either"
-    | "unconstrained"
-    | { readonly slotFoundCpp: string };
+    AbsentValueKind | "unconstrained" | { readonly slotFoundCpp: string };
+
+/** Which JavaScript absent values a type admits: one of the two, or "either". */
+export type AbsentValueKind = "undefined" | "null" | "either";
+
+/** The absent values `absent` admits; undefined when it admits neither. */
+export function absentValueKind(
+    absent: Pick<Nullability, "null" | "undefined">,
+): AbsentValueKind | undefined {
+    if (absent.null) return absent.undefined ? "either" : "null";
+    return absent.undefined ? "undefined" : undefined;
+}
 
 /**
  * The one rule for which absent value `value`, read at `node`, is when it
@@ -113,10 +120,10 @@ export function absenceKind(
     }
     if (value.preserveUncheckedLookup)
         return absent.null ? "either" : "undefined";
-    if (absent.null) return absent.undefined ? "either" : "null";
-    if (absent.undefined) return "undefined";
-    if (presenceFlagCpp(value) !== undefined) return "undefined";
-    return "unconstrained";
+    return (
+        absentValueKind(absent) ??
+        (presenceFlagCpp(value) !== undefined ? "undefined" : "unconstrained")
+    );
 }
 
 /** Whether a type is a generic instantiation (`Map<K, V>`, `Array<T>`). */
