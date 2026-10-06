@@ -6042,6 +6042,26 @@ check(
     const sanitizers: Array<(item: Kept) => string> = [(item) => JSON.stringify(sanitize(item))];
     if (sanitizers[0]!({ pattern: 2, foot: 3 }) !== '{"pattern":2,"foot":3}' || sanitizers[0]!({ pattern: 2 }) !== '{"pattern":2}')
         throw new Error("deleting absent and present properties");
+
+    interface Spot { x: number; z: number }
+    interface Blocker { id?: number; save: Spot }
+    function free(blockers: () => readonly Blocker[], vacating?: ReadonlySet<number>): number {
+        let total = 0;
+        for (const { id, save } of blockers()) {
+            if (id !== undefined && vacating?.has(id)) continue;
+            total += save.x;
+        }
+        return total;
+    }
+    function blockerId({ id, save }: Blocker): number { return id === undefined ? -save.x : id; }
+    interface Area { props(): readonly { save: Spot }[] }
+    function wire(area: Area): string {
+        let ids = 0;
+        for (const prop of area.props()) ids += blockerId(prop);
+        return free(area.props, new Set([1])) + "," + ids;
+    }
+    const placed = [{ save: { x: 2, z: 0 } }, { save: { x: 3, z: 1 } }];
+    if (wire({ props: () => placed }) !== "5,-5") throw new Error("destructured absent properties");
 `,
 );
 
@@ -6057,6 +6077,9 @@ test("absent property reads refuse properties a converted record may carry", () 
         "list.push(make(1)); const read = readB(list[0]!);",
         "const read = readB(list[0]!); list.push(make(1));",
         "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
+        // Destructuring reads the property as a property access does.
+        "list.push(make(1)); function bOf({ b }: View): number { return b ?? -1; } const read = bOf(list[0]!);",
+        "list.push(make(1)); const views: readonly View[] = list; let read = 0; for (const { b } of views) read += b ?? -1;",
     ])
         assert.throws(
             () => compileSource(declarations + body),

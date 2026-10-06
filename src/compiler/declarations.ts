@@ -4145,6 +4145,15 @@ export class DeclarationLowerer {
                 }
                 const { name, property } = this.bindingProperty(element);
                 consumed.add(property);
+                const absent = this.context.dataLowerer.absentBindingValue(
+                    element,
+                    value.dataType.name,
+                    property,
+                );
+                if (absent && ts.isIdentifier(name)) {
+                    this.context.bindings.defineVariable(name, absent);
+                    continue;
+                }
                 const field = this.context.dataTypes.structField(
                     value.dataType.name,
                     property,

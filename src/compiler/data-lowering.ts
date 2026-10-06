@@ -3895,6 +3895,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { kind: "json-null", cpp: "std::nullopt" };
     }
 
+    /**
+     * A destructured identifier whose property the record's type admits as
+     * absent and its struct does not store: the binding is `undefined`, as
+     * the property's read is.
+     */
+    public absentBindingValue(
+        binding: ts.BindingElement,
+        structName: string,
+        property: string,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(binding.name) ||
+            binding.initializer ||
+            !admitsUndefined(
+                this.context.checker.getTypeAtLocation(binding.name),
+            ) ||
+            !this.context.dataTypes.absentRecordProperty(
+                structName,
+                property,
+                binding,
+            )
+        )
+            return undefined;
+        return { kind: "json-null", cpp: "std::nullopt" };
+    }
+
     private propertyRead(
         ownerValue: Value,
         access: ts.PropertyAccessExpression,
@@ -14944,6 +14970,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         binding,
                         "Struct destructuring supports plain and renamed identifiers.",
                     );
+                }
+                const absent = this.absentBindingValue(
+                    binding,
+                    element.name,
+                    property,
+                );
+                if (absent) {
+                    define(binding.name, absent);
+                    continue;
                 }
                 const field = this.context.dataTypes.structField(
                     element.name,
