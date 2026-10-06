@@ -500,6 +500,30 @@ check(
 );
 
 check(
+    "conditional-expression-statements",
+    `
+    let log = "";
+    function a(): void { log += "a"; }
+    function b(): number { log += "b"; return 1; }
+    function c(): string { log += "c"; return "c"; }
+    const set = new Set<string>();
+    const values: number[] = [];
+    function run(k: number): void { k === 0 ? a() : k === 1 ? b() : c(); }
+    function toggle(key: string, on: boolean): void { on ? set.add(key) : set.delete(key); }
+    function mixed(flag: boolean): void { flag ? a() : values.push(1); }
+    const runs: Array<typeof run> = [run];
+    const toggles: Array<typeof toggle> = [toggle];
+    const mixes: Array<typeof mixed> = [mixed];
+    run(0); runs[0]!(1); runs[0]!(2);
+    toggles[0]!("a", true); toggles[0]!("b", true); toggles[0]!("a", false);
+    mixes[0]!(true); mixes[0]!(false);
+    const always = true;
+    always ? a() : b();
+    if (log !== "abcaa" || set.size !== 1 || !set.has("b") || values.length !== 1) throw new Error("conditional statements " + log);
+`,
+);
+
+check(
     "exponent-compound-assignment",
     `
     const h = [2, 10];

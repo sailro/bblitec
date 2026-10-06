@@ -4343,6 +4343,48 @@ export class StatementLowerer {
      * an expression rather than an `ExpressionStatement` — a concise
      * arrow body, whose value the pin's callback contract discards.
      */
+    /**
+     * `condition ? a() : b()` whose value is discarded: each arm is a
+     * statement of its own branch, so arms of different value types (one
+     * void) never meet in one native expression.
+     */
+    private emitConditionalStatement(
+        context: StatementLoweringContext,
+        expression: ts.ConditionalExpression,
+    ): void {
+        const condition = context.conditions.compileCondition(
+            expression.condition,
+        );
+        const emitArm = (arm: ts.Expression): void => {
+            if (this.emitExpression(context, arm))
+                context.fail(
+                    arm,
+                    "A conditional expression statement cannot suspend in one arm.",
+                );
+        };
+        if (condition === "true" || condition === "false") {
+            emitArm(
+                condition === "true"
+                    ? expression.whenTrue
+                    : expression.whenFalse,
+            );
+            return;
+        }
+        const emitBranch = (arm: ts.Expression): void => {
+            context.increaseIndent();
+            try {
+                this.inRuntimeControlFlow(context, () => emitArm(arm));
+            } finally {
+                context.decreaseIndent();
+            }
+        };
+        context.emit({ kind: "open", code: `if (${condition}) {` });
+        emitBranch(expression.whenTrue);
+        context.emit({ kind: "branch", code: "} else {" });
+        emitBranch(expression.whenFalse);
+        context.emit({ kind: "close", code: "}" });
+    }
+
     public emitExpression(
         context: StatementLoweringContext,
         expression: ts.Expression,
@@ -4388,6 +4430,10 @@ export class StatementLowerer {
             // only its value. At a statement boundary the value was already
             // unused, so lower the operand through the same statement path.
             return this.emitExpression(context, operand);
+        }
+        if (ts.isConditionalExpression(unwrapped)) {
+            this.emitConditionalStatement(context, unwrapped);
+            return;
         }
         if (ts.isDeleteExpression(unwrapped)) {
             context.emitDelete(unwrapped);
