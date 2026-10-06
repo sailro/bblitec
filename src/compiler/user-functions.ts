@@ -4521,13 +4521,17 @@ export class UserFunctionLowerer {
         return this.lower(context, ir, values, callNode, discardReturn, body);
     }
 
-    /** Materializes a read-only closure as a copyable native function value. */
+    /**
+     * Materializes a read-only closure as a copyable native function value.
+     * `receiver` is the home object a literal's method reads as `this`.
+     */
     public compileStoredDataFunction(
         context: UserFunctionContext,
         expression: ts.Identifier | SupportedFunction,
         dataType: DataType & { kind: "function" },
         owner?: Value,
         identityCpp?: string,
+        receiver?: Value,
     ): string {
         const unwrapped =
             ts.isFunctionDeclaration(expression) ||
@@ -4573,6 +4577,7 @@ export class UserFunctionLowerer {
                 dataType,
                 owner,
                 identityCpp,
+                receiver,
             );
         } finally {
             this.loweringStoredDataFunctions.delete(declaration);
@@ -4585,6 +4590,7 @@ export class UserFunctionLowerer {
         dataType: DataType & { kind: "function" },
         owner?: Value,
         identityCpp?: string,
+        receiver?: Value,
     ): string {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
@@ -4744,12 +4750,8 @@ export class UserFunctionLowerer {
         try {
             const compileBody = () =>
                 context.captureManagedClosureLines(() => {
-                    // A literal method's `this` is its home object's shared cell.
-                    const receiver = context.activeThis();
-                    if (
-                        receiver?.sharedStorageCpp !== undefined &&
-                        functionUsesDynamicThis(declaration)
-                    )
+                    // A literal method's `this` is the object its literal creates.
+                    if (receiver && functionUsesDynamicThis(declaration))
                         context.useNativeValue(receiver);
                     this.bindArgumentsObject(
                         context,

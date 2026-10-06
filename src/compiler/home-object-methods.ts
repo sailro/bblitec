@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import type { DataType } from "./data-types.js";
+import type { DataStructField, DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { LibraryGlobal } from "./symbols.js";
 import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
@@ -306,15 +306,74 @@ export function readsHomeObject(node: ts.Node): node is HomeObjectMethod {
     return ts.isObjectLiteralExpression(owner) && functionUsesDynamicThis(node);
 }
 
+/** A literal's own methods reading `this`, by property name. */
+export function homeObjectMethods(
+    literal: ts.ObjectLiteralExpression,
+): ReadonlyMap<string, HomeObjectMethod> {
+    const methods = new Map<string, HomeObjectMethod>();
+    for (const property of literal.properties) {
+        const method = ts.isPropertyAssignment(property)
+            ? unwrapExpression(property.initializer)
+            : property;
+        const name =
+            property.name === undefined
+                ? undefined
+                : propertyNameText(property.name);
+        if (name !== undefined && readsHomeObject(method))
+            methods.set(name, method);
+    }
+    return methods;
+}
+
 /**
- * The shared cell an object literal's `this`-reading methods read as their
- * receiver, declared before the methods' closures capture it; the caller
- * stores the created object in it. A method whose function value never
- * leaves its object is only called as a member of that object, so `this`
- * is the object the literal creates; any read of the value from an object
- * that can hold it refuses.
+ * The binding a declaration hands the object literal it is initialized
+ * with, while that literal is lowered: the literal's methods name it, so
+ * the literal binds it to the object it creates before they capture it.
  */
-export function homeObjectReceiver(
+interface SelfBinding {
+    readonly name: ts.Identifier;
+    readonly cppName: string;
+}
+
+/** Requests live only while their declaration lowers its initializer. */
+const selfBindings = new WeakMap<ts.ObjectLiteralExpression, SelfBinding>();
+
+/**
+ * Lowers a declaration's initializer while its object literal binds the
+ * declared name to the object it creates (see {@link literalSelf}).
+ */
+export function withLiteralSelfBinding<T>(
+    literal: ts.ObjectLiteralExpression,
+    binding: SelfBinding,
+    lower: () => T,
+): T {
+    selfBindings.set(literal, binding);
+    try {
+        return lower();
+    } finally {
+        selfBindings.delete(literal);
+    }
+}
+
+/**
+ * The object an object literal creates, allocated before the closures of
+ * its methods capture it: the `this` of its own methods reading `this`,
+ * and the value of the binding it initializes when its methods name that
+ * binding. The literal's fields are stored into it once lowered.
+ */
+export interface LiteralSelf {
+    readonly value: Value;
+    readonly methods: ReadonlyMap<string, HomeObjectMethod>;
+}
+
+/**
+ * The self object of a struct built from an object literal (`node`), or
+ * undefined when nothing in the literal reaches it. A method whose function
+ * value never leaves its object is only called as a member of that object,
+ * so `this` is the object the literal creates; any read of the value from
+ * an object that can hold it refuses.
+ */
+export function literalSelf(
     context: Pick<
         LoweringServices,
         | "program"
@@ -326,21 +385,24 @@ export function homeObjectReceiver(
         | "reachJsData"
         | "emit"
         | "registerNativeBinding"
+        | "bindings"
     >,
     dataType: DataType<"struct">,
-    methods: readonly {
-        readonly name: string;
-        readonly method: HomeObjectMethod;
-    }[],
+    methods: ReadonlyMap<string, HomeObjectMethod>,
     node: ts.Node,
-): Value | undefined {
-    if (!methods.length) return undefined;
+): LiteralSelf | undefined {
+    const literal = ts.isExpression(node) ? unwrapExpression(node) : undefined;
+    const binding =
+        literal && ts.isObjectLiteralExpression(literal)
+            ? selfBindings.get(literal)
+            : undefined;
+    if (!methods.size && !binding) return undefined;
     if (!context.dataTypes.isReferenceStruct(dataType.name))
         context.fail(
             node,
             "An object literal method reading `this` requires shared native object storage.",
         );
-    for (const { name, method } of methods) {
+    for (const [name, method] of methods) {
         const read = methodValueRead(
             context,
             name,
@@ -354,27 +416,54 @@ export function homeObjectReceiver(
             `Method '${name}' reads \`this\`, and ${basename(file.fileName)}:${line + 1} reads its function value, which could call it with another receiver.`,
         );
     }
-    const cell = context.allocateTemporaryCppName("home_object");
+    const cpp =
+        binding?.cppName ?? context.allocateTemporaryCppName("home_object");
     const cppType = context.dataTypes.cppType(dataType);
     context.reachJsData();
     context.emit({
         kind: "declaration",
         type: "auto",
-        name: cell,
-        initializer: `bbl::js::make_gc_shared<${cppType}>()`,
+        name: cpp,
+        initializer: `bbl::js::make_ref<bblscene::${dataType.name}Data>()`,
     });
-    return {
+    const value: Value = {
         kind: "data",
-        cpp: `(*${cell})`,
+        cpp,
         dataType,
-        sharedStorageCpp: cell,
         nativeCaptures: [
-            context.registerNativeBinding(
-                cell,
-                false,
-                false,
-                `std::shared_ptr<${cppType}>`,
-            ),
+            context.registerNativeBinding(cpp, false, false, cppType),
         ],
     };
+    if (binding) context.bindings.defineVariable(binding.name, value);
+    return { value, methods };
+}
+
+/** The receiver a literal's method `name` is lowered with: its self object when it is that method. */
+export function homeReceiver(
+    self: LiteralSelf | undefined,
+    name: string,
+    method: ts.Node,
+): Value | undefined {
+    return self?.methods.get(name) === method ? self.value : undefined;
+}
+
+/**
+ * Stores a literal's lowered fields (`aggregate`, its `Data` record) into
+ * its self object, which is the literal's value.
+ */
+export function completeLiteralSelf(
+    context: Pick<LoweringServices, "emit">,
+    self: LiteralSelf,
+    aggregate: string,
+    fields: readonly DataStructField[],
+): string {
+    const cpp = self.value.cpp;
+    context.emit({ kind: "expression", code: `*${cpp} = ${aggregate};` });
+    // Accessor slots bind to the record that holds them.
+    if (fields.some((field) => field.accessorReceiver))
+        context.emit({
+            kind: "expression",
+            code: `${cpp}->bind_accessors(${cpp});`,
+        });
+    return cpp;
 }

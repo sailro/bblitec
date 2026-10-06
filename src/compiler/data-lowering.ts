@@ -147,7 +147,12 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
-import { homeObjectReceiver, readsHomeObject } from "./home-object-methods.js";
+import {
+    completeLiteralSelf,
+    homeObjectMethods,
+    homeReceiver,
+    literalSelf,
+} from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 
 /**
@@ -9160,19 +9165,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Struct literals support plain property assignments.",
             );
         }
-        const home = homeObjectReceiver(
+        const self = literalSelf(
             this.context,
             dataType,
-            fields.flatMap((field) => {
-                const provider = provided.get(field.sourceName);
-                const method =
-                    provider && !ts.isMethodDeclaration(provider)
-                        ? this.context.unwrap(provider)
-                        : provider;
-                return method && readsHomeObject(method)
-                    ? [{ name: field.sourceName, method }]
-                    : [];
-            }),
+            homeObjectMethods(literal),
             literal,
         );
         const parts = fields.map((field) => {
@@ -9210,7 +9206,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field.type,
                     undefined,
                     false,
-                    home && readsHomeObject(initializer) ? home : undefined,
+                    homeReceiver(self, field.sourceName, initializer),
                 );
                 return this.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -9227,9 +9223,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer,
                 );
             const method = this.context.unwrap(initializer);
+            const receiver = homeReceiver(self, field.sourceName, method);
             if (
-                home &&
-                readsHomeObject(method) &&
+                receiver &&
+                ts.isFunctionExpression(method) &&
                 field.type.kind === "function"
             )
                 return this.context.dataTypes.structFieldInitializerCpp(
@@ -9239,7 +9236,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         field.type,
                         undefined,
                         false,
-                        home,
+                        receiver,
                     ),
                 );
             return this.context.dataTypes.structFieldInitializerCpp(
@@ -9253,13 +9250,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Struct literal has unknown field '${[...provided.keys()][0]}'.`,
             );
         }
-        if (home) {
-            this.context.emit({
-                kind: "expression",
-                code: `${home.cpp} = ${this.structAggregate(dataType, parts)};`,
-            });
-            return home.cpp;
-        }
+        if (self)
+            return completeLiteralSelf(
+                this.context,
+                self,
+                `bblscene::${dataType.name}Data{${parts.join(", ")}}`,
+                fields,
+            );
         return this.structAggregate(dataType, parts);
     }
 

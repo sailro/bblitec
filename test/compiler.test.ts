@@ -1891,13 +1891,16 @@ test("self-referential struct callbacks capture the initialized binding", () => 
         const value = states[0]!.read();
     `);
 
+    // The literal allocates the object its binding names before the method
+    // closure captures it, then stores its fields into that object.
     const declaration = result.cpp.match(
-        /auto (v_fn\d+_state) = bbl::js::make_gc_shared<bblscene::State>\(\);/,
+        /auto (v_fn\d+_state) = bbl::js::make_ref<bblscene::StateData>\(\);/,
     );
     assert.ok(declaration);
     const name = declaration[1]!;
-    assert.match(result.cpp, new RegExp(`\\(\\*${name}\\) = `));
-    assert.match(result.cpp, new RegExp(`\\(\\*${name}\\)->values`));
+    assert.match(result.cpp, new RegExp(`\\*${name} = bblscene::StateData\\{`));
+    assert.match(result.cpp, new RegExp(`${name}->values`));
+    assert.doesNotMatch(result.cpp, /make_gc_shared<bblscene::State>/);
 });
 
 test("lowers optional data property and element chains generically", () => {

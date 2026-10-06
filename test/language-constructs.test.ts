@@ -6290,6 +6290,48 @@ check(
 );
 
 check(
+    "literal-methods-reach-their-object-by-this-and-by-name",
+    `
+    interface Counter {
+        value: number;
+        next: Counter | null;
+        bump(): number;
+        twice(): number;
+        owner(): Counter;
+        self(): Counter;
+        peek(): number;
+        link(other: Counter): void;
+    }
+    function createCounter(start: number): Counter {
+        const counter: Counter = {
+            value: start,
+            next: null,
+            bump() { this.value++; return counter.value; },
+            twice() { counter.bump(); return this.bump(); },
+            owner() { return counter; },
+            self() { return this; },
+            peek: () => counter.value,
+            link(other) { this.next = other; other.next = counter; },
+        };
+        return counter;
+    }
+    const counters: Array<typeof createCounter> = [createCounter];
+    const a = counters[0]!(1);
+    const b = counters[0]!(10);
+    if (a.twice() !== 3 || b.bump() !== 11 || a.peek() !== 3) throw new Error("this and name read one object");
+    if (a.owner() !== a || a.self() !== a || b.owner() !== b || a.owner() === b) throw new Error("object identity");
+    const peek = a.peek;
+    if (peek !== a.peek || peek === b.peek || peek() !== 3) throw new Error("method value identity");
+    a.link(a);
+    if (a.next !== a || a.next.self() !== a) throw new Error("an object holding itself");
+    a.link(b);
+    if (a.next !== b || b.next !== a || b.next.next !== b) throw new Error("two objects holding each other");
+    for (let round = 0; round < 64; round++) counters[0]!(round).link(counters[0]!(-round));
+    if (a.twice() !== 5 || b.next?.owner() !== a) throw new Error("objects after collection");
+`,
+);
+
+check(
     "optional-class-method-call-values",
     `
     class Contacts {
