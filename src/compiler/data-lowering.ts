@@ -8682,7 +8682,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * they are where the spread is read, each read once into a temporary.
      * Undefined for any other value, whose element count is not known.
      */
-    public spreadTupleLanes(
+    private spreadTupleLanes(
         spread: Value,
         node: ts.Expression,
     ): readonly Value[] | undefined {
@@ -11756,20 +11756,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 invalidateRootRecordSnapshot();
                 return true;
             }
-            if (
-                operator !== "=" &&
-                !target.freshData &&
-                target.dataType.kind === "optional" &&
-                target.dataType.inner.kind === "number"
-            ) {
-                this.emitNumericUpdate(
-                    {
-                        kind: "optional",
-                        target: { ...target, dataType: target.dataType },
-                    },
-                    left,
-                    compoundNext,
-                );
+            const optionalNumber =
+                operator === "=" ? undefined : this.optionalNumberPlace(target);
+            if (optionalNumber) {
+                this.emitNumericUpdate(optionalNumber, left, compoundNext);
                 return true;
             }
             if (operator !== "=") {
@@ -12706,19 +12696,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : rawTarget;
                 if (target.kind === "number")
                     return { kind: "scalar", cpp: target.cpp, target };
-                if (
-                    target.kind === "data" &&
-                    !target.freshData &&
-                    target.dataType?.kind === "optional" &&
-                    target.dataType.inner.kind === "number"
-                )
-                    return {
-                        kind: "optional",
-                        target: { ...target, dataType: target.dataType },
-                    };
-                return undefined;
+                return this.optionalNumberPlace(target);
             },
         );
+    }
+
+    /** A written optional-number slot, the place a numeric update stores. */
+    private optionalNumberPlace(
+        target: Value,
+    ): Extract<NumericUpdatePlace, { kind: "optional" }> | undefined {
+        return target.kind === "data" &&
+            !target.freshData &&
+            target.dataType?.kind === "optional" &&
+            target.dataType.inner.kind === "number"
+            ? {
+                  kind: "optional",
+                  target: { ...target, dataType: target.dataType },
+              }
+            : undefined;
     }
 
     /**
@@ -13940,14 +13935,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public iteratedElements(value: Value): IteratedElements | undefined {
         if (value.kind === "tuple") return { lanes: value.tupleElements ?? [] };
         if (isStringValue(value)) {
-            this.context.reachJsData();
             return {
-                range: {
-                    kind: "data",
-                    cpp: `bbl::js::string_characters(${value.cpp})`,
-                    dataType: { kind: "vector", element: { kind: "string" } },
-                    freshData: true,
-                },
+                range: this.stringCharacters(value),
                 element: { kind: "string" },
             };
         }
@@ -13969,6 +13958,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType?.kind === "set"
             ? { range: value, element: dataType.element }
             : undefined;
+    }
+
+    /** A string's code points, each a string, as iteration yields them. */
+    private stringCharacters(value: Value): Value {
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_characters(${value.cpp})`,
+            dataType: { kind: "vector", element: { kind: "string" } },
+            freshData: true,
+        };
     }
 
     /**
@@ -14015,12 +14015,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             rawValue?.kind === "data"
                 ? this.narrowOptional(rawValue, expression)
                 : rawValue;
-        if (value && isStringValue(value)) {
-            const characters = this.iteratedElements(value);
-            return characters && "range" in characters
-                ? { container: characters.range, element: characters.element }
-                : undefined;
-        }
+        if (value && isStringValue(value))
+            return {
+                container: this.stringCharacters(value),
+                element: { kind: "string" },
+            };
         if (value?.kind !== "data" || !value.dataType) {
             return undefined;
         }

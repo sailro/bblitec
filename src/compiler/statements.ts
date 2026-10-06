@@ -904,6 +904,7 @@ export class StatementLowerer {
                     labels.has(node.label.text),
                 { functions: "skip" },
             );
+        let continueAfter: JumpLabel | undefined;
         if (enclosing && continues) {
             if (crossed)
                 context.fail(
@@ -915,11 +916,8 @@ export class StatementLowerer {
                     loop,
                     "A labeled continue of a statically unrolled loop is not lowered.",
                 );
+            continueAfter = this.jumpLabel(context, "labeled_continue");
         }
-        const continueAfter =
-            enclosing && continues
-                ? this.jumpLabel(context, "labeled_continue")
-                : undefined;
         this.withJumpTarget(jumpTarget(loop, { continueAfter }), emitLoop);
         if (!continueAfter?.used) return;
         let iterating: ts.Node | undefined;
