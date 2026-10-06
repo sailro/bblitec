@@ -1623,6 +1623,22 @@ export class ExpressionLowerer {
     }
 
     /**
+     * A Number method's receiver. A number an asserted empty object may lack
+     * stays optional for arithmetic (`undefined` reads NaN there), but a
+     * method call on it reads it present: the dereference throws the
+     * TypeError JavaScript throws for a method of `undefined`.
+     */
+    private numberMethodReceiver(expression: ts.Expression): Value {
+        const value = this.compileValue(expression);
+        return value.kind === "data" &&
+            value.preserveUncheckedLookup &&
+            value.dataType?.kind === "optional" &&
+            value.dataType.inner.kind === "number"
+            ? this.context.dataLowerer.narrowOptional(value, expression, true)
+            : value;
+    }
+
+    /**
      * Evaluates the reached transcendental constants only when JavaScript
      * immediately formats them into generation-time source text. Ordinary
      * numeric expressions remain native so their runtime width and library
@@ -5898,7 +5914,7 @@ export class ExpressionLowerer {
             this.context.checker.getTypeAtLocation(callee.expression).flags &
                 ts.TypeFlags.NumberLike
         ) {
-            const owner = this.compileValue(callee.expression);
+            const owner = this.numberMethodReceiver(callee.expression);
             if (owner.kind !== "number")
                 this.context.fail(
                     call,
@@ -5911,7 +5927,7 @@ export class ExpressionLowerer {
             );
         }
         if (callee.name.text === "toString") {
-            const owner = this.compileValue(callee.expression);
+            const owner = this.numberMethodReceiver(callee.expression);
             if (owner.kind === "number") {
                 this.context.expectArgumentCount(call, 0, 1);
                 this.context.reachJsData();
@@ -5927,7 +5943,7 @@ export class ExpressionLowerer {
         }
         if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
             this.context.expectArgumentCount(call, 0, 1);
-            const owner = this.compileValue(callee.expression);
+            const owner = this.numberMethodReceiver(callee.expression);
             const number =
                 owner.staticNumber ??
                 this.generationTimeNumber(callee.expression);

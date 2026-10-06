@@ -7840,6 +7840,22 @@ check(
 );
 
 check(
+    "number-methods-of-numbers-an-asserted-empty-record-lacks",
+    `
+    interface Env { id: number; fascia: number }
+    function sig(env: Env): string {
+        return env.id + "," + env.fascia.toFixed(2) + "," + env.fascia.toString() + "," + (env.fascia + 1);
+    }
+    const envs: Env[] = [{ id: 1, fascia: 0.5 }, {} as Env];
+    const out: string[] = [];
+    for (const env of envs) {
+        try { out.push(sig(env)); } catch (error) { out.push(error instanceof TypeError ? "TypeError" : "other"); }
+    }
+    if (out.join("|") !== "1,0.50,0.5,1.5|TypeError") throw new Error(out.join("|"));
+`,
+);
+
+check(
     "calls-typed-never-by-narrowing-still-return",
     `
     interface Item { id: number }
