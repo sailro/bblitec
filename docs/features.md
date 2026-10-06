@@ -95,7 +95,9 @@ guards and retains the selected record's identity; `a && b` selects represented 
 present values are all truthy contributing only its absence. Conditional branches of different native
 kinds select as the storage of the conditional's type; a branch preparing a record, tuple or searched
 value runs only when selected. A conditional spread (`...(c ? { a } : {})`) adds its keys only where its
-arm is taken. An assignment is a value (`a.x = b.x = false`). Operands of concatenation, arithmetic,
+arm is taken. An assignment is the value it assigns, its target evaluated once (`a.x = b.x = false`,
+`if (a[i++] = v)`, a setter's argument); an engine property is read back, so its target must not run code.
+Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
 call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
@@ -109,7 +111,7 @@ and `=== undefined` on an absent value answer from what its type admits. A read 
 knows whether the slot existed, so a missing slot (`undefined`) and a stored `null` compare and spell
 apart. Primitive unions containing both absence values retain distinct tags in dynamic storage;
 other values that may be either without a represented tag refuse strict comparison (`== null`, or
-`x !== null && x !== undefined` over one plain read, answers either). An enum member reads as its
+`x !== null && x !== undefined` over one plain read, also inside a longer chain, answers either). An enum member reads as its
 constant wherever it is written, `Tone["Soft"]` included. Object and array declarations compose nested
 bindings, rest and lazy defaults; a parsed document destructures its array elements or string code
 points, without rest or defaults.
