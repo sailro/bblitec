@@ -6141,8 +6141,8 @@ void set_shader_texture(Engine& engine, MaterialHandle material, std::uint32_t s
                         FileTexture texture);
 MaterialRecord& shader_material(Engine& engine, MaterialHandle handle);
 VideoHandle create_baked_video(int ready_state);
-VideoHandle create_baked_video(const std::string& path, std::uint32_t width,
-                               std::uint32_t height, int ready_state);
+VideoHandle create_baked_video(const std::string& path, std::uint32_t width, std::uint32_t height,
+                               int ready_state);
 ExternalTextureHandle create_external_texture(VideoHandle video);
 bool is_external_texture_ready(const ExternalTextureHandle& texture);
 void set_shader_external_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
