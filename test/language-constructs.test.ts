@@ -5042,3 +5042,28 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "generic-method-over-a-value-or-promise-union",
+    `
+    type Outcome = { readonly committed: true; readonly created: number } | { readonly committed: false; readonly reason: string };
+    interface Deps { runWorldEdit<T>(operation: () => T | Promise<T>): Promise<T | null>; syncNow(): void }
+    async function runEdit(deps: Deps, command: () => Outcome): Promise<Outcome> {
+        return (await deps.runWorldEdit(async () => {
+            const outcome = command();
+            if (outcome.committed) deps.syncNow();
+            return outcome;
+        })) ?? { committed: false, reason: "transaction" };
+    }
+    let synced = 0;
+    const deps: Deps = { runWorldEdit: async (operation) => await operation(), syncNow: () => { synced++; } };
+    const refusing: Deps = { runWorldEdit: async () => null, syncNow: () => { synced += 10; } };
+    const edits: Array<typeof runEdit> = [runEdit];
+    void (async () => {
+        const created = await edits[0]!(deps, () => ({ committed: true, created: 3 }));
+        const refused = await edits[0]!(refusing, () => ({ committed: true, created: 4 }));
+        if (!created.committed || created.created !== 3 || refused.committed || refused.reason !== "transaction" || synced !== 1)
+            throw new Error("generic edit lane");
+        globalThis.close();
+    })();
+`,
+);
