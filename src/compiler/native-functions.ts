@@ -1420,11 +1420,10 @@ export class NativeFunctionLowerer {
                 parameter,
             );
             if (parameterType)
-                parameterType =
-                    this.context.dataTypes.ownReadonlyArrayParameter(
-                        parameterType,
-                        parameterTsType,
-                    );
+                parameterType = this.context.dataTypes.ownReadonlyArray(
+                    parameterType,
+                    parameterTsType,
+                );
             const freshMatchingArray =
                 arrayStorage === "fresh" &&
                 parameterType?.kind === "span" &&

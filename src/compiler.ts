@@ -65,7 +65,10 @@ import {
     type SurveyReport,
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
-import type { DynamicBindingStorage } from "./compiler/dynamic-binding-storage.js";
+import {
+    requireDynamicBindingStorage,
+    type DynamicBindingStorage,
+} from "./compiler/dynamic-binding-storage.js";
 import {
     mergeNativeRecordStorage,
     type NativeRecordStorageDemand,
@@ -2211,6 +2214,9 @@ class Compiler implements LoweringServices {
             return;
         }
         if (sourceValue?.kind === "tuple" && !fresh) {
+            // A named literal array takes one native array, which the alias shares.
+            if (ts.isIdentifier(right))
+                requireDynamicBindingStorage(this.checker, right, "array");
             this.fail(
                 source,
                 "Assigning an array alias requires native collection storage.",

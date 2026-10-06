@@ -90,6 +90,7 @@ import {
     dataTypesEqual,
     isUndefinedDataType,
     doubleLiteral,
+    isBinaryDataType,
     isTypedArrayType,
     isOpaqueReference,
     isHandleKind,
@@ -136,6 +137,45 @@ import {
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
 import { integerCounterOf } from "./integer-loops.js";
+
+/**
+ * Storage whose assignment copies a primitive value or the shared identity of
+ * the object it names; see `reseatsOnAssignment`.
+ */
+const REASSIGNED_SHARED_KINDS: ReadonlySet<DataType["kind"]> = new Set([
+    "number",
+    "boolean",
+    "string",
+    "enum",
+    "handle",
+    "event-target",
+    "json",
+    "vector",
+    "tuple",
+    "product",
+    "iterator",
+    "map",
+    "set",
+]);
+
+/** A plain member path: an identifier followed by `.` or `->` field names. */
+const memberPathPattern = /^[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*)+$/;
+
+/**
+ * Two member paths from one root, neither extending the other, name
+ * different fields of that object; other spellings may denote the same
+ * storage.
+ */
+function disjointMemberPaths(left: string, right: string): boolean {
+    if (!memberPathPattern.test(left) || !memberPathPattern.test(right))
+        return false;
+    const leftFields = left.split(/\.|->/);
+    const rightFields = right.split(/\.|->/);
+    const common = Math.min(leftFields.length, rightFields.length);
+    return leftFields
+        .slice(0, common)
+        .some((field, index) => field !== rightFields[index]);
+}
 
 /** Container length mutations, isolated by checker and source file. */
 const resizedSymbolsByChecker = new EmissionWeakMap<
@@ -899,8 +939,8 @@ export class DataLowerer {
         });
     }
 
-    /** Container root each live alias refers into, for invalidation. */
-    private readonly aliasRoots = new EmissionMap<string, string>();
+    /** Container path each live alias refers into, for invalidation. */
+    private readonly aliasContainers = new EmissionMap<string, string>();
 
     /** Container locals whose length generation knows; see below. */
     private readonly fixedLengths = new EmissionMap<string, number>();
@@ -932,19 +972,24 @@ export class DataLowerer {
      */
     public registerAlias(cppName: string, containerCpp: string): void {
         this.ownership.set(cppName, "alias");
-        this.aliasRoots.set(cppName, this.rootName(containerCpp));
+        this.aliasContainers.set(cppName, containerCpp);
     }
 
     /**
      * Marks every alias into `containerCpp` unusable: growing or
      * shrinking the backing vector can move its elements, so a
      * reference taken before the mutation no longer denotes the same
-     * element (or any element at all).
+     * element (or any element at all). Distinct member paths of one
+     * object name disjoint fields, so resizing one leaves the others.
      */
     public invalidateAliases(containerCpp: string): void {
         const root = this.rootName(containerCpp);
-        for (const [name, aliasRoot] of this.aliasRoots) {
-            if (aliasRoot === root && this.ownership.get(name) === "alias") {
+        for (const [name, aliasContainer] of this.aliasContainers) {
+            if (
+                this.rootName(aliasContainer) === root &&
+                !disjointMemberPaths(aliasContainer, containerCpp) &&
+                this.ownership.get(name) === "alias"
+            ) {
                 this.ownership.set(name, "poisoned");
             }
         }
@@ -8974,17 +9019,41 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Emits assignments whose target is a data path. Returns false when the
-     * left side is not a data path.
+     * Whether assigning to storage of this type reseats the binding as
+     * JavaScript does: a primitive copies its value, and a shared wrapper (an
+     * array, collection, binary buffer or view, reference record, document or
+     * opaque object) copies the identity of the object it names. Optional and
+     * union storage reseat when every member does. A borrowed view and a
+     * value-backed record would copy instead.
      */
+    private reseatsOnAssignment(type: DataType): boolean {
+        switch (type.kind) {
+            case "optional":
+                return this.reseatsOnAssignment(type.inner);
+            case "union":
+                return type.members.every((member) =>
+                    this.reseatsOnAssignment(member),
+                );
+            case "struct":
+                return this.context.dataTypes.isReferenceStruct(type.name);
+            default:
+                return (
+                    isOpaqueReference(type) ||
+                    isBinaryDataType(type) ||
+                    REASSIGNED_SHARED_KINDS.has(type.kind)
+                );
+        }
+    }
+
     /**
      * Assigns to a data-typed local by name (`currentMode = mode`).
      *
      * Scalars are native values. A vector is `js::Array`, whose copy
      * assignment copies its shared storage identity: aliases of the old
      * array keep the old object while the rebound name takes the right-hand
-     * array, exactly like JavaScript. Value-backed structs still cannot be
-     * rebound because their C++ assignment would copy fields instead. A
+     * array, exactly like JavaScript. Value-backed structs and borrowed views
+     * still cannot be rebound because their C++ assignment would copy
+     * instead; declarations select owning storage for rebound bindings. A
      * stored function is immutable after creation, so copying its
      * `std::function` target preserves JavaScript's observable semantics.
      */
@@ -9015,73 +9084,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "a reassigned local",
             );
         }
-        const referenceRebind =
-            isOpaqueReference(target.dataType) ||
-            ["vector", "tuple", "product", "iterator", "map", "set"].includes(
-                kind,
-            );
-        // An array, map or set copies its reference, and a reference
-        // struct its handle, so rebinding a nullable local to another one
-        // aliases exactly as JavaScript does.
-        const referenceInner =
+        // An empty optional slot filled from a literal or an absence takes
+        // fresh storage that no alias names.
+        const right = this.context.unwrap(expression.right);
+        const freshOptional =
             target.dataType.kind === "optional" &&
-            (isOpaqueReference(target.dataType.inner) ||
-                ["vector", "tuple", "product", "iterator"].includes(
-                    target.dataType.inner.kind,
-                ) ||
-                target.dataType.inner.kind === "map" ||
-                target.dataType.inner.kind === "set" ||
-                (target.dataType.inner.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(
-                        target.dataType.inner.name,
-                    )));
-        const optionalRebind =
-            referenceInner ||
-            (target.dataType.kind === "optional" &&
-                (target.dataType.inner.kind === "number" ||
-                    target.dataType.inner.kind === "boolean" ||
-                    target.dataType.inner.kind === "string" ||
-                    target.dataType.inner.kind === "enum" ||
-                    target.dataType.inner.kind === "handle" ||
-                    target.dataType.inner.kind === "event-target" ||
-                    // Owned typed arrays and byte-backed views both copy shared
-                    // wrappers, including a view returned by a helper.
-                    isTypedArrayType(target.dataType.inner) ||
-                    ((target.dataType.inner.kind === "map" ||
-                        target.dataType.inner.kind === "set") &&
-                        ts.isNewExpression(
-                            this.context.unwrap(expression.right),
-                        )) ||
-                    ts.isObjectLiteralExpression(
-                        this.context.unwrap(expression.right),
-                    ) ||
-                    ts.isArrayLiteralExpression(
-                        this.context.unwrap(expression.right),
-                    ) ||
-                    this.context.unwrap(expression.right).kind ===
-                        ts.SyntaxKind.NullKeyword ||
-                    identifierText(this.context.unwrap(expression.right)) ===
-                        "undefined"));
+            (ts.isObjectLiteralExpression(right) ||
+                ts.isArrayLiteralExpression(right) ||
+                right.kind === ts.SyntaxKind.NullKeyword ||
+                identifierText(right) === "undefined");
         if (
-            kind !== "number" &&
-            kind !== "boolean" &&
-            kind !== "string" &&
-            kind !== "enum" &&
-            kind !== "handle" &&
-            kind !== "event-target" &&
             kind !== "function" &&
-            !isTypedArrayType(target.dataType) &&
-            // JsonValue copies its array/object storage by shared pointer, so
-            // assigning a freshly parsed dynamic document preserves the
-            // JavaScript object identity of that value rather than deep-copying
-            // the graph.
-            kind !== "json" &&
-            !(
-                kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(target.dataType.name)
-            ) &&
-            !optionalRebind &&
-            !referenceRebind
+            !this.reseatsOnAssignment(target.dataType) &&
+            !freshOptional
         ) {
             this.context.fail(
                 expression,
