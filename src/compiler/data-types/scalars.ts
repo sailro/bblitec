@@ -22,7 +22,10 @@ function opaqueLeaf(cpp: string, key: string) {
 }
 
 function typedArray(kind: TypedArrayKind) {
-    return leaf(typedArrayCppType(kind), typedArrayStem(kind), true);
+    return {
+        ...leaf(typedArrayCppType(kind), typedArrayStem(kind), true),
+        sharesStorage: true as const,
+    };
 }
 
 export const scalarKinds: DataKindOperations<

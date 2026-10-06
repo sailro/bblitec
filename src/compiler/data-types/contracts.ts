@@ -31,6 +31,12 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
         /** Opaque Ref<T> leaf: copies retain identity, assignment reseats it, and get() exposes it. */
         readonly opaqueReference?: true;
         /**
+         * A container or view whose native copies share one object's
+         * storage, as JavaScript references do: a write through either is
+         * seen by both, and assignment reseats the name.
+         */
+        readonly sharesStorage?: true;
+        /**
          * Whether the native value can own an edge the cycle collector
          * traces (`bbl::js::gc_traceable`): always, never, through its
          * stored children, or decided by the payload.

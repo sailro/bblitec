@@ -41,6 +41,7 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
     isUndefinedDataType,
+    sharesStorageKind,
 } from "./data-types/operations.js";
 import {
     emissionArray,

@@ -112,6 +112,7 @@ import {
     isOpaqueReference,
     isHandleKind,
     passesByReference,
+    sharesStorageKind,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
     typedArrayConstructorName,
@@ -159,10 +160,10 @@ import { homeObjectReceiver, readsHomeObject } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 
 /**
- * Storage whose assignment copies a primitive value or the shared identity of
- * the object it names; see `reseatsOnAssignment`.
+ * Storage whose assignment copies a primitive value, or the handle or
+ * document it names; see `reseatsOnAssignment`.
  */
-const REASSIGNED_SHARED_KINDS: ReadonlySet<DataType["kind"]> = new Set([
+const REASSIGNED_VALUE_KINDS: ReadonlySet<DataType["kind"]> = new Set([
     "number",
     "boolean",
     "string",
@@ -170,12 +171,6 @@ const REASSIGNED_SHARED_KINDS: ReadonlySet<DataType["kind"]> = new Set([
     "handle",
     "event-target",
     "json",
-    "vector",
-    "tuple",
-    "product",
-    "iterator",
-    "map",
-    "set",
 ]);
 
 /**
@@ -1266,10 +1261,7 @@ export class DataLowerer {
         if (type.kind === "optional")
             return this.sharesObjectStorage(type.inner);
         return (
-            ["vector", "map", "set", "tuple", "product", "arguments"].includes(
-                type.kind,
-            ) ||
-            isTypedArrayType(type) ||
+            sharesStorageKind(type) ||
             (type.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(type.name))
         );
@@ -9758,7 +9750,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return (
                     isOpaqueReference(type) ||
                     isBinaryDataType(type) ||
-                    REASSIGNED_SHARED_KINDS.has(type.kind)
+                    sharesStorageKind(type) ||
+                    REASSIGNED_VALUE_KINDS.has(type.kind)
                 );
         }
     }
