@@ -1034,6 +1034,31 @@ export class NativeFunctionLowerer {
                 directKernel,
             );
             if (adapted !== undefined) return adapted;
+            // A record, or an array of records, passed as another record
+            // type: the sink keeps one object in a shared layout, or copies
+            // it where nothing can tell the copy apart (a callee that only
+            // reads it borrows the copy for the call).
+            const recordElement = (type: DataType): DataType =>
+                type.kind === "vector" ? type.element : type;
+            if (
+                value?.kind === "data" &&
+                value.dataType &&
+                !dataTypesEqual(value.dataType, dataType) &&
+                value.dataType.kind === dataType.kind &&
+                recordElement(value.dataType).kind === "struct" &&
+                recordElement(dataType).kind === "struct"
+            )
+                return this.context.bindings.pinValueToTemporary(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            dataType,
+                            expression,
+                        ),
+                        dataType,
+                    ),
+                    "record_argument",
+                ).cpp;
             if (
                 value?.kind !== "data" ||
                 !value.dataType ||

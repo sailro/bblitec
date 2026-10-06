@@ -7981,6 +7981,74 @@ test("record conversions refuse what neither a copy nor a shared layout holds", 
     );
 });
 
+check(
+    "arrays-of-records-lent-to-reading-callees",
+    `
+    interface Emit { x: number; y: number; z: number }
+    interface Wheel { x: number; z: number; label?: string }
+    class Marks {
+        total = 0;
+        trails: { x: number }[] = [];
+        update(wheels: readonly Wheel[]): void {
+            if (this.trails.length !== wheels.length) this.trails = wheels.map(() => ({ x: 0 }));
+            for (let i = 0; i < wheels.length; i++) this.total += wheels[i]!.x * 10 + wheels[i]!.z;
+            wheels.forEach((wheel) => { this.total += wheel.label === undefined ? 1 : 0; });
+            for (const wheel of wheels) { const point = wheel; this.total += point.x; }
+        }
+    }
+    const marks = new Marks();
+    const points: Emit[] = [{ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 }];
+    marks.update(points);
+    points.push({ x: 7, y: 8, z: 9 });
+    marks.update(points);
+    if (marks.total !== 219 || marks.trails.length !== 3) throw new Error("lent array " + marks.total);
+    const seen = new Set<Emit>(points);
+    if (!seen.has(points[2]!) || points.length !== 3) throw new Error("original array");
+`,
+);
+
+test("arrays of records are lent only to callees that keep neither them nor their elements", () => {
+    const shapes = `interface Emit { x: number; y: number; z: number }
+        interface Wheel { x: number; z: number; label?: string }`;
+    const copied =
+        /'Emit' record stored as 'Wheel' would be a copy of the one object JavaScript keeps, and the array holding them is one shared array/;
+    // The callee keeps an element.
+    assert.throws(
+        () =>
+            compileSource(`${shapes}
+            class Keeper {
+                kept: Wheel | undefined;
+                keep(wheels: readonly Wheel[]): void { this.kept = wheels[0]; }
+            }
+            const keeper = new Keeper();
+            const points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+            keeper.keep(points);
+            points.push({ x: 4, y: 5, z: 6 });
+            keeper.keep(points);
+            const unused = keeper.kept?.x;`),
+        copied,
+    );
+    // The call grows the original array while the callee reads the copy.
+    assert.throws(
+        () =>
+            compileSource(`${shapes}
+            class Store {
+                points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+                grow(): void { this.points.push({ x: 0, y: 0, z: 0 }); }
+            }
+            class Summer {
+                total = 0;
+                sum(wheels: readonly Wheel[], store: Store): void { store.grow(); for (const wheel of wheels) this.total += wheel.x; }
+            }
+            const store = new Store();
+            const summer = new Summer();
+            summer.sum(store.points, store);
+            summer.sum(store.points, store);
+            const unused = summer.total;`),
+        copied,
+    );
+});
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

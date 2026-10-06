@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineBodies } from "./engine-bodies.js";
-import { declarationOrigin, libraryGlobal } from "./symbols.js";
+import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -50,6 +50,11 @@ interface Write {
  */
 interface Observations {
     readonly writes: readonly Write[];
+    /**
+     * Changes of an array's elements or length: element and `length`
+     * writes, deletions and the mutating methods, by the array's type.
+     */
+    readonly arrayWrites: readonly Write[];
     readonly identities: readonly ts.Type[];
     readonly enumerations: readonly ts.Type[];
     /** Type assertions: what they assert, and whether the operand was untyped. */
@@ -74,6 +79,26 @@ const KEYED_COLLECTIONS = new Set([
     "WeakMap",
     "WeakSet",
     "WeakRef",
+]);
+const MUTATING_ARRAY_METHODS = new Set([
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "splice",
+    "sort",
+    "reverse",
+    "fill",
+    "copyWithin",
+]);
+/** Array methods that read their receiver's elements and return none of them. */
+const READING_ARRAY_METHODS = new Set([
+    "forEach",
+    "map",
+    "some",
+    "every",
+    "findIndex",
+    "findLastIndex",
 ]);
 
 /**
@@ -239,10 +264,13 @@ function index(
     const cached = indexes.get(checker);
     if (cached) return cached;
     const writes: Write[] = [];
+    const arrayWrites: Write[] = [];
     const identities: ts.Type[] = [];
     const enumerations: ts.Type[] = [];
     const assertions: { asserted: ts.Type; open: boolean }[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
+    const arrayLike = (node: ts.Node): boolean =>
+        checker.isArrayLikeType(typeOf(node));
     const objectLike = (type: ts.Type): boolean =>
         (type.flags &
             (ts.TypeFlags.Object |
@@ -273,6 +301,15 @@ function index(
             ts.isPrivateIdentifier(unwrapped.name)
         )
             return;
+        if (
+            (ts.isPropertyAccessExpression(unwrapped) ||
+                ts.isElementAccessExpression(unwrapped)) &&
+            arrayLike(unwrapped.expression)
+        )
+            arrayWrites.push({
+                node: unwrapped,
+                type: typeOf(unwrapped.expression),
+            });
         if (ts.isPropertyAccessExpression(unwrapped))
             writes.push({
                 node: unwrapped,
@@ -416,9 +453,14 @@ function index(
                 } else if (
                     IDENTITY_SEARCHES.has(method) &&
                     first &&
-                    checker.isArrayLikeType(typeOf(callee.expression))
+                    arrayLike(callee.expression)
                 )
                     identity(first);
+                else if (
+                    MUTATING_ARRAY_METHODS.has(method) &&
+                    arrayLike(callee.expression)
+                )
+                    arrayWrites.push({ node, type: typeOf(callee.expression) });
                 else if (
                     method === "hasOwnProperty" ||
                     method === "propertyIsEnumerable"
@@ -441,7 +483,13 @@ function index(
                 enumerated(node.arguments[0]);
         });
     }
-    const result = { writes, identities, enumerations, assertions };
+    const result = {
+        writes,
+        arrayWrites,
+        identities,
+        enumerations,
+        assertions,
+    };
     indexes.set(checker, result);
     return result;
 }
@@ -526,9 +574,9 @@ function calledInPlace(
 
 /**
  * Whether a callee only reads the properties of its parameter `index`: the
- * parameter is never written, compared, enumerated, stored, returned,
- * captured or called through, and is handed only to callees that read it the
- * same way.
+ * parameter, or an array's element, is never written, compared, enumerated,
+ * stored, returned, captured or called through, and is handed only to
+ * callees that read it the same way (`valueReadOnly`).
  */
 function readsParameterOnly(
     checker: ts.TypeChecker,
@@ -537,36 +585,62 @@ function readsParameterOnly(
     active: Set<ts.Node>,
 ): boolean {
     const parameter = callee.parameters[index];
-    if (
-        !parameter ||
-        parameter.dotDotDotToken ||
-        !ts.isIdentifier(parameter.name) ||
-        active.has(parameter)
-    )
-        return false;
-    const symbol = checker.getSymbolAtLocation(parameter.name);
-    if (!symbol) return false;
-    active.add(parameter);
-    const writeTargets = new Set<ts.Node>();
+    return (
+        parameter !== undefined &&
+        !parameter.dotDotDotToken &&
+        ts.isIdentifier(parameter.name) &&
+        bindingReadOnly(
+            checker,
+            callee,
+            parameter,
+            parameter.name,
+            writeTargetsOf(callee),
+            active,
+        )
+    );
+}
+
+/** The expressions a callee's body assigns, updates or deletes. */
+function writeTargetsOf(callee: Callee): ReadonlySet<ts.Node> {
+    const targets = new Set<ts.Node>();
     forEachAnalysisNode(callee.body!, (node) => {
         if (isAssignmentExpression(node))
             for (const target of assignmentTargets(node.left))
-                writeTargets.add(climb(target));
-        else if (isUpdateExpression(node))
-            writeTargets.add(climb(node.operand));
+                targets.add(climb(target));
+        else if (isUpdateExpression(node)) targets.add(climb(node.operand));
         else if (ts.isDeleteExpression(node))
-            writeTargets.add(climb(node.expression));
+            targets.add(climb(node.expression));
     });
+    return targets;
+}
+
+/**
+ * Whether every reference in `callee` to the binding `name` declares (a
+ * parameter, an alias or a loop variable of it, held by `declaration`) only
+ * reads the object it holds, from code that runs while the callee does.
+ */
+function bindingReadOnly(
+    checker: ts.TypeChecker,
+    callee: Callee,
+    declaration: ts.Node,
+    name: ts.Identifier,
+    writeTargets: ReadonlySet<ts.Node>,
+    active: Set<ts.Node>,
+): boolean {
+    const symbol = declaredSymbol(checker, name);
+    if (!symbol || active.has(declaration)) return false;
+    active.add(declaration);
     let only = true;
     forEachAnalysisNode(callee.body!, (node) => {
         if (!only) return "skip";
         if (
             !ts.isIdentifier(node) ||
-            checker.getSymbolAtLocation(node) !== symbol
+            node === name ||
+            declaredSymbol(checker, node) !== symbol
         )
             return;
-        if (
-            !calledInPlace(
+        only =
+            calledInPlace(
                 checker,
                 callee,
                 ts.findAncestor(
@@ -574,64 +648,139 @@ function readsParameterOnly(
                     (ancestor) =>
                         ts.isFunctionLike(ancestor) || ancestor === callee,
                 ),
-            )
-        ) {
-            only = false;
-            return;
-        }
-        // Where narrowing leaves only primitives, the reference is not the object.
-        const narrowed = checker.getTypeAtLocation(node);
-        if (
-            (narrowed.isUnion() ? narrowed.types : [narrowed]).every(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.NumberLike |
-                            ts.TypeFlags.StringLike |
-                            ts.TypeFlags.BooleanLike |
-                            ts.TypeFlags.BigIntLike |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined |
-                            ts.TypeFlags.Void)) !==
-                    0,
-            )
-        )
-            return;
-        const use = climb(node);
-        const parent = use.parent;
-        if (
-            (ts.isPropertyAccessExpression(parent) ||
-                ts.isElementAccessExpression(parent)) &&
-            parent.expression === use
-        ) {
-            const read = climb(parent);
-            only =
-                !writeTargets.has(read) &&
-                !(
-                    ts.isCallExpression(read.parent) &&
-                    read.parent.expression === read
-                );
-            return;
-        }
-        if (ts.isCallExpression(parent) && parent.expression !== use) {
-            const position = parent.arguments.indexOf(use);
-            const next = calleeOf(checker, parent);
-            const declaration = next
-                ? undefined
-                : checker.getResolvedSignature(parent)?.declaration;
-            only = next
-                ? readsParameterOnly(checker, next, position, active)
-                : declaration !== undefined &&
-                  declarationOrigin(declaration) === "babylon" &&
-                  engineReadsOnly(declaration, position);
-            return;
-        }
-        // Testing its type and iterating its elements read it too.
-        only =
-            ts.isTypeOfExpression(parent) ||
-            (ts.isForOfStatement(parent) && parent.expression === use);
+            ) && valueReadOnly(checker, callee, node, writeTargets, active);
     });
-    active.delete(parameter);
+    active.delete(declaration);
     return only;
+}
+
+/** Whether every member of a (narrowed) type is a primitive or nullish. */
+function primitiveOnly(type: ts.Type): boolean {
+    return (type.isUnion() ? type.types : [type]).every(
+        (member) =>
+            (member.flags &
+                (ts.TypeFlags.NumberLike |
+                    ts.TypeFlags.StringLike |
+                    ts.TypeFlags.BooleanLike |
+                    ts.TypeFlags.BigIntLike |
+                    ts.TypeFlags.Null |
+                    ts.TypeFlags.Undefined |
+                    ts.TypeFlags.Void)) !==
+            0,
+    );
+}
+
+/**
+ * Whether `callee` only reads the object `expression` evaluates to there:
+ * its properties are read and neither written nor called; an array's
+ * elements are read the same way, and its reading methods take callbacks
+ * that read their element and array parameters only; it is handed only to
+ * callees that read it so, type-tested, iterated into a loop variable or
+ * aliased by a local that are read so too.
+ */
+function valueReadOnly(
+    checker: ts.TypeChecker,
+    callee: Callee,
+    expression: ts.Expression,
+    writeTargets: ReadonlySet<ts.Node>,
+    active: Set<ts.Node>,
+): boolean {
+    // Where narrowing leaves only primitives, the reference is not the object.
+    if (primitiveOnly(checker.getTypeAtLocation(expression))) return true;
+    const use = climb(expression);
+    const parent = use.parent;
+    if (
+        (ts.isPropertyAccessExpression(parent) ||
+            ts.isElementAccessExpression(parent)) &&
+        parent.expression === use
+    ) {
+        const read = climb(parent);
+        if (writeTargets.has(read)) return false;
+        const array = checker.isArrayLikeType(checker.getTypeAtLocation(use));
+        if (ts.isCallExpression(read.parent) && read.parent.expression === read)
+            return (
+                array &&
+                ts.isPropertyAccessExpression(parent) &&
+                READING_ARRAY_METHODS.has(parent.name.text) &&
+                callbacksReadOnly(checker, read.parent, active)
+            );
+        // An array's element is an object of its own, read the same way.
+        return (
+            !(array && ts.isElementAccessExpression(parent)) ||
+            valueReadOnly(checker, callee, read, writeTargets, active)
+        );
+    }
+    if (ts.isCallExpression(parent) && parent.expression !== use) {
+        const position = parent.arguments.indexOf(use);
+        const next = calleeOf(checker, parent);
+        if (next) return readsParameterOnly(checker, next, position, active);
+        const declaration = checker.getResolvedSignature(parent)?.declaration;
+        return (
+            declaration !== undefined &&
+            declarationOrigin(declaration) === "babylon" &&
+            engineReadsOnly(declaration, position)
+        );
+    }
+    if (ts.isTypeOfExpression(parent)) return true;
+    // Iterating reads each element into the loop variable.
+    if (ts.isForOfStatement(parent) && parent.expression === use) {
+        const list = parent.initializer;
+        const variable =
+            ts.isVariableDeclarationList(list) && list.declarations.length === 1
+                ? list.declarations[0]!
+                : undefined;
+        return (
+            variable !== undefined &&
+            (primitiveOnly(checker.getTypeAtLocation(variable.name)) ||
+                (ts.isIdentifier(variable.name) &&
+                    bindingReadOnly(
+                        checker,
+                        callee,
+                        variable,
+                        variable.name,
+                        writeTargets,
+                        active,
+                    )))
+        );
+    }
+    // A local alias reads it wherever the alias is read.
+    return (
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === use &&
+        ts.isIdentifier(parent.name) &&
+        bindingReadOnly(
+            checker,
+            callee,
+            parent,
+            parent.name,
+            writeTargets,
+            active,
+        )
+    );
+}
+
+/**
+ * Whether a reading array method's only argument is a function that reads
+ * its element and array parameters only (`map((point) => point.x)`).
+ */
+function callbacksReadOnly(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    active: Set<ts.Node>,
+): boolean {
+    const [argument, ...rest] = call.arguments;
+    const callback = argument && unwrapExpression(argument);
+    return (
+        rest.length === 0 &&
+        callback !== undefined &&
+        (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+        callback.parameters.every((parameter) => !parameter.dotDotDotToken) &&
+        [0, 2].every(
+            (position) =>
+                callback.parameters[position] === undefined ||
+                readsParameterOnly(checker, callback, position, active),
+        )
+    );
 }
 
 /**
@@ -644,6 +793,35 @@ export function argumentOnlyRead(
     argument: ts.Node,
 ): boolean {
     return readOnlyArgumentCall(checker, argument) !== undefined;
+}
+
+/**
+ * Whether an array handed as `argument` to a callee that only reads it can
+ * be lent as a copy for the call: the callee keeps neither the array nor an
+ * element, and nothing the call runs changes the elements or length of an
+ * array that may be the original. A write of an element's fields while the
+ * call runs is the element copies' own question.
+ */
+export function arrayLentForCall(
+    checker: ts.TypeChecker,
+    sources: readonly ts.SourceFile[],
+    argument: ts.Node,
+): boolean {
+    const call = readOnlyArgumentCall(checker, argument);
+    const bodies = call && callBodies(checker, call);
+    if (!bodies) return false;
+    const array = checker.getTypeAtLocation(argument);
+    const observations = index(checker, sources);
+    // An engine or ambient function may change any array it is handed.
+    return ![
+        ...observations.arrayWrites,
+        ...observations.writes.filter(({ property }) => property === undefined),
+    ].some(
+        (write) =>
+            holdsRecord(checker, write.type, [array]) &&
+            ts.findAncestor(write.node, (node) => bodies.has(node)) !==
+                undefined,
+    );
 }
 
 /**

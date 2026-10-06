@@ -8,7 +8,7 @@ import {
     yieldsFreshObject,
     yieldsFreshRecordElements,
 } from "../fresh-records.js";
-import { argumentOnlyRead } from "../record-observations.js";
+import { argumentOnlyRead, arrayLentForCall } from "../record-observations.js";
 import { resolvedSymbol } from "../symbols.js";
 import { unwrapExpression } from "../syntax.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -207,7 +207,9 @@ function valueVector(
             dataTypesEqual(own.element, value.dataType.element) &&
             yieldsFreshRecordElements(lowerer.context.checker, node);
         // The projection is a second array. JavaScript keeps one, so the
-        // records of an array the program still holds share one layout.
+        // records of an array the program still holds share one layout;
+        // where none holds both types, a callee that only reads the array
+        // borrows the copy for the call.
         if (
             !freshElements &&
             value.dataType.element.kind === "struct" &&
@@ -218,7 +220,16 @@ function valueVector(
                 dataType.element,
                 node,
                 lowerer.context.program.getSourceFiles(),
-                { sharedArray: true },
+                {
+                    sharedArray: true,
+                    lentForCall:
+                        ts.isExpression(node) &&
+                        arrayLentForCall(
+                            lowerer.context.checker,
+                            lowerer.context.program.getSourceFiles(),
+                            node,
+                        ),
+                },
             );
         const projected = lowerer.compileKnownValueForSink(
             {

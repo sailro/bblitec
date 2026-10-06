@@ -619,7 +619,11 @@ function unreachedRecordValue(
     );
 }
 
-/** The expression a converted struct value is the value of, if `node` is it. */
+/**
+ * The expression a converted struct value is the value of, or the array
+ * it is projected out of as an element, if `node` is it: a copy handed to a
+ * callee that only reads that argument lives for the call.
+ */
 function recordExpression(
     lowerer: DataSinkHost,
     value: Value,
@@ -628,7 +632,12 @@ function recordExpression(
     if (!ts.isExpression(node) || value.dataType?.kind !== "struct")
         return undefined;
     const own = lowerer.dataTypeAt(node);
-    const record = own?.kind === "optional" ? own.inner : own;
+    const record =
+        own?.kind === "optional"
+            ? own.inner
+            : own?.kind === "vector"
+              ? own.element
+              : own;
     return record?.kind === "struct" && record.name === value.dataType.name
         ? node
         : undefined;

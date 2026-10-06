@@ -1474,8 +1474,10 @@ export class DataTypeRegistry {
      * type's records (`layoutAbsentFields`). Returns when the copy is
      * unobservable; otherwise throws the layout demand or refuses. Records
      * read out of a shared
-     * array (`sharedArray`) are never copied: a copy needs a second array.
-     * A copy handed to a call as `argument` needs only the call's writes.
+     * array (`sharedArray`) are never copied: a copy needs a second array,
+     * except one lent to a callee that only reads it (`lentForCall`) where
+     * no shared layout holds both types. A copy handed to a call as
+     * `argument` needs only the call's writes.
      */
     public storeRecordAs(
         sourceType: DataType<"struct">,
@@ -1484,8 +1486,13 @@ export class DataTypeRegistry {
         sources: readonly ts.SourceFile[],
         {
             sharedArray = false,
+            lentForCall = false,
             argument,
-        }: { sharedArray?: boolean; argument?: ts.Node | undefined } = {},
+        }: {
+            sharedArray?: boolean;
+            lentForCall?: boolean;
+            argument?: ts.Node | undefined;
+        } = {},
     ): void {
         const source = this.nativeRecordSources.get(sourceType.name);
         const target = this.nativeRecordSources.get(targetType.name);
@@ -1554,37 +1561,39 @@ export class DataTypeRegistry {
             (source.type.flags & RECORD_TYPE_FLAGS) !== 0 &&
             !this.isClassStruct(sourceType.name) &&
             !this.isClassStruct(targetType.name);
-        const demand = (
-            owner: NativeRecordStorageDemand,
-            layout: ts.Type,
-        ): never => {
+        const demand = (owner: NativeRecordStorageDemand, layout: ts.Type) => {
             // A replay that still converts this type was not redirected:
             // another source type shares its storage.
-            if (this.sharedRecordLayouts.has(this.structIdentity(owner.type)))
+            if (!this.sharedRecordLayouts.has(this.structIdentity(owner.type)))
+                throw new NativeRecordStorageRequired({ ...owner, layout });
+            if (!lentForCall)
                 this.fail(
                     node,
                     `Record type '${this.checker.typeToString(owner.type)}' shares its storage with another type that keeps a separate layout.`,
                 );
-            throw new NativeRecordStorageRequired({ ...owner, layout });
         };
+        const targetRecord = (target?.type.flags ?? 0) & RECORD_TYPE_FLAGS;
         // The target's other fields are held absent in the source's records.
         if (
             plain &&
-            (union || (target.type.flags & RECORD_TYPE_FLAGS) !== 0) &&
+            (union || targetRecord) &&
             fits(sourceFields, targetFields)
         )
             demand(source, target.type);
+        else if (
+            plain &&
+            !union &&
+            targetRecord &&
+            fits(targetFields, sourceFields)
+        )
+            demand(target, source.type);
+        // A copy lent to a callee that only reads it lives for the call.
+        if (lentForCall) return;
         if (union)
             this.fail(
                 node,
                 "A retained record union requires one shared layout preserving its original fields and storage kinds.",
             );
-        if (
-            plain &&
-            (target.type.flags & RECORD_TYPE_FLAGS) !== 0 &&
-            fits(targetFields, sourceFields)
-        )
-            demand(target, source.type);
         return this.fail(
             node,
             `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
