@@ -3052,12 +3052,7 @@ export class StatementLowerer {
                     statement,
                     "for...in over a record whose keys a conditional spread decides cannot leave the loop early.",
                 );
-            const entries = conditional
-                ? ownEntries(context, owner, statement.expression)!
-                : Object.keys(owner.recordProperties ?? {}).map((key) => ({
-                      key,
-                      presentCpp: undefined,
-                  }));
+            const entries = ownEntries(context, owner, statement.expression)!;
             this.emitUnrolledLoop(
                 context,
                 statement,
@@ -3072,7 +3067,7 @@ export class StatementLowerer {
                                 ),
                             ),
                 ),
-                (index) => entries[index]!.presentCpp,
+                (index) => entries[index]!.presence?.ownCpp,
             );
             return;
         }
@@ -3190,13 +3185,13 @@ export class StatementLowerer {
             ).cpp;
             const presence = fields.map((field) => ({
                 field,
-                present: context.dataTypes.ownPropertyPresentCpp(
+                present: context.dataTypes.ownPresence(
                     dataType.name,
                     field,
                     object,
                     access,
                     node,
-                ),
+                )?.ownCpp,
             }));
             const optional = presence.filter(({ present }) => present);
             const pushes = presence.map(({ field, present }) => {

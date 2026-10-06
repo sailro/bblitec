@@ -235,10 +235,7 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
-import {
-    homeObjectAccessors,
-    homeObjectMethods,
-} from "./compiler/home-object-methods.js";
+import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
@@ -1318,8 +1315,7 @@ class Compiler implements LoweringServices {
                     }
                 } else if (
                     ts.isObjectLiteralExpression(node) &&
-                    (homeObjectMethods(node).size > 0 ||
-                        homeObjectAccessors(node).size > 0)
+                    homeObjectMembers(node).size > 0
                 ) {
                     // A method's or accessor's `this` is the object the
                     // literal creates.

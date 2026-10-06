@@ -18,16 +18,25 @@ export class DynamicBindingStorageRequired extends Error {
     }
 }
 
+/** The initialized variable declaration a name reads, whose storage a demand can retype. */
+export function initializedVariableDeclaration(
+    checker: ts.TypeChecker,
+    name: ts.Identifier,
+): ts.VariableDeclaration | undefined {
+    const declaration = resolvedSymbol(checker, name)?.valueDeclaration;
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer
+        ? declaration
+        : undefined;
+}
+
 export function requireDynamicBindingStorage(
     checker: ts.TypeChecker,
     target: ts.Identifier,
     storage?: DynamicBindingStorage,
 ): void {
-    const declaration = resolvedSymbol(checker, target)?.valueDeclaration;
-    if (
-        declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer
-    )
+    const declaration = initializedVariableDeclaration(checker, target);
+    if (declaration)
         throw new DynamicBindingStorageRequired(declaration, storage);
 }

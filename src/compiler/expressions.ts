@@ -5357,11 +5357,11 @@ export class ExpressionLowerer {
                     ),
                 );
             // A key that is always own replaces the earlier one outright.
-            if (entry.presentCpp === undefined) return storeProperty(key, held);
+            if (entry.presence === undefined) return storeProperty(key, held);
             // Both values select as the storage the key holds when present.
             const type = entry.value.dataType;
             const merged = this.selectValue(
-                { cpp: entry.presentCpp, nativeCaptures },
+                { cpp: entry.presence.ownCpp, nativeCaptures },
                 type
                     ? this.selectedArmValue(
                           entry.value,
@@ -5407,9 +5407,7 @@ export class ExpressionLowerer {
                         spread.dataType,
                         property,
                     );
-                    if (
-                        entries.some((entry) => entry.presentCpp && !entry.slot)
-                    )
+                    if (entries.some((entry) => entry.presence && !entry.slot))
                         this.context.fail(
                             property,
                             "A struct with optional properties spreads into a dictionary or a struct; a compile-time record needs keys known at generation.",

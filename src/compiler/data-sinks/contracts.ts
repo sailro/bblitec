@@ -12,6 +12,7 @@ export type DataSinkHost = Pick<
     | "convertedExpression"
     | "convertedElementOf"
     | "recordMemberEntry"
+    | "ownObjectContext"
     | "compileForSink"
     | "compileDataPath"
     | "narrowOptional"

@@ -106,12 +106,12 @@ import {
     dataTypesEqual,
     isUndefinedDataType,
     doubleLiteral,
-    isBinaryDataType,
     isNumericSequenceType,
     isTypedArrayType,
     isOpaqueReference,
     isHandleKind,
     passesByReference,
+    reseatsOnAssignment,
     sharesStorageKind,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
@@ -163,25 +163,11 @@ import {
 import { recordAt } from "./record-access.js";
 import {
     completeLiteralSelf,
-    homeObjectMethods,
+    homeObjectMembers,
     homeReceiver,
     literalSelf,
 } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
-
-/**
- * Storage whose assignment copies a primitive value, or the handle or
- * document it names; see `reseatsOnAssignment`.
- */
-const REASSIGNED_VALUE_KINDS: ReadonlySet<DataType["kind"]> = new Set([
-    "number",
-    "boolean",
-    "string",
-    "enum",
-    "handle",
-    "event-target",
-    "json",
-]);
 
 /**
  * Two member paths from one root, neither extending the other, name
@@ -9191,30 +9177,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 property,
                             );
                             // A `?` field is copied while it is own.
-                            for (const { key, value, presentCpp } of entries) {
+                            for (const { key, value, presence } of entries) {
                                 const cpp = this.compileKnownValueForSink(
                                     value,
                                     dataType.value,
                                     property,
                                 );
-                                if (presentCpp) {
+                                this.emitWhileOwn(presence?.ownCpp, () =>
                                     this.context.emit({
-                                        kind: "open",
-                                        code: `if (${presentCpp}) {`,
-                                    });
-                                    this.context.increaseIndent();
-                                }
-                                this.context.emit({
-                                    kind: "expression",
-                                    code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
-                                });
-                                if (presentCpp) {
-                                    this.context.decreaseIndent();
-                                    this.context.emit({
-                                        kind: "close",
-                                        code: "}",
-                                    });
-                                }
+                                        kind: "expression",
+                                        code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
+                                    }),
+                                );
                             }
                             continue;
                         }
@@ -9424,7 +9398,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const self = literalSelf(
             this.context,
             dataType,
-            homeObjectMethods(literal),
+            homeObjectMembers(literal),
             literal,
         );
         const parts = fields.map((field) => {
@@ -9462,7 +9436,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field.type,
                     undefined,
                     false,
-                    homeReceiver(self, field.sourceName, initializer),
+                    homeReceiver(self, initializer),
                 );
                 return this.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -9479,7 +9453,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer,
                 );
             const method = this.context.unwrap(initializer);
-            const receiver = homeReceiver(self, field.sourceName, method);
+            const receiver = homeReceiver(self, method);
             if (
                 receiver &&
                 ts.isFunctionExpression(method) &&
@@ -9566,14 +9540,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): OwnEntry {
         if (!member.conditionalOwnKey) return { key, value: member };
         this.context.useNativeValue(member);
-        const presentCpp =
+        const ownCpp =
             presenceFlagCpp(member) ??
             (member.dataType &&
                 this.context.dataTypes.slotPresentCpp(
                     member.dataType,
                     member.cpp,
                 ));
-        if (!presentCpp)
+        if (!ownCpp)
             return this.context.fail(
                 node,
                 "A record key a conditional spread decides needs a represented absent value.",
@@ -9584,7 +9558,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 member.dataType?.kind === "optional"
                     ? this.presentOptionalValue(member, member.dataType.inner)
                     : member,
-            presentCpp,
+            presence: { ownCpp },
             slot: member,
         };
     }
@@ -9680,14 +9654,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : `object ${operation}`,
             );
             const raw =
-                entry.presentCpp !== undefined &&
-                !sourceField.presentForTags &&
+                entry.presence?.emptySlot === "ambiguous" &&
                 targetField.type.kind === "optional" &&
-                options.fresh?.(targetField.name) === true &&
-                this.context.dataTypes.ownPropertyPresence(
-                    sourceType.name,
-                    sourceField,
-                ) === "nullable";
+                options.fresh?.(targetField.name) === true;
             // The source's own type declares the field required, so its
             // records hold it, absent-capable storage or not.
             const presentCpp =
@@ -9696,7 +9665,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     declared !== undefined &&
                     (declared.flags & ts.SymbolFlags.Optional) === 0)
                     ? undefined
-                    : entry.presentCpp;
+                    : entry.presence?.ownCpp;
             const value = raw
                 ? {
                       ...this.leafValue(
@@ -9723,8 +9692,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return assigned;
     }
 
-    /** The own-object services the struct entry walks read. */
-    private ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
+    /** The own-object services the own-entry walks read. */
+    public ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
         return {
             dataTypes: this.context.dataTypes,
             dataLowerer: this,
@@ -9825,7 +9794,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 : value,
                             property,
                         );
-                        this.emitWhileOwn(entry.presentCpp, () =>
+                        this.emitWhileOwn(entry.presence?.ownCpp, () =>
                             this.context.emit({
                                 kind: "expression",
                                 code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(entry.value, field.type, property)};`,
@@ -9974,34 +9943,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Whether assigning to storage of this type reseats the binding as
-     * JavaScript does: a primitive copies its value, and a shared wrapper (an
-     * array, collection, binary buffer or view, reference record, document or
-     * opaque object) copies the identity of the object it names. Optional and
-     * union storage reseat when every member does. A borrowed view and a
-     * value-backed record would copy instead.
-     */
-    private reseatsOnAssignment(type: DataType): boolean {
-        switch (type.kind) {
-            case "optional":
-                return this.reseatsOnAssignment(type.inner);
-            case "union":
-                return type.members.every((member) =>
-                    this.reseatsOnAssignment(member),
-                );
-            case "struct":
-                return this.context.dataTypes.isReferenceStruct(type.name);
-            default:
-                return (
-                    isOpaqueReference(type) ||
-                    isBinaryDataType(type) ||
-                    sharesStorageKind(type) ||
-                    REASSIGNED_VALUE_KINDS.has(type.kind)
-                );
-        }
-    }
-
-    /**
      * Assigns to a data-typed local by name (`currentMode = mode`).
      *
      * Scalars are native values. A vector is `js::Array`, whose copy
@@ -10051,7 +9992,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 identifierText(right) === "undefined");
         if (
             kind !== "function" &&
-            !this.reseatsOnAssignment(target.dataType) &&
+            !reseatsOnAssignment(target.dataType, (name) =>
+                this.context.dataTypes.isReferenceStruct(name),
+            ) &&
             !freshOptional
         ) {
             this.context.fail(
@@ -10450,8 +10393,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const ownWhile = (key: string): string | undefined => {
                 const property = narrowed.recordProperties?.[key];
                 return property
-                    ? this.recordMemberEntry(key, property, ownerNode)
-                          .presentCpp
+                    ? this.recordMemberEntry(key, property, ownerNode).presence
+                          ?.ownCpp
                     : undefined;
             };
             const inherited = (key: string): boolean =>
@@ -10579,16 +10522,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        const present = this.context.dataTypes.ownPropertyPresentCpp(
+        const presence = this.context.dataTypes.ownPresence(
             structName,
             field,
             ownerCpp,
             this.context.dataTypes.isReferenceStruct(structName) ? "->" : ".",
             node,
         );
-        if (present === undefined) return "true";
+        if (presence === undefined) return "true";
         this.context.reachJsData();
-        return present;
+        return presence.ownCpp;
     }
 
     /**
