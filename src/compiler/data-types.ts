@@ -3885,9 +3885,10 @@ export class DataTypeRegistry {
     public ownPropertyPresence(
         structName: string,
         field: DataStructField,
+        recorded: ReadonlyMap<string, OwnPropertyPresence> = this.fieldPresence,
     ): OwnPropertyPresence {
         return (
-            this.fieldPresence.get(`${structName}.${field.sourceName}`) ??
+            recorded.get(`${structName}.${field.sourceName}`) ??
             (field.optionalProperty || field.uncheckedProperty
                 ? storedPresence(field.type, false)
                 : "own")
@@ -3910,10 +3911,11 @@ export class DataTypeRegistry {
         // A field only some union arms declare is own when the record's
         // tags select one of them, and then as those arms declare it.
         const tags = this.tagPresenceCpp(structName, field, slot);
-        const presence =
-            tags === undefined
-                ? this.ownPropertyPresence(structName, field)
-                : (this.armFieldPresence.get(key) ?? "ambiguous");
+        const presence = this.ownPropertyPresence(
+            structName,
+            field,
+            tags === undefined ? this.fieldPresence : this.armFieldPresence,
+        );
         if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
         if (tags !== undefined) this.armPresenceReads.set(key, node);
         if (presence === "own") return tags;
