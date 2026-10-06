@@ -126,7 +126,10 @@ import {
     compileWebStorageCall,
     compileWebStorageValue,
 } from "./web-storage.js";
-import { browserEnvironmentValue } from "./browser-erasure.js";
+import {
+    browserEnvironmentValue,
+    constInitializer,
+} from "./browser-erasure.js";
 import {
     compileImmediatePromise,
     type PromiseLoweringContext,
@@ -3709,34 +3712,22 @@ export class ExpressionLowerer {
      * A call through a module `const` that aliases a function
      * (`const f32 = Math.fround`, `const key = archKey`). The binding is
      * immutable and reading it has no effect, so the call is a call of the
-     * aliased function itself: the alias chain is followed to the function
-     * it names, a Math member keeps its direct native spelling and a source
-     * function is called as a direct call of it would be.
+     * aliased function itself: the static constant resolves the alias chain
+     * to what it names, a Math member keeps its direct native spelling and
+     * a source function is called as a direct call of it would be.
      */
     private compileConstAliasCall(
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined {
-        let target: ts.Expression = callee;
-        for (;;) {
-            if (!ts.isIdentifier(target)) break;
-            const declaration =
-                this.context.symbols.valueSymbol(target)?.valueDeclaration;
-            if (
-                !declaration ||
-                !ts.isVariableDeclaration(declaration) ||
-                !declaration.initializer ||
-                !ts.isVariableDeclarationList(declaration.parent) ||
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
-                this.context.bindings.lookupOptional(target) ||
-                this.context.resolveStaticExpression(target) === target
-            )
-                break;
-            const next = this.context.unwrap(declaration.initializer);
-            if (!ts.isIdentifier(next) && !ts.isPropertyAccessExpression(next))
-                break;
-            target = next;
-        }
+        const aliased = constInitializer(this.context, callee);
+        if (
+            !aliased ||
+            (!ts.isIdentifier(aliased) &&
+                !ts.isPropertyAccessExpression(aliased))
+        )
+            return undefined;
+        const target = this.context.resolveStaticExpression(callee);
         if (target === callee) return undefined;
         if (ts.isPropertyAccessExpression(target)) {
             const math = this.context.dataLowerer.compileMathCall(call, target);

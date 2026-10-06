@@ -3322,6 +3322,30 @@ check(
 `,
 );
 
+check(
+    "typed-array-constructor-reads-as-callees",
+    `
+    function grow<T extends Uint8Array | Float32Array>(value: T, length: number): T {
+        const next = new (value.constructor as { new (length: number): T })(length);
+        next.set(value);
+        return next;
+    }
+    function twin(value: Int16Array): Int16Array {
+        return (value.constructor as { from(values: ArrayLike<number>): Int16Array }).from(value);
+    }
+    let reads = 0;
+    const held = new Uint32Array([4, 5]);
+    function source(): Uint32Array { reads++; return held; }
+    const bytes = grow(new Uint8Array([1, 255]), 3);
+    const floats = grow(new Float32Array([0.5]), 2);
+    const copied = twin(new Int16Array([7, -3]));
+    const sized = new (source().constructor as { new (length: number): Uint32Array })(2);
+    if (!(bytes instanceof Uint8Array) || bytes.join() !== "1,255,0" || !(floats instanceof Float32Array) || floats.join() !== "0.5,0") throw new Error("new through the read");
+    if (!(copied instanceof Int16Array) || copied.join() !== "7,-3") throw new Error("from through the read");
+    if (!(sized instanceof Uint32Array) || sized.join() !== "0,0" || reads !== 1) throw new Error("owner evaluated once");
+`,
+);
+
 test("typed-array unions and views refuse what they do not represent", () => {
     const pick =
         "function pick(text: boolean): Float32Array | string { return text ? 'ab' : new Float32Array(2); }";
@@ -3349,6 +3373,10 @@ test("typed-array unions and views refuse what they do not represent", () => {
         [
             "const C = new Float32Array(1).constructor; const unused: string = C.name;",
             /Unsupported property value 'C\.name' \(owner typed-array-constructor/,
+        ],
+        [
+            "interface Rec { n: number } const recs: Rec[] = [{ n: 1 }]; const made = new (recs[0]!.constructor as { new (): Rec })(); const unused = made.n;",
+            /Struct Rec has no field 'constructor'/,
         ],
     ] as const)
         assert.throws(() => compileSource(source), message);

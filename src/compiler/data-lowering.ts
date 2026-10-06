@@ -7615,33 +7615,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * The typed-array class a `new` or static-factory callee names: the
-     * global itself, or a binding holding a typed array's `constructor`.
+     * global itself, or a value that is a typed array's `constructor` --
+     * a binding holding one, or the read itself (`new arr.constructor(n)`).
      */
     private typedArrayClass(callee: ts.Expression): string | undefined {
         const name = this.context.libraryGlobal(callee);
         if (name !== undefined)
             return TYPED_ARRAY_KINDS.has(name) ? name : undefined;
         const unwrapped = this.context.unwrap(callee);
-        const declaration = ts.isIdentifier(unwrapped)
-            ? declaredSymbol(this.context.checker, unwrapped)?.valueDeclaration
-            : undefined;
-        const read =
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer
-                ? this.context.unwrap(declaration.initializer)
-                : undefined;
-        const constructorRead =
-            read !== undefined &&
-            ts.isPropertyAccessExpression(read) &&
-            read.name.text === "constructor";
-        const bound =
-            constructorRead && ts.isIdentifier(unwrapped)
-                ? this.context.bindings.lookupOptional(unwrapped)
-                : undefined;
-        return bound?.kind === "typed-array-constructor" &&
-            bound.typedArrayConstructor
-            ? typedArrayConstructorName(bound.typedArrayConstructor)
+        const value = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : ts.isPropertyAccessExpression(unwrapped) &&
+                unwrapped.name.text === "constructor"
+              ? this.context.compileValue(unwrapped)
+              : undefined;
+        return value?.kind === "typed-array-constructor" &&
+            value.typedArrayConstructor
+            ? typedArrayConstructorName(value.typedArrayConstructor)
             : undefined;
     }
 
