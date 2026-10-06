@@ -3,14 +3,16 @@ import ts from "typescript";
 import { dataTypesEqual, doubleLiteral, type DataType } from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
 
-import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    initializedVariableDeclaration,
+} from "../dynamic-binding-storage.js";
 import {
     yieldsFreshObject,
     yieldsFreshRecordElements,
 } from "../fresh-records.js";
 import { ownEntries } from "../object-statics.js";
 import { argumentOnlyRead, arrayLentForCall } from "../record-observations.js";
-import { resolvedSymbol } from "../symbols.js";
 import { unwrapExpression } from "../syntax.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -280,15 +282,14 @@ function requireGrowableTuple(
     // A callee that only reads the array cannot grow or retain it.
     if (expression && argumentOnlyRead(lowerer.context.checker, expression))
         return;
-    const named =
-        expression && ts.isIdentifier(expression)
-            ? resolvedSymbol(lowerer.context.checker, expression)
-                  ?.valueDeclaration
-            : undefined;
     const declaration =
-        named && ts.isVariableDeclaration(named) && named.initializer
-            ? named
-            : lowerer.context.bindings.variableDeclarationOf(value.cpp);
+        (expression && ts.isIdentifier(expression)
+            ? initializedVariableDeclaration(
+                  lowerer.context.checker,
+                  expression,
+              )
+            : undefined) ??
+        lowerer.context.bindings.variableDeclarationOf(value.cpp);
     if (declaration && !lowerer.context.dynamicBindings.has(declaration))
         throw new DynamicBindingStorageRequired(declaration, "array");
     lowerer.context.fail(
