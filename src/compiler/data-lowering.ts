@@ -6054,13 +6054,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         element: DataType,
         method: "indexOf" | "includes" | "lastIndexOf",
     ): Value {
-        if (
-            call.arguments.length !== 1 &&
-            !(method === "lastIndexOf" && call.arguments.length === 2)
-        ) {
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
             this.context.fail(
                 call,
-                `Array.${method} expects one argument; the fromIndex form is outside the supported subset.`,
+                `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
         if (
@@ -6107,7 +6104,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 { kind: "number" },
             );
         }
-        const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
+        // A fromIndex is evaluated after the search value, which is read
+        // first into a named value.
+        let needle = value;
+        let from = "";
+        if (call.arguments[1]) {
+            needle = this.context.allocateTemporaryCppName("search_needle");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: needle,
+                initializer: value,
+            });
+            from = `, ${this.context.compileNumber(call.arguments[1], "double")}`;
+        }
+        const index = `bbl::js::array_index_of(${owner.cpp}, ${needle}${from})`;
         if (method === "indexOf")
             return { kind: "number", cpp: index, dataType: { kind: "number" } };
         // `includes` is SameValueZero, which differs from `indexOf`'s strict
@@ -6116,7 +6127,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "boolean",
             cpp:
                 element.kind === "number"
-                    ? `bbl::js::array_includes(${owner.cpp}, ${value})`
+                    ? `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`
                     : `${index} >= 0.0`,
             dataType: { kind: "boolean" },
         };
@@ -6207,6 +6218,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         method:
             | "find"
             | "findIndex"
+            | "findLast"
+            | "findLastIndex"
             | "filter"
             | "some"
             | "every"
@@ -6273,8 +6286,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} requires a represented callback.`,
             );
         initialize(source);
+        // `findLast` and `findLastIndex` visit the length read at the call
+        // from its last index down.
+        const reverse = method === "findLast" || method === "findLastIndex";
         let bound = `${source}.size()`;
-        if (snapshotLength) {
+        if (snapshotLength || reverse) {
             const count = this.context.allocateTemporaryCppName(
                 `${label}_count`,
             );
@@ -6288,7 +6304,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.context.emit({
             kind: "open",
-            code: `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
+            code: reverse
+                ? `for (std::size_t ${index} = ${bound}; ${index}-- > 0;) {`
+                : `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
             iteration: true,
         });
         this.context.increaseIndent();
@@ -6306,6 +6324,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (receiverPolicy.skipRemoved)
                     this.context.emit(
                         `if (${index} >= ${source}.size()) continue;`,
+                    );
+                // JavaScript would pass undefined for an index the callback
+                // removed before the walk reached it.
+                if (reverse)
+                    this.context.emit(
+                        `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
                     );
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
@@ -6343,6 +6367,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const predicateMethod = [
                     "find",
                     "findIndex",
+                    "findLast",
+                    "findLastIndex",
                     "filter",
                     "some",
                     "every",

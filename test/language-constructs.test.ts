@@ -4696,3 +4696,105 @@ check(
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
 `,
 );
+
+check(
+    "array-search-from-index-and-last-callbacks",
+    `
+    const values = [1, 2, 1, Number.NaN, 2];
+    if (values.indexOf(1, 1) !== 2 || values.indexOf(2, -1) !== 4 || values.indexOf(1, 9) !== -1 || values.indexOf(1, Number.NaN) !== 0)
+        throw new Error("indexOf fromIndex");
+    if (!values.includes(Number.NaN, -2) || values.includes(Number.NaN, 4) || !values.includes(1, -5) || values.includes(1, 3))
+        throw new Error("includes fromIndex");
+    const names = ["a", "b", "a"];
+    let from = 0;
+    function start(): number { from++; return 1; }
+    if (names.indexOf("a", start()) !== 2 || from !== 1 || names.includes("b", 2)) throw new Error("string fromIndex");
+    const visited: number[] = [];
+    const last = values.findLast((value, index) => { visited.push(index); return value === 1; });
+    if (last !== 1 || visited.join(",") !== "4,3,2") throw new Error("findLast order");
+    if (values.findLastIndex((value) => value === 2) !== 4 || values.findLastIndex((value) => value > 5) !== -1)
+        throw new Error("findLastIndex");
+    if (values.findLast((value) => value > 5) !== undefined) throw new Error("findLast miss");
+    function lastEven(input: readonly number[]): number | undefined { return input.findLast((value) => value % 2 === 0); }
+    function lastOddIndex(input: number[]): number { return input.findLastIndex((value) => value % 2 === 1); }
+    const stored: Array<typeof lastEven> = [lastEven];
+    if (stored[0]!([2, 3, 4, 5]) !== 4 || lastOddIndex([1, 2, 3, 4]) !== 2 || stored[0]!([1]) !== undefined)
+        throw new Error("findLast through parameters");
+    const lanes = new Float32Array([0.5, 1.5, 2.5]);
+    if (lanes.findLast((value) => value < 2) !== 1.5 || lanes.findLastIndex((value) => value > 9) !== -1)
+        throw new Error("typed findLast");
+    const records = [{ id: 1, on: true }, { id: 2, on: false }, { id: 3, on: true }];
+    if (records.findLast((record) => record.on)?.id !== 3) throw new Error("record findLast");
+`,
+);
+
+check(
+    "array-copying-methods",
+    `
+    const source = [3, 1, 2];
+    const ascending = source.toSorted((a, b) => a - b);
+    const lexical = [10, 9, 1].toSorted();
+    if (ascending.join() !== "1,2,3" || source.join() !== "3,1,2" || lexical.join() !== "1,10,9") throw new Error("toSorted");
+    const reversed = source.toReversed();
+    reversed.push(7);
+    if (reversed.join() !== "2,1,3,7" || source.length !== 3) throw new Error("toReversed");
+    const replaced = source.with(-1, 9);
+    if (replaced.join() !== "3,1,9" || source[2] !== 2 || source.with(0, 5)[0] !== 5) throw new Error("with");
+    let name = "";
+    try { source.with(3, 0); } catch (error) { name = (error as Error).name; }
+    if (name !== "RangeError") throw new Error("with range");
+    function sortedNames(input: readonly string[]): string[] { return input.toSorted(); }
+    function flipped(input: readonly number[]): number[] { return input.toReversed(); }
+    const words = ["pear", "apple"];
+    if (sortedNames(words).join() !== "apple,pear" || words[0] !== "pear" || flipped([1, 2]).join() !== "2,1")
+        throw new Error("readonly copies");
+    const flags = [true, false];
+    if (flags.with(1, true).join() !== "true,true" || flags[1] !== false) throw new Error("boolean with");
+`,
+);
+
+check(
+    "array-reduce-without-initial-value-and-right",
+    `
+    const values = [4, 1, 3];
+    if (values.reduce((sum, value) => sum + value) !== 8) throw new Error("reduce without initial value");
+    if (values.reduce((best, value) => (value < best ? value : best)) !== 1) throw new Error("reduce pick");
+    const letters = ["a", "b", "c"];
+    if (letters.reduceRight((text, letter) => text + letter, "") !== "cba") throw new Error("reduceRight");
+    if (letters.reduceRight((text, letter) => text + letter) !== "cba") throw new Error("reduceRight without initial value");
+    const indexes: number[] = [];
+    letters.reduceRight((count, _letter, index) => { indexes.push(index); return count + 1; }, 0);
+    if (indexes.join() !== "2,1,0") throw new Error("reduceRight order");
+    if ([7].reduce((sum, value) => sum + value) !== 7) throw new Error("single element");
+    let name = "";
+    const empty: number[] = [];
+    try { empty.reduce((sum, value) => sum + value); } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("empty reduce");
+    name = "";
+    try { empty.reduceRight((sum, value) => sum + value); } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("empty reduceRight");
+    function smallest(input: readonly number[]): number { return input.reduce((best, value) => Math.min(best, value)); }
+    const stored: Array<typeof smallest> = [smallest];
+    if (stored[0]!([5, 2, 8]) !== 2) throw new Error("readonly reduce");
+    const lanes = new Float32Array([1, 2, 4]);
+    if (lanes.reduceRight((text, value) => text + value, "") !== "421") throw new Error("typed reduceRight");
+`,
+);
+
+check(
+    "numeric-tuple-observing-methods",
+    `
+    type Vec3 = [number, number, number];
+    function summary(v: Vec3): string {
+        const doubled = v.map((value) => value * 2);
+        return \`\${v.join("/")};\${v.indexOf(2)};\${v.lastIndexOf(2)};\${v.includes(3, 2)};\${v.at(-1)};\` +
+            \`\${doubled.join()};\${v.filter((value) => value > 1).length};\${v.concat([9]).length};\` +
+            \`\${v.toSorted((a, b) => b - a).join()};\${v.reduce((sum, value) => sum + value)};\${v.findLast((value) => value < 3)}\`;
+    }
+    const stored: Array<typeof summary> = [summary];
+    if (stored[0]!([1, 2, 3]) !== "1/2/3;1;1;true;3;2,4,6;2;4;3,2,1;6;2") throw new Error(stored[0]!([1, 2, 3]));
+    function reset(v: Vec3): Vec3 { v.fill(0, 1); return v; }
+    const lanes: Vec3 = [4, 5, 6];
+    if (reset(lanes) !== lanes || lanes.join() !== "4,0,0") throw new Error("tuple fill");
+`,
+);
