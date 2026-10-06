@@ -8593,6 +8593,46 @@ test("an engine-handle list index with effects runs once, before the right side,
     );
 });
 
+test("material stores through an effectful owner evaluate it once", () => {
+    // `uvOffset`/`uvScale` write two record fields and `diffuseColor` binds
+    // its owner for the setter: every statement names the owner, so an
+    // index with effects is read once ahead of them.
+    const result = compileSource(`
+        import { createEngine, createStandardMaterial, type StandardMaterial } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const first = createStandardMaterial();
+            const second = createStandardMaterial();
+            const third = createStandardMaterial();
+            interface Holder { mat: StandardMaterial }
+            const holders: Holder[] = [{ mat: first }, { mat: second }, { mat: third }];
+            let h = 0;
+            holders[h++]!.mat.uvOffset = [5, 6];
+            let d = 0;
+            holders[d++]!.mat.diffuseColor = [0, 0, 1];
+            let u = 0;
+            holders[u++]!.mat.uvScale = [2, 2];
+            const rig = { materials: [first, second, third] };
+            let r = 0;
+            rig.materials[r++]!.uvOffset = [r, r];
+            let s = 0;
+            rig.materials[s++ % 3]!.specularPower = 8;
+            void engine;
+        }
+    `);
+    for (const name of ["v_h", "v_d", "v_u", "v_r", "v_s"])
+        assert.equal(
+            result.cpp.split(`${name}++`).length - 1,
+            1,
+            `${name} is incremented once`,
+        );
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_store_key_\d+) = \(v_r\+\+\);[^]*?standard_uv_offset_x = v_r;[^]*?standard_uv_offset_y = v_r;/,
+    );
+});
+
 test("folds a nullish-coalescing browser query default", () => {
     const source = `
         import {
