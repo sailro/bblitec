@@ -1575,7 +1575,9 @@ export class DataTypeRegistry {
             target &&
             joinable(source) &&
             joinable(target) &&
-            !(source.type.isUnion() && union) &&
+            // A union's layout holds a record stored as it; a union stored
+            // as one of its arms' types would give that arm two layouts.
+            !source.type.isUnion() &&
             (union ||
                 layoutsCompatible(this.checker, source.type, target.type)) &&
             !this.joined(source.type, target.type)
@@ -3730,23 +3732,26 @@ export class DataTypeRegistry {
     }
 
     private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
-        // A record component's struct takes its widest member's name.
-        const named = this.recordComponentOf(type)?.named ?? type;
-        const preferredName =
+        const declaredName = (named: ts.Type): string | undefined =>
             named.aliasSymbol?.name ??
             (named.symbol &&
             named.symbol.name !== "__type" &&
             named.symbol.name !== "__object"
                 ? named.symbol.name
                 : undefined);
+        // A record component's struct takes its widest member's name, and
+        // stores the functions any named member declares.
+        const component = this.recordComponentOf(type);
+        const preferredName = declaredName(component?.named ?? type);
+        const storesFunctions =
+            preferredName !== undefined ||
+            this.classDemanded ||
+            component?.members.some(
+                (member) => declaredName(member) !== undefined,
+            ) === true;
         return (
             this.mapRecursiveStruct(type, preferredName, (name) =>
-                this.fromStructTypeInner(
-                    type,
-                    node,
-                    name,
-                    preferredName !== undefined || this.classDemanded,
-                ),
+                this.fromStructTypeInner(type, node, name, storesFunctions),
             ) ?? undefined
         );
     }
@@ -4180,7 +4185,11 @@ export class DataTypeRegistry {
         const proxy = this.proxyRecords.has(this.structIdentity(type));
         const valueOf = (
             property: ts.Symbol,
-        ): { type: ts.Type; mapped: DataType | undefined } => {
+        ): {
+            type: ts.Type;
+            mapped: DataType | undefined;
+            callable: boolean;
+        } => {
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
             const propertyType = this.checker.getTypeOfSymbolAtLocation(
@@ -4190,6 +4199,7 @@ export class DataTypeRegistry {
             const callableType = this.checker.getNonNullableType(propertyType);
             return {
                 type: propertyType,
+                callable: callableType.getCallSignatures().length > 0,
                 mapped:
                     callableType.getCallSignatures().length > 0
                         ? allowStoredFunctions &&
@@ -4223,7 +4233,17 @@ export class DataTypeRegistry {
         for (const [name, declared] of layout.properties) {
             const property = declared[0]!.symbol;
             const values = declared.map(({ symbol }) => valueOf(symbol));
-            const mappedValue = values[0]!.mapped;
+            // A function an object literal declares is stored only in a
+            // stored position (`fromStoredTsType`); elsewhere a component
+            // member declaring its signature stores it for every member.
+            const storing = ({
+                mapped,
+                callable,
+            }: {
+                mapped: DataType | undefined;
+                callable: boolean;
+            }): boolean => mapped !== undefined || !callable;
+            const mappedValue = values.find(storing)?.mapped;
             if (!mappedValue) {
                 return undefined;
             }
@@ -4232,7 +4252,9 @@ export class DataTypeRegistry {
             const storage = (mapped: DataType): DataType =>
                 mapped.kind === "optional" ? mapped.inner : mapped;
             let stored: DataType = storage(mappedValue);
-            for (const [index, { mapped }] of values.entries()) {
+            for (const [index, value] of values.entries()) {
+                if (!storing(value)) continue;
+                const { mapped } = value;
                 const next =
                     mapped && this.joinedStorage(stored, storage(mapped));
                 if (!next)

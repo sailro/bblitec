@@ -8247,7 +8247,32 @@ check(
         for (const item of field.instances(1)) out.push({ kind, slot: item.slot, open: item.open, id: 1, matrix: item.matrix });
     const list = fields.get("door")!.instances(1);
     if (out.length !== 4 || out[3]!.slot !== 1 || out[2]!.open !== 1 || out[0]!.open !== null || out[3]!.matrix[0] !== 4) throw new Error("records of a mapped type");
-    if (Object.keys(list[0]!).join() !== "open,slot,matrix") throw new Error("keys of the fresh records " + Object.keys(list[0]!).join());
+    if (Object.keys(list[0]!).sort().join() !== "matrix,open,slot") throw new Error("keys of the fresh records " + Object.keys(list[0]!).join());
+`,
+);
+
+check(
+    "retained-factories-store-literal-function-fields-through-a-declared-type",
+    `
+    interface Action { id: string; label: string; variant: string; onSelect: () => void; large?: boolean }
+    interface Groups { first: Action[]; second: Action[] }
+    let selected = "";
+    function same(a: unknown, b: unknown): boolean { return a === b; }
+    function createGroups(select: (() => void) | undefined): Groups {
+        const optional = (id: string, label: string, onSelect: (() => void) | undefined, extra: Pick<Action, "variant" | "large">): Action | null =>
+            onSelect ? { id, label, onSelect, ...extra } : null;
+        return {
+            first: [{ id: "a", label: "A", variant: "x", onSelect: () => { selected = "a"; } }],
+            second: [optional("b", "B", select, { variant: "y", large: true }), optional("c", "C", undefined, { variant: "z" })].filter((action): action is Action => action !== null),
+        };
+    }
+    const roots: Array<typeof createGroups> = [createGroups];
+    const groups = roots[0]!(() => { selected = "b"; });
+    const action = groups.second[0]!;
+    action.onSelect();
+    if (selected !== "b" || groups.second.length !== 1 || action.large !== true || !same(action, groups.second[0]) || Object.keys(action).sort().join() !== "id,label,large,onSelect,variant") throw new Error("actions " + Object.keys(action).join());
+    groups.first[0]!.onSelect();
+    if (selected !== "a" || Object.keys(groups.first[0]!).join() !== "id,label,variant,onSelect") throw new Error("declared record keys");
 `,
 );
 

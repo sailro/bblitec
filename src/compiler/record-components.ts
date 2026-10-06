@@ -206,12 +206,22 @@ export function recordComponents(
     for (const members of groups.values()) {
         if (members.length < 2) continue;
         const unions = members.filter((member) => member.isUnion());
+        // The widest member names the layout and orders its fields; among
+        // equally wide members, a declared type before an object literal's.
+        const declared = (member: ts.Type): number =>
+            member.aliasSymbol ||
+            (member.symbol &&
+                member.symbol.name !== "__type" &&
+                member.symbol.name !== "__object")
+                ? 0
+                : 1;
         const named = [...members]
             .filter((member) => !member.isUnion())
             .sort(
                 (left, right) =>
                     checker.getPropertiesOfType(right).length -
-                    checker.getPropertiesOfType(left).length,
+                        checker.getPropertiesOfType(left).length ||
+                    declared(left) - declared(right),
             )[0]!;
         const component: RecordComponent = {
             key: `record-component:${next++}`,
