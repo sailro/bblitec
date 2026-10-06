@@ -3176,7 +3176,8 @@ export class StatementLowerer {
                 present: context.dataTypes.ownPropertyPresentCpp(
                     dataType.name,
                     field,
-                    `${object}${access}${field.name}`,
+                    object,
+                    access,
                     node,
                 ),
             }));

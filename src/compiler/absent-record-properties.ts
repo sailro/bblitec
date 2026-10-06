@@ -24,7 +24,10 @@ export class AbsentRecordProperties {
     /** Struct conversions: the source structs whose records reached each target. */
     private readonly sources = new EmissionMap<string, readonly string[]>();
     /** Reads answered `undefined` because a struct lacks the property, by `struct.property`. */
-    private readonly reads = new EmissionMap<string, ts.Node>();
+    private readonly reads = new EmissionMap<
+        string,
+        { struct: string; property: string; node: ts.Node }
+    >();
 
     public constructor(
         private readonly fail: (node: ts.Node, message: string) => never,
@@ -55,15 +58,13 @@ export class AbsentRecordProperties {
     /** Records a read of `property`, absent from `struct`'s layout, as `undefined`. */
     public read(struct: string, property: string, node: ts.Node): void {
         this.refuseCarried(struct, property, node);
-        this.reads.set(`${struct}.${property}`, node);
+        this.reads.set(`${struct}.${property}`, { struct, property, node });
     }
 
     /** An absent read stays sound only if no conversion carried its property. */
     public check(): void {
-        for (const [key, node] of this.reads) {
-            const dot = key.indexOf(".");
-            this.refuseCarried(key.slice(0, dot), key.slice(dot + 1), node);
-        }
+        for (const { struct, property, node } of this.reads.values())
+            this.refuseCarried(struct, property, node);
     }
 
     private refuseCarried(

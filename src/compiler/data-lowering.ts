@@ -5,7 +5,6 @@ import {
     objectTruthinessCpp,
     optionalPresentCpp,
     optionalValueCpp,
-    presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
     statedTruthinessCpp,
@@ -10232,10 +10231,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         field: DataStructField,
         node: ts.Node,
     ): string {
-        const access = this.context.dataTypes.isReferenceStruct(structName)
-            ? "->"
-            : ".";
-        const slot = `${ownerCpp}${access}${field.name}`;
         // A union arm's field is own when the record's tags select an arm
         // declaring it.
         if (field.presentForTags && field.type.kind === "undefined")
@@ -10246,7 +10241,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const present = this.context.dataTypes.ownPropertyPresentCpp(
             structName,
             field,
-            slot,
+            ownerCpp,
+            this.context.dataTypes.isReferenceStruct(structName) ? "->" : ".",
             node,
         );
         if (present === undefined) return "true";
@@ -10576,16 +10572,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public conditionalKeyPresentCpp(value: Value, node: ts.Node): string {
         this.context.useNativeValue(value);
-        const present = presenceCpp(value);
-        if (present !== undefined) return present;
-        const type = value.dataType;
-        if (type?.kind === "json") return `!${value.cpp}.is_undefined()`;
-        if (
-            type?.kind === "function" ||
-            (type?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(type.name))
-        )
-            return `static_cast<bool>(${value.cpp})`;
+        const present =
+            presenceFlagCpp(value) ??
+            (value.dataType &&
+                this.context.dataTypes.slotPresentCpp(
+                    value.dataType,
+                    value.cpp,
+                ));
+        if (present) return present;
         return this.context.fail(
             node,
             "A record key a conditional spread decides needs a represented absent value.",

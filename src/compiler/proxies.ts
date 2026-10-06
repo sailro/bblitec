@@ -218,7 +218,7 @@ export class RecordProxies {
         const presence = context.captureManagedClosureLines(() => {
             context.useNativeValue(target);
             context.emit(
-                `return ${context.dataTypes.ownPropertyPresentCpp(type.name, field, `${target.cpp}->${field.name}`, node) ?? "true"};`,
+                `return ${context.dataTypes.ownPropertyPresentCpp(type.name, field, target.cpp, "->", node) ?? "true"};`,
             );
         });
         const mutation = (

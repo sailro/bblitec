@@ -145,7 +145,8 @@ export function structOwnEntries(
             : context.dataTypes.ownPropertyPresentCpp(
                   dataType.name,
                   field,
-                  slot,
+                  owner.cpp,
+                  access,
                   node,
               );
         const original = owner.recordProperties?.[key];
