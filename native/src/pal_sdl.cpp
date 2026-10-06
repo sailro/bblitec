@@ -381,8 +381,8 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
         }
         if (!engine.renderer_restart_requested) {
             // The page unloads once its frames end, however they end.
-            dispatch_page_lifecycle(
-                engine, [](auto& callback, const auto& payload) { callback(payload); });
+            dispatch_page_lifecycle(engine,
+                                    [](auto& callback, const auto& payload) { callback(payload); });
             co_return 0;
         }
     }
