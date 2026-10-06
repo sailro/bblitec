@@ -2715,6 +2715,7 @@ public:
             value_ = pull_();
             return *this;
         }
+        bool operator==(std::default_sentinel_t) const { return !value_.has_value(); }
         bool operator!=(std::default_sentinel_t) const { return value_.has_value(); }
 
     private:

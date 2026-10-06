@@ -7685,3 +7685,34 @@ check(
     if (sorted !== ordered || ordered.join() !== "1,2,3") throw new Error("sort writes back the values it collected");
 `,
 );
+
+check(
+    "spreads-and-sequence-copies-read-one-iteration-protocol",
+    `
+    type Vec3 = [number, number, number];
+    const lanes: Vec3 = [4, 9, 2];
+    if (Math.max(...lanes) !== 9 || Math.min(...lanes) !== 2) throw new Error("Math over a numeric tuple");
+    const set = new Set<number>([5, -1, 3]);
+    if (Math.max(...set) !== 5 || Math.min(...set.values()) !== -1) throw new Error("Math over a Set and its iterator");
+    interface Holder { pos: [number, number] }
+    function holderAt(x: number): Holder { return { pos: [x, x + 1] }; }
+    const holder = holderAt(3);
+    holder.pos[1] = 4;
+    if (Math.hypot(...holder.pos) !== 5) throw new Error("tuple field spread into a rest pack");
+    function total(...items: number[]): number {
+        let sum = 0;
+        for (const item of items) sum += item;
+        return sum;
+    }
+    const totals: Array<(...items: number[]) => number> = [total];
+    const typed = new Uint8Array([1, 2]);
+    if (totals[0]!(...set, ...typed, ...holder.pos, 10) !== 27) throw new Error("rest pack over a Set, a typed array and a tuple field");
+    function letters(...items: string[]): string { return items.join("-"); }
+    const named: Array<(...items: string[]) => string> = [letters];
+    if (named[0]!(..."ab", "c") !== "a-b-c") throw new Error("rest pack over a string");
+    const fromValues = new Float32Array(set.values());
+    const fromIterator = Float64Array.from(set.values());
+    if (fromValues.join() !== "5,-1,3" || fromIterator.join() !== "5,-1,3") throw new Error("typed arrays from an iterator");
+    if (Array.from(typed).join() !== "1,2" || Array.from(lanes).length !== 3) throw new Error("Array.from over sequences");
+`,
+);

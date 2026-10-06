@@ -1318,18 +1318,19 @@ function compileKnownDataMethod(
             };
         }
         if (!typedArrayReadMethods.has(method)) return undefined;
+        const numbers = typedArrayReader(
+            lowerer,
+            call,
+            method,
+            narrowed,
+            dataType,
+        );
         return compileArrayMethodTail(
             {
                 lowerer,
                 call,
-                narrowed: typedArrayReader(
-                    lowerer,
-                    call,
-                    method,
-                    narrowed,
-                    dataType,
-                ),
-                dataType: typedArrayNumbers,
+                narrowed: numbers,
+                dataType: { kind: "span", element: { kind: "number" } },
                 dynamicOwner,
                 expectedResult: undefined,
                 typedResult: dataType,
@@ -1451,11 +1452,6 @@ function collectedArray(
     return { kind: "data", cpp: typed, dataType: state.typedResult };
 }
 
-const typedArrayNumbers: DataType<"span"> = {
-    kind: "span",
-    element: { kind: "number" },
-};
-
 /** The array methods a typed array shares, read through `TypedArrayNumbers`. */
 const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
     "at",
@@ -1478,10 +1474,9 @@ const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
 
 /**
  * A typed array as the array-method tail reads it: its elements as numbers
- * (`bbl::js::TypedArrayNumbers`), each read the element at that moment,
- * through a view's bytes as through owned storage. `map` and `filter` fill
- * the receiver's own kind (`typedResult`), converting each number as a
- * store does.
+ * (`DataLowerer.typedArrayNumbersValue`). `map` and `filter` fill the
+ * receiver's own kind (`typedResult`), converting each number as a store
+ * does.
  */
 function typedArrayReader(
     lowerer: DataLowerer,
@@ -1496,14 +1491,7 @@ function typedArrayReader(
             callback,
             `A typed array's ${method} callback takes no array parameter here.`,
         );
-    lowerer.context.reachJsData();
-    const cppType = lowerer.context.dataTypes.cppType(dataType);
-    return {
-        kind: "data",
-        cpp: `bbl::js::typed_array_numbers(${narrowed.cpp})`,
-        dataType: typedArrayNumbers,
-        nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${cppType}>`,
-    };
+    return lowerer.typedArrayNumbersValue(narrowed.cpp, dataType);
 }
 
 function compileTypedArraySort(
