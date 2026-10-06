@@ -4095,6 +4095,41 @@ export class UserFunctionLowerer {
     }
 
     /** Invokes a callback over values supplied by a lowering operation. */
+    /**
+     * The global `Boolean` passed as a callback (`filter(Boolean)`):
+     * ToBoolean of its first argument.
+     */
+    private booleanCallback(
+        context: UserFunctionContext,
+        declaration: ts.Node,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(declaration) ||
+            context.bindings.lookupOptional(declaration) !== undefined ||
+            libraryGlobal(this.checker, declaration) !== "Boolean"
+        )
+            return undefined;
+        const argument = arguments_[0];
+        const condition = argument
+            ? context.dataLowerer.truthinessCondition(argument)
+            : "false";
+        if (condition === undefined)
+            context.fail(
+                callNode,
+                "Boolean as a callback requires an argument with native truthiness.",
+            );
+        return {
+            kind: "boolean",
+            cpp: condition,
+            dataType: { kind: "boolean" },
+            ...(condition === "true" || condition === "false"
+                ? { staticBoolean: condition === "true" }
+                : {}),
+        };
+    }
+
     public compileCallbackWithValues(
         context: UserFunctionContext,
         declaration:
@@ -4107,6 +4142,13 @@ export class UserFunctionLowerer {
         discardReturn = false,
         body?: CallbackInvocationOptions,
     ): Value {
+        const truth = this.booleanCallback(
+            context,
+            declaration,
+            arguments_,
+            callNode,
+        );
+        if (truth) return truth;
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
             : undefined;
@@ -4750,6 +4792,13 @@ export class UserFunctionLowerer {
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
             : undefined;
+        const truth = this.booleanCallback(
+            context,
+            declaration,
+            arguments_,
+            callNode,
+        );
+        if (truth) return truth;
         if (
             bound?.kind === "callback" ||
             bound?.dataType?.kind === "function"
@@ -5211,9 +5260,9 @@ export class UserFunctionLowerer {
                 if (this.documentReturnStorage(returnType)) {
                     try {
                         return context.probeEmission(() =>
-                            this.lowerValueLambda(
+                            this.emitValueLambda(
                                 context,
-                                ir,
+                                ir.statements,
                                 returnType,
                                 discardReturn,
                             ),
@@ -5222,16 +5271,16 @@ export class UserFunctionLowerer {
                         if (!(error instanceof DynamicReturnRequiresStorage))
                             throw error;
                     }
-                    return this.lowerValueLambda(
+                    return this.emitValueLambda(
                         context,
-                        ir,
+                        ir.statements,
                         { kind: "json" },
                         discardReturn,
                     );
                 }
-                return this.lowerValueLambda(
+                return this.emitValueLambda(
                     context,
-                    ir,
+                    ir.statements,
                     returnType,
                     discardReturn,
                 );
@@ -5271,9 +5320,13 @@ export class UserFunctionLowerer {
         }
     }
 
-    private lowerValueLambda(
+    /**
+     * A body with early value returns as an immediately-invoked native
+     * lambda of the returned type; a body that can fall through throws.
+     */
+    public emitValueLambda(
         context: UserFunctionContext,
-        ir: UserFunctionIr,
+        statements: readonly ts.Statement[],
         returnType: DataType | undefined,
         discardReturn: boolean,
     ): Value {
@@ -5300,7 +5353,7 @@ export class UserFunctionLowerer {
                 : {},
         );
         try {
-            const terminated = emitReachableStatements(context, ir.statements);
+            const terminated = emitReachableStatements(context, statements);
             if (!terminated && returnType) {
                 context.emit({
                     kind: "control",

@@ -500,6 +500,36 @@ check(
 );
 
 check(
+    "getter-early-returns-and-boolean-predicates",
+    `
+    function counter(limit: number) {
+        let disposed = false;
+        const values = new Float32Array([1, 2, 3]);
+        return {
+            get value(): number {
+                if (disposed || limit < 0) return -1;
+                for (const v of values) if (v > limit) return v;
+                return values[0]! > 0 ? 0 : 1;
+            },
+            dispose(): void { disposed = true; },
+        };
+    }
+    function read(source: { readonly value: number }): number { return source.value; }
+    const made: Array<typeof counter> = [counter];
+    const c = made[0]!(1);
+    if (read(c) !== 2 || counter(5).value !== 0 || counter(-1).value !== -1) throw new Error("getter early returns");
+    c.dispose();
+    if (read(c) !== -1) throw new Error("getter after dispose");
+    function label(a: string, b: string): string { return [a.trim(), b.trim(), ""].filter(Boolean).join(" "); }
+    const labels: Array<typeof label> = [label];
+    const numbers = [0, 3, NaN, -1];
+    if (label(" x ", "") !== "x" || labels[0]!("a", "b") !== "a b" || numbers.filter(Boolean).join() !== "3,-1" ||
+        !numbers.some(Boolean) || numbers.every(Boolean) || numbers.find(Boolean) !== 3 || numbers.findIndex(Boolean) !== 1)
+        throw new Error("Boolean predicate");
+`,
+);
+
+check(
     "conditional-expression-statements",
     `
     let log = "";

@@ -5033,11 +5033,42 @@ class Compiler implements LoweringServices {
         const expression = only.expression;
         const leading = statements.slice(0, -1);
         const earlyReturn = firstReturn(leading);
-        if (earlyReturn)
-            this.fail(
-                earlyReturn,
-                "A getter with early returns requires a represented result flow.",
-            );
+        if (earlyReturn) {
+            // Early returns are function control flow: the body runs as a
+            // native lambda of the getter's represented result type.
+            const signature =
+                this.checker.getSignatureFromDeclaration(accessor);
+            const resultType = signature
+                ? this.dataTypes.fromTsType(
+                      this.checker.getReturnTypeOfSignature(signature),
+                      accessor,
+                  )
+                : undefined;
+            if (!resultType)
+                this.fail(
+                    earlyReturn,
+                    "A getter with early returns requires a represented result flow.",
+                );
+            return this.withRecordScopes(owner, () => {
+                this.bindings.pushScope(this.allocateUserFunctionPrefix());
+                const previousThis = this.activeThis();
+                this.defineThis(receiver ?? owner);
+                try {
+                    return {
+                        ...this.userFunctions.emitValueLambda(
+                            this,
+                            statements,
+                            this.dataTypes.ownReturnedArray(resultType),
+                            false,
+                        ),
+                        impure: true,
+                    };
+                } finally {
+                    this.defineThis(previousThis);
+                    this.bindings.popScope();
+                }
+            });
+        }
         return this.withRecordScopes(owner, () => {
             if (leading.length)
                 this.bindings.pushScope(this.allocateUserFunctionPrefix());
