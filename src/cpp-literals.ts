@@ -112,6 +112,14 @@ export function doubleLiteral(value: number): string {
     return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
 }
 
+/** A double as C++, NaN and the infinities included. */
+export function doubleCpp(value: number): string {
+    if (Number.isNaN(value)) return "std::numeric_limits<double>::quiet_NaN()";
+    if (Math.abs(value) === Infinity)
+        return `${value < 0 ? "-" : ""}std::numeric_limits<double>::infinity()`;
+    return doubleLiteral(value);
+}
+
 const VALUES_PER_LINE = 64;
 
 /**

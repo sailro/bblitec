@@ -71,11 +71,14 @@ import {
     renderClosure,
     type NativeCaptureBinding,
 } from "./closure-captures.js";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import { cppIdentifierPattern, doubleCpp } from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { isObjectIdentityFunction } from "./static-evaluator.js";
+import {
+    isObjectIdentityFunction,
+    numberFromOptionalCpp,
+} from "./static-evaluator.js";
 import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
@@ -6760,6 +6763,54 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return name;
     }
 
+    /**
+     * A number argument whose absent `undefined` selects `undefinedReads`
+     * (an omitted search position or byte offset): ToNumber of anything
+     * else, an absent `null` reading 0.
+     */
+    public compileDefaultedNumberArgument(
+        argument: ts.Expression,
+        undefinedReads: number,
+    ): string {
+        const absent = nullability(
+            this.context.checker.getTypeAtLocation(argument),
+        );
+        if (!absent.null && !absent.undefined)
+            return this.context.compileNumber(argument, "double");
+        const value = this.context.compileValue(argument);
+        const ambiguous = (): never =>
+            this.context.fail(
+                argument,
+                "A number argument that may be null or undefined requires distinguishable null and undefined storage.",
+            );
+        if (value.kind === "json-null" || isUndefinedDataType(value.dataType)) {
+            this.context.emitDiscardedValue(value);
+            if (absent.null && absent.undefined && undefinedReads !== 0)
+                ambiguous();
+            return doubleCpp(absent.null ? 0 : undefinedReads);
+        }
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "optional" ||
+            value.dataType.inner.kind !== "number" ||
+            presenceFlagCpp(value) !== undefined
+        )
+            return this.compileKnownValueForSink(
+                value,
+                { kind: "number" },
+                argument,
+            );
+        this.context.reachJsData();
+        return (
+            numberFromOptionalCpp(
+                this.context.checker,
+                value,
+                argument,
+                undefinedReads,
+            ) ?? ambiguous()
+        );
+    }
+
     /** Promise-producing callbacks need retained invocation even inside a synchronous iterator. */
     public promiseCallbackType(
         callback: ts.Expression,
@@ -7892,43 +7943,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
             // ToIndex reads an absent byte offset (undefined, or null as
             // ToNumber 0) as zero.
-            const offsetArgument = (argument: ts.Expression): string => {
-                const absent = nullability(
-                    this.context.checker.getTypeAtLocation(argument),
-                );
-                if (!absent.null && !absent.undefined)
-                    return numericArgument(argument);
-                const value = this.context.compileValue(argument);
-                if (
-                    value.kind === "json-null" ||
-                    isUndefinedDataType(value.dataType)
-                ) {
-                    this.context.emitDiscardedValue(value);
-                    return numericArgument(argument, "0.0");
-                }
-                if (
-                    value.kind !== "data" ||
-                    value.dataType?.kind !== "optional" ||
-                    value.dataType.inner.kind !== "number" ||
-                    presenceFlagCpp(value) !== undefined
-                )
-                    return numericArgument(
-                        argument,
-                        this.compileKnownValueForSink(
-                            value,
-                            { kind: "number" },
-                            argument,
-                        ),
-                    );
-                const offset = this.context.bindings.pinValueToTemporary(
-                    value,
-                    "view_offset",
-                ).cpp;
-                return numericArgument(
+            const offsetArgument = (argument: ts.Expression): string =>
+                numericArgument(
                     argument,
-                    `(${optionalPresentCpp(offset)} ? ${optionalValueCpp(offset)} : 0.0)`,
+                    this.compileDefaultedNumberArgument(argument, 0),
                 );
-            };
             const offset = arguments_[1]
                 ? `, ${offsetArgument(arguments_[1])}`
                 : "";
@@ -12608,8 +12627,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const previous =
             this.context.allocateTemporaryCppName("update_previous");
         const stored = this.context.allocateTemporaryCppName("update_next");
+        let read: string;
+        let store: (value: string) => string;
         if (place.kind === "entry") {
-            this.context.reachJsData();
             const owner = this.context.allocateTemporaryCppName("update_owner");
             const key = this.context.allocateTemporaryCppName("update_key");
             this.context.emit({
@@ -12624,54 +12644,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 name: key,
                 initializer: place.keyCpp,
             });
+            read = `bbl::js::number_from_optional(${owner}.get(${key}))`;
+            store = (value) => `${owner}.set(${key}, ${value});`;
+        } else {
+            const slot = this.context.allocateTemporaryCppName("update_slot");
             this.context.emit({
                 kind: "declaration",
-                type: "const double",
-                name: previous,
-                initializer: `bbl::js::number_from_optional(${owner}.get(${key}))`,
+                type: "auto&&",
+                name: slot,
+                initializer: place.target.cpp,
             });
-            this.context.emit({
-                kind: "declaration",
-                type: "const double",
-                name: stored,
-                initializer: next(previous),
-            });
-            this.context.emit({
-                kind: "expression",
-                code: `${owner}.set(${key}, ${stored});`,
-            });
-            this.context.bindings.invalidateRecordProperties(place.owner);
-            return { previous, next: stored };
+            read =
+                numberFromOptionalCpp(
+                    this.context.checker,
+                    { ...place.target, cpp: slot },
+                    this.context.unwrap(operand),
+                ) ??
+                this.context.fail(
+                    operand,
+                    "A numeric update requires distinguishable null and undefined storage.",
+                );
+            store = (value) =>
+                `${slot} = ${this.compileKnownValueForSink(
+                    this.leafValue(value, { kind: "number" }),
+                    place.target.dataType,
+                    operand,
+                )};`;
         }
-        const absence = absenceKind(
-            this.context.checker,
-            place.target,
-            this.context.unwrap(operand),
-        );
-        if (absence === "either")
-            this.context.fail(
-                operand,
-                "A numeric update requires distinguishable null and undefined storage.",
-            );
         this.context.reachJsData();
-        const slot = this.context.allocateTemporaryCppName("update_slot");
-        this.context.emit({
-            kind: "declaration",
-            type: "auto&&",
-            name: slot,
-            initializer: place.target.cpp,
-        });
-        const fallback =
-            absence === "null"
-                ? ", 0.0"
-                : typeof absence === "object"
-                  ? `, (${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
-                  : "";
         this.context.emit({
             kind: "declaration",
             type: "const double",
             name: previous,
-            initializer: `bbl::js::number_from_optional(${slot}${fallback})`,
+            initializer: read,
         });
         this.context.emit({
             kind: "declaration",
@@ -12679,15 +12684,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: stored,
             initializer: next(previous),
         });
-        this.context.emit({
-            kind: "expression",
-            code: `${slot} = ${this.compileKnownValueForSink(
-                this.leafValue(stored, { kind: "number" }),
-                place.target.dataType,
-                operand,
-            )};`,
-        });
-        this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
+        this.context.emit({ kind: "expression", code: store(stored) });
+        if (place.kind === "entry")
+            this.context.bindings.invalidateRecordProperties(place.owner);
+        else this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
         return { previous, next: stored };
     }
 

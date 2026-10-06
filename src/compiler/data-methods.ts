@@ -13,7 +13,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import { cppIdentifierPattern, doubleCpp } from "../cpp-literals.js";
 import {
     argumentAt,
     expressionMayRunCode,
@@ -58,7 +58,6 @@ import { numberConstantValue } from "./number-intrinsics.js";
 import {
     arrayElementType,
     isTypeReference,
-    nullability,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 
@@ -3415,30 +3414,13 @@ function compileStringPositionSearch(
         { kind: "string" },
         searchNode,
     );
-    const absent =
-        search.absent === "start"
-            ? "0.0"
-            : "std::numeric_limits<double>::infinity()";
+    // An omitted or undefined position is the search's own start; `null`
+    // is ToNumber 0.
+    const absent = search.absent === "start" ? 0 : Infinity;
     const positionNode = call.arguments[1];
-    let position = absent;
-    if (positionNode) {
-        if (
-            nullability(context.checker.getTypeAtLocation(positionNode))
-                .undefined
-        ) {
-            const held = context.allocateTemporaryCppName("search_position");
-            context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: held,
-                initializer: lowerer.compileForSink(positionNode, {
-                    kind: "optional",
-                    inner: { kind: "number" },
-                }),
-            });
-            position = `(${optionalPresentCpp(held)} ? *${held} : ${absent})`;
-        } else position = context.compileNumber(positionNode, "double");
-    }
+    const position = positionNode
+        ? lowerer.compileDefaultedNumberArgument(positionNode, absent)
+        : doubleCpp(absent);
     context.reachJsData();
     return lowerer.leafValue(search.cpp(receiver.cpp, searchText, position), {
         kind: search.result,

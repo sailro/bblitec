@@ -6973,6 +6973,43 @@ check(
 );
 
 check(
+    "defaulted-number-arguments-read-null-as-zero",
+    `
+    const gate = new Float32Array([0, 1]);
+    const text = "abcabc";
+    const none: number | null = gate[1]! > 0 ? null : 2;
+    const omitted: number | undefined = gate[1]! > 0 ? undefined : 2;
+    // @ts-expect-error a null position is ToNumber(null), 0
+    if (text.lastIndexOf("b", none) !== -1 || text.lastIndexOf("a", none) !== 0) throw new Error("lastIndexOf null");
+    // @ts-expect-error a null position is ToNumber(null), 0
+    if (text.indexOf("b", none) !== 1 || text.endsWith("c", none) || !text.startsWith("a", none)) throw new Error("null positions");
+    if (text.lastIndexOf("b", omitted) !== 4 || text.indexOf("b", omitted) !== 1 || !text.endsWith("c", omitted))
+        throw new Error("undefined positions");
+    if (text.lastIndexOf("b", undefined) !== 4) throw new Error("undefined literal position");
+    const loose: number | null | undefined = gate[0]! > 0 ? 3 : undefined;
+    // @ts-expect-error null and undefined both read 0 here
+    if (text.indexOf("c", loose) !== 2) throw new Error("indexOf either absence");
+    const table: Record<string, number | null> = { a: null };
+    const key = gate[1]! > 0 ? "a" : "b";
+    // @ts-expect-error a stored null and a missing entry both read 0 here
+    if (text.indexOf("b", table[key]) !== 1 || text.indexOf("b", table[key + "z"]) !== 1) throw new Error("indexOf lookups");
+    const buffer = new ArrayBuffer(8);
+    // @ts-expect-error a null byte offset is ToIndex(null), 0
+    if (new Uint8Array(buffer, none).length !== 8 || new Uint8Array(buffer, omitted).length !== 8) throw new Error("byte offsets");
+`,
+);
+
+test("a defaulted number argument refuses storage that cannot tell null from undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'const g = new Float32Array([1]); const r: Record<string, number | null> = { a: null }; const key = g[0]! > 0 ? "a" : "b"; // @ts-expect-error\nconst i = "ab".lastIndexOf("b", r[key]);',
+            ),
+        /requires distinguishable null and undefined storage/,
+    );
+});
+
+check(
     "string-from-code-point",
     `
     const codes = [65, 0x1f600, 0xd83d, 0xde00, 0xd800];
