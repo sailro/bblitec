@@ -7203,7 +7203,7 @@ test("spreads a runtime numeric tuple into a numeric array", () => {
 
     assert.match(
         result.cpp,
-        /\.insert\([^,]+\.end\(\), [^.]+\.begin\(\), [^.]+\.end\(\)\)/,
+        /auto (v_bblite_push_spread_\d+) = bbl::js::array_from_iterable<double>\([^;]+\);\s*[^;]*bbl::js::array_append\(v_values, \1\)/,
     );
 });
 
