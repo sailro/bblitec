@@ -4818,3 +4818,59 @@ check(
 `,
 );
 
+check(
+    "expression-bodied-recursive-callbacks",
+    `
+    function root(values: readonly number[], index: number): number {
+        const parent = values.slice();
+        const find = (k: number): number => (parent[k] === k ? k : (parent[k] = find(parent[k]!)));
+        return find(index) * 10 + parent[index]!;
+    }
+    const seen: number[] = [];
+    function log(k: number): void { seen.push(k); }
+    function visit(k: number, next: (k: number) => void): void { seen.push(k); if (k > 0) next(k - 1); }
+    function walk(n: number): string {
+        const down = (k: number): void => (k > 0 ? down(k - 1) : log(k));
+        const each = (k: number): void => visit(k, each);
+        down(n);
+        each(n);
+        return seen.join(",");
+    }
+    const roots: Array<typeof root> = [root];
+    const walks: Array<typeof walk> = [walk];
+    if (roots[0]!([1, 1, 1, 2], 3) !== 11 || walks[0]!(2) !== "0,2,1,0") throw new Error("expression-bodied recursion");
+`,
+);
+
+check(
+    "functions-re-entered-through-their-callback-arguments",
+    `
+    interface Extent { pos: number; neg: number }
+    function walkAlternating<T>(firstSide: 1 | -1, step: number, extent: Extent, tryOffset: (offset: number) => T | null): T | null {
+        const first = tryOffset(0);
+        if (first) return first;
+        for (let n = 1; step > 0 && (n * step <= extent.pos || n * step <= extent.neg); n++) {
+            const near = tryOffset(firstSide * n * step);
+            if (near) return near;
+            const far = tryOffset(-firstSide * n * step);
+            if (far) return far;
+        }
+        return null;
+    }
+    function findFreePoint(base: number, blocked: (x: number) => boolean): { x: number } | null {
+        return walkAlternating(1, 1, { pos: 3, neg: 3 }, (offset) => (blocked(base + offset) ? null : { x: base + offset }));
+    }
+    function findHook(side: 1 | -1, blocked: (x: number) => boolean): { x: number; hook: number } | null {
+        return walkAlternating(side, 1, { pos: 2, neg: 2 }, (offset) => {
+            const point = findFreePoint(offset * 10, blocked);
+            return point ? { x: point.x, hook: offset } : null;
+        });
+    }
+    const hooks: Array<typeof findHook> = [findHook];
+    const found = hooks[0]!(1, (x) => x < 11);
+    const reversed = findHook(-1, (x) => x > -9 && x < 30);
+    if (!found || found.x !== 11 || found.hook !== 1) throw new Error("nested walk");
+    if (!reversed || reversed.x !== -10 || reversed.hook !== -1) throw new Error("nested walk from the far side");
+`,
+);
+

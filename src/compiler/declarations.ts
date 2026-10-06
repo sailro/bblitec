@@ -96,12 +96,14 @@ interface DeclarationContext
             | "captureManagedClosureLines"
             | "compileCallbackWithValues"
             | "compileEngineCreation"
+            | "compileForDataSink"
             | "compileStoredDataFunction"
             | "compileStringLiteral"
             | "constArrayLiteral"
             | "defaultEngine"
             | "refuseBorrowedPlatformEventEscape"
             | "emitDiscardedValue"
+            | "emitExpressionAsStatement"
             | "callbacks"
             | "emitNativeCallbackStorage"
             | "engineLifecycle"
@@ -1980,12 +1982,6 @@ export class DeclarationLowerer {
             });
             return;
         }
-        if (!ts.isBlock(callback.body)) {
-            this.context.fail(
-                callback.body,
-                "Recursive callbacks require a block body.",
-            );
-        }
         const callbackBody = callback.body;
         const signature =
             this.context.checker.getSignatureFromDeclaration(callback);
@@ -2102,10 +2098,19 @@ export class DeclarationLowerer {
                 parameters,
                 returnType,
                 () => {
-                    emitReachableStatements(
-                        this.context,
-                        callbackBody.statements,
-                    );
+                    // An expression body is the value its one `return` hands back.
+                    if (ts.isBlock(callbackBody))
+                        emitReachableStatements(
+                            this.context,
+                            callbackBody.statements,
+                        );
+                    else if (returnType)
+                        this.context.emit({
+                            kind: "control",
+                            code: `return ${this.context.compileForDataSink(callbackBody, returnType)};`,
+                            transfer: "return",
+                        });
+                    else this.context.emitExpressionAsStatement(callbackBody);
                 },
             );
             parameterDeclarations = captured.parameterDeclarations;
