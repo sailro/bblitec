@@ -4835,3 +4835,273 @@ check(
         Date.UTC(2020) !== 1577836800000 || Date.UTC(1970, 0, 2) !== 86400000) throw new Error("Date.UTC fields");
 `,
 );
+
+check(
+    "element-reads-of-absent-receivers",
+    `
+    interface Control { u: number; lat?: number }
+    interface Options { size: number; controls?: readonly Control[]; extra?: Float32Array }
+    function lateral(controls: readonly Control[] | undefined): number {
+        let sum = 0;
+        for (let i = 0; i < (controls?.length ?? 0); i++) {
+            const control = controls![i]!;
+            if (control.lat === undefined) continue;
+            sum += control.lat * control.u;
+        }
+        return sum;
+    }
+    function pack(options: Options): number[] {
+        const out: number[] = [];
+        for (let i = 0; i < options.size; i++) out.push(options.extra?.[i] ?? -1);
+        return out;
+    }
+    const plain: Options = { size: 2 };
+    if (lateral(plain.controls) !== 0 || pack(plain).join() !== "-1,-1") throw new Error("absent optional reads");
+    let reads = 0;
+    function index(): number { reads++; return 0; }
+    function optionalRead(options: { list?: number[] }): number | undefined { return options.list?.[index()]; }
+    function assertedRead(options: { list?: number[] }): number { return options.list![index()]!; }
+    if (optionalRead({}) !== undefined || reads !== 0) throw new Error("optional index short-circuits");
+    let threw = false;
+    try { assertedRead({}); } catch (error) { threw = error instanceof TypeError; }
+    if (!threw || reads !== 1) throw new Error("asserted read evaluates its key, then throws");
+`,
+);
+
+check(
+    "delete-struct-fields-by-known-key",
+    `
+    interface Style { tint?: number; label?: string; scale?: number; size: number }
+    const setNumber = <T extends object, K extends keyof T>(target: T, key: K, value: number | undefined): void => {
+        if (value === undefined) delete target[key];
+        else target[key] = value as T[K];
+    };
+    const setTint = (target: { tint?: number }, key: "tint", value: number | null): void => {
+        if (value) target[key] = value;
+        else delete target[key];
+    };
+    const style: Style = { tint: 1, label: "a", scale: 2, size: 3 };
+    const inputs = [undefined, 4];
+    setNumber(style, "scale", inputs[0]);
+    setTint(style, "tint", null);
+    delete style["label"];
+    if ("scale" in style || "tint" in style || "label" in style || style.size !== 3) throw new Error("deleted fields");
+    if (Object.keys(style).join() !== "size" || JSON.stringify(style) !== '{"size":3}') throw new Error("own keys after delete");
+    setNumber(style, "scale", inputs[1]);
+    setTint(style, "tint", 5);
+    if (style.scale !== 4 || style.tint !== 5) throw new Error("restored fields");
+`,
+);
+
+check(
+    "object-assign-copies-own-optional-struct-fields",
+    `
+    interface Mix { amount?: number; material?: string; tint?: [number, number, number] }
+    function copy(source: Readonly<Mix>): Mix {
+        return {
+            ...(source.amount !== undefined ? { amount: source.amount } : {}),
+            ...(source.material !== undefined ? { material: source.material } : {}),
+            ...(source.tint ? { tint: [...source.tint] as [number, number, number] } : {}),
+        };
+    }
+    function replace(target: Mix, source: Readonly<Mix>): void {
+        const next = copy(source);
+        delete target.amount; delete target.material; delete target.tint;
+        Object.assign(target, next);
+    }
+    const target: Mix = { amount: 1, tint: [1, 2, 3] };
+    replace(target, { material: "stone" });
+    if (target.amount !== undefined || target.material !== "stone" || "tint" in target) throw new Error("replaced fields");
+    if (Object.keys(target).join() !== "material") throw new Error("own keys " + Object.keys(target).join());
+    let reads = 0;
+    function source(): Mix { reads++; return { amount: 7, tint: [4, 5, 6] }; }
+    Object.assign(target, source());
+    if (reads !== 1 || target.amount !== 7 || target.material !== "stone" || target.tint![2] !== 6) throw new Error("source read once");
+    interface Door { kind: string; y?: number }
+    function commit(existing: Door, candidate: Door): Door {
+        Object.assign(existing, candidate);
+        if (candidate.y === undefined) delete existing.y;
+        return existing;
+    }
+    const doors: Door[] = [{ kind: "a", y: 3 }, { kind: "b" }];
+    const door = commit(doors[0]!, doors[1]!);
+    if (door !== doors[0] || door.kind !== "b" || "y" in door) throw new Error("door commit");
+`,
+);
+
+check(
+    "object-entries-of-documents-and-dictionaries",
+    `
+    function strings(raw: unknown): Record<string, string> {
+        const p: Record<string, string> = {};
+        if (!raw || typeof raw !== "object") return p;
+        const fact = raw as { p?: unknown };
+        if (fact.p && typeof fact.p === "object") {
+            for (const [k, v] of Object.entries(fact.p)) if (typeof v === "string") p[k] = v;
+        }
+        return p;
+    }
+    const doc = JSON.parse('{"p":{"b":"x","2":"two","a":1}}') as unknown;
+    const read = strings(doc);
+    if (Object.keys(read).join() !== "2,b" || read["b"] !== "x" || read["2"] !== "two") throw new Error("document entries");
+    interface State { issue: number; lastUsed: Record<string, number> }
+    function counts(raw: unknown): Record<string, number> {
+        const state = raw as Partial<Record<keyof State, unknown>> | undefined;
+        const out: Record<string, number> = {};
+        if (!state || !state.lastUsed || typeof state.lastUsed !== "object") return out;
+        for (const [id, n] of Object.entries(state.lastUsed)) if (Number.isFinite(n)) out[id] = n as number;
+        return out;
+    }
+    const used: Record<string, number> = {};
+    used["z"] = 2;
+    used["a"] = Number.NaN;
+    used["1"] = 5;
+    const saved: State = { issue: 1, lastUsed: used };
+    const restored = counts(saved);
+    if (Object.keys(restored).join() !== "1,z" || restored["z"] !== 2) throw new Error("dictionary entries " + Object.keys(restored).join());
+    function digest(table: Readonly<Record<string, unknown>>): string {
+        const fields: string[] = [];
+        for (const [name, value] of Object.entries(table)) if (typeof value === "number") fields.push(name + "=" + value);
+        return fields.sort().join(";");
+    }
+    if (digest(used) !== "1=5;a=NaN;z=2") throw new Error("unknown-valued entries " + digest(used));
+`,
+);
+
+check(
+    "record-lookup-with-document-key",
+    `
+    const SIGN: Record<string, number> = { door: -1, "2": 5 };
+    function sign(raw: unknown): number {
+        const node = raw as { name: string };
+        return SIGN[node.name] ?? 1;
+    }
+    const nodes = JSON.parse('[{"name":"door"},{"name":"pane"},{"name":2},{}]') as unknown[];
+    const signs = nodes.map(sign);
+    if (signs.join() !== "-1,1,5,1") throw new Error("document keys " + signs.join());
+`,
+);
+
+check(
+    "branded-primitives-are-their-primitive",
+    `
+    type SourceId = string & { readonly __source: unique symbol };
+    type Meters = number & { readonly __unit: "m" };
+    interface Row { source: SourceId; cycle: number; length: Meters }
+    function source(id: string): SourceId { return id as SourceId; }
+    const rows = new Map<number, Row>();
+    rows.set(1, { source: source("well"), cycle: 2, length: 3 as Meters });
+    const row = rows.get(1)!;
+    const ids = new Set<SourceId>([row.source]);
+    if (row.source !== "well" || row.source.length !== 4 || !ids.has(source("well")) || row.length + 1 !== 4)
+        throw new Error("branded values");
+`,
+);
+
+check(
+    "object-spread-of-a-narrowed-union-member",
+    `
+    type Policy = "durable" | "fresh";
+    interface Portion { kind: string; nutrition: number; policy: Policy; expires: number | null }
+    function normalize(raw: number | Readonly<Portion>): Portion | null {
+        if (typeof raw === "number") return raw > 0 ? { kind: "generic", nutrition: raw, policy: "durable", expires: null } : null;
+        if (!(raw.nutrition > 0)) return null;
+        const expiry = raw.policy === "durable" ? null : Number.isFinite(raw.expires) && raw.expires! >= 1 ? Math.trunc(raw.expires!) : null;
+        if (raw.policy !== "durable" && expiry === null) return null;
+        return { ...raw, expires: expiry };
+    }
+    const inputs: Array<number | Portion> = [2, { kind: "bread", nutrition: 1, policy: "fresh", expires: 3.5 }];
+    const first = normalize(inputs[0]!), second = normalize(inputs[1]!);
+    if (first?.kind !== "generic" || second?.kind !== "bread" || second.expires !== 3 || second === inputs[1])
+        throw new Error("spread member");
+    if ((inputs[1] as Portion).expires !== 3.5) throw new Error("spread copies its source");
+`,
+);
+
+check(
+    "map-entry-struct-destructuring",
+    `
+    interface Host { boundary: { kind: string }; size: number }
+    const byKey = new Map<string, { host: Host; count: number }>();
+    byKey.set("tower:a", { host: { boundary: { kind: "circle" }, size: 2 }, count: 1 });
+    byKey.set("house:b", { host: { boundary: { kind: "rect" }, size: 3 }, count: 5 });
+    const seen: string[] = [];
+    for (const [key, { host, count: total }] of byKey)
+        if (key.startsWith("tower:") || host.boundary.kind === "rect") seen.push(key + "=" + (host.size * total));
+    if (seen.join() !== "tower:a=2,house:b=15") throw new Error("entries " + seen.join());
+`,
+);
+
+test("dynamic object and built-in boundaries refuse explicitly", () => {
+    const refusals: Array<[string, RegExp]> = [
+        [
+            "const codes = [65, 66]; console.log(String.fromCodePoint(...codes));",
+            /String\.fromCodePoint takes its code points as separate arguments/,
+        ],
+        [
+            "const parts: [number, number] = [2020, 1]; console.log(Date.UTC(...parts));",
+            /Date\.UTC takes a year and up to six numeric fields as separate arguments/,
+        ],
+        [
+            `const s = ["abc"];
+            const i = (s[0]! as unknown as { indexOf(a: string, b: number, c: number): number }).indexOf("b", 0, 1);
+            console.log(i);`,
+            /String\.indexOf expects a search string and an optional position/,
+        ],
+        [
+            `interface S { size: number; tint?: number }
+            const clear = <T extends object, K extends keyof T>(t: T, k: K): void => { delete t[k]; };
+            const s: S = { size: 1, tint: 2 };
+            clear(s, "size");
+            console.log(s.size);`,
+            /'size' is a required field of its type; only an optional field can be deleted/,
+        ],
+        [
+            `const doc = JSON.parse("{}") as unknown;
+            if (doc && typeof doc === "object") {
+                const { a, ...rest } = doc as { a?: unknown; b?: unknown };
+                console.log(a, rest);
+            }`,
+            /Object rest over a parsed document is not represented/,
+        ],
+        [
+            `interface M { a?: number; b?: string }
+            const ms: M[] = [{ a: 1 }];
+            console.log(Object.assign({}, ms[0]!));`,
+            /Enumerating a struct with optional properties as a fixed list requires known own keys/,
+        ],
+        [
+            `const names = ["\\u00e9"]; console.log(/\\p{L}/u.test(names[0]!));`,
+            /Reached RegExp literals support the g and i flags, not 'u'/,
+        ],
+    ];
+    for (const [source, message] of refusals)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "object-destructuring-of-documents",
+    `
+    function read(raw: string | null): { n: number; k: number | null } {
+        const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+        if (!parsed || typeof parsed !== "object") return { n: 0, k: null };
+        const { n, k } = parsed as { n?: unknown; k?: unknown };
+        return {
+            n: typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : 0,
+            k: typeof k === "number" && Number.isFinite(k) ? k : null,
+        };
+    }
+    const r = read('{"n":2,"k":3.5}');
+    if (r.n !== 2 || r.k !== 3.5 || read(null).n !== 0 || read('{"n":-1}').k !== null) throw new Error("members");
+    let defaults = 0;
+    function fallback(): number { defaults++; return 7; }
+    function withDefault(raw: string): number {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== "object") return -1;
+        const { n = fallback(), "k": renamed } = parsed as { n?: unknown; k?: unknown };
+        return (typeof n === "number" ? n : -2) + (renamed === undefined ? 100 : 0);
+    }
+    if (withDefault("{}") !== 107 || withDefault('{"n":1,"k":0}') !== 1 || withDefault('{"n":null}') !== 98 || defaults !== 1)
+        throw new Error("defaults " + defaults);
+`,
+);

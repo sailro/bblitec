@@ -2,7 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
@@ -3826,6 +3826,55 @@ export class DeclarationLowerer {
         this.context.dataLowerer.registerLocal(cppName, "copy");
     }
 
+    /**
+     * An object pattern over a parsed document: the document is read once,
+     * and each binding is the member its key names, itself a document; a
+     * default stands in for an undefined member. A rest element refuses.
+     */
+    private bindDocumentPattern(
+        pattern: ts.ObjectBindingPattern,
+        value: Value,
+    ): void {
+        const owner = this.context.bindings.pinValueToTemporary(
+            value,
+            "destructure_document",
+        );
+        const documentType: DataType = { kind: "json" };
+        this.context.reachJson();
+        for (const element of pattern.elements) {
+            if (element.dotDotDotToken)
+                this.context.fail(
+                    element,
+                    "Object rest over a parsed document is not represented.",
+                );
+            const { name, property } = this.bindingProperty(element);
+            const member = `${owner.cpp}.get(${stringLiteral(property)})`;
+            if (element.initializer) {
+                const held =
+                    this.context.allocateTemporaryCppName("document_member");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const bbl::js::JsonValue",
+                    name: held,
+                    initializer: member,
+                });
+                const fallback = this.context.dataLowerer.compileArm(() =>
+                    this.context.dataLowerer.compileForSink(
+                        element.initializer!,
+                        documentType,
+                    ),
+                );
+                this.bindCopiedDefault(
+                    name,
+                    documentType,
+                    `${held}.is_undefined() ? ${this.context.dataLowerer.armExpression(element.initializer, fallback.lines, fallback.value, documentType)} : ${held}`,
+                );
+                continue;
+            }
+            this.bindCopiedDefault(name, documentType, member);
+        }
+    }
+
     private bindNestedPattern(
         pattern: ts.BindingPattern,
         value: Value,
@@ -3883,6 +3932,10 @@ export class DeclarationLowerer {
         }
         if (value.kind === "record") {
             this.emitRecordBindingDeclaration(pattern, value);
+            return;
+        }
+        if (isJsonValue(value)) {
+            this.bindDocumentPattern(pattern, value);
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {

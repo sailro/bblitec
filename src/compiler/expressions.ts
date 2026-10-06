@@ -3775,6 +3775,48 @@ export class ExpressionLowerer {
         return value;
     }
 
+    /**
+     * An index of an absent (null or undefined) receiver: an optional chain
+     * short-circuits to undefined without evaluating the key; any other read
+     * evaluates the key, then throws JavaScript's TypeError, typed as the
+     * element it would have read.
+     */
+    private compileAbsentElementAccess(
+        owner: Value,
+        unwrapped: ts.ElementAccessExpression,
+    ): Value {
+        if (
+            unwrapped.questionDotToken ||
+            (ts.isOptionalChain(unwrapped) && owner.optionalChainShortCircuited)
+        )
+            return {
+                kind: "json-null",
+                cpp: "std::nullopt",
+                optionalChainShortCircuited: true,
+            };
+        const type = this.context.dataLowerer.dataTypeAt(unwrapped);
+        if (!type)
+            return this.context.fail(
+                unwrapped.expression,
+                "Element access is not supported for json-null.",
+            );
+        this.context.emitDiscardedValue(
+            this.compileValue(unwrapped.argumentExpression),
+        );
+        const absent = nullability(
+            this.context.checker.getTypeAtLocation(
+                this.context.unwrap(unwrapped.expression),
+            ),
+        );
+        this.context.reachJsData();
+        return this.context.dataLowerer.leafValue(
+            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${this.context.cppString(
+                `Cannot read properties of ${absent.null && !absent.undefined ? "null" : "undefined"}`,
+            )})`,
+            type,
+        );
+    }
+
     private compileIndexedValue(
         unwrapped: ts.ElementAccessExpression,
         expression: ts.Expression,
@@ -3888,6 +3930,8 @@ export class ExpressionLowerer {
             return collectionElement;
         }
         const owner = this.compileValue(unwrapped.expression);
+        if (owner.kind === "json-null")
+            return this.compileAbsentElementAccess(owner, unwrapped);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,
@@ -4000,13 +4044,20 @@ export class ExpressionLowerer {
         }
         if (owner.kind === "record") {
             const rawKey = this.compileValue(unwrapped.argumentExpression);
-            const key =
+            const narrowedKey =
                 rawKey.kind === "data"
                     ? this.context.dataLowerer.narrowOptional(
                           rawKey,
                           unwrapped.argumentExpression,
                       )
                     : rawKey;
+            // A document key selects the property its ToString names.
+            const key = isJsonValue(narrowedKey)
+                ? this.context.dataLowerer.leafValue(
+                      `${narrowedKey.cpp}.to_string()`,
+                      { kind: "string" },
+                  )
+                : narrowedKey;
             const property =
                 key.kind === "string"
                     ? key.staticString

@@ -438,32 +438,43 @@ function compileObjectEntries(
         if (array) return array;
     }
     if (isJsonValue(owner)) {
-        // A document's values are documents too.
-        const documentType = context.dataTypes.withDynamicJsonTypes(true, () =>
+        // A document's values are documents too, also where TypeScript
+        // types them `any` (the entries of an `object`).
+        const typed = context.dataTypes.withDynamicJsonTypes(true, () =>
             context.dataLowerer.dataTypeAt(call),
         );
+        const documentType: DataType<"vector"> =
+            typed?.kind === "vector"
+                ? typed
+                : {
+                      kind: "vector",
+                      element: {
+                          kind: "product",
+                          elements: [{ kind: "string" }, { kind: "json" }],
+                      },
+                  };
         // A parsed document's own pairs, in property order.
-        if (documentType?.kind === "vector")
-            return pairArray(
-                context,
-                owner,
-                "bbl::js::JsonValue",
-                context.dataLowerer.leafValue("own_owner.get(name)", {
-                    kind: "json",
-                }),
-                (push) =>
-                    `for (const std::string& name : own_owner.own_keys()) ${push}`,
-                documentType,
-                call,
-            );
+        return pairArray(
+            context,
+            owner,
+            "bbl::js::JsonValue",
+            context.dataLowerer.leafValue("own_owner.get(name)", {
+                kind: "json",
+            }),
+            (push) =>
+                `for (const std::string& name : own_owner.own_keys()) ${push}`,
+            documentType,
+            call,
+        );
     }
     if (
         owner.kind === "data" &&
         owner.dataType?.kind === "map" &&
-        owner.dataType.dictionary &&
-        resultType?.kind === "vector"
+        owner.dataType.dictionary
     )
-        // A dictionary's pairs in property order, a number key spelled as a name.
+        // A dictionary's pairs in property order, a number key spelled as a
+        // name; its values keep their type where TypeScript erases them
+        // (`unknown`, or `any` for an `object`).
         return pairArray(
             context,
             owner,
@@ -471,7 +482,15 @@ function compileObjectEntries(
             context.dataLowerer.leafValue("value", owner.dataType.value),
             (push) =>
                 `bbl::js::for_each_property_entry(own_owner, [&](const std::string& name, const auto& value) { ${push} });`,
-            resultType,
+            resultType?.kind === "vector"
+                ? resultType
+                : {
+                      kind: "vector",
+                      element: {
+                          kind: "product",
+                          elements: [{ kind: "string" }, owner.dataType.value],
+                      },
+                  },
             call,
         );
     const pairs = ownObjectEntries(context, owner, call);
@@ -554,6 +573,52 @@ function compileObjectFromEntries(
 }
 
 /**
+ * One struct source of `Object.assign` into a struct target: the source is
+ * read once, and each `?` field is stored only while it is an own property.
+ */
+function assignOptionalStructFields(
+    context: ObjectStaticContext,
+    target: Value,
+    targetType: DataType<"struct">,
+    source: Value,
+    sourceType: DataType<"struct">,
+    node: ts.Expression,
+): void {
+    const owner = context.bindings.pinValueToTemporary(
+        source,
+        "assign_source",
+        node,
+    );
+    const access = context.dataTypes.isReferenceStruct(targetType.name)
+        ? "->"
+        : ".";
+    for (const { key, value, presentCpp } of structOwnEntries(
+        context,
+        owner,
+        sourceType,
+        node,
+    )) {
+        context.refuseBorrowedPlatformEventEscape(value, node, "Object.assign");
+        const field = context.dataTypes.structField(targetType.name, key, node);
+        let stored = "";
+        const emitted = context.captureEmittedLines(() => {
+            stored = context.dataLowerer.compileKnownValueForSink(
+                value,
+                field.type,
+                node,
+            );
+        });
+        if (emitted.length > 0)
+            context.fail(
+                node,
+                "Object.assign copies a struct's optional fields when each converts to its target field in place.",
+            );
+        const store = `${target.cpp}${access}${field.name} = ${stored};`;
+        context.emit(presentCpp ? `if (${presentCpp}) ${store}` : store);
+    }
+}
+
+/**
  * `Object.assign(target, ...sources)`: an empty literal target merges its
  * sources into a fresh compile-time record, as an object spread does; a
  * struct target stores each source field in place. Sources are compile-time
@@ -600,8 +665,11 @@ function compileObjectAssign(
         );
     };
     // An existing target keeps what it receives, as a field store does.
-    const sourcePairs = (source: ts.Expression): Array<[string, Value]> => {
-        const pairs = readPairs(source);
+    const sourcePairs = (
+        source: ts.Expression,
+        value?: Value,
+    ): Array<[string, Value]> => {
+        const pairs = readPairs(source, value);
         if (!fresh)
             for (const [, value] of pairs)
                 context.refuseBorrowedPlatformEventEscape(
@@ -711,7 +779,28 @@ function compileObjectAssign(
             ? "->"
             : ".";
         for (const source of sources) {
-            for (const [key, value] of sourcePairs(source)) {
+            const sourceValue = context.compileValue(source);
+            if (
+                sourceValue.kind === "data" &&
+                sourceValue.dataType?.kind === "struct" &&
+                structOwnEntries(
+                    context,
+                    sourceValue,
+                    sourceValue.dataType,
+                    source,
+                ).some((entry) => entry.presentCpp !== undefined)
+            ) {
+                assignOptionalStructFields(
+                    context,
+                    target,
+                    structType,
+                    sourceValue,
+                    sourceValue.dataType,
+                    source,
+                );
+                continue;
+            }
+            for (const [key, value] of sourcePairs(source, sourceValue)) {
                 const field = context.dataTypes.structField(
                     structType.name,
                     key,

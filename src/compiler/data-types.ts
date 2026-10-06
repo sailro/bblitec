@@ -1686,6 +1686,26 @@ export class DataTypeRegistry {
                     );
                 return this.fromTsType(constrained[0]!, node);
             }
+            // A primitive intersected with object types (a branded
+            // `string & { readonly brand: unique symbol }`) holds only
+            // values of that primitive: the object members are phantom.
+            const primitives = constrained.filter(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.StringLike |
+                            ts.TypeFlags.NumberLike |
+                            ts.TypeFlags.BooleanLike)) !==
+                    0,
+            );
+            if (
+                primitives.length === 1 &&
+                constrained.every(
+                    (member) =>
+                        member === primitives[0] ||
+                        (member.flags & ts.TypeFlags.Object) !== 0,
+                )
+            )
+                return this.fromTsType(primitives[0]!, node);
             return this.fromStructType(type, node);
         }
         if ((type.flags & ts.TypeFlags.Object) === 0) {

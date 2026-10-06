@@ -2564,6 +2564,11 @@ struct CivilDate {
            digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
 }
 
+/** A property read of null or undefined: JavaScript's TypeError, typed as the read's result. */
+template <typename T> [[nodiscard]] T absent_receiver_read(const char* message) {
+    throw NamedError("TypeError", message);
+}
+
 /**
  * Whether a `?` property that also admits null is own: it is while its storage holds a value.
  * Empty storage is either an absent property or a stored null, which nothing records.
