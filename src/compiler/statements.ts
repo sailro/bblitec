@@ -395,17 +395,33 @@ interface JumpLabel {
 }
 
 /**
- * A construct being emitted that a break, continue or bare return binds, on
- * the one stack every such jump lowers against. A jump resolves to the
- * construct the language binds it to (`jumpBinding`); the entries above that
- * construct's are the ones it crosses. It lowers as a native C++ jump when no
- * crossed construct is itself a C++ breakable, as a goto to a label after a
- * construct, or, for a loop being unrolled, as the end of an iteration that
- * generation settles.
+ * A cleanup that suspends (`emitSuspendingCleanup`): a native return or a
+ * break or continue leaving it completes through it, by an exception its
+ * handler turns back into that completion once the cleanup has run.
+ */
+interface CleanupRegion {
+    readonly returns: boolean;
+    readonly jumps: Set<ts.BreakStatement | ts.ContinueStatement>;
+}
+
+/**
+ * A construct being emitted that a break, continue or bare return binds or
+ * crosses, on the one stack every such jump lowers against. A jump resolves
+ * to the construct the language binds it to (`jumpBinding`); the entries
+ * above that construct's are the ones it crosses. Crossing a suspending
+ * cleanup, it completes through the cleanup. Otherwise it lowers as a native
+ * C++ jump when no crossed construct is itself a C++ breakable, as a goto to
+ * a label after a construct, or, for a loop being unrolled, as the end of an
+ * iteration that generation settles.
  */
 interface JumpTarget {
-    /** A loop, a switch, a labeled statement or an inlined function. */
+    /**
+     * A loop, a switch, a labeled statement or an inlined function, or the
+     * statement a suspending cleanup belongs to.
+     */
     readonly node: ts.Node;
+    /** A suspending cleanup, which no jump binds. */
+    readonly cleanup: CleanupRegion | undefined;
     /** A `do {} while (false)` stands for it: a native break leaves it. */
     readonly breakable: boolean;
     /** The label after it that a jump leaving it goes to. */
@@ -433,6 +449,7 @@ function jumpTarget(
 ): JumpTarget {
     return {
         node,
+        cleanup: fields.cleanup,
         breakable: fields.breakable ?? false,
         exit: fields.exit,
         continueAfter: fields.continueAfter,
@@ -479,61 +496,28 @@ function labeledBody(statement: ts.LabeledStatement): ts.Statement {
 }
 
 export class StatementLowerer {
-    private readonly cleanupRegions = emissionArray<{
-        node: ts.Node;
-        returns: boolean;
-        jumps: Set<ts.BreakStatement | ts.ContinueStatement>;
-    }>();
-
+    /**
+     * Whether a native return leaves a suspending cleanup of its own
+     * function, which then completes it; the innermost one is told.
+     */
     public needsReturnCompletion(statement: ts.ReturnStatement): boolean {
-        const owner = ts.findAncestor(statement, ts.isFunctionLike);
-        for (let index = this.cleanupRegions.length - 1; index >= 0; index--) {
-            const region = this.cleanupRegions[index]!;
-            if (ts.findAncestor(region.node, ts.isFunctionLike) !== owner)
-                continue;
-            writable(region).returns = true;
-            return true;
-        }
-        return false;
+        const region = this.innermostCleanup(
+            ts.findAncestor(statement, ts.isFunctionLike),
+        );
+        if (region) writable(region).returns = true;
+        return region !== undefined;
     }
 
-    private completeCleanupJump(
-        context: StatementLoweringContext,
-        statement: ts.BreakStatement | ts.ContinueStatement,
-    ): boolean {
-        const region = this.cleanupRegions.at(-1);
-        if (!region) return false;
-        for (
-            let current: ts.Node | undefined = statement.parent;
-            current;
-            current = current.parent
-        ) {
-            if (ts.isFunctionLike(current)) return false;
-            if (current === region.node) {
-                if (!statement.label && ts.isIterationStatement(current, false))
-                    return false;
-                region.jumps.add(statement);
-                context.emit({
-                    kind: "control",
-                    code: `throw bbl::js::LoopCompletion(${statement.pos + 1}u);`,
-                    transfer: "throw",
-                });
-                return true;
-            }
-            if (statement.label) {
-                if (
-                    ts.isLabeledStatement(current) &&
-                    current.label.text === statement.label.text
-                )
-                    return false;
-            } else if (
-                ts.isIterationStatement(current, false) ||
-                (ts.isBreakStatement(statement) &&
-                    ts.isSwitchStatement(current))
-            )
-                return false;
+    /** The innermost suspending cleanup being emitted in `owner`. */
+    private innermostCleanup(
+        owner: ts.Node | undefined,
+    ): CleanupRegion | undefined {
+        for (let index = this.jumpTargets.length - 1; index >= 0; index--) {
+            const { node, cleanup } = this.jumpTargets[index]!;
+            if (cleanup && ts.findAncestor(node, ts.isFunctionLike) === owner)
+                return cleanup;
         }
-        return false;
+        return undefined;
     }
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
     /** Expression statements of a never-typed expression: they throw. */
@@ -635,13 +619,24 @@ export class StatementLowerer {
         }
     }
 
+    /** The index of the innermost entry jumps to `node` bind, or -1. */
+    private bindingIndex(node: ts.Node | undefined): number {
+        let index = this.jumpTargets.length - 1;
+        while (
+            index >= 0 &&
+            (this.jumpTargets[index]!.cleanup ||
+                this.jumpTargets[index]!.node !== node)
+        )
+            index--;
+        return index;
+    }
+
     /** The innermost entry of a construct being emitted. */
     private targetOf(node: ts.Node): JumpTarget {
-        for (let index = this.jumpTargets.length - 1; index >= 0; index--) {
-            const target = this.jumpTargets[index]!;
-            if (target.node === node) return target;
-        }
-        throw new Error("A construct is lowered outside its jump target.");
+        const target = this.jumpTargets[this.bindingIndex(node)];
+        if (!target)
+            throw new Error("A construct is lowered outside its jump target.");
+        return target;
     }
 
     /** Whether a loop's iteration is being emitted statically. */
@@ -677,7 +672,10 @@ export class StatementLowerer {
 
     /**
      * A break, continue or bare return, lowered against the construct it
-     * binds; false for a return of a function no inlined body emits.
+     * binds; false for a return of a function no inlined body emits. A break
+     * or continue leaving a suspending cleanup -- not the loop that cleanup
+     * belongs to, which it stays inside -- completes through the innermost
+     * one it leaves, which lowers it again after the cleanup has run.
      */
     private jump(
         context: StatementLoweringContext,
@@ -685,8 +683,7 @@ export class StatementLowerer {
             ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
     ): boolean {
         const binding = jumpBinding(statement);
-        let index = this.jumpTargets.length - 1;
-        while (index >= 0 && this.jumpTargets[index]!.node !== binding) index--;
+        const index = this.bindingIndex(binding);
         if (index < 0) {
             if (ts.isReturnStatement(statement)) return false;
             context.fail(
@@ -699,7 +696,8 @@ export class StatementLowerer {
             );
         }
         const target = this.jumpTargets[index]!;
-        const crossed = this.jumpTargets.slice(index + 1);
+        const above = this.jumpTargets.slice(index + 1);
+        const crossed = above.filter((entry) => !entry.cleanup);
         if (ts.isReturnStatement(statement)) {
             // A jump out of an unrolled loop would skip the initialization of
             // its flat iterations.
@@ -709,6 +707,19 @@ export class StatementLowerer {
                     "An early return out of a statically unrolled loop is not lowered.",
                 );
             this.leave(context, statement, target, crossed);
+            return true;
+        }
+        let cleanup: CleanupRegion | undefined;
+        for (const entry of above)
+            if (entry.cleanup && entry.node !== binding)
+                cleanup = entry.cleanup;
+        if (cleanup) {
+            cleanup.jumps.add(statement);
+            context.emit({
+                kind: "control",
+                code: `throw bbl::js::LoopCompletion(${statement.pos + 1}u);`,
+                transfer: "throw",
+            });
             return true;
         }
         const kind = ts.isBreakStatement(statement) ? "break" : "continue";
@@ -1133,8 +1144,7 @@ export class StatementLowerer {
             ts.isBreakStatement(statement) ||
             ts.isContinueStatement(statement)
         ) {
-            if (!this.completeCleanupJump(context, statement))
-                this.jump(context, statement);
+            this.jump(context, statement);
             return;
         }
         // An early bare return of an inlined body leaves it; a native
@@ -2078,32 +2088,29 @@ export class StatementLowerer {
         emitBody: () => void,
         emitCleanup: (pending: string) => void,
     ): void {
-        const region = {
-            node: statement,
+        const region: CleanupRegion = {
             returns: false,
             jumps: new EmissionSet<ts.BreakStatement | ts.ContinueStatement>(),
         };
         const pending = context.allocateTemporaryCppName("cleanup_exception");
-        this.cleanupRegions.push(region);
-        let body: string[];
-        try {
-            body = context.captureEmittedLines(() => {
-                context.emit(`std::exception_ptr ${pending};`);
-                context.emit({ kind: "open", code: "try {" });
-                context.increaseIndent();
-                emitBody();
-                context.decreaseIndent();
-                context.emit(
-                    `} ${context.options.workers ? "catch (const bbl::pal::WorkerTerminated&) { throw; } " : ""}catch (...) { ${pending} = std::current_exception(); }`,
-                );
-                emitCleanup(pending);
-                context.emit(
-                    `if (${pending}) std::rethrow_exception(${pending});`,
-                );
-            });
-        } finally {
-            this.cleanupRegions.pop();
-        }
+        const body = this.withJumpTarget(
+            jumpTarget(statement, { cleanup: region }),
+            () =>
+                context.captureEmittedLines(() => {
+                    context.emit(`std::exception_ptr ${pending};`);
+                    context.emit({ kind: "open", code: "try {" });
+                    context.increaseIndent();
+                    emitBody();
+                    context.decreaseIndent();
+                    context.emit(
+                        `} ${context.options.workers ? "catch (const bbl::pal::WorkerTerminated&) { throw; } " : ""}catch (...) { ${pending} = std::current_exception(); }`,
+                    );
+                    emitCleanup(pending);
+                    context.emit(
+                        `if (${pending}) std::rethrow_exception(${pending});`,
+                    );
+                }),
+        );
         context.emit({
             kind: "open",
             code: region.returns || region.jumps.size ? "try {" : "{",
@@ -2130,12 +2137,10 @@ export class StatementLowerer {
                     : `} catch ([[maybe_unused]] const bbl::js::AsyncReturn<${cpp}>& ${result}) {`,
             );
             context.increaseIndent();
-            const parent = this.cleanupRegions.at(-1);
-            if (
-                parent &&
-                ts.findAncestor(parent.node, ts.isFunctionLike) ===
-                    ts.findAncestor(statement, ts.isFunctionLike)
-            ) {
+            const parent = this.innermostCleanup(
+                ts.findAncestor(statement, ts.isFunctionLike),
+            );
+            if (parent) {
                 writable(parent).returns = true;
                 context.emit("throw;");
             } else
