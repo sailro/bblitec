@@ -54,6 +54,7 @@ import {
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
+import { recordCopyObservation } from "./record-observations.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
@@ -699,6 +700,9 @@ export function tupleComponents(
     );
 }
 
+/** Record types a shared layout can redirect: object types and their intersections. */
+const RECORD_TYPE_FLAGS = ts.TypeFlags.Object | ts.TypeFlags.Intersection;
+
 /** Stored callback fields and collection entries preserve function identity. */
 function markIdentityFunctions(dataType: DataType): DataType {
     switch (dataType.kind) {
@@ -1040,10 +1044,13 @@ export class DataTypeRegistry {
     private readonly proxyRecords = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
-    private readonly unionRecordLayouts = new EmissionMap<
+    /** Record types whose records are constructed in another type's layout. */
+    private readonly sharedRecordLayouts = new EmissionMap<
         NativeRecordStorageDemand["identity"],
-        ts.UnionType
+        ts.Type
     >();
+    /** Layout types being resolved, so a cycle of shared layouts maps once. */
+    private readonly resolvingLayouts = new EmissionSet<ts.Type>();
 
     /** Register stronger layout demands before any nested record is mapped. */
     public prepareRecordLayouts(
@@ -1051,10 +1058,10 @@ export class DataTypeRegistry {
     ): void {
         for (const demand of demands)
             this.withRecordDemand(demand, () => {
-                if (demand.unionStorage)
-                    this.unionRecordLayouts.set(
+                if (demand.layout)
+                    this.sharedRecordLayouts.set(
                         this.structIdentity(demand.type),
-                        demand.unionStorage,
+                        demand.layout,
                     );
                 if (demand.proxy)
                     this.proxyRecords.add(this.structIdentity(demand.type));
@@ -1344,13 +1351,20 @@ export class DataTypeRegistry {
     /** Map a checker type and retain its source for a later ownership demand. */
     public fromTsType(type: ts.Type, node: ts.Node): DataType | undefined {
         if (
-            this.unionRecordLayouts.size &&
-            (type.flags & ts.TypeFlags.Object) !== 0
+            this.sharedRecordLayouts.size &&
+            (type.flags & RECORD_TYPE_FLAGS) !== 0
         ) {
-            const layout = this.unionRecordLayouts.get(
+            const layout = this.sharedRecordLayouts.get(
                 this.structIdentity(type),
             );
-            if (layout) return this.fromTsType(layout, node);
+            if (layout && !this.resolvingLayouts.has(layout)) {
+                this.resolvingLayouts.add(layout);
+                try {
+                    return this.fromTsType(layout, node);
+                } finally {
+                    this.resolvingLayouts.delete(layout);
+                }
+            }
         }
         const mapped = this.mapTsType(type, node);
         if (
@@ -1369,48 +1383,155 @@ export class DataTypeRegistry {
         return mapped;
     }
 
-    /** A union view must share the arm's original storage, including its fields. */
-    public requireRecordUnionStorage(
+    /**
+     * A record the program may still reach, stored as another record type.
+     * JavaScript keeps one object under both types. A native copy is kept
+     * only where nothing in the program can tell it from that object
+     * (`recordCopyObservation`); otherwise the record stays one object:
+     * either the source type's records are constructed in the target's
+     * layout (a union, or a record type declaring every source field and
+     * leaving its other fields optional), or the target is a view whose
+     * records are constructed in the source's layout (it declares only
+     * source fields). Returns when the copy is unobservable; otherwise
+     * throws the layout demand or refuses. Records read out of a shared
+     * array (`sharedArray`) are never copied: a copy needs a second array.
+     * A copy handed to a call as `argument` needs only the call's writes.
+     */
+    public storeRecordAs(
         sourceType: DataType<"struct">,
         targetType: DataType<"struct">,
         node: ts.Node,
+        sources: readonly ts.SourceFile[],
+        {
+            sharedArray = false,
+            argument,
+        }: { sharedArray?: boolean; argument?: ts.Node | undefined } = {},
     ): void {
-        const target = this.nativeRecordSources.get(targetType.name);
-        if (!target?.type.isUnion()) return;
         const source = this.nativeRecordSources.get(sourceType.name);
-        if (source?.type.isUnion())
+        const target = this.nativeRecordSources.get(targetType.name);
+        const union = target?.type.isUnion() === true;
+        if (union && source?.type.isUnion())
             this.fail(
                 node,
-                "A retained record has conflicting union storage layouts.",
+                "A retained record has conflicting shared storage layouts.",
             );
-        const fields = this.structFields(targetType.name, node, "accessors");
-        if (
-            source &&
+        const sourceFields = this.structFields(
+            sourceType.name,
+            node,
+            "accessors",
+        );
+        const targetFields = this.structFields(
+            targetType.name,
+            node,
+            "accessors",
+        );
+        // A union view of a stored record always shares its layout.
+        const observed =
+            !source || !target
+                ? "its record types have no checked source"
+                : sharedArray
+                  ? "the array holding them is one shared array"
+                  : union && this.isReferenceStruct(sourceType.name)
+                    ? "a union view shares its arm's storage"
+                    : recordCopyObservation(
+                          this.checker,
+                          sources,
+                          source.type,
+                          target.type,
+                          targetFields.map((field) => field.sourceName),
+                          sourceFields.some(
+                              (field) =>
+                                  !targetFields.some(
+                                      (candidate) =>
+                                          candidate.sourceName ===
+                                          field.sourceName,
+                                  ),
+                          ),
+                          argument,
+                      );
+        if (observed === undefined) return;
+        // Every field of `fields` has storage of the same kind in `layout`.
+        const fits = (
+            fields: readonly DataStructField[],
+            layout: readonly DataStructField[],
+        ): boolean =>
+            fields.every((field) => {
+                const held = layout.find(
+                    (candidate) => candidate.sourceName === field.sourceName,
+                );
+                return (
+                    held !== undefined &&
+                    !field.accessor &&
+                    !held.accessor &&
+                    this.sharedUnionFieldStorage(field.type, held.type)
+                );
+            });
+        const plain =
+            source !== undefined &&
+            target !== undefined &&
             !source.frames.length &&
             !target.frames.length &&
-            (source.type.flags & ts.TypeFlags.Object) !== 0 &&
-            this.structFields(sourceType.name, node, "accessors").every(
-                (field) => {
-                    const target = fields.find(
-                        (target) => target.sourceName === field.sourceName,
-                    );
-                    return (
-                        target &&
-                        !field.accessor &&
-                        !target.accessor &&
-                        this.sharedUnionFieldStorage(field.type, target.type)
-                    );
-                },
+            (source.type.flags & RECORD_TYPE_FLAGS) !== 0 &&
+            !this.isClassStruct(sourceType.name) &&
+            !this.isClassStruct(targetType.name);
+        const demand = (
+            owner: NativeRecordStorageDemand,
+            layout: ts.Type,
+        ): never => {
+            // A replay that still converts this type was not redirected:
+            // another source type shares its storage.
+            if (this.sharedRecordLayouts.has(this.structIdentity(owner.type)))
+                this.fail(
+                    node,
+                    `Record type '${this.checker.typeToString(owner.type)}' shares its storage with another type that keeps a separate layout.`,
+                );
+            throw new NativeRecordStorageRequired({ ...owner, layout });
+        };
+        if (plain && fits(sourceFields, targetFields)) {
+            const absent = targetFields.filter(
+                (field) =>
+                    !sourceFields.some(
+                        (candidate) =>
+                            candidate.sourceName === field.sourceName,
+                    ),
+            );
+            if (
+                union ||
+                absent.every(
+                    (field) =>
+                        field.defaultWhenMissing ||
+                        field.type.kind === "optional",
+                )
             )
+                demand(source, target.type);
+        }
+        if (union)
+            this.fail(
+                node,
+                "A retained record union requires one shared layout preserving its original fields and storage kinds.",
+            );
+        if (
+            plain &&
+            (target.type.flags & RECORD_TYPE_FLAGS) !== 0 &&
+            fits(targetFields, sourceFields)
         )
-            throw new NativeRecordStorageRequired({
-                ...source,
-                unionStorage: target.type,
-            });
-        this.fail(
+            demand(target, source.type);
+        return this.fail(
             node,
-            "A retained record union requires one shared layout preserving its original fields and storage kinds.",
+            `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
         );
+    }
+
+    /** Why records of the type a literal is checked against take another type's layout. */
+    public sharedLayoutNote(node: ts.Node): string {
+        if (!this.sharedRecordLayouts.size || !ts.isExpression(node)) return "";
+        const type =
+            this.checker.getContextualType(node) ??
+            this.checker.getTypeAtLocation(node);
+        const layout = this.sharedRecordLayouts.get(this.structIdentity(type));
+        return layout
+            ? ` '${this.checker.typeToString(type)}' records share the '${this.checker.typeToString(layout)}' layout, since a record converted between the two types stays one object.`
+            : "";
     }
 
     private sharedUnionFieldStorage(

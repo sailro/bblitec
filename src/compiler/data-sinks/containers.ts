@@ -3,6 +3,11 @@ import ts from "typescript";
 import { dataTypesEqual, doubleLiteral, type DataType } from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
 
+import {
+    yieldsFreshObject,
+    yieldsFreshRecordElements,
+} from "../fresh-records.js";
+import { unwrapExpression } from "../syntax.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function expressionOptional(
@@ -189,8 +194,33 @@ function valueVector(
         const result =
             lowerer.context.allocateTemporaryCppName("project_result");
         const destinationCpp = lowerer.context.dataTypes.cppType(dataType);
+        // Elements of a fresh array are records nothing else reaches.
+        const own = ts.isExpression(node)
+            ? lowerer.dataTypeAt(node)
+            : undefined;
+        const freshElements =
+            own?.kind === "vector" &&
+            dataTypesEqual(own.element, value.dataType.element) &&
+            yieldsFreshRecordElements(lowerer.context.checker, node);
+        // The projection is a second array. JavaScript keeps one, so the
+        // records of an array the program still holds share one layout.
+        if (
+            !freshElements &&
+            value.dataType.element.kind === "struct" &&
+            !(ts.isExpression(node) && yieldsFreshArray(lowerer, node))
+        )
+            lowerer.context.dataTypes.storeRecordAs(
+                value.dataType.element,
+                dataType.element,
+                node,
+                lowerer.context.program.getSourceFiles(),
+                { sharedArray: true },
+            );
         const projected = lowerer.compileKnownValueForSink(
-            lowerer.leafValue(item, value.dataType.element),
+            {
+                ...lowerer.leafValue(item, value.dataType.element),
+                ...(freshElements ? { freshRecord: true as const } : {}),
+            },
             dataType.element,
             node,
         );
@@ -204,6 +234,47 @@ function valueVector(
         );
     }
     return undefined;
+}
+
+/** Methods and statics that return a new array of the receiver's elements. */
+const ARRAY_COPIES = new Set([
+    "concat",
+    "filter",
+    "flat",
+    "flatMap",
+    "map",
+    "slice",
+    "toReversed",
+    "toSorted",
+    "toSpliced",
+    "with",
+    "from",
+    "of",
+    "values",
+]);
+
+/** Whether an array expression evaluates to an array no other reference holds. */
+function yieldsFreshArray(
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+): boolean {
+    const unwrapped = unwrapExpression(expression);
+    return (
+        yieldsFreshObject(lowerer.context.checker, unwrapped) ||
+        (ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            ARRAY_COPIES.has(unwrapped.expression.name.text) &&
+            (lowerer.context.checker.isArrayLikeType(
+                lowerer.context.checker.getTypeAtLocation(
+                    unwrapped.expression.expression,
+                ),
+            ) ||
+                ["Array", "Object"].includes(
+                    lowerer.context.libraryGlobal(
+                        unwrapped.expression.expression,
+                    ) ?? "",
+                )))
+    );
 }
 
 function valueMap(

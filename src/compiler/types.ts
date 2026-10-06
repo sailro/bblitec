@@ -2137,6 +2137,8 @@ export interface ValueFields {
     nativeCollectionCppType?: string;
     /** The expression creates an owning data container at this read. */
     freshData?: true;
+    /** A record no other reference holds, such as an element of a fresh array. */
+    freshRecord?: true;
     dataStore?: TypedArrayKind | "numberindex";
     /**
      * A typed-array element's store through a slot that does not own the

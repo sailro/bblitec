@@ -17,7 +17,12 @@ import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
+import {
+    yieldsFreshObject,
+    yieldsFreshRecordElements,
+} from "../fresh-records.js";
 import { homeObjectReceiver, readsHomeObject } from "../home-object-methods.js";
+import { returnedRecordLocal } from "../record-observations.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -428,7 +433,7 @@ function valueStruct(
                         ? "std::nullopt"
                         : lowerer.context.fail(
                               node,
-                              `Compile-time record is missing required field '${field.sourceName}'.`,
+                              `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
                           );
                 return lowerer.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -449,11 +454,17 @@ function valueStruct(
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const sourceType = value.dataType;
-        if (lowerer.context.dataTypes.isReferenceStruct(sourceType.name))
-            lowerer.context.dataTypes.requireRecordUnionStorage(
+        // JavaScript stores the same object under the other type. A record
+        // nothing else reaches, or one whose copy nothing can tell apart, is
+        // copied; any other source shares one layout with the target or
+        // refuses.
+        if (!unreachedRecordValue(lowerer, value, node))
+            lowerer.context.dataTypes.storeRecordAs(
                 sourceType,
                 dataType,
                 node,
+                lowerer.context.program.getSourceFiles(),
+                { argument: recordExpression(lowerer, value, node) },
             );
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
@@ -557,6 +568,70 @@ function valueStruct(
             : aggregate;
     }
     return undefined;
+}
+
+/**
+ * A struct value whose copy nothing else can observe: one no other reference
+ * holds (an element of a fresh array, a fresh record, a callback's fresh
+ * result), or a returned local that is the last reference to its record.
+ */
+function unreachedRecordValue(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): boolean {
+    if (value.freshRecord) return true;
+    if (!ts.isExpression(node) || value.dataType?.kind !== "struct")
+        return false;
+    const name = value.dataType.name;
+    const checker = lowerer.context.checker;
+    // The node must yield the value: its own expression, a callback
+    // returning it, or a fresh array holding it -- not an enclosing literal
+    // or a record whose field is being converted.
+    const yields = (expression: ts.Expression): boolean => {
+        const own = lowerer.dataTypeAt(expression);
+        const record = own?.kind === "optional" ? own.inner : own;
+        return record?.kind === "struct" && record.name === name;
+    };
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+        const returned = ts.isBlock(node.body)
+            ? node.body.statements.find(ts.isReturnStatement)?.expression
+            : node.body;
+        return (
+            returned !== undefined &&
+            yields(returned) &&
+            yieldsFreshObject(checker, node)
+        );
+    }
+    const own = lowerer.dataTypeAt(node);
+    if (own?.kind === "vector")
+        return (
+            own.element.kind === "struct" &&
+            own.element.name === name &&
+            yieldsFreshRecordElements(checker, node)
+        );
+    return (
+        yields(node) &&
+        (yieldsFreshObject(checker, node) ||
+            returnedRecordLocal(checker, node, (initializer) =>
+                yieldsFreshObject(checker, initializer),
+            ))
+    );
+}
+
+/** The expression a converted struct value is the value of, if `node` is it. */
+function recordExpression(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): ts.Expression | undefined {
+    if (!ts.isExpression(node) || value.dataType?.kind !== "struct")
+        return undefined;
+    const own = lowerer.dataTypeAt(node);
+    const record = own?.kind === "optional" ? own.inner : own;
+    return record?.kind === "struct" && record.name === value.dataType.name
+        ? node
+        : undefined;
 }
 
 function accessorGetter(

@@ -624,7 +624,7 @@ function compileSourceApplication(
                 if (
                     previous &&
                     previous.proxy === merged.proxy &&
-                    previous.unionStorage === merged.unionStorage
+                    previous.layout === merged.layout
                 )
                     return false;
                 ownedRecords.set(request.demand.identity, merged);

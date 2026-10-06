@@ -5212,7 +5212,7 @@ check(
     }
     const base = palette();
     const extra: Spec = { id: "b", rgb: [4, 5, 6] };
-    const all: Swatch[] = [...base, { ...extra, swatch: "#b" }];
+    const all: Swatch[] = [...base, { id: extra.id, rgb: extra.rgb, swatch: "#b" }];
     if (all.length !== 2 || all[0]!.swatch !== "#a" || all[0]!.rgb[2] !== 3 || all[1]!.id !== "b") throw new Error("spread records");
     base[0]!.rgb[0] = 9;
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
@@ -6168,3 +6168,64 @@ check(
     if (scales[0]!(1) !== 22 || scales[0]!(1, 3) !== 33 || scales[0]!(1, 3, 1) !== 4) throw new Error("defaulted stored function");
 `,
 );
+
+check(
+    "records-stored-as-another-record-type-stay-one-object",
+    `
+    interface Wide { a: number; b: number }
+    interface Narrow { a: number }
+    const w: Wide = { a: 1, b: 2 };
+    const n: Narrow = w;
+    n.a = 5;
+    if (w.a !== 5 || (n as Wide) !== w) throw new Error("local view");
+    const list: Narrow[] = [];
+    list.push(w);
+    list[0]!.a = 7;
+    if (w.a !== 7 || list[0] !== n) throw new Error("array element view");
+    w.a = 9;
+    if (list[0]!.a !== 9) throw new Error("element reads the wide record");
+    function bump(view: Narrow): void { view.a++; }
+    const stored: Wide[] = [{ a: 3, b: 4 }];
+    bump(stored[0]!);
+    bump(w);
+    if (stored[0]!.a !== 4 || w.a !== 10) throw new Error("parameter view");
+    interface State { count: number; readonly ids: number[]; name: string }
+    interface CountView { readonly count: number; readonly ids: readonly number[] }
+    const contacts = new WeakMap<CountView, string>();
+    function remember(view: CountView, label: string): void { contacts.set(view, label); }
+    function recall(view: CountView): string { return contacts.get(view) ?? "none"; }
+    const state: State = { count: 2, ids: [1, 2], name: "s" };
+    remember(state, "kept");
+    state.count = 3;
+    if (recall(state) !== "kept") throw new Error("keyed view identity");
+    interface Point { readonly x: number; readonly y: number }
+    interface Labelled { readonly x: number; readonly y: number; readonly label: string }
+    function length(point: Point): number { return Math.hypot(point.x, point.y); }
+    const labelled: Labelled[] = [{ x: 3, y: 4, label: "p" }];
+    if (length(labelled[0]!) !== 5) throw new Error("unobservable copy");
+`,
+);
+
+test("record conversions refuse what neither a copy nor a shared layout holds", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface S { a: number; extra: number }
+            interface T { a: number; note?: string }
+            const s: S = { a: 1, extra: 2 };
+            const t: T = s;
+            const seen = new Set<T>([t]);
+            const unused = seen.has(t);`),
+        /'S' record stored as 'T' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`interface Wide { a: number; b: number }
+            interface Narrow { a: number }
+            const w: Wide = { a: 1, b: 2 };
+            const n: Narrow = w;
+            n.a = 2;
+            const other: Narrow = { a: 3 };
+            const unused = w.a + other.a;`),
+        /missing required field 'b'\. 'Narrow' records share the 'Wide' layout/,
+    );
+});
