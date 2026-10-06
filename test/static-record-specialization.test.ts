@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
-import { parameterIsMutated } from "../src/compiler/user-functions.js";
+import { parameterIsMutated } from "../src/compiler/parameter-effects.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,

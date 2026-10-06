@@ -225,9 +225,7 @@ import { HandleCollections } from "./compiler/handle-collections.js";
 import {
     UserFunctionLowerer,
     aliasedMutationScan,
-    callArgumentIsReadOnly,
     isSupportedFunction,
-    parameterIsReadOnly,
     resolveFunctionDeclaration,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
@@ -236,10 +234,14 @@ import {
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
 import {
+    callArgumentIsReadOnly,
+    libraryArgumentIsReadOnly,
+    parameterIsReadOnly,
+} from "./compiler/parameter-effects.js";
+import {
     homeObjectAccessors,
     homeObjectMethods,
 } from "./compiler/home-object-methods.js";
-import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
 import {
     argumentAt,
     bindingNameIdentifiers,

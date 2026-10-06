@@ -37,13 +37,15 @@ import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
     borrowsReferenceParameter,
-    fixedLengthParameterWrites,
     isSupportedFunction,
-    parameterIsReadOnly,
     requiresDefaultParameterBinding,
     resolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
+import {
+    fixedLengthParameterWrites,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,

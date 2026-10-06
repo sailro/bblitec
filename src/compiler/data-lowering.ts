@@ -140,11 +140,13 @@ import {
 } from "./json-bridge.js";
 import {
     callbackMayWriteReceiver,
-    callbackTakesReceiver,
     compileDataMethodCall,
-    readOnlyDataMethods,
 } from "./data-methods.js";
-import { resizingArrayMethods } from "./receiver-methods.js";
+import {
+    callbackTakesReceiver,
+    readOnlyDataMethods,
+    resizingArrayMethods,
+} from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
 import { mappedElement } from "./fresh-records.js";
 import {
