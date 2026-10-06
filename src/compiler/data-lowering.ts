@@ -9901,43 +9901,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
                 return;
             const field = this.compileDataPath(target, "write");
-            if (
-                field?.dataType?.kind === "function" ||
-                (field?.dataType?.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(
-                        field.dataType.name,
-                    ))
-            ) {
+            if (field) {
                 const property = this.context.checker.getPropertyOfType(
                     this.context.checker.getTypeAtLocation(target.expression),
                     target.name.text,
                 );
-                if (
-                    property &&
-                    (property.flags & ts.SymbolFlags.Optional) !== 0
-                ) {
-                    this.context.emit({
-                        kind: "expression",
-                        code: `${field.cpp} = {};`,
-                    });
-                    this.invalidateStaticElements(field);
-                    return;
-                }
-            }
-            if (field?.kind === "data" && field.dataType?.kind === "optional") {
-                this.context.reachJsData();
-                this.context.emit({
-                    kind: "expression",
-                    code: `${field.cpp} = std::nullopt;`,
-                });
-                this.invalidateStaticElements(field);
-                return;
-            }
-            if (field) {
-                this.context.fail(
+                this.deleteSlot(
+                    field,
+                    property !== undefined &&
+                        (property.flags & ts.SymbolFlags.Optional) !== 0,
+                    target.name.text,
                     target,
-                    `'${target.name.text}' is a required field of its type; only an optional field can be deleted.`,
                 );
+                return;
             }
         }
         this.context.fail(
@@ -9954,27 +9930,49 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         node: ts.Node,
     ): void {
         const field = this.context.dataTypes.structField(type.name, key, node);
-        const slot = `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`;
-        if (field.type.kind === "optional") {
-            this.context.reachJsData();
-            this.context.emit({
-                kind: "expression",
-                code: `${slot} = std::nullopt;`,
-            });
-        } else if (
-            field.optionalProperty &&
-            (field.type.kind === "function" ||
-                (field.type.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(field.type.name)))
+        this.deleteSlot(
+            this.leafValue(
+                `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`,
+                field.type,
+            ),
+            field.optionalProperty === true,
+            key,
+            node,
+        );
+        this.context.bindings.invalidateRecordProperties(owner);
+    }
+
+    /**
+     * Empties the slot of a deleted property, which is then absent: optional
+     * storage empties, and a `?` property's shared object or function becomes
+     * its null. Storage with no absent state for the property refuses.
+     */
+    private deleteSlot(
+        slot: Value,
+        optionalProperty: boolean,
+        key: string,
+        node: ts.Node,
+    ): void {
+        const type = slot.dataType;
+        if (
+            type?.kind !== "optional" &&
+            !(
+                optionalProperty &&
+                (type?.kind === "function" ||
+                    (type?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(type.name)))
+            )
         )
-            this.context.emit({ kind: "expression", code: `${slot} = {};` });
-        else
-            this.context.fail(
+            return this.context.fail(
                 node,
                 `'${key}' is a required field of its type; only an optional field can be deleted.`,
             );
-        this.invalidateStaticElements(this.leafValue(slot, field.type));
-        this.context.bindings.invalidateRecordProperties(owner);
+        if (type.kind === "optional") this.context.reachJsData();
+        this.context.emit({
+            kind: "expression",
+            code: `${slot.cpp} = ${this.context.dataTypes.absentValue(type)};`,
+        });
+        this.invalidateStaticElements(slot);
     }
 
     /** `key in object` as a condition. */
