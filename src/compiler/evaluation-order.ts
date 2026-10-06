@@ -54,6 +54,12 @@ interface Storage {
     any: boolean;
     /** Properties and elements of objects that existed before the evaluation. */
     heap: boolean;
+    /**
+     * Part of `heap`: an object that may be an array or typed array -- its
+     * type admits one (`mayHoldArray`) -- through a property, an element or
+     * a mutating method.
+     */
+    arrays: boolean;
     /** Variables by symbol, and the state behind `Math.random`. */
     variables: Set<ts.Symbol | typeof randomState>;
 }
@@ -112,7 +118,7 @@ const argumentAnsweringGlobals = new Set([
 ]);
 
 function emptyStorage(): Storage {
-    return { any: false, heap: false, variables: new Set() };
+    return { any: false, heap: false, arrays: false, variables: new Set() };
 }
 
 function touchesAnything(storage: Storage): boolean {
@@ -137,6 +143,7 @@ function touchEverything(access: Access): void {
 function merge(into: Storage, from: Storage): void {
     into.any ||= from.any;
     into.heap ||= from.heap;
+    into.arrays ||= from.arrays;
     from.variables.forEach((variable) => into.variables.add(variable));
 }
 
@@ -201,6 +208,8 @@ export class EvaluationOrder {
     private readonly moduleEffects = new WeakMap<ts.Node, boolean>();
     /** @unjournaled Different initializers share the effects of their checked callees. */
     private readonly moduleUnitEffects = new WeakMap<Unit, boolean>();
+    /** @unjournaled The library's `any[]` (`mayHoldArray`), null without one. */
+    private anyArray: ts.Type | null | undefined;
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -239,10 +248,12 @@ export class EvaluationOrder {
     }
 
     /**
-     * Whether calling the function `callback` denotes can write object state
-     * or `variable`: a function literal or a named function answers from its
+     * Whether calling the function `callback` denotes can write an array or
+     * `variable`: a function literal or a named function answers from its
      * body and everything it reaches, a function of the language's library
-     * writes neither, and any other function value may write anything.
+     * writes neither, and any other function value may write anything. A
+     * write to an object no array can be (a record's field, a Map) is no
+     * array's.
      */
     public callbackMayWrite(
         callback: ts.Expression,
@@ -261,7 +272,7 @@ export class EvaluationOrder {
         const writes = this.summary(unit).writes;
         return (
             writes.any ||
-            writes.heap ||
+            writes.arrays ||
             (variable !== undefined && writes.variables.has(variable))
         );
     }
@@ -940,13 +951,15 @@ export class EvaluationOrder {
             else access.writes.any = true;
             return;
         }
-        if (
+        const member =
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
-        ) {
+                ? node
+                : undefined;
+        if (member) {
             const setter = resolvedSymbol(
                 this.checker,
-                node,
+                member,
             )?.declarations?.find(
                 (declaration): declaration is ts.SetAccessorDeclaration =>
                     ts.isSetAccessorDeclaration(declaration) &&
@@ -954,7 +967,70 @@ export class EvaluationOrder {
             );
             if (setter) this.runs(access, setter);
         }
-        if (!this.isFresh(node, unit)) access.writes.heap = true;
+        if (this.isFresh(node, unit)) return;
+        access.writes.heap = true;
+        if (
+            !member ||
+            this.mayHoldArray(this.checker.getTypeAtLocation(member.expression))
+        )
+            access.writes.arrays = true;
+    }
+
+    /**
+     * Whether an object of `type` may be an array or a typed array: one of
+     * those, `any`, `unknown`, `object`, a type parameter whose constraint
+     * admits one, or another type an array can be assigned to
+     * (`{ length: number }`, `Iterable<T>`).
+     */
+    private mayHoldArray(type: ts.Type): boolean {
+        if (
+            type.flags &
+            (ts.TypeFlags.Any |
+                ts.TypeFlags.Unknown |
+                ts.TypeFlags.NonPrimitive)
+        )
+            return true;
+        if (type.flags & ts.TypeFlags.InstantiableNonPrimitive) {
+            // A class's `this` is a type parameter constrained by the class.
+            const constraint = this.checker.getBaseConstraintOfType(type);
+            return (
+                !constraint ||
+                constraint === type ||
+                this.mayHoldArray(constraint)
+            );
+        }
+        if (type.isUnionOrIntersection())
+            return type.types.some((member) => this.mayHoldArray(member));
+        if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+        const name = type.getSymbol()?.name;
+        if (
+            this.checker.isArrayLikeType(type) ||
+            (name !== undefined && TYPED_ARRAY_KINDS.has(name))
+        )
+            return true;
+        this.anyArray ??= this.libraryAnyArray() ?? null;
+        return (
+            this.anyArray === null ||
+            this.checker.isTypeAssignableTo(this.anyArray, type)
+        );
+    }
+
+    /** `any[]`, the type `Array.isArray` asserts, from the language's library. */
+    private libraryAnyArray(): ts.Type | undefined {
+        const array = this.checker.resolveName(
+            "Array",
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        );
+        const isArray =
+            array && this.checker.getTypeOfSymbol(array).getProperty("isArray");
+        const signature =
+            isArray &&
+            this.checker.getTypeOfSymbol(isArray).getCallSignatures()[0];
+        return (
+            signature && this.checker.getTypePredicateOfSignature(signature)
+        )?.type;
     }
 
     /** Record that `access` runs an accessor, or anything when an override may run instead. */
@@ -1026,6 +1102,7 @@ export class EvaluationOrder {
         const asScene = (storage: Storage): Storage => ({
             any: storage.any,
             heap: storage.heap || storage.variables.size > 0,
+            arrays: storage.arrays,
             variables: new Set(),
         });
         return {
@@ -1052,8 +1129,15 @@ export class EvaluationOrder {
             !this.isFresh(callee.expression, unit)
         ) {
             access.reads.heap = true;
-            if (receiverWritingMethods.has(callee.name.text))
+            if (receiverWritingMethods.has(callee.name.text)) {
                 access.writes.heap = true;
+                if (
+                    this.mayHoldArray(
+                        this.checker.getTypeAtLocation(callee.expression),
+                    )
+                )
+                    access.writes.arrays = true;
+            }
         }
         for (const argument of call.arguments ?? []) {
             const expression = unwrapExpression(argument);

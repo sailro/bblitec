@@ -4,7 +4,7 @@ import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
-import type { DataType } from "./data-types.js";
+import type { DataType, OwnPresence } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
@@ -93,18 +93,17 @@ function stringCpp(
 
 /**
  * One own property of a compile-time record or a struct: its key, its
- * value and, for a key whose storage decides whether it is own, the
- * run-time test that it is; the value of such a key is the one it holds
- * while it is own.
+ * value and, for a key whose storage or tags decide whether it is own, its
+ * presence; the value of such a key is the one it holds while it is own.
  */
 export interface OwnEntry {
     key: string;
     value: Value;
-    presentCpp?: string;
+    presence?: OwnPresence;
     /**
-     * The storage whose engagement `presentCpp` is exactly, when it is: a
-     * key a compile-time record can hold as a member own while its storage
-     * holds a value (`Value.conditionalOwnKey`).
+     * The slot of a key own exactly while it holds a value: a member a
+     * compile-time record holds as a conditionally own key
+     * (`Value.conditionalOwnKey`).
      */
     slot?: Value;
 }
@@ -146,9 +145,9 @@ export function structOwnEntries(
             `${slot}${field.accessor ? ".get()" : ""}`,
             field.type,
         );
-        const presentCpp = owner.recordOwnKeys
+        const presence = owner.recordOwnKeys
             ? undefined
-            : context.dataTypes.ownPropertyPresentCpp(
+            : context.dataTypes.ownPresence(
                   dataType.name,
                   field,
                   owner.cpp,
@@ -158,19 +157,10 @@ export function structOwnEntries(
         const original = owner.recordProperties?.[key];
         // A key own by tags alone may hold an empty slot while own.
         const definitelyPresent =
-            (presentCpp !== undefined &&
-                context.dataTypes.ownPresenceHoldsValue(
-                    dataType.name,
-                    field,
-                )) ||
+            (presence !== undefined && presence.holdsValueCpp === undefined) ||
             (original &&
                 original.kind !== "json-null" &&
                 original.dataType?.kind !== "optional");
-        const stored =
-            presentCpp !== undefined &&
-            !field.accessorReceiver &&
-            context.dataTypes.ownPropertyPresence(dataType.name, field) ===
-                "stored";
         return {
             key,
             value: {
@@ -184,8 +174,8 @@ export function structOwnEntries(
                     : value),
                 nativeCaptures: owner.nativeCaptures ?? [],
             },
-            ...(presentCpp ? { presentCpp } : {}),
-            ...(stored
+            ...(presence ? { presence } : {}),
+            ...(presence?.emptySlot === "absent"
                 ? {
                       slot: {
                           ...value,
@@ -281,7 +271,7 @@ export function ownArray(
     const element = resultType.element;
     const pushes: string[] = [];
     const emitted = context.captureEmittedLines(() => {
-        for (const { key, value, presentCpp } of entries) {
+        for (const { key, value, presence } of entries) {
             const keyValue = staticStringValue(key, (text) =>
                 context.cppString(text),
             );
@@ -296,7 +286,7 @@ export function ownArray(
                             tupleElements: [keyValue, value],
                         };
             const push = `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
-            pushes.push(presentCpp ? `if (${presentCpp}) ${push}` : push);
+            pushes.push(presence ? `if (${presence.ownCpp}) ${push}` : push);
         }
     });
     if (emitted.length > 0)
@@ -325,7 +315,7 @@ function fixedOwnEntries(
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
     const entries = ownEntries(context, owner, node);
-    if (entries?.some((entry) => entry.presentCpp !== undefined))
+    if (entries?.some((entry) => entry.presence !== undefined))
         context.fail(
             node,
             owner.kind === "record"

@@ -1003,8 +1003,6 @@ export interface UserFunctionContext
             | "enterRuntimeControlFlow"
             | "leaveRuntimeControlFlow"
             | "emitNativeCallbackStorage"
-            | "beginInlineFrame"
-            | "endInlineFrame"
             | "emitInlinedBody"
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
@@ -5014,17 +5012,11 @@ export class UserFunctionLowerer {
                 : ir.needsLocalNative && !ir.returnExpression
                   ? "label"
                   : undefined;
-            context.beginInlineFrame();
-            let terminated = false;
-            try {
-                const emitBody = (): boolean =>
-                    emitReachableStatements(context, ir.statements);
-                terminated = returns
-                    ? context.emitInlinedBody(ir.declaration, returns, emitBody)
-                    : emitBody();
-            } finally {
-                context.endInlineFrame();
-            }
+            const terminated = context.emitInlinedBody(
+                ir.declaration,
+                returns,
+                () => emitReachableStatements(context, ir.statements),
+            );
             if (terminated || !ir.returnExpression)
                 return {
                     kind: "void",

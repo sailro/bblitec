@@ -2929,7 +2929,11 @@ export class DeclarationLowerer {
             ts.isArrayLiteralExpression(initializer) &&
             !initializer.elements.some(ts.isSpreadElement) &&
             ts.isIdentifier(name) &&
-            isNeverResized(this.context.checker, name)
+            isNeverResized(
+                this.context.checker,
+                name,
+                initializer.elements.length,
+            )
         ) {
             this.context.dataLowerer.registerFixedLength(
                 boundCpp,

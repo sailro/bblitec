@@ -441,12 +441,13 @@ export interface LoweringServices {
         emitBody: () => void,
         byReference?: ClosureBorrowing,
     ): CapturedClosure;
-    beginInlineFrame(): void;
-    endInlineFrame(): void;
-    /** An inlined body whose bare early returns break out of it or jump past it. */
+    /**
+     * An inlined body, in its own return frame, whose bare early returns
+     * break out of it or jump past it; `undefined` when it has none.
+     */
     emitInlinedBody<T>(
         declaration: ts.SignatureDeclaration,
-        returns: "break" | "label",
+        returns: "break" | "label" | undefined,
         emitBody: () => T,
     ): T;
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;

@@ -78,13 +78,21 @@ test("value scans skip type annotations and member names, and stop at the first 
     assert.equal(calls, 1);
 });
 
-test("length facts use binding symbols across shadowed names, writes and escaping arguments", () => {
+test("length facts use binding symbols across shadowed names, writes, aliases and escapes", () => {
     const { checker, sourceFile } = createCompilerProgram(
         `
         function first() { const values = [1, 2]; values[0] = 3; return values.length; }
         function second() { const values = [1, 2]; values.push(3); return values.length; }
         function third() { const values = [1, 2]; values.length = 0; return values.length; }
         function fourth() { const values = [1, 2]; consume({ values }); return values.length; }
+        function fifth() { const values = [1, 2]; const alias = values; alias.push(3); return values.length; }
+        function sixth() { const values = [1, 2]; const sorted = (values.sort() as number[]); const view = sorted; view.pop(); return values.length; }
+        function seventh() { const values = [1, 2]; values[2] = 3; return values.length; }
+        function eighth(index: number) { const values = [1, 2]; values[index] = 3; return values.length; }
+        function ninth() { const values = [1, 2]; const holder = { values }; holder.values.push(3); return values.length; }
+        function tenth() { const values = [1, 2]; return values; }
+        function eleventh() { const values = [1, 2]; let alias: number[] = []; const grow = () => alias.push(3); alias = values; grow(); return values.length; }
+        function twelfth() { const values = [1, 2]; const alias = values; for (const value of alias) void value; return values.length + alias.length; }
         declare function consume(input: { values: number[] }): void;
     `,
         "test/analysis-length.ts",
@@ -96,10 +104,23 @@ test("length facts use binding symbols across shadowed names, writes and escapin
             ts.isIdentifier(node.name) &&
             node.name.text === "values"
         ) {
-            facts.push(isNeverResized(checker, node.name));
+            facts.push(isNeverResized(checker, node.name, 2));
         }
     });
-    assert.deepEqual(facts, [true, false, false, false]);
+    assert.deepEqual(facts, [
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+    ]);
 });
 
 test("mutation analysis follows aliases and callees without confusing shadowed parameters", () => {

@@ -16,6 +16,7 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
         children: () => [],
         byReference: false,
         tracedEdges: "never",
+        reseats: true,
     },
     function: {
         cpp: (type, context) =>

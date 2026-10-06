@@ -41,6 +41,7 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
     isUndefinedDataType,
+    reseatsOnAssignment,
     sharesStorageKind,
 } from "./data-types/operations.js";
 import {
@@ -394,6 +395,22 @@ export type StructFieldAccessor = "get" | "get-set";
  * `ambiguous` when type shapes sharing the struct disagree.
  */
 export type OwnPropertyPresence = "own" | "stored" | "nullable" | "ambiguous";
+
+/**
+ * The run-time tests of a key whose storage or record tags decide whether it
+ * is own: `ownCpp` passes while it is. `holdsValueCpp`, set where an own key
+ * may still hold an empty slot (own by its record's tags alone, as a union arm
+ * declaring `x: T | undefined` is), passes while the slot holds a value;
+ * without it, an own key's slot holds its value. `emptySlot` is set where the
+ * slot alone decides: `absent` when `ownCpp` is exactly its engagement, so
+ * the slot carries the presence wherever its value goes, and `ambiguous` when
+ * an empty slot may be null or absent and `ownCpp` refuses on it.
+ */
+export interface OwnPresence {
+    readonly ownCpp: string;
+    readonly holdsValueCpp?: string;
+    readonly emptySlot?: "absent" | "ambiguous";
+}
 
 export function propertyIsReadOnly(property: ts.Symbol): boolean {
     return (property.declarations ?? []).some(
@@ -762,13 +779,8 @@ function storedPresence(
     return admitsNull ? "nullable" : "stored";
 }
 
-/**
- * What an empty native slot of a field holds as a JavaScript value: the
- * absent values its property types admit, `either` when they admit both.
- */
-type FieldAbsence = AbsentValueKind;
-
-function valueAbsence(types: readonly ts.Type[]): FieldAbsence | undefined {
+/** The absent values a field's property types admit. */
+function valueAbsence(types: readonly ts.Type[]): AbsentValueKind | undefined {
     const absent = types.map(nullability);
     return absentValueKind({
         null: absent.some((each) => each.null),
@@ -785,12 +797,13 @@ function valueAbsence(types: readonly ts.Type[]): FieldAbsence | undefined {
 interface FieldPresence {
     readonly presence?: OwnPropertyPresence;
     readonly armPresence?: OwnPropertyPresence;
-    readonly absence?: FieldAbsence;
+    /** What an empty native slot of the field holds as a JavaScript value. */
+    readonly absence?: AbsentValueKind;
 }
 
 function fieldPresence(
     presence: OwnPropertyPresence | undefined,
-    absence: FieldAbsence | undefined,
+    absence: AbsentValueKind | undefined,
     armPresence?: OwnPropertyPresence,
 ): FieldPresence {
     return {
@@ -4300,26 +4313,32 @@ export class DataTypeRegistry {
         );
     }
 
-    /** Whether every field of a struct is always an own key of its records. */
+    /**
+     * Whether every field of a struct is always an own key of its records:
+     * neither its storage nor the record's tags (`ownPresence`) decide it.
+     */
     public ownKeysDecided(structName: string, node: ts.Node): boolean {
         return this.structFields(structName, node, "accessors").every(
-            (field) => this.ownPropertyPresence(structName, field) === "own",
+            (field) =>
+                !this.presenceByTags(structName, field) &&
+                this.ownPropertyPresence(structName, field) === "own",
         );
     }
 
     /**
-     * The run-time test that `field` is an own key of the struct `ownerCpp`
-     * names (read through `access`), or undefined when it always is. A
-     * nullable field's empty storage refuses at run time; an ambiguous field
-     * refuses here, and the read is checked again once every shape is known.
+     * The run-time presence of `field` as an own key of the struct
+     * `ownerCpp` names (read through `access`), or undefined when it always
+     * is one. A nullable field's empty storage refuses at run time; an
+     * ambiguous field refuses here, and the read is checked again once every
+     * shape is known.
      */
-    public ownPropertyPresentCpp(
+    public ownPresence(
         structName: string,
         field: DataStructField,
         ownerCpp: string,
         access: "->" | ".",
         node: ts.Node,
-    ): string | undefined {
+    ): OwnPresence | undefined {
         // A field only some union arms declare is own when the record's
         // tags select one of them, and then as those arms declare it.
         const tags = this.tagPresenceCpp(structName, field, ownerCpp, access);
@@ -4333,8 +4352,15 @@ export class DataTypeRegistry {
                 arms,
                 node,
             });
-        if (presence === "own") return tags;
         const slot = `${ownerCpp}${access}${field.name}`;
+        if (presence === "own") {
+            if (tags === undefined) return undefined;
+            const holdsValueCpp = this.slotPresentCpp(field.type, slot);
+            return {
+                ownCpp: tags,
+                ...(holdsValueCpp ? { holdsValueCpp } : {}),
+            };
+        }
         const held =
             presence === "nullable"
                 ? `bbl::js::held_own_property(${field.accessorReceiver ? `${slot}.has_own()` : slot}, ${stringLiteral(field.sourceName)})`
@@ -4346,26 +4372,15 @@ export class DataTypeRegistry {
                 node,
                 `Own-property presence of '${field.sourceName}' is not represented: its storage has no absent state.`,
             );
-        return tags === undefined ? held : `(${tags}) && ${held}`;
-    }
-
-    /**
-     * Whether `ownPropertyPresentCpp`'s test of `field` passes only while
-     * its storage holds a value. A key own by its record's tags alone is
-     * not: a union arm declaring `x: T | undefined` holds an empty slot
-     * while `x` is own.
-     */
-    public ownPresenceHoldsValue(
-        structName: string,
-        field: DataStructField,
-    ): boolean {
-        return (
-            this.ownPropertyPresence(
-                structName,
-                field,
-                this.presenceByTags(structName, field),
-            ) !== "own"
-        );
+        if (tags !== undefined) return { ownCpp: `(${tags}) && ${held}` };
+        return {
+            ownCpp: held,
+            ...(presence === "nullable"
+                ? { emptySlot: "ambiguous" as const }
+                : field.accessorReceiver
+                  ? {}
+                  : { emptySlot: "absent" as const }),
+        };
     }
 
     /** Whether the record's tags decide whether `field` is an own key. */
@@ -5757,7 +5772,7 @@ export class DataTypeRegistry {
                             field.type.kind === "struct" &&
                             this.isReferenceStruct(field.type.name)
                         )
-                            this.ownPropertyPresentCpp(
+                            this.ownPresence(
                                 current.name,
                                 field,
                                 "value",
@@ -5900,7 +5915,7 @@ export class DataTypeRegistry {
         this.cppType(type);
         for (const field of this.structFields(type.name, node, "accessors")) {
             // The view lists a field among its own keys while it is one.
-            this.ownPropertyPresentCpp(type.name, field, "value", "->", node);
+            this.ownPresence(type.name, field, "value", "->", node);
             if (this.jsonValueCpp(field.type, "value", node) === undefined)
                 this.fail(
                     node,
@@ -5920,8 +5935,8 @@ export class DataTypeRegistry {
         for (const name of names) {
             const fields = this.structsByName.get(name)!.fields;
             const node = this.jsonBoxedStructs.get(name)!;
-            const present = fields.map((field) =>
-                this.ownPropertyPresentCpp(name, field, "value", "->", node),
+            const presences = fields.map((field) =>
+                this.ownPresence(name, field, "value", "->", node),
             );
             lines.push(
                 `inline bbl::js::JsonValue json_value_property(const ${name}&${fields.length ? " value" : ""}, std::string_view${fields.length ? " key" : ""}) {`,
@@ -5931,18 +5946,19 @@ export class DataTypeRegistry {
                 const cpp = this.jsonValueCpp(field.type, property, node)!;
                 // An absent shared object reads undefined, not its null, and
                 // a nullable field's empty storage refuses to guess.
+                const presence = presences[index];
                 const read =
-                    present[index] &&
+                    presence &&
                     (field.type.kind === "struct" ||
-                        this.ownPropertyPresence(name, field) === "nullable")
-                        ? `${present[index]} ? ${cpp} : bbl::js::JsonValue{}`
+                        presence.emptySlot === "ambiguous")
+                        ? `${presence.ownCpp} ? ${cpp} : bbl::js::JsonValue{}`
                         : cpp;
                 lines.push(
                     `    if (key == ${stringLiteral(field.sourceName)}) return ${read};`,
                 );
             });
             lines.push("    return {};", "}");
-            if (present.every((condition) => condition === undefined))
+            if (presences.every((presence) => presence === undefined))
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
                     `    return {${fields.map((field) => stringLiteral(field.sourceName)).join(", ")}};`,
@@ -5955,8 +5971,9 @@ export class DataTypeRegistry {
                     "    bbl::js::Array<std::string> keys;",
                     ...fields.map((field, index) => {
                         const push = `keys.push_back(${stringLiteral(field.sourceName)});`;
-                        return present[index]
-                            ? `    if (${present[index]}) ${push}`
+                        const presence = presences[index];
+                        return presence
+                            ? `    if (${presence.ownCpp}) ${push}`
                             : `    ${push}`;
                     }),
                     "    return keys;",
@@ -6006,13 +6023,13 @@ export class DataTypeRegistry {
                 ) {
                     const slot = `value.${field.name}`;
                     const present =
-                        this.ownPropertyPresentCpp(
+                        this.ownPresence(
                             name,
                             field,
                             "value",
                             ".",
                             this.jsonSerializedStructs.get(name)!,
-                        ) ?? "true";
+                        )?.ownCpp ?? "true";
                     return [
                         `    if (${present}) {`,
                         `        writer.key(${key});`,
@@ -6033,9 +6050,9 @@ export class DataTypeRegistry {
                 // A member whose value is undefined is dropped too, so an own
                 // `f: T | undefined` field writes its key only while it holds
                 // a value; an `f: T | null` one writes null.
-                const emptyCpp = omittable
+                const definedCpp = omittable
                     ? undefined
-                    : this.undefinedFieldValueCpp(name, field, "member");
+                    : this.definedFieldValueCpp(name, field, "member");
                 const written = omittable
                     ? [
                           `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
@@ -6043,11 +6060,11 @@ export class DataTypeRegistry {
                           `        json_write(writer, *value.${field.name});`,
                           "    }",
                       ]
-                    : emptyCpp !== undefined
+                    : definedCpp !== undefined
                       ? [
                             "    {",
                             `        const auto& member = value.${field.name}${field.accessor ? ".get()" : ""};`,
-                            `        if (!(${emptyCpp})) {`,
+                            `        if (${definedCpp}) {`,
                             `            writer.key(${key});`,
                             "            json_write(writer, member);",
                             "        }",
@@ -6074,11 +6091,12 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The test that a non-`?` field's value `cpp` is JavaScript's undefined,
-     * which `JSON.stringify` omits; undefined when the field never holds
-     * undefined. A field whose empty slot may be null or undefined refuses.
+     * The test that a non-`?` field's value `cpp` is not JavaScript's
+     * undefined, which `JSON.stringify` omits; undefined when the field
+     * never holds undefined. A field whose empty slot may be null or
+     * undefined refuses.
      */
-    private undefinedFieldValueCpp(
+    private definedFieldValueCpp(
         structName: string,
         field: DataStructField,
         cpp: string,
@@ -6086,11 +6104,8 @@ export class DataTypeRegistry {
         if (field.optionalProperty) return undefined;
         const present = this.slotPresentCpp(field.type, cpp);
         if (present === undefined) return undefined;
-        const empty = present.startsWith("!")
-            ? present.slice(1)
-            : `!${present}`;
         // A document keeps undefined apart from null.
-        if (field.type.kind === "json") return empty;
+        if (field.type.kind === "json") return present;
         const absence = this.fieldPresences.get(
             `${structName}.${field.sourceName}`,
         )?.absence;
@@ -6099,7 +6114,7 @@ export class DataTypeRegistry {
                 this.jsonSerializedStructs.get(structName)!,
                 `JSON.stringify cannot tell whether an empty '${field.sourceName}' holds undefined (omitted) or null (written); its type admits both.`,
             );
-        return absence === "undefined" ? empty : undefined;
+        return absence === "undefined" ? present : undefined;
     }
 
     /**

@@ -26,9 +26,6 @@ import {
     completeLiteralSelf,
     homeReceiver,
     literalSelf,
-    readsHomeObject,
-    readsHomeObjectAccessor,
-    type HomeObjectMethod,
     type LiteralSelf,
 } from "../home-object-methods.js";
 import { returnedRecordLocal } from "../record-observations.js";
@@ -367,33 +364,24 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
+        // The members lowered into function slots, and the accessors of
+        // slots without a receiver, may read `this` as the object the
+        // literal creates.
         const self = literalSelf(
             lowerer.context,
             dataType,
-            new Map(
-                fields.flatMap((field): [string, HomeObjectMethod][] => {
-                    const method =
-                        field.type.kind === "function"
-                            ? value.recordMethods?.[field.sourceName]
-                            : undefined;
-                    return method && readsHomeObject(method)
-                        ? [[field.sourceName, method]]
-                        : [];
-                }),
-            ),
+            fields.flatMap((field) => [
+                ...(field.type.kind === "function"
+                    ? [value.recordMethods?.[field.sourceName]]
+                    : []),
+                ...(field.accessor && !field.accessorReceiver
+                    ? [
+                          value.recordGetters?.[field.sourceName],
+                          value.recordSetters?.[field.sourceName],
+                      ]
+                    : []),
+            ]),
             node,
-            // An accessor slot without a receiver reads `this` as the
-            // object the literal creates.
-            new Set(
-                fields.flatMap((field) =>
-                    field.accessor && !field.accessorReceiver
-                        ? [
-                              value.recordGetters?.[field.sourceName],
-                              value.recordSetters?.[field.sourceName],
-                          ].filter(readsHomeObjectAccessor)
-                        : [],
-                ),
-            ),
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
@@ -421,7 +409,7 @@ function valueStruct(
                                 value,
                                 ts.isMethodDeclaration(method) &&
                                     ts.isClassDeclaration(method.parent),
-                                homeReceiver(self, field.sourceName, method),
+                                homeReceiver(self, method),
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
@@ -603,10 +591,8 @@ function unreachedRecordValue(
     // The expression must yield the value: its own expression, a callback
     // returning it, or a fresh array it is an element of -- never a
     // container it was read out of (`convertedExpression`).
-    const record = (type: DataType | undefined): boolean => {
-        const inner = type?.kind === "optional" ? type.inner : type;
-        return inner?.kind === "struct" && inner.name === name;
-    };
+    const record = (type: DataType | undefined): boolean =>
+        isRecordNamed(type, name);
     const yields = (expression: ts.Expression): boolean =>
         record(lowerer.dataTypeAt(expression));
     const freshElements = (array: ts.Expression | undefined): boolean => {
@@ -653,10 +639,8 @@ function recordExpression(
 ): ts.Expression | undefined {
     if (value.dataType?.kind !== "struct") return undefined;
     const name = value.dataType.name;
-    const record = (type: DataType | undefined): boolean => {
-        const inner = type?.kind === "optional" ? type.inner : type;
-        return inner?.kind === "struct" && inner.name === name;
-    };
+    const record = (type: DataType | undefined): boolean =>
+        isRecordNamed(type, name);
     const array = lowerer.convertedElementOf(node);
     const elements = array && lowerer.dataTypeAt(array);
     if (elements?.kind === "vector" && record(elements.element)) return array;
@@ -711,7 +695,7 @@ function accessorSlot(
               setter,
               field.type,
               receiver,
-              homeReceiver(self, field.sourceName, setter),
+              homeReceiver(self, setter),
           )
         : "{}";
     return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(
@@ -719,7 +703,7 @@ function accessorSlot(
         getter,
         field.type,
         receiver,
-        homeReceiver(self, field.sourceName, getter),
+        homeReceiver(self, getter),
     )}, ${set})`;
 }
 
@@ -796,3 +780,9 @@ export const structuresSinks: DataSinkOperations<
     struct: { expression: expressionStruct, value: valueStruct },
     enummap: { expression: expressionEnummap, value: valueEnummap },
 };
+
+/** Whether `type`, read through an optional, is the record type `name`. */
+function isRecordNamed(type: DataType | undefined, name: string): boolean {
+    const inner = type?.kind === "optional" ? type.inner : type;
+    return inner?.kind === "struct" && inner.name === name;
+}

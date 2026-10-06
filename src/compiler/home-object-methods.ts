@@ -9,7 +9,10 @@ import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 
 /** An object literal's own method or function-expression property whose body reads `this`. */
-export type HomeObjectMethod = ts.MethodDeclaration | ts.FunctionExpression;
+type HomeObjectMethod = ts.MethodDeclaration | ts.FunctionExpression;
+
+/** An object literal's own method, function-expression property or accessor whose body reads `this`. */
+type HomeObjectMember = HomeObjectMethod | ts.AccessorDeclaration;
 
 /**
  * An object literal's method that reads `this` is called with its home
@@ -143,59 +146,63 @@ function methodValueRead(
     return answer ?? undefined;
 }
 
-/** An object literal's own method or function-expression property whose body reads `this`. */
-export function readsHomeObject(node: ts.Node): node is HomeObjectMethod {
+/**
+ * An object literal's own method, function-expression property or accessor
+ * whose body reads `this`. A property read or write runs an accessor with
+ * the object holding it as receiver, and no lowered form hands its
+ * function out, so its `this` is the object the literal creates (a Proxy
+ * target's accessors take their receiver instead).
+ */
+function readsHomeObject(node: ts.Node | undefined): node is HomeObjectMember {
+    if (node === undefined) return false;
     let owner: ts.Node = node.parent;
     if (ts.isFunctionExpression(node)) {
         owner = wrappedParent(node);
         if (!ts.isPropertyAssignment(owner)) return false;
         owner = owner.parent;
-    } else if (!ts.isMethodDeclaration(node)) return false;
+    } else if (
+        !ts.isMethodDeclaration(node) &&
+        !ts.isGetAccessorDeclaration(node) &&
+        !ts.isSetAccessorDeclaration(node)
+    )
+        return false;
     return ts.isObjectLiteralExpression(owner) && functionUsesDynamicThis(node);
 }
 
-/**
- * An object literal's own accessor whose body reads `this`. A property read
- * or write runs it with the object holding it as receiver, and no lowered
- * form hands its function out, so its `this` is the object the literal
- * creates (a Proxy target's accessors take their receiver instead).
- */
-export function readsHomeObjectAccessor(
-    node: ts.Node | undefined,
-): node is ts.AccessorDeclaration {
-    return (
-        node !== undefined &&
-        (ts.isGetAccessorDeclaration(node) ||
-            ts.isSetAccessorDeclaration(node)) &&
-        ts.isObjectLiteralExpression(node.parent) &&
-        functionUsesDynamicThis(node)
+/** A literal's own members reading `this`, keyed by node. */
+export function homeObjectMembers(
+    literal: ts.ObjectLiteralExpression,
+): ReadonlySet<HomeObjectMember> {
+    return new Set(
+        literal.properties
+            .map((property) =>
+                ts.isPropertyAssignment(property)
+                    ? unwrapExpression(property.initializer)
+                    : property,
+            )
+            .filter(readsHomeObject),
     );
 }
 
-/** A literal's own accessors reading `this`. */
-export function homeObjectAccessors(
-    literal: ts.ObjectLiteralExpression,
-): ReadonlySet<ts.AccessorDeclaration> {
-    return new Set(literal.properties.filter(readsHomeObjectAccessor));
-}
-
-/** A literal's own methods reading `this`, by property name. */
-export function homeObjectMethods(
-    literal: ts.ObjectLiteralExpression,
-): ReadonlyMap<string, HomeObjectMethod> {
-    const methods = new Map<string, HomeObjectMethod>();
-    for (const property of literal.properties) {
-        const method = ts.isPropertyAssignment(property)
-            ? unwrapExpression(property.initializer)
-            : property;
-        const name =
-            property.name === undefined
-                ? undefined
-                : propertyNameText(property.name);
-        if (name !== undefined && readsHomeObject(method))
-            methods.set(name, method);
-    }
-    return methods;
+/**
+ * The property name a home-object method is stored under: its literal
+ * name, or the literal type of its computed key.
+ */
+function methodName(
+    checker: ts.TypeChecker,
+    method: HomeObjectMethod,
+): string | undefined {
+    const property = ts.isMethodDeclaration(method)
+        ? method
+        : wrappedParent(method);
+    if (!ts.isPropertyAssignment(property) && !ts.isMethodDeclaration(property))
+        return undefined;
+    if (!ts.isComputedPropertyName(property.name))
+        return propertyNameText(property.name);
+    const key = checker.getTypeAtLocation(property.name.expression);
+    return key.isStringLiteral() || key.isNumberLiteral()
+        ? String(key.value)
+        : undefined;
 }
 
 /**
@@ -237,16 +244,18 @@ export function withLiteralSelfBinding<T>(
  */
 export interface LiteralSelf {
     readonly value: Value;
-    readonly methods: ReadonlyMap<string, HomeObjectMethod>;
-    readonly accessors: ReadonlySet<ts.AccessorDeclaration>;
+    /** The literal's members reading `this` as this object. */
+    readonly members: ReadonlySet<HomeObjectMember>;
 }
 
 /**
  * The self object of a struct built from an object literal (`node`), or
- * undefined when nothing in the literal reaches it. A method whose function
- * value never leaves its object is only called as a member of that object,
- * so `this` is the object the literal creates; any read of the value from
- * an object that can hold it refuses.
+ * undefined when nothing in the literal reaches it: the members the struct
+ * lowers into its slots (`lowered`) that read `this` as their home object,
+ * or a binding the literal initializes. A method whose function value never
+ * leaves its object is only called as a member of that object, so `this` is
+ * the object the literal creates; any read of the value from an object that
+ * can hold it refuses.
  */
 export function literalSelf(
     context: Pick<
@@ -262,22 +271,31 @@ export function literalSelf(
         | "bindings"
     >,
     dataType: DataType<"struct">,
-    methods: ReadonlyMap<string, HomeObjectMethod>,
+    lowered: Iterable<ts.Node | undefined>,
     node: ts.Node,
-    accessors: ReadonlySet<ts.AccessorDeclaration> = new Set(),
 ): LiteralSelf | undefined {
     const literal = ts.isExpression(node) ? unwrapExpression(node) : undefined;
     const binding =
         literal && ts.isObjectLiteralExpression(literal)
             ? selfBindings.get(literal)
             : undefined;
-    if (!methods.size && !accessors.size && !binding) return undefined;
+    const members = new Set([...lowered].filter(readsHomeObject));
+    if (!members.size && !binding) return undefined;
+    const methods = [...members].filter(
+        (member): member is HomeObjectMethod => !ts.isAccessor(member),
+    );
     if (!context.dataTypes.isReferenceStruct(dataType.name))
         context.fail(
             node,
-            `An object literal ${methods.size || !accessors.size ? "method" : "accessor"} reading \`this\` requires shared native object storage.`,
+            `An object literal ${methods.length || !members.size ? "method" : "accessor"} reading \`this\` requires shared native object storage.`,
         );
-    for (const [name, method] of methods) {
+    for (const method of methods) {
+        const name = methodName(context.checker, method);
+        if (name === undefined)
+            context.fail(
+                method,
+                "A method reading `this` needs a literal or literal-typed property name.",
+            );
         const read = methodValueRead(
             context,
             name,
@@ -310,25 +328,20 @@ export function literalSelf(
         ],
     };
     if (binding) context.bindings.defineVariable(binding.name, value);
-    return { value, methods, accessors };
+    return { value, members };
 }
 
 /**
- * The receiver a literal's method `name` or accessor is lowered with: its
- * self object when it is one of the literal's members reading `this`.
+ * The receiver a literal's method or accessor is lowered with: its self
+ * object when it is one of the literal's members reading `this`.
  */
 export function homeReceiver(
     self: LiteralSelf | undefined,
-    name: string,
     member: ts.Node,
 ): Value | undefined {
-    return self?.methods.get(name) === member ||
-        (self !== undefined &&
-            (ts.isGetAccessorDeclaration(member) ||
-                ts.isSetAccessorDeclaration(member)) &&
-            self.accessors.has(member))
-        ? self.value
-        : undefined;
+    if (!self) return undefined;
+    const members: ReadonlySet<ts.Node> = self.members;
+    return members.has(member) ? self.value : undefined;
 }
 
 /**
