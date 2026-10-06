@@ -29,6 +29,7 @@ export {
     TYPED_ARRAY_KINDS,
     BUFFER_VIEW_KINDS,
     isBinaryDataType,
+    isNumericSequenceType,
     isTypedArrayType,
     typedArrayStem,
     typedArrayElement,

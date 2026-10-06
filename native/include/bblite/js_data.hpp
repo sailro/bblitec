@@ -3927,6 +3927,35 @@ template <typename Values>
         return Values(values.begin() + begin, values.begin() + end);
 }
 
+/** `subarray` and `slice` of the Uint8Array view, whose storage is its own class. */
+[[nodiscard]] inline U8Array typed_array_subarray(const U8Array& values, double begin_value,
+                                                  double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    return values.subarray(begin, end);
+}
+[[nodiscard]] inline U8Array typed_array_slice(const U8Array& values, double begin_value,
+                                               double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    return values.slice(begin, end);
+}
+
+/** `%TypedArray%.prototype.reverse`: the elements reversed in place; the result is the receiver. */
+template <typename Values> inline Values typed_array_reverse(Values values) {
+    for (std::size_t low = 0, high = values.size(); low + 1 < high; ++low, --high) {
+        const auto first = values.load(low);
+        values.store(low, values.load(high - 1));
+        values.store(high - 1, first);
+    }
+    return values;
+}
+
+/** `ArrayBuffer.prototype.slice`: a new buffer holding a copy of the relative byte range. */
+[[nodiscard]] inline ArrayBuffer array_buffer_slice(const ArrayBuffer& buffer, double begin_value,
+                                                    double end_value) {
+    const auto [begin, end] = relative_slice_bounds(buffer.byte_length(), begin_value, end_value);
+    return ArrayBuffer(std::vector<std::uint8_t>(buffer.data() + begin, buffer.data() + end));
+}
+
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
 // JavaScript compares primitives by value and objects by identity, and
 // every element type reaching here is a scalar or a handle id, so a
@@ -4670,7 +4699,7 @@ struct NumberArgument {
 template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Values& values) {
     U8Array result(values.size());
     for (std::size_t index = 0; index < values.size(); ++index) {
-        result[index] = to_uint8(values[index]);
+        result[index] = to_uint8(static_cast<double>(typed_array_load(values, index)));
     }
     return result;
 }

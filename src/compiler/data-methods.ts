@@ -1186,33 +1186,7 @@ function compileKnownDataMethod(
         return lowerer.compileTypedArraySet(call, narrowed, dataType.kind);
     }
     if (
-        dataType?.kind === "u8array" &&
-        (method === "slice" || method === "subarray")
-    ) {
-        if (call.arguments.length > 2) {
-            lowerer.context.fail(
-                call,
-                `Uint8Array.${method} expects up to two arguments.`,
-            );
-        }
-        const begin = call.arguments[0]
-            ? lowerer.context.compileNumber(call.arguments[0], "double")
-            : "0.0";
-        const end = call.arguments[1]
-            ? lowerer.context.compileNumber(call.arguments[1], "double")
-            : `static_cast<double>(${narrowed.cpp}.size())`;
-        return {
-            kind: "data",
-            cpp:
-                `${narrowed.cpp}.${method}(` +
-                `bbl::js::array_index(${begin}), ` +
-                `bbl::js::array_index(${end}))`,
-            dataType: { kind: "u8array" },
-        };
-    }
-    if (
         isTypedArrayType(dataType) &&
-        dataType.kind !== "u8array" &&
         (method === "slice" || method === "subarray")
     ) {
         if (call.arguments.length > 2) {
@@ -1229,12 +1203,32 @@ function compileKnownDataMethod(
             : `static_cast<double>(${narrowed.cpp}.size())`;
         lowerer.context.reachJsData();
         // `slice` copies the range; `subarray` is a view sharing the
-        // receiver's bytes, so writes through it reach the source.
+        // receiver's bytes, so writes through it reach the source. Both
+        // endpoints are relative indices.
         return {
             kind: "data",
             cpp:
                 `bbl::js::typed_array_${method}(${narrowed.cpp}, ` +
                 `${begin}, ${end})`,
+            dataType,
+        };
+    }
+    if (dataType?.kind === "arraybuffer" && method === "slice") {
+        if (call.arguments.length > 2)
+            lowerer.context.fail(
+                call,
+                "ArrayBuffer.slice expects up to two arguments.",
+            );
+        const begin = call.arguments[0]
+            ? lowerer.context.compileNumber(call.arguments[0], "double")
+            : "0.0";
+        const end = call.arguments[1]
+            ? lowerer.context.compileNumber(call.arguments[1], "double")
+            : "std::numeric_limits<double>::infinity()";
+        lowerer.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::js::array_buffer_slice(${narrowed.cpp}, ${begin}, ${end})`,
             dataType,
         };
     }
@@ -1253,6 +1247,19 @@ function compileKnownDataMethod(
     if (isTypedArrayType(dataType)) {
         if (method === "sort")
             return compileTypedArraySort(lowerer, call, narrowed, dataType);
+        if (method === "reverse") {
+            if (call.arguments.length !== 0)
+                lowerer.context.fail(
+                    call,
+                    "TypedArray.reverse expects no arguments.",
+                );
+            lowerer.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: `bbl::js::typed_array_reverse(${narrowed.cpp})`,
+                dataType,
+            };
+        }
         if (!typedArrayReadMethods.has(method)) return undefined;
         return compileArrayMethodTail(
             {

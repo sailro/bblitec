@@ -108,6 +108,19 @@ export function isTypedArrayType(
     );
 }
 
+/**
+ * A sequence of numbers a typed array is built or filled from, read
+ * element by element: a typed array, a number array or a numeric tuple.
+ */
+export function isNumericSequenceType(dataType: DataType): boolean {
+    return (
+        isTypedArrayType(dataType) ||
+        dataType.kind === "tuple" ||
+        ((dataType.kind === "vector" || dataType.kind === "span") &&
+            dataType.element.kind === "number")
+    );
+}
+
 /** An ArrayBuffer, a DataView, an ArrayBufferView or a typed array. */
 export function isBinaryDataType(
     dataType: DataType | undefined,

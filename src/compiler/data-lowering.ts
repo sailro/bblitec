@@ -39,6 +39,7 @@ import { compileMapInitializer } from "./collection-methods.js";
 import {
     absenceKind,
     arrayElementType,
+    nullability,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
@@ -90,6 +91,7 @@ import {
     dataTypesEqual,
     isUndefinedDataType,
     doubleLiteral,
+    isNumericSequenceType,
     isTypedArrayType,
     isOpaqueReference,
     isHandleKind,
@@ -2566,6 +2568,72 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A read every member of a data union answers, lowered once over each
+     * member's own storage and selected at run time by the member the union
+     * holds (`std::visit`), as JavaScript reads the property or element of
+     * whichever object the binding refers to. Every member's read must have
+     * one result type; a member without the read refuses through `read`.
+     */
+    private unionMemberRead(
+        owner: Value,
+        members: readonly DataType[],
+        node: ts.Node,
+        read: (member: Value) => Value,
+        captures: readonly NativeCaptureBinding[] = owner.nativeCaptures ?? [],
+    ): Value {
+        const parameter = this.context.allocateTemporaryCppName("union_member");
+        let resultType: DataType | undefined;
+        const arms = members.map((member) => {
+            let body = "";
+            const lines = this.context.captureEmittedLines(() => {
+                const result = read(this.leafValue(parameter, member));
+                const type =
+                    result.dataType ??
+                    (result.kind === "number" ||
+                    result.kind === "boolean" ||
+                    result.kind === "string"
+                        ? { kind: result.kind }
+                        : undefined);
+                if (
+                    !type ||
+                    result.optionalFoundCpp !== undefined ||
+                    result.slotFoundCpp !== undefined ||
+                    (resultType && !dataTypesEqual(resultType, type))
+                )
+                    this.context.fail(
+                        node,
+                        "A read through a data union requires one result " +
+                            "type across its members.",
+                    );
+                resultType = type;
+                body = `return ${this.compileKnownValueForSink(result, type, node)};`;
+            });
+            return { member, body: [...lines, body].join(" ") };
+        });
+        const resultCpp = this.context.dataTypes.cppType(resultType!);
+        const memberType = `${parameter}_type`;
+        const visitor =
+            new Set(arms.map((arm) => arm.body)).size === 1
+                ? arms[0]!.body
+                : `using ${memberType} = std::decay_t<decltype(${parameter})>; ` +
+                  arms
+                      .map((arm, index) =>
+                          index === arms.length - 1
+                              ? `{ ${arm.body} }`
+                              : `if constexpr (std::is_same_v<${memberType}, ` +
+                                `${this.context.dataTypes.cppType(arm.member)}>) { ${arm.body} } else `,
+                      )
+                      .join("");
+        return {
+            ...this.leafValue(
+                `std::visit([&](const auto& ${parameter}) -> ${resultCpp} { ${visitor} }, ${owner.cpp})`,
+                resultType!,
+            ),
+            nativeCaptures: captures,
+        };
+    }
+
+    /**
      * `left ?? right` over the data model — the general operator, taken
      * after the handle-collection concept and the static-record fold have
      * both declined.
@@ -3185,6 +3253,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `'${access.expression.getText()}' may be null here; narrow it before member access.`,
             );
         }
+        if (dataType.kind === "union") {
+            return this.unionMemberRead(
+                owner,
+                dataType.members,
+                access,
+                (member) =>
+                    this.propertyRead(member, access) ??
+                    this.context.fail(
+                        access,
+                        `Unsupported data property '${property}' on union member ${member.dataType?.kind}.`,
+                    ),
+            );
+        }
         if (dataType.kind === "struct") {
             if (
                 this.context.dataTypes.isClassStruct(dataType.name) &&
@@ -3614,6 +3695,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     index.staticString,
                     access,
                 ) ?? { kind: "json-null", cpp: "std::nullopt" }
+            );
+        }
+        if (dataType.kind === "union") {
+            if (
+                !dataType.members.every(
+                    (member) =>
+                        isTypedArrayType(member) ||
+                        member.kind === "vector" ||
+                        member.kind === "span" ||
+                        member.kind === "tuple",
+                )
+            )
+                this.context.fail(
+                    access,
+                    "Element access is not supported on data union.",
+                );
+            if (mode === "write")
+                this.context.fail(
+                    access,
+                    "Element writes through a data union are not supported; narrow it to one member first.",
+                );
+            // The owner is read before the index, which may rebind it; the
+            // index is read once, whichever member reads it.
+            const receiver = this.indexMayChangeOwner(access)
+                ? this.context.bindings.retainedValue(owner, "indexed_union")
+                : owner;
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            let member = index;
+            if (index.staticNumber === undefined) {
+                const pinned =
+                    this.context.allocateTemporaryCppName("union_index");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: pinned,
+                    initializer: this.compileKnownValueForSink(
+                        index,
+                        { kind: "number" },
+                        access.argumentExpression,
+                    ),
+                });
+                member = {
+                    ...this.leafValue(pinned, { kind: "number" }),
+                    nativeCaptures: [
+                        this.context.registerNativeBinding(pinned),
+                    ],
+                };
+            }
+            return this.unionMemberRead(
+                receiver,
+                dataType.members,
+                access,
+                (value) =>
+                    this.elementRead(value, access, "read", member) ??
+                    this.context.fail(
+                        access,
+                        "Element access is not supported on data union.",
+                    ),
+                [
+                    ...(receiver.nativeCaptures ?? []),
+                    ...(member.nativeCaptures ?? []),
+                ],
             );
         }
         if (
@@ -7198,8 +7343,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "view_buffer",
                 unwrapped,
             ).cpp;
-            const numericArgument = (argument: ts.Expression): string => {
-                const value = this.context.compileNumber(argument, "double");
+            const numericArgument = (
+                argument: ts.Expression,
+                value = this.context.compileNumber(argument, "double"),
+            ): string => {
                 const temporary =
                     this.context.allocateTemporaryCppName("view_index");
                 this.context.emit({
@@ -7212,8 +7359,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? `bbl::js::buffer_view_index(${temporary})`
                     : temporary;
             };
+            // ToIndex reads an absent byte offset (undefined, or null as
+            // ToNumber 0) as zero.
+            const offsetArgument = (argument: ts.Expression): string => {
+                const absent = nullability(
+                    this.context.checker.getTypeAtLocation(argument),
+                );
+                if (!absent.null && !absent.undefined)
+                    return numericArgument(argument);
+                const value = this.context.compileValue(argument);
+                if (
+                    value.kind === "json-null" ||
+                    isUndefinedDataType(value.dataType)
+                ) {
+                    this.context.emitDiscardedValue(value);
+                    return numericArgument(argument, "0.0");
+                }
+                if (
+                    value.kind !== "data" ||
+                    value.dataType?.kind !== "optional" ||
+                    value.dataType.inner.kind !== "number" ||
+                    presenceFlagCpp(value) !== undefined
+                )
+                    return numericArgument(
+                        argument,
+                        this.compileKnownValueForSink(
+                            value,
+                            { kind: "number" },
+                            argument,
+                        ),
+                    );
+                const offset = this.context.bindings.pinValueToTemporary(
+                    value,
+                    "view_offset",
+                ).cpp;
+                return numericArgument(
+                    argument,
+                    `(${optionalPresentCpp(offset)} ? ${optionalValueCpp(offset)} : 0.0)`,
+                );
+            };
             const offset = arguments_[1]
-                ? `, ${numericArgument(arguments_[1])}`
+                ? `, ${offsetArgument(arguments_[1])}`
                 : "";
             const length = arguments_[2]
                 ? `, ${numericArgument(arguments_[2])}`
@@ -7288,12 +7474,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (ts.isCallExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
-        const staticSource =
+        // Any other expression whose type is not a number is a sequence or
+        // nothing (`a ?? b`, a conditional, a constructed view); a number is
+        // the constructor's length.
+        const compiled =
             source ??
             (ts.isIdentifier(unwrapped) ||
-            ts.isPropertyAccessExpression(unwrapped)
+            ts.isPropertyAccessExpression(unwrapped) ||
+            (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                ts.TypeFlags.NumberLike) ===
+                0
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        // A guarded optional or union reads as the member the checker
+        // narrowed it to, under any assertion the source wrote.
+        const staticSource =
+            compiled && this.narrowOptional(compiled, unwrapped);
         if (staticSource?.kind === "camera-world-matrix") {
             const engine = this.context.requireEngine(staticSource, unwrapped);
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
@@ -7337,15 +7533,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // already applies to a `number[]` -- so one arm serves them all. A
         // runtime tuple joins them because its lanes are doubles too: the
         // three components of a colour a scene computed.
-        if (
-            staticSource?.kind === "data" &&
-            (isTypedArrayType(staticSource.dataType) ||
-                staticSource.dataType?.kind === "tuple" ||
-                ((staticSource.dataType?.kind === "vector" ||
-                    staticSource.dataType?.kind === "span") &&
-                    staticSource.dataType.element.kind === "number"))
-        ) {
+        if (staticSource?.kind !== "data" || !staticSource.dataType)
+            return undefined;
+        const sourceType = staticSource.dataType;
+        if (isNumericSequenceType(sourceType)) {
             return `bbl::js::${prefix}_array_from(${staticSource.cpp})`;
+        }
+        // A Set iterates its numbers in insertion order, as both the
+        // constructor and `from` read any iterable.
+        if (sourceType.kind === "set" && sourceType.element.kind === "number")
+            return `bbl::js::${prefix}_array_from(bbl::js::array_from_iterable<double>(${staticSource.cpp}))`;
+        // A union of sequences converts the member it holds at run time.
+        if (
+            sourceType.kind === "union" &&
+            sourceType.members.every(isNumericSequenceType)
+        ) {
+            const member = this.context.allocateTemporaryCppName("source");
+            return (
+                `std::visit([](const auto& ${member}) { ` +
+                `return bbl::js::${prefix}_array_from(${member}); }, ${staticSource.cpp})`
+            );
         }
         return undefined;
     }
