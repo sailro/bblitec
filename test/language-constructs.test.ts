@@ -6168,3 +6168,281 @@ check(
     if (scales[0]!(1) !== 22 || scales[0]!(1, 3) !== 33 || scales[0]!(1, 3, 1) !== 4) throw new Error("defaulted stored function");
 `,
 );
+
+check(
+    "conditional-spread-record-tuple-callback-properties",
+    `
+    const gate = new Float32Array([0, 1, 2]);
+    interface Output { kind: string; batchYield: number }
+    interface Profile {
+        name: string;
+        secondary?: Output;
+        indices?: number[];
+        tint?: [number, number, number];
+        eave?: { inset: readonly [number, number] };
+        terrainY?: () => number;
+        onRelease?: (speed: number) => void;
+    }
+    let released = 0;
+    function profile(job: string, bone: number | undefined, footY: number, notify?: (value: number) => void): Profile {
+        return {
+            name: job,
+            ...(job === "inn" ? { secondary: { kind: "keg", batchYield: Math.max(1, footY * 2) } } : {}),
+            ...(bone === undefined ? {} : { indices: [bone] }),
+            ...(job === "inn" ? { tint: [footY, 2, 3] as [number, number, number] } : {}),
+            ...(footY > 0 ? { eave: { inset: [footY, footY] as const } } : {}),
+            ...(footY > 0 ? { terrainY: () => footY } : {}),
+            ...(notify ? { onRelease: (speed: number) => notify(speed * 2) } : {}),
+        };
+    }
+    const full = profile(gate[1]! > 0 ? "inn" : "x", gate[2]!, gate[1]!, (value) => { released += value; });
+    const bare = profile(gate[0]! > 0 ? "inn" : "x", undefined, gate[0]!);
+    if (full.secondary?.kind !== "keg" || full.secondary.batchYield !== 2 || full.indices?.[0] !== 2 || full.tint?.[0] !== 1)
+        throw new Error("present record, array and tuple properties");
+    if (full.eave?.inset[1] !== 1 || full.terrainY?.() !== 1) throw new Error("present nested tuple and callback");
+    full.onRelease?.(3);
+    if (released !== 6) throw new Error("present callback property");
+    if (bare.secondary !== undefined || bare.indices !== undefined || bare.tint !== undefined || bare.eave !== undefined ||
+        bare.terrainY !== undefined || bare.onRelease !== undefined)
+        throw new Error("absent properties");
+    if ("secondary" in bare || !("secondary" in full) || "terrainY" in bare || !("onRelease" in full)) throw new Error("own keys");
+`,
+);
+
+check(
+    "conditional-spread-own-keys",
+    `
+    const gate = new Float32Array([0, 1]);
+    const absent = { name: "a", ...(gate[0]! > 0 ? { extra: 3 } : {}), tail: true };
+    const present = { name: "a", ...(gate[1]! > 0 ? { extra: 4 } : {}), tail: true };
+    if ("extra" in absent || !("extra" in present)) throw new Error("in");
+    const key = gate[1]! > 0 ? "extra" : "name";
+    if (key in absent || !(key in present)) throw new Error("dynamic in");
+    if (Object.hasOwn(absent, "extra") || !Object.hasOwn(present, "extra")) throw new Error("hasOwn");
+    if (Object.keys(absent).join() !== "name,tail" || Object.keys(present).join() !== "name,extra,tail")
+        throw new Error("keys " + Object.keys(present).join());
+    if (Object.values(present).length !== 3 || Object.values(absent).length !== 2) throw new Error("values");
+    const entries = Object.entries(present).map(([k, v]) => k + "=" + v).join();
+    if (entries !== "name=a,extra=4,tail=true") throw new Error("entries " + entries);
+    let visited = "";
+    for (const k in absent) visited += k;
+    for (const k in present) visited += k;
+    if (visited !== "nametailnameextratail") throw new Error("for in " + visited);
+    if (JSON.stringify(absent).includes("extra") || JSON.parse(JSON.stringify(present)).extra !== 4) throw new Error("json");
+    const kept = { extra: 1, ...(gate[0]! > 0 ? { extra: 2 } : {}) };
+    const replaced = { extra: 1, ...(gate[1]! > 0 ? { extra: 2 } : {}) };
+    if (kept.extra !== 1 || replaced.extra !== 2) throw new Error("override");
+    const copy = { ...absent, more: 1 };
+    const copied = { ...present, more: 1 };
+    if ("extra" in copy || copied.extra !== 4 || Object.keys(copied).join() !== "name,extra,tail,more") throw new Error("copy");
+    const table: Record<string, number> = { base: 1, ...(gate[1]! > 0 ? { added: 2 } : {}), ...(gate[0]! > 0 ? { skipped: 3 } : {}) };
+    if (Object.keys(table).join() !== "base,added") throw new Error("dictionary " + Object.keys(table).join());
+    interface Options { width: number; tint?: number; label?: string }
+    function read(index: number): Options { return index > 0 ? { width: 2, tint: 5 } : { width: 1 }; }
+    const a = { ...read(gate[1]!), kind: "a" };
+    const b = { ...read(gate[0]!), kind: "b" };
+    if (a.tint !== 5 || !("tint" in a) || "tint" in b || "label" in a) throw new Error("struct spread keys");
+    const over = { tint: 9, ...read(gate[0]!) };
+    const under = { tint: 9, ...read(gate[1]!) };
+    if (over.tint !== 9 || under.tint !== 5) throw new Error("struct spread override");
+`,
+);
+
+check(
+    "conditional-spread-prepared-arms",
+    `
+    const gate = new Float32Array([0, 1]);
+    let draws = 0;
+    function rng(): number { draws++; return gate[1]! * 0.5; }
+    interface Style { level: number; roofHeight?: number; endSlope?: number; crown?: string; ivyOff?: boolean }
+    function style(crown: string): Partial<Style> {
+        return {
+            level: Math.round(rng() * 20) / 20,
+            ...(crown === "roof" ? { roofHeight: rng() * 2, endSlope: rng() < 0.75 ? 0 : 1 } : { crown: "railing" }),
+            ...(rng() < 0.2 ? { ivyOff: true } : {}),
+        };
+    }
+    const roof = style(gate[1]! > 0 ? "roof" : "flat");
+    if (roof.roofHeight !== 1 || roof.endSlope !== 0 || roof.crown !== undefined || "crown" in roof || draws !== 4)
+        throw new Error("selected arm " + draws);
+    const flat = style(gate[0]! > 0 ? "roof" : "flat");
+    if (flat.roofHeight !== undefined || flat.crown !== "railing" || flat.ivyOff !== undefined || draws !== 6)
+        throw new Error("other arm " + draws);
+    interface Run { id: number }
+    interface Snap { x: number; target?: { runIndex: number }; run?: Run }
+    const runs: Run[] = [{ id: 7 }, { id: 9 }];
+    function snap(x: number | undefined, target: { runIndex: number } | undefined): Snap | null {
+        return x !== undefined ? { x, ...(target ? { target, run: runs[target.runIndex] } : {}) } : null;
+    }
+    const target = { runIndex: 1 };
+    const hit = snap(gate[1]!, gate[1]! > 0 ? target : undefined);
+    if (hit?.run?.id !== 9 || hit.target !== target) throw new Error("prepared member identity");
+    if (snap(gate[0]!, undefined)?.run !== undefined) throw new Error("prepared absent");
+    interface Arch { span: number; seatDepth?: number }
+    const arches = (list: readonly Arch[], sink?: number): Arch[] =>
+        list.map((arch) => ({ ...arch, ...(sink !== undefined ? { seatDepth: (arch.seatDepth ?? 0.25) + sink } : {}) }));
+    const sunk = arches([{ span: 1 }, { span: 2, seatDepth: 1 }], gate[1]!);
+    if (sunk[0]!.seatDepth !== 1.25 || sunk[1]!.seatDepth !== 2 || arches([{ span: 1, seatDepth: 3 }])[0]!.seatDepth !== 3)
+        throw new Error("prepared fallback member");
+    interface State { mix: number }
+    const store: State[] = [{ mix: 1 }, { mix: 2 }];
+    const find = (id: number) => (Number.isSafeInteger(id) && id > 0 ? store.find((state) => state.mix === id) : undefined);
+    if (find(gate[1]!) !== store[0] || find(gate[0]!) !== undefined || find(3) !== undefined) throw new Error("prepared search");
+`,
+);
+
+check(
+    "conditional-branches-of-different-native-kinds",
+    `
+    const gate = new Float32Array([0, 1, 2]);
+    const jobs = ["baker", "priest", "queen"];
+    function availability(job: string, unlocked: boolean): { unlocked: boolean; goalMana?: number } {
+        const goal = job === "priest" ? { goalMana: 5 } : job === "queen" ? { goalMana: 7 } : {};
+        return unlocked ? { unlocked: true, ...goal } : { unlocked: false, ...goal };
+    }
+    const priest = availability(jobs[gate[1]!]!, gate[1]! > 0);
+    const queen = availability(jobs[gate[2]!]!, gate[0]! > 0);
+    const baker = availability(jobs[gate[0]!]!, gate[1]! > 0);
+    if (priest.goalMana !== 5 || queen.goalMana !== 7 || queen.unlocked || baker.goalMana !== undefined || "goalMana" in baker)
+        throw new Error("nested conditional records");
+    interface Projection { inside: boolean }
+    let bestInside = false;
+    let picks = 0;
+    for (const value of gate) {
+        const intent: Projection = { inside: value > 0.5 };
+        const better = intent.inside !== bestInside ? intent.inside : value < 1.5;
+        if (better) { picks++; bestInside = intent.inside; }
+    }
+    if (picks !== 2 || !bestInside) throw new Error("data and boolean branches");
+    function reads(shared: boolean): { cascade: (layer: string) => string; frustum: string } {
+        return shared ? { cascade: (layer) => "scene(" + layer + ")", frustum: "a" } : { cascade: (layer) => "own(" + layer + ")", frustum: "b" };
+    }
+    if (reads(gate[1]! > 0).cascade("1") !== "scene(1)" || reads(gate[0]! > 0).cascade("2") !== "own(2)") throw new Error("callback members");
+    type Blocked = "ambiguous" | "unqualified";
+    function facts(active: boolean, blocked: Blocked): { fn: "church" | "none"; blocked: Blocked | null } {
+        const base = { fn: "none" as const };
+        return active ? { ...base, fn: "church" as const, blocked: null } : { ...base, blocked };
+    }
+    if (facts(gate[1]! > 0, "ambiguous").blocked !== null || facts(gate[0]! > 0, "unqualified").blocked !== "unqualified")
+        throw new Error("null member");
+    type Kind = "well" | "bench" | "keg";
+    const KINDS: readonly Kind[] = ["well", "bench", "keg"];
+    function kinds(config: { kinds?: readonly Kind[] } | undefined): readonly Kind[] {
+        const listed = Array.isArray(config?.kinds) ? config.kinds : [];
+        return KINDS.filter((kind) => listed.includes(kind));
+    }
+    const configs: ({ kinds?: readonly Kind[] } | undefined)[] = [{ kinds: ["keg", "well"] }, undefined, {}];
+    if (kinds(configs[0]).join() !== "well,keg" || kinds(configs[1]).length !== 0 || kinds(configs[2]).length !== 0)
+        throw new Error("array or empty literal");
+    let ran = 0;
+    function settle<T>(world: boolean, settlement: () => T): T | undefined { return world ? settlement() : undefined; }
+    settle(gate[1]! > 0, () => { ran++; });
+    settle(gate[0]! > 0, () => { ran++; });
+    if (ran !== 1 || settle(gate[1]! > 0, () => 4) !== 4) throw new Error("void branch");
+`,
+);
+
+check(
+    "logical-and-selects-values",
+    `
+    const gate = new Float32Array([0, 1]);
+    type Job = "baker" | "priest";
+    interface Model { file: string }
+    const MODELS: Partial<Record<Job, Model>> = { baker: { file: "b.glb" } };
+    const plan = (job: Job | null): Model | null => (job && MODELS[job]) ?? null;
+    if (plan(gate[1]! > 0 ? "baker" : null)?.file !== "b.glb" || plan(null) !== null || plan(gate[1]! > 0 ? "priest" : null) !== null)
+        throw new Error("guarded table read");
+    interface Surface { y: number }
+    let reads = 0;
+    const readLocal = (surface: Surface): { id: number } => { reads++; return { id: surface.y }; };
+    function attach(surface: Surface | null): { id: number } | null {
+        const handle = surface && readLocal(surface);
+        return handle;
+    }
+    if (attach(gate[1]! > 0 ? { y: 4 } : null)?.id !== 4 || attach(null) !== null || reads !== 1) throw new Error("lazy right operand");
+    const byKey = new Map<string, { id: number }>([["house:1", { id: 1 }]]);
+    const lookup = (rec: { id: number } | undefined) => rec && byKey.get("house:" + rec.id);
+    if (lookup({ id: gate[1]! })?.id !== 1 || lookup(undefined) !== undefined || lookup({ id: 2 }) !== undefined) throw new Error("map read");
+    const r = { a: true, b: true, c: true };
+    r.a = r.b = r.c = false;
+    if (r.a || r.b || r.c) throw new Error("chained assignment");
+    const frame = { admitted: false };
+    const presence = { admitted: false };
+    presence.admitted = frame.admitted = gate[0]! < gate[1]!;
+    if (!presence.admitted || !frame.admitted) throw new Error("chained comparison");
+    interface Peer { id: string }
+    const peer: Peer = { id: "p" };
+    const slots: { target0: Peer | null; target1: Peer | null; key0: string | null; key1: string | null; line0: number; line1: number } =
+        { target0: peer, target1: peer, key0: "a", key1: "b", line0: 1, line1: 2 };
+    slots.target0 = slots.target1 = null;
+    slots.key0 = slots.key1 = null;
+    slots.line0 = slots.line1 = -1;
+    if (slots.target0 !== null || slots.target1 !== null || slots.key0 !== null || slots.key1 !== null || slots.line0 !== -1 || slots.line1 !== -1)
+        throw new Error("chained stores");
+`,
+);
+
+test("conditional record values refuse unrepresented key and absence shapes", () => {
+    for (const [source, message] of [
+        [
+            "const g = new Float32Array([1]); const r = { a: 1, ...(g[0]! > 0 ? { b: 2 } : {}) }; for (const k in r) { if (k === 'b') break; }",
+            /for\.\.\.in over a record whose keys a conditional spread decides cannot leave the loop early/,
+        ],
+        [
+            "const g = new Float32Array([1]); const r = { a: 1, ...(g[0]! > 0 ? { b: 2 } : {}) }; const t = { c: 0 }; Object.assign(t, r);",
+            /Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys/,
+        ],
+        [
+            "const g = new Float32Array([1]); const r = { m() { return 1; }, ...(g[0]! > 0 ? { m: 2 } : {}) }; const n = r.m;",
+            /conditionally present spread key 'm' cannot replace a method or accessor/,
+        ],
+        [
+            "const g = new Float32Array([1]); const o = { f: false }; function p(): { f: boolean } { return o; } const v = (p().f = g[0]! > 0) ? 1 : 2;",
+            /a target containing a call must be bound to a local first/,
+        ],
+        [
+            "const g = new Float32Array([1]); function f(o: { x: number } | null | undefined): number | null | undefined { return o && o.x; } const v = f(g[0]! > 0 ? { x: 1 } : null);",
+            /may be null or undefined selects a value only where its storage tells them apart/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "paired-null-and-undefined-tests",
+    `
+    const gate = new Float32Array([0, 1]);
+    interface Bounds { x: number }
+    interface Opts { linkedHandle?: Bounds | null; current: boolean }
+    const dirty = (opts: Opts): boolean => opts.linkedHandle !== null && opts.linkedHandle !== undefined && opts.current === false;
+    const handles: (Bounds | null | undefined)[] = [{ x: 1 }, null, undefined];
+    let count = 0;
+    for (let i = 0; i < 3; i++) if (dirty({ linkedHandle: handles[i], current: gate[0]! > 0 })) count++;
+    if (count !== 1) throw new Error("present pair " + count);
+    const absent = (value: Bounds | null | undefined): boolean => value === null || value === undefined;
+    if (absent(handles[0]) || !absent(handles[1]) || !absent(handles[2])) throw new Error("absent pair");
+    let pending: Bounds | null | undefined = gate[1]! > 0 ? null : undefined;
+    let changed = pending !== null && pending !== undefined;
+    if (changed) throw new Error("null pending");
+    pending = { x: 2 };
+    changed = pending !== null && pending !== undefined;
+    if (!changed) throw new Error("present pending");
+`,
+);
+
+check(
+    "typed-conditional-spread-optional-fields",
+    `
+    const gate = new Float32Array([0, 1]);
+    interface Frame { x: number }
+    interface Spec { value: number; scrub?: string; onCommit?: () => void; frame?: Frame }
+    const keep: Spec = { value: 0, frame: { x: 1 } };
+    const specs: Spec[] = [keep];
+    specs.push({ value: 2, ...(gate[1]! > 0 ? { scrub: "x" } : {}) });
+    const kept: Spec = { value: 3, scrub: "a", ...(gate[0]! > 0 ? { scrub: "b" } : {}) };
+    const replaced: Spec = { value: 3, scrub: "a", ...(gate[1]! > 0 ? { scrub: "b" } : {}) };
+    if (specs[1]!.scrub !== "x" || specs[1]!.onCommit !== undefined || specs[1]!.frame !== undefined)
+        throw new Error("absent optional fields");
+    if (kept.scrub !== "a" || replaced.scrub !== "b") throw new Error("typed spread override");
+`,
+);

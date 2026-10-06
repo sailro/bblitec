@@ -191,6 +191,28 @@ export function excludesObjectColour(expected: ts.Type | undefined): boolean {
     );
 }
 
+/**
+ * Whether every present value of a type is truthy: objects, non-empty string
+ * and non-zero number literals, and `true`. Its absent values are then its
+ * only falsy ones.
+ */
+export function presentValuesTruthy(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return presentMembers(type).every((member) => {
+        if (member.isStringLiteral()) return member.value !== "";
+        if (member.isNumberLiteral()) return member.value !== 0;
+        if ((member.flags & ts.TypeFlags.BooleanLiteral) !== 0)
+            return member === checker.getTrueType();
+        return (
+            (member.flags &
+                (ts.TypeFlags.Object | ts.TypeFlags.NonPrimitive)) !==
+            0
+        );
+    });
+}
+
 /** Whether a type admits `null`, `undefined` or `void`. */
 export function isNullable(type: ts.Type): boolean {
     const absent = nullability(type);

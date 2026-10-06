@@ -2982,10 +2982,14 @@ export class DeclarationLowerer {
                 ? { sharedStorageCpp: cppName }
                 : {}),
             dataType: annotated,
+            // A key a conditional spread decides is own while its field is.
             ...(annotated.kind === "struct" &&
             initializerSnapshot?.kind === "record" &&
             ts.isIdentifier(name) &&
-            !mutablePlainObject
+            !mutablePlainObject &&
+            !Object.values(initializerSnapshot.recordProperties ?? {}).some(
+                (property) => property.conditionalOwnKey,
+            )
                 ? {
                       recordOwnKeys: Object.keys(
                           initializerSnapshot.recordProperties ?? {},

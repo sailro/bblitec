@@ -8,6 +8,8 @@ export type DataSinkHost = Pick<
     | "context"
     | "compileStringSink"
     | "compileKnownValueForSink"
+    | "conditionalKeyPresentCpp"
+    | "conditionalKeyValue"
     | "compileForSink"
     | "compileDataPath"
     | "narrowOptional"

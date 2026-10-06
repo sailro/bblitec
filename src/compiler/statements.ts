@@ -2318,20 +2318,62 @@ export class StatementLowerer {
                 ? context.dataLowerer.narrowOptional(raw, statement.expression)
                 : raw;
         if (owner.kind === "record") {
-            for (const key of Object.keys(owner.recordProperties ?? {})) {
-                const completed = this.emitUnrolledIteration(
-                    context,
-                    statement,
+            // A key a conditional spread wrote is visited while it is own;
+            // a runtime skip cannot carry a static loop exit.
+            const conditional = Object.values(
+                owner.recordProperties ?? {},
+            ).some((value) => value.conditionalOwnKey);
+            if (
+                conditional &&
+                someAnalysisNode(
                     statement.statement,
-                    () =>
-                        this.bindStaticIterationValue(
-                            context,
-                            binding,
-                            staticStringValue(key, (text) =>
-                                context.cppString(text),
-                            ),
-                        ),
+                    (node) =>
+                        ts.isBreakStatement(node) ||
+                        ts.isContinueStatement(node) ||
+                        ts.isReturnStatement(node),
+                    { functions: "skip" },
+                )
+            )
+                context.fail(
+                    statement,
+                    "for...in over a record whose keys a conditional spread decides cannot leave the loop early.",
                 );
+            for (const [key, value] of Object.entries(
+                owner.recordProperties ?? {},
+            )) {
+                const present = value.conditionalOwnKey
+                    ? context.dataLowerer.conditionalKeyPresentCpp(
+                          value,
+                          statement.expression,
+                      )
+                    : undefined;
+                if (present) {
+                    context.emit({ kind: "open", code: `if (${present}) {` });
+                    context.increaseIndent();
+                    context.enterRuntimeControlFlow();
+                }
+                let completed: "normal" | "break" | "continue";
+                try {
+                    completed = this.emitUnrolledIteration(
+                        context,
+                        statement,
+                        statement.statement,
+                        () =>
+                            this.bindStaticIterationValue(
+                                context,
+                                binding,
+                                staticStringValue(key, (text) =>
+                                    context.cppString(text),
+                                ),
+                            ),
+                    );
+                } finally {
+                    if (present) {
+                        context.leaveRuntimeControlFlow();
+                        context.decreaseIndent();
+                        context.emit({ kind: "close", code: "}" });
+                    }
+                }
                 if (completed === "break") break;
             }
             return;

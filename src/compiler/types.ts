@@ -2161,6 +2161,11 @@ export interface ValueFields {
      * the built one was already moved into storage of its own.
      */
     builtFrom?: { readonly node: ts.Expression; readonly cpp: string };
+    /**
+     * A compile-time record member only one arm of a conditional wrote
+     * (`...(c ? { a } : {})`): an own key exactly while its value is present.
+     */
+    conditionalOwnKey?: true;
     /** A pinned function retained as a compile-time alias of its intrinsic. */
     intrinsicName?: string;
     hostFunction?: "fetch" | "clipboard-write" | "gpu-request-adapter";

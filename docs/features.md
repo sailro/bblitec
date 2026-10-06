@@ -91,7 +91,11 @@ native identity. Mutation, escaping aliases and untracked extraction withdraw th
 variables are not loaded implicitly.
 
 Defaults and short-circuit operands evaluate once and lazily. Record-valued `||` supports nested `&&`
-guards and retains the selected record's identity. Operands of concatenation, arithmetic,
+guards and retains the selected record's identity; `a && b` selects represented values, a left whose
+present values are all truthy contributing only its absence. Conditional branches of different native
+kinds select as the storage of the conditional's type; a branch preparing a record, tuple or searched
+value runs only when selected. A conditional spread (`...(c ? { a } : {})`) adds its keys only where its
+arm is taken. An assignment is a value (`a.x = b.x = false`). Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
 call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
@@ -104,10 +108,11 @@ and `=== undefined` on an absent value answer from what its type admits. A read 
 `null` -- a `Map.get`, an optional chain over a nullable field, an array index, `pop()`/`shift()` --
 knows whether the slot existed, so a missing slot (`undefined`) and a stored `null` compare and spell
 apart. Primitive unions containing both absence values retain distinct tags in dynamic storage;
-other values that may be either without a represented tag refuse strict comparison (`== null` answers
-either). An enum member reads as its constant wherever it is written,
-`Tone["Soft"]` included. Object and array declarations compose nested bindings, rest and lazy defaults;
-a parsed document destructures its array elements or string code points, without rest or defaults.
+other values that may be either without a represented tag refuse strict comparison (`== null`, or
+`x !== null && x !== undefined` over one plain read, answers either). An enum member reads as its
+constant wherever it is written, `Tone["Soft"]` included. Object and array declarations compose nested
+bindings, rest and lazy defaults; a parsed document destructures its array elements or string code
+points, without rest or defaults.
 Destructuring finishes the source before left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings, plain struct fields and,
 when unrolled, plain or renamed object bindings; other nested/default/renamed struct bindings refuse.
@@ -168,7 +173,7 @@ MessageChannel refuses; gzip/base64 JSON decoded through
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options; `toLocaleLowerCase`/`toLocaleUpperCase` with default, string or string-array locales | Option getters and non-string locale entries refuse |
 | Text encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`) decoding an ArrayBuffer or view; `TextEncoder.encode` | Other encodings, streaming decode, `encodeInto` and codec properties refuse |
-| Objects | Supported keys/values/entries (as arrays for dictionaries, structs and parsed documents), assign/fromEntries/hasOwn/is, shallow spreads (including nullable dictionaries), object-rest copies of represented records, delete/in, `for...in` over the same own keys; dynamic struct membership; fixed-field records read through string-indexed helper parameters; a closed record asserted from an open string record (`as Record<Union, V>`) views its entries; one asserted from `{}` is a dictionary | Object rest requires literal exclusion keys and a concrete record result. Own keys follow [fidelity](fidelity.md#semantic-contract); fixed-field dictionary reads require one non-nullable field type and preserve aliases; dynamic writes through that view, dynamic class membership and class hasOwn refuse. A struct with `?` properties spreads into a compile-time record or a fixed key list only with known own keys; Object.assign targets records, object literals and structs, other targets refuse; a closed asserted view's read of an absent entry refuses; enum-keyed views refuse |
+| Objects | Supported keys/values/entries (as arrays for dictionaries, structs, parsed documents and records with conditionally present keys), assign/fromEntries/hasOwn/is, shallow spreads (including nullable dictionaries and structs with `?` properties), object-rest copies of represented records, delete/in, `for...in` over the same own keys; dynamic struct membership; fixed-field records read through string-indexed helper parameters; a closed record asserted from an open string record (`as Record<Union, V>`) views its entries; one asserted from `{}` is a dictionary | Object rest requires literal exclusion keys and a concrete record result. Own keys follow [fidelity](fidelity.md#semantic-contract); fixed-field dictionary reads require one non-nullable field type and preserve aliases; dynamic writes through that view, dynamic class membership and class hasOwn refuse. A struct with `?` properties or a conditional spread enumerates as a fixed key list (Object.assign) only with known own keys, and `for...in` over its keys cannot leave the loop early; Object.assign targets records, object literals and structs, other targets refuse; a closed asserted view's read of an absent entry refuses; enum-keyed views refuse |
 | JSON | Represented parse/stringify, mixed unions of serializable values, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers, cyclic serialization and Map/Set values refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone; Collator(locales, options) and `compare`, as `localeCompare`; number `toLocaleString(locales, options)`: decimal/percent, digit, grouping and locale-matcher options, `nu` extension | No DateTimeFormat locale/options, formatting or broader fields; Collator `resolvedOptions` and a detached `compare` refuse; `Intl.NumberFormat`, currency/unit styles and other number options refuse (a struct's absent option field is checked at run time); CLDR data is the platform ICU's |

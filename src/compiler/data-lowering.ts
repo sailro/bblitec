@@ -5,6 +5,7 @@ import {
     objectTruthinessCpp,
     optionalPresentCpp,
     optionalValueCpp,
+    presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
     statedTruthinessCpp,
@@ -29,6 +30,7 @@ import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
+    accessedPropertySymbol,
     CompilerSymbols,
     declaredSymbol,
     isGlobalUndefined,
@@ -41,6 +43,7 @@ import {
     admitsUndefined,
     arrayElementType,
     nullability,
+    presentValuesTruthy,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
@@ -307,6 +310,7 @@ interface DataLoweringContext extends Pick<
     | "classLowerer"
     | "compileValue"
     | "emitDiscardedValue"
+    | "emitExpressionAsStatement"
     | "compileNumber"
     | "castNumber"
     | "conditions"
@@ -451,20 +455,32 @@ export class DataLowerer {
             ts.isElementAccessExpression(left)
         ) {
             const target = this.compileDataPath(left, "write");
+            // The store withdraws generation snapshots of the field's owner,
+            // as a statement store does.
+            const stored = (value: Value): Value => {
+                const root = rootIdentifier(left, (node) =>
+                    this.context.unwrap(node),
+                );
+                const owner =
+                    root && this.context.bindings.lookupOptional(root);
+                if (owner)
+                    this.context.bindings.invalidateRecordProperties(owner);
+                return value;
+            };
             if (target?.kind === "number" && !target.dataStore) {
-                return {
+                return stored({
                     kind: "number",
                     cpp: `(${target.cpp} = ${this.context.compileNumber(expression.right, "double")})`,
                     dataType: { kind: "number" },
-                };
+                });
             }
             if (target?.kind === "boolean" && !target.dataStore) {
-                return {
+                return stored({
                     kind: "boolean",
                     cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
                     dataType: { kind: "boolean" },
                     impure: true,
-                };
+                });
             }
             return undefined;
         }
@@ -8139,6 +8155,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        // `a.x = b.x = null`: the inner assignment runs as its statement and
+        // its stored value is read back from its target. Number and boolean
+        // sinks store a scalar in place.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            dataType.kind !== "number" &&
+            dataType.kind !== "boolean"
+        ) {
+            if (
+                someAnalysisNode(
+                    unwrapped.left,
+                    (node) =>
+                        ts.isCallExpression(node) || ts.isNewExpression(node),
+                )
+            )
+                this.context.fail(
+                    unwrapped.left,
+                    "An assignment used as a value reads its target back; a target containing a call must be bound to a local first.",
+                );
+            this.context.emitExpressionAsStatement(unwrapped);
+            return this.compileForSink(unwrapped.left, dataType);
+        }
         if (ts.isBinaryExpression(unwrapped)) {
             const logical = this.compileRecordLogicalValue(unwrapped, dataType);
             if (logical)
@@ -9251,7 +9290,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     for (const [name, value] of Object.entries(
                         spread.recordProperties ?? {},
                     )) {
-                        assign(name, value, property);
+                        // A key a conditional spread decides is stored only
+                        // while it is own, keeping an earlier value
+                        // otherwise; an unwritten `?` field is already
+                        // absent, so its value stores as it is.
+                        const field = this.context.dataTypes.structField(
+                            dataType.name,
+                            name,
+                            property,
+                        );
+                        if (
+                            !value.conditionalOwnKey ||
+                            !assigned.has(field.name)
+                        ) {
+                            assign(name, value, property);
+                            continue;
+                        }
+                        const held = this.context.bindings.pinValueToTemporary(
+                            value,
+                            "spread_member",
+                            property.expression,
+                        );
+                        this.context.emit({
+                            kind: "open",
+                            code: `if (${this.conditionalKeyPresentCpp(held, property)}) {`,
+                        });
+                        this.context.increaseIndent();
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(this.conditionalKeyValue(held), field.type, property)};`,
+                        });
+                        this.context.decreaseIndent();
+                        this.context.emit({ kind: "close", code: "}" });
                     }
                     // Methods are own properties a spread copies too.
                     for (const [name, method] of Object.entries(
@@ -9425,8 +9495,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const missing = this.context.dataTypes
             .structFields(dataType.name, literal)
             .find(
+                // A `?` field holding a nullable reference or function is
+                // absent in its default storage.
                 (field) =>
                     field.type.kind !== "optional" &&
+                    !field.optionalProperty &&
                     !field.defaultWhenMissing &&
                     !assigned.has(field.name),
             );
@@ -9860,17 +9933,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ].flatMap((fields) => Object.keys(fields ?? {})),
                 ),
             ];
+            // A key a conditional spread wrote is own while its value is.
+            const ownWhile = (key: string): string | undefined => {
+                const property = narrowed.recordProperties?.[key];
+                return property?.conditionalOwnKey
+                    ? this.conditionalKeyPresentCpp(property, ownerNode)
+                    : undefined;
+            };
+            const inherited = (key: string): boolean =>
+                operator === "in" && Object.hasOwn(Object.prototype, key);
             if (key.staticString !== undefined) {
-                if (keys.includes(key.staticString)) return "true";
+                if (
+                    keys.includes(key.staticString) &&
+                    !inherited(key.staticString)
+                )
+                    return ownWhile(key.staticString) ?? "true";
                 return String(
-                    operator === "in" &&
-                        Object.hasOwn(Object.prototype, key.staticString),
+                    keys.includes(key.staticString) ||
+                        inherited(key.staticString),
                 );
             }
             const name = this.membershipStringKeyCpp(key, keyNode);
-            const tests = keys.map(
-                (key) => `${name} == ${this.context.cppString(key)}`,
-            );
+            const tests = keys.map((key) => {
+                const test = `${name} == ${this.context.cppString(key)}`;
+                const present = ownWhile(key);
+                return present ? `(${test} && ${present})` : test;
+            });
             if (operator === "in") {
                 this.context.reachJsData();
                 tests.push(`bbl::js::object_prototype_has_property(${name})`);
@@ -10305,6 +10393,107 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 });
             },
         );
+        return this.leafValue(result, type);
+    }
+
+    /**
+     * Whether a record member a conditional spread wrote
+     * (`Value.conditionalOwnKey`) is an own key: its stored value is present.
+     */
+    public conditionalKeyPresentCpp(value: Value, node: ts.Node): string {
+        this.context.useNativeValue(value);
+        const present = presenceCpp(value);
+        if (present !== undefined) return present;
+        const type = value.dataType;
+        if (type?.kind === "json") return `!${value.cpp}.is_undefined()`;
+        if (
+            type?.kind === "function" ||
+            (type?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(type.name))
+        )
+            return `static_cast<bool>(${value.cpp})`;
+        return this.context.fail(
+            node,
+            "A record key a conditional spread decides needs a represented absent value.",
+        );
+    }
+
+    /**
+     * The value of a present conditional record member: the one its
+     * nullable storage holds.
+     */
+    public conditionalKeyValue(value: Value): Value {
+        return value.dataType?.kind === "optional"
+            ? this.presentOptionalValue(value, value.dataType.inner)
+            : value;
+    }
+
+    /**
+     * `left && right` as a value of represented storage: the right operand,
+     * evaluated only when the left is truthy, else the left itself. A left
+     * whose present values are all truthy (an object, a non-empty literal)
+     * contributes only its absent value; a nullable result whose storage
+     * tells `null` from `undefined` needs the left to say which.
+     */
+    public compileLogicalAndValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        if (
+            expression.operatorToken.kind !==
+            ts.SyntaxKind.AmpersandAmpersandToken
+        )
+            return undefined;
+        const type = this.dataTypeAt(expression);
+        if (!type) return undefined;
+        const left = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(expression.left),
+            "logical_left",
+            expression.left,
+        );
+        const condition = this.truthinessCondition(left);
+        if (condition === undefined)
+            this.context.fail(
+                expression.left,
+                "Logical value selection requires a truth-testable left operand.",
+            );
+        const leftType = this.context.checker.getTypeAtLocation(
+            expression.left,
+        );
+        let falsy: Value = left;
+        if (
+            !isJsonValue(left) &&
+            presentValuesTruthy(this.context.checker, leftType)
+        ) {
+            const absent = nullability(leftType);
+            if (absent.null && absent.undefined && type.kind === "json")
+                this.context.fail(
+                    expression.left,
+                    "A short circuit whose left operand may be null or undefined selects a value only where its storage tells them apart.",
+                );
+            falsy = {
+                kind: "json-null",
+                cpp: absent.null && !absent.undefined ? "" : "std::nullopt",
+            };
+        }
+        const result = this.context.allocateTemporaryCppName("logical_value");
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: result,
+            initializer: this.compileKnownValueForSink(
+                falsy,
+                type,
+                expression.left,
+            ),
+        });
+        this.context.registerNativeBinding(result);
+        this.emitGuardedStore(condition, () => {
+            const right = this.compileForSink(expression.right, type);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${right};`,
+            });
+        });
         return this.leafValue(result, type);
     }
 
@@ -12286,6 +12475,86 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return negated ? "true" : "false";
         }
         return undefined;
+    }
+
+    /**
+     * `x !== null && x !== undefined` (or `x === null || x === undefined`)
+     * over one reference read without effects: the loose test `x != null`
+     * (`x == null`), which one native absent state answers exactly whichever
+     * absence `x` holds. Undefined for any other expression.
+     */
+    public pairedAbsence(
+        expression: ts.BinaryExpression,
+    ): { reference: ts.Expression; present: boolean } | undefined {
+        const operator = expression.operatorToken.kind;
+        const isAnd = operator === ts.SyntaxKind.AmpersandAmpersandToken;
+        if (!isAnd && operator !== ts.SyntaxKind.BarBarToken) return undefined;
+        const comparison = isAnd
+            ? ts.SyntaxKind.ExclamationEqualsEqualsToken
+            : ts.SyntaxKind.EqualsEqualsEqualsToken;
+        const tested = (
+            node: ts.Expression,
+        ):
+            | { reference: ts.Expression; literal: "null" | "undefined" }
+            | undefined => {
+            const binary = this.context.unwrap(node);
+            if (
+                !ts.isBinaryExpression(binary) ||
+                binary.operatorToken.kind !== comparison
+            )
+                return undefined;
+            const right = this.absentLiteral(binary.right);
+            const left = this.absentLiteral(binary.left);
+            return right && !left
+                ? {
+                      reference: this.context.unwrap(binary.left),
+                      literal: right,
+                  }
+                : left && !right
+                  ? {
+                        reference: this.context.unwrap(binary.right),
+                        literal: left,
+                    }
+                  : undefined;
+        };
+        const first = tested(expression.left);
+        const second = tested(expression.right);
+        // Each operand reads the same storage: a name or a chain of data
+        // fields, none of them an accessor.
+        const plainRead = (node: ts.Expression): boolean =>
+            ts.isIdentifier(node) ||
+            node.kind === ts.SyntaxKind.ThisKeyword ||
+            (ts.isPropertyAccessExpression(node) &&
+                !accessedPropertySymbol(
+                    this.context.checker,
+                    node,
+                )?.declarations?.some(ts.isGetAccessorDeclaration) &&
+                plainRead(this.context.unwrap(node.expression)));
+        return first &&
+            second &&
+            first.literal !== second.literal &&
+            plainRead(first.reference) &&
+            first.reference.getText() === second.reference.getText()
+            ? { reference: first.reference, present: isAnd }
+            : undefined;
+    }
+
+    /** {@link pairedAbsence} as a condition. */
+    public pairedAbsenceComparison(
+        expression: ts.BinaryExpression,
+    ): string | undefined {
+        const paired = this.pairedAbsence(expression);
+        if (!paired) return undefined;
+        const value =
+            this.compileDataPath(paired.reference, "read") ??
+            this.context.compileValue(paired.reference);
+        return this.absentComparison(
+            value,
+            paired.reference,
+            undefined,
+            paired.present,
+            true,
+        );
     }
 
     public equalityComparison(

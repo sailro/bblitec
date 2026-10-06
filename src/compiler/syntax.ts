@@ -88,6 +88,13 @@ export function unwrapExpression(
     return current;
 }
 
+/** The node that consumes an expression, past the wrappers around it. */
+export function wrappedParent(expression: ts.Expression): ts.Node {
+    let current: ts.Node = expression;
+    while (isExpressionWrapper(current.parent)) current = current.parent;
+    return current.parent;
+}
+
 /**
  * Whether the wrapper chain around an expression carries a `!`. A reader
  * that erases the wrappers still has to know the scene asserted presence,

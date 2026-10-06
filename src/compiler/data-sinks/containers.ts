@@ -213,6 +213,11 @@ function valueMap(
     node: ts.Node,
 ): string | undefined {
     if (value.kind === "record") {
+        // A key a conditional spread wrote is stored while it is own, in
+        // creation order.
+        const conditional = Object.values(value.recordProperties ?? {}).some(
+            (entry) => entry.conditionalOwnKey,
+        );
         const entries = Object.entries(value.recordProperties ?? {}).map(
             ([name, entry]) => {
                 const key =
@@ -224,11 +229,19 @@ function valueMap(
                                 node,
                                 "Compile-time open Records require string or number keys.",
                             );
-                return `{${key}, ${lowerer.compileKnownValueForSink(entry, dataType.value, node)}}`;
+                if (!conditional)
+                    return `{${key}, ${lowerer.compileKnownValueForSink(entry, dataType.value, node)}}`;
+                if (!entry.conditionalOwnKey)
+                    return `own.set(${key}, ${lowerer.compileKnownValueForSink(entry, dataType.value, node)});`;
+                const held = lowerer.conditionalKeyValue(entry);
+                return `if (${lowerer.conditionalKeyPresentCpp(entry, node)}) own.set(${key}, ${lowerer.compileKnownValueForSink(held, dataType.value, node)});`;
             },
         );
         lowerer.context.reachJsData();
-        return `${lowerer.context.dataTypes.cppType(dataType)}{${entries.join(", ")}}`;
+        const cppType = lowerer.context.dataTypes.cppType(dataType);
+        return conditional
+            ? `[&]() { ${cppType} own; ${entries.join(" ")} return own; }()`
+            : `${cppType}{${entries.join(", ")}}`;
     }
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
