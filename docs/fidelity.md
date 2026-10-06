@@ -23,7 +23,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Assets/producers | Generation-time loading, query folding and Chromium bakes |
 | Workers/Window | AOT factories, typed cloning, realm loops, layout snapshots; 16 ms ResizeObserver polling |
 | Data | Typed storage, checked access, bounded sparse/JSON representation |
-| Typed records | Required and optional undefined-only fields retain own-key presence through storage and cloning; JSON omits them. Other optional fields holding undefined are absent. Keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
+| Typed records | Required and optional undefined-only fields retain own-key presence through storage and cloning; JSON omits them. Other optional fields, and conditional spread keys, holding undefined are absent. Keys enumerate in declaration order. Array spreads into another record type copy each record; nested objects stay shared |
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data. Locale case conversion validates and selects only the first requested tag, matching Chromium |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections and WeakRef | Erased object/DOM WeakMap keys use weak identity; other keys and WeakRef targets are retained strongly |
