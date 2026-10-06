@@ -123,15 +123,23 @@ export function firstReturn(
     return undefined;
 }
 
-/** A call typed never: TypeScript's own rule for a call that cannot return. */
+/**
+ * A call that cannot return: TypeScript's own rule, a callee whose declared
+ * return type is written `never`. A call typed never only because an argument
+ * narrowed to never (`appendChild<T>(node: T)` over a narrowed `T`) still
+ * returns: that narrowing assumes property reads that run time can change.
+ */
 export function callsNever(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
     const call = unwrapExpression(expression, { await: true });
+    if (!ts.isCallExpression(call)) return false;
+    const declaration = checker.getResolvedSignature(call)?.getDeclaration();
     return (
-        ts.isCallExpression(call) &&
-        (checker.getTypeAtLocation(call).flags & ts.TypeFlags.Never) !== 0
+        declaration !== undefined &&
+        "type" in declaration &&
+        declaration.type?.kind === ts.SyntaxKind.NeverKeyword
     );
 }
 

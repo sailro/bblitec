@@ -7110,6 +7110,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ambiguous();
             return doubleCpp(absent.null ? 0 : undefinedReads);
         }
+        if (value.kind === "data" && value.dataType?.kind === "json") {
+            // A dynamic value holds undefined apart from null: undefined
+            // takes the default, null and the rest read through ToNumber.
+            const held = this.context.bindings.pinValueToTemporary(
+                value,
+                "number_argument",
+                argument,
+            );
+            this.context.reachJsData();
+            return `(${held.cpp}.is_undefined() ? ${doubleCpp(undefinedReads)} : ${held.cpp}.to_number())`;
+        }
         if (
             value.kind !== "data" ||
             value.dataType?.kind !== "optional" ||
@@ -8808,6 +8819,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * The member a sink is storing, read out of the value its node
      * evaluates to: the node it converts at, the member's own expression
      * where known, and the array expression an element was read out of.
+     *
+     * @unjournaled Set for one member conversion and restored by its finally.
      */
     private memberConversion:
         | {

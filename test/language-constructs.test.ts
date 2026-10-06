@@ -3711,7 +3711,7 @@ test("unsupported language shapes refuse explicitly", () => {
             /'in' is decided/,
         ],
         [
-            "function f(r: { a: number }): void { delete r.a; } f({ a: 1 });",
+            "interface R { a: number } const rs: R[] = [{ a: 1 }]; rs.push({ a: 2 }); function f(r: R): void { delete (r as { a?: number }).a; } f(rs[0]!);",
             /required field/,
         ],
         [
@@ -7768,14 +7768,6 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
             /String\.indexOf expects a search string and an optional position/,
         ],
         [
-            `function ends(text: string, end: number | null | undefined): boolean {
-                // @ts-expect-error null is outside the declared position type
-                return text.endsWith("b", end);
-            }
-            console.log(ends("ab", [1].length > 3 ? null : undefined));`,
-            /String\.endsWith reads a null position as 0 and an undefined one as the end; this position's storage cannot tell them apart/,
-        ],
-        [
             `interface S { size: number; tint?: number }
             const clear = <T extends object, K extends keyof T>(t: T, k: K): void => { delete t[k]; };
             const s: S = { size: 1, tint: 2 };
@@ -7805,6 +7797,41 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
     for (const [source, message] of refusals)
         assert.throws(() => compileSource(source), message);
 });
+
+check(
+    "calls-typed-never-by-narrowing-still-return",
+    `
+    interface Item { id: number }
+    interface Ev { target: Item | null }
+    const ev: Ev = { target: null };
+    const node: Item = { id: 1 };
+    function mutate(): void { ev.target = node; }
+    if (ev.target !== null) throw new Error("initial target");
+    mutate();
+    // TypeScript keeps ev.target narrowed to null across mutate(), so this
+    // comparison narrows node to never, and keep(node) is typed never.
+    if (ev.target !== node) throw new Error("target after mutate");
+    function keep<T>(value: T): T { return value; }
+    keep(node);
+    let after = 0;
+    after++;
+    if (after !== 1) throw new Error("statements after a call typed never by narrowing still run");
+`,
+);
+
+check(
+    "string-search-positions-that-may-be-null-or-undefined",
+    `
+    function ends(text: string, end: number | null | undefined): boolean {
+        // @ts-expect-error null is outside the declared position type
+        return text.endsWith("b", end);
+    }
+    const picks = [2, 1, 0];
+    const position = (pick: number): number | null | undefined => (pick === 0 ? undefined : pick === 1 ? null : 1);
+    if (!ends("ab", position(picks[2]!)) || ends("ab", position(picks[1]!)) || ends("ab", position(picks[0]!)))
+        throw new Error("undefined reads the end, null reads 0, a number reads itself");
+`,
+);
 
 check(
     "object-destructuring-of-documents",

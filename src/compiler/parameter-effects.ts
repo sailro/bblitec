@@ -373,12 +373,16 @@ interface Scope {
 /** One walk of a function's body for the uses of one parameter's objects. */
 class EffectWalker {
     /** What each local binding may hold of the parameter's objects. */
+    /** @unjournaled State of one analysis walk, discarded with the walker. */
     private readonly aliases = new Map<ts.Symbol, readonly Projection[]>();
-    /** The binding names an alias declares, which are not references. */
+    /** @unjournaled The binding names an alias declares, which are not references; one walk's state. */
     private readonly aliasNames = new Set<ts.Node>();
+    /** @unjournaled State of one analysis walk, discarded with the walker. */
     private readonly inPlaceScopes = new Map<ts.Node, boolean>();
     private readonly writeTargets: ReadonlySet<ts.Node>;
+    /** @unjournaled State of one analysis walk, discarded with the walker. */
     private changed = false;
+    /** @unjournaled State of one analysis walk, discarded with the walker. */
     private uses: ParameterUse[] = [];
 
     public constructor(
