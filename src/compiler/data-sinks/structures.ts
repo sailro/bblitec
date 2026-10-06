@@ -16,6 +16,7 @@ import {
 import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { homeObjectReceiver, readsHomeObject } from "../home-object-methods.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -334,6 +335,20 @@ function valueStruct(
                 throw new DynamicBindingStorageRequired(declaration, "source");
         }
         lowerer.context.dataTypes.cppType(dataType);
+        const home = homeObjectReceiver(
+            lowerer.context,
+            dataType,
+            fields.flatMap((field) => {
+                const method =
+                    field.type.kind === "function"
+                        ? value.recordMethods?.[field.sourceName]
+                        : undefined;
+                return method && readsHomeObject(method)
+                    ? [{ name: field.sourceName, method }]
+                    : [];
+            }),
+            node,
+        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const getter = value.recordGetters?.[field.sourceName];
@@ -360,6 +375,9 @@ function valueStruct(
                                 value,
                                 ts.isMethodDeclaration(method) &&
                                     ts.isClassDeclaration(method.parent),
+                                home && readsHomeObject(method)
+                                    ? home
+                                    : undefined,
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
@@ -393,6 +411,13 @@ function valueStruct(
                 );
             })
             .join(", ")}}`;
+        if (home) {
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${home.cpp} = bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate});`,
+            });
+            return home.cpp;
+        }
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
             ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
             : aggregate;

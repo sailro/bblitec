@@ -4696,3 +4696,74 @@ check(
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
 `,
 );
+
+check(
+    "literal-methods-read-their-home-object-through-this",
+    `
+    interface Mover {
+        carryBegin(id: number): boolean;
+        prepareBegin(id: number): (() => void) | null;
+        carried(): number;
+        self(): Mover;
+    }
+    function createMover(limit: number): Mover {
+        const carried = new Set<number>();
+        return {
+            carryBegin(id) {
+                const begin = this.prepareBegin(id);
+                if (!begin) return false;
+                begin();
+                return true;
+            },
+            prepareBegin(id) {
+                if (id > limit) return null;
+                return () => { carried.add(id); };
+            },
+            carried() { return carried.size; },
+            self() { return this; },
+        };
+    }
+    interface Ledger { balance: number; grant(amount: number): void; morning(shares: number): number }
+    function createLedger(): Ledger {
+        return {
+            balance: 0,
+            grant(amount) { if (amount > 0) this.balance += amount; },
+            morning: function (shares) { const amount = shares * 2; this.grant(amount); return this.balance; },
+        };
+    }
+    const movers: Array<typeof createMover> = [createMover];
+    const mover = movers[0]!(3);
+    const other = movers[0]!(9);
+    if (!mover.carryBegin(2) || mover.carryBegin(5) || mover.carried() !== 1) throw new Error("sibling through this");
+    if (!other.carryBegin(5) || other.carried() !== 1 || mover.carried() !== 1) throw new Error("separate home objects");
+    if (mover.self() !== mover || other.self() === mover) throw new Error("this identity");
+    mover.prepareBegin = () => null;
+    if (mover.carryBegin(1) || !other.carryBegin(1)) throw new Error("this reads the live field");
+    const ledgers: Array<typeof createLedger> = [createLedger];
+    const ledger = ledgers[0]!();
+    if (ledger.morning(3) !== 6 || ledger.balance !== 6) throw new Error("void sibling and field through this");
+    ledger.balance = 1;
+    if (ledger.morning(1) !== 3) throw new Error("field written outside");
+`,
+);
+
+test("literal methods reading this refuse reads of their function value", () => {
+    const factory = `
+        interface Mover { carryBegin(id: number): boolean; prepareBegin(id: number): boolean }
+        function createMover(): Mover {
+            return { carryBegin(id) { return this.prepareBegin(id); }, prepareBegin(id) { return id > 0; } };
+        }
+        const movers: Array<typeof createMover> = [createMover];
+        const mover = movers[0]!();`;
+    for (const use of [
+        "const extracted = mover.carryBegin; const unused = extracted(1);",
+        "const unused = mover.carryBegin.call(mover, 1);",
+        "const { carryBegin } = mover; const unused = carryBegin(1);",
+        "const copy: Mover = { ...mover }; const unused = copy.carryBegin(1);",
+    ])
+        assert.throws(
+            () => compileSource(`${factory}\n${use}`),
+            /Method 'carryBegin' reads `this`, and .*:\d+ reads its function value, which could call it with another receiver/,
+        );
+});
+

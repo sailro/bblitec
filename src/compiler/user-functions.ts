@@ -4484,6 +4484,13 @@ export class UserFunctionLowerer {
         try {
             const compileBody = () =>
                 context.captureManagedClosureLines(() => {
+                    // A literal method's `this` is its home object's shared cell.
+                    const receiver = context.activeThis();
+                    if (
+                        receiver?.sharedStorageCpp !== undefined &&
+                        functionUsesDynamicThis(declaration)
+                    )
+                        context.useNativeValue(receiver);
                     this.bindArgumentsObject(
                         context,
                         ir,

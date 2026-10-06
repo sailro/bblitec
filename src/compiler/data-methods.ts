@@ -327,6 +327,16 @@ export function mayCompileDataMethodCall(
     );
 }
 
+/** `this` when it is a native plain record (a literal method's home object), not a class instance. */
+function plainRecordReceiver(lowerer: DataLowerer): Value | undefined {
+    const receiver = lowerer.context.activeThis();
+    return receiver?.kind === "data" &&
+        receiver.dataType?.kind === "struct" &&
+        !lowerer.context.dataTypes.isClassStruct(receiver.dataType.name)
+        ? receiver
+        : undefined;
+}
+
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -443,7 +453,9 @@ export function compileDataMethodCall(
                 : ts.isStringLiteralLike(ownerExpression) ||
                     ts.isTemplateExpression(ownerExpression)
                   ? lowerer.context.compileValue(ownerExpression)
-                  : undefined;
+                  : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
+                    ? plainRecordReceiver(lowerer)
+                    : undefined;
     if (dynamicOwner && !ts.isOptionalChain(callee)) {
         dynamicOwner = lowerer.narrowOptional(
             dynamicOwner,
