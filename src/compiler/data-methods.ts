@@ -56,6 +56,7 @@ import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import {
+    absenceKind,
     arrayElementType,
     isTypeReference,
     nullability,
@@ -3317,72 +3318,54 @@ function compileSetDataMethod(
 }
 
 /**
- * The string searches that take a UTF-16 position: the runtime function, its
- * result, and the position an absent (undefined) argument stands for.
+ * The string searches that take a UTF-16 position, at every arity: the
+ * runtime helper, its result, the position an absent (undefined) argument
+ * stands for -- also the helper's default when the call passes none -- and,
+ * where one exists, the generation-time answer over a known receiver and
+ * needle with no position.
  */
 interface StringPositionSearch {
-    readonly cpp: (
-        receiver: string,
-        search: string,
-        position: string,
-    ) => string;
+    readonly helper: string;
     readonly result: "number" | "boolean";
     readonly absent: "start" | "end";
+    readonly fold?: (receiver: string, search: string) => boolean;
 }
 
 const STRING_POSITION_SEARCHES: ReadonlyMap<string, StringPositionSearch> =
-    new EmissionMap([
+    new EmissionMap<string, StringPositionSearch>([
         [
             "indexOf",
-            {
-                cpp: (receiver, search, position) =>
-                    `bbl::js::string_index_of(${receiver}, ${search}, ${position})`,
-                result: "number",
-                absent: "start",
-            },
+            { helper: "string_index_of", result: "number", absent: "start" },
         ],
         [
             "includes",
-            {
-                cpp: (receiver, search, position) =>
-                    `(bbl::js::string_index_of(${receiver}, ${search}, ${position}) >= 0.0)`,
-                result: "boolean",
-                absent: "start",
-            },
+            { helper: "string_includes", result: "boolean", absent: "start" },
         ],
         [
             "lastIndexOf",
-            {
-                cpp: (receiver, search, position) =>
-                    `bbl::js::string_last_index_of(${receiver}, ${search}, ${position})`,
-                result: "number",
-                absent: "end",
-            },
+            { helper: "string_last_index_of", result: "number", absent: "end" },
         ],
         [
             "startsWith",
             {
-                cpp: (receiver, search, position) =>
-                    `bbl::js::string_starts_with(${receiver}, ${search}, ${position})`,
+                helper: "string_starts_with",
                 result: "boolean",
                 absent: "start",
+                fold: (receiver, search) => receiver.startsWith(search),
             },
         ],
         [
             "endsWith",
-            {
-                cpp: (receiver, search, position) =>
-                    `bbl::js::string_ends_with(${receiver}, ${search}, ${position})`,
-                result: "boolean",
-                absent: "end",
-            },
+            { helper: "string_ends_with", result: "boolean", absent: "end" },
         ],
     ]);
 
 /**
  * `s.indexOf(search, position)` and its siblings: the receiver, the search
- * string and the position evaluate once, in order; the position is a UTF-16
- * index, NaN reads as 0 and an undefined argument as its absent default.
+ * string and the position evaluate once, in order. The position is a UTF-16
+ * index read through ToNumber (`null` is 0); undefined reads as the absent
+ * position, which for `lastIndexOf`/`endsWith` is the end and so needs
+ * storage telling it from `null`.
  */
 function compileStringPositionSearch(
     lowerer: DataLowerer,
@@ -3408,6 +3391,24 @@ function compileStringPositionSearch(
         : narrowed;
     const searchNode = argumentAt(call, 0);
     const searchValue = context.compileValue(searchNode);
+    const positionNode = call.arguments[1];
+    if (
+        search.fold &&
+        !positionNode &&
+        narrowed.staticString !== undefined &&
+        searchValue.staticString !== undefined
+    ) {
+        const value = search.fold(
+            narrowed.staticString,
+            searchValue.staticString,
+        );
+        return {
+            kind: "boolean",
+            cpp: value ? "true" : "false",
+            staticBoolean: value,
+            dataType: { kind: "boolean" },
+        };
+    }
     const searchText = lowerer.compileKnownValueForSink(
         pins[1]
             ? pinOperand(context, searchValue, searchNode, "search_text")
@@ -3415,34 +3416,47 @@ function compileStringPositionSearch(
         { kind: "string" },
         searchNode,
     );
-    const absent =
+    const position = positionNode
+        ? compileSearchPosition(lowerer, positionNode, method, search)
+        : undefined;
+    return lowerer.leafValue(
+        `bbl::js::${search.helper}(${receiver.cpp}, ${searchText}${position === undefined ? "" : `, ${position}`})`,
+        { kind: search.result },
+    );
+}
+
+/** A passed search position as a double: see `compileStringPositionSearch`. */
+function compileSearchPosition(
+    lowerer: DataLowerer,
+    node: ts.Expression,
+    method: string,
+    search: StringPositionSearch,
+): string {
+    const context = lowerer.context;
+    const admitted = nullability(context.checker.getTypeAtLocation(node));
+    if (!admitted.null && !admitted.undefined)
+        return context.compileNumber(node, "double");
+    const value = context.compileValue(node);
+    const absence = absenceKind(context.checker, value, node);
+    const fallback =
         search.absent === "start"
             ? "0.0"
-            : "std::numeric_limits<double>::infinity()";
-    const positionNode = call.arguments[1];
-    let position = absent;
-    if (positionNode) {
-        if (
-            nullability(context.checker.getTypeAtLocation(positionNode))
-                .undefined
-        ) {
-            const held = context.allocateTemporaryCppName("search_position");
-            context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: held,
-                initializer: lowerer.compileForSink(positionNode, {
-                    kind: "optional",
-                    inner: { kind: "number" },
-                }),
-            });
-            position = `(${optionalPresentCpp(held)} ? *${held} : ${absent})`;
-        } else position = context.compileNumber(positionNode, "double");
-    }
-    context.reachJsData();
-    return lowerer.leafValue(search.cpp(receiver.cpp, searchText, position), {
-        kind: search.result,
-    });
+            : absence === "null"
+              ? "0.0"
+              : typeof absence === "object"
+                ? `(${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::infinity())`
+                : absence === "either"
+                  ? context.fail(
+                        node,
+                        `String.${method} reads a null position as 0 and an undefined one as the end; this position's storage cannot tell them apart.`,
+                    )
+                  : "std::numeric_limits<double>::infinity()";
+    const optional = lowerer.compileKnownValueForSink(
+        value,
+        { kind: "optional", inner: { kind: "number" } },
+        node,
+    );
+    return `bbl::js::number_from_optional(${optional}, ${fallback})`;
 }
 
 function compileStringDataMethod(
@@ -3497,10 +3511,7 @@ function compileStringDataMethod(
               };
     }
     const positionedSearch = STRING_POSITION_SEARCHES.get(method);
-    if (
-        positionedSearch &&
-        (call.arguments.length === 2 || method === "lastIndexOf")
-    )
+    if (positionedSearch)
         return compileStringPositionSearch(
             lowerer,
             call,
@@ -3508,29 +3519,6 @@ function compileStringDataMethod(
             positionedSearch,
             narrowed,
         );
-    if (method === "indexOf" || method === "includes") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                `String.${method} expects a search string and an optional position.`,
-            );
-        }
-        const search = lowerer.compileForSink(argumentAt(call, 0), {
-            kind: "string",
-        });
-        const index = `bbl::js::string_index_of(${narrowed.cpp}, ${search})`;
-        return method === "indexOf"
-            ? {
-                  kind: "number",
-                  cpp: index,
-                  dataType: { kind: "number" },
-              }
-            : {
-                  kind: "boolean",
-                  cpp: `${index} >= 0.0`,
-                  dataType: { kind: "boolean" },
-              };
-    }
     if (method === "toUpperCase") {
         if (call.arguments.length !== 0) {
             lowerer.context.fail(
@@ -3799,55 +3787,6 @@ function compileStringDataMethod(
             kind: "data",
             cpp: `${regex}.replace(${source}, ${replacement})`,
             dataType: { kind: "string" },
-        };
-    }
-    if (method === "startsWith") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                "String.startsWith expects a search string and an optional position.",
-            );
-        }
-        const prefixValue = lowerer.context.compileValue(argumentAt(call, 0));
-        if (
-            narrowed.staticString !== undefined &&
-            prefixValue.staticString !== undefined
-        ) {
-            const value = narrowed.staticString.startsWith(
-                prefixValue.staticString,
-            );
-            return {
-                kind: "boolean",
-                cpp: value ? "true" : "false",
-                staticBoolean: value,
-                dataType: { kind: "boolean" },
-            };
-        }
-        if (!isStringValue(prefixValue)) {
-            lowerer.context.fail(
-                argumentAt(call, 0),
-                "String.startsWith expects a string argument.",
-            );
-        }
-        const prefix = prefixValue.cpp;
-        return {
-            kind: "boolean",
-            cpp: `bbl::js::string_starts_with(${narrowed.cpp}, ${prefix})`,
-        };
-    }
-    if (method === "endsWith") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                "String.endsWith expects a search string and an optional end position.",
-            );
-        }
-        const suffix = lowerer.compileForSink(argumentAt(call, 0), {
-            kind: "string",
-        });
-        return {
-            kind: "boolean",
-            cpp: `bbl::js::string_ends_with(${narrowed.cpp}, ${suffix})`,
         };
     }
     if (method === "charCodeAt") {
