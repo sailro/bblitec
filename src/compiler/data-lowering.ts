@@ -49,6 +49,7 @@ import { compileWeakRefNew } from "./weak-refs.js";
 import {
     DynamicBindingStorageRequired,
     requireDynamicBindingStorage,
+    type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
@@ -308,7 +309,13 @@ interface DataLoweringContext extends Pick<
     | "requireEngine"
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
-> {}
+> {
+    /** Declarations a storage demand retyped, by declaration. */
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+}
 
 /**
  * `owned` — the local holds a value it constructed.

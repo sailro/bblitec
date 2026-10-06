@@ -331,6 +331,16 @@ function valueStruct(
                 value,
                 node,
             );
+            // A binding already given its own storage is still a record
+            // only when lowering its initializer into that storage refused.
+            if (
+                declaration &&
+                lowerer.context.dynamicBindings.get(declaration) !== undefined
+            )
+                lowerer.context.fail(
+                    node,
+                    `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
+                );
             if (declaration)
                 throw new DynamicBindingStorageRequired(declaration, "source");
         }
