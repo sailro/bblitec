@@ -10619,17 +10619,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const type = this.dataTypeAt(expression);
         if (type?.kind !== "optional" || type.inner.kind !== "boolean")
             return undefined;
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical boolean selection requires a truth-testable left operand.",
-            );
         // An object contributes only its absent state to `object && bool`;
         // its present value belongs to the unselected arm, not the bool sink.
         const absentObject =
@@ -10639,29 +10628,66 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ).flags &
                 ts.TypeFlags.Object) !==
                 0;
-        const result = this.context.allocateTemporaryCppName("logical_boolean");
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
+                type,
+                "logical_boolean",
+                (left) =>
+                    absentObject
+                        ? this.context.dataTypes.absentValue(type)
+                        : this.compileKnownValueForSink(
+                              left,
+                              type,
+                              expression.left,
+                          ),
+            ),
+            type,
+        );
+    }
+
+    /**
+     * `left && right` / `left || right` as a value of represented storage:
+     * the left operand, pinned and truth-tested once, is the value unless
+     * its truthiness selects the right one, which is evaluated only then.
+     * `unselected` spells the value when the right one is not selected.
+     */
+    private compileLogicalSelection(
+        expression: ts.BinaryExpression,
+        type: DataType,
+        label: string,
+        unselected: (left: Value, condition: string) => string,
+    ): string {
+        const left = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(expression.left),
+            "logical_left",
+            expression.left,
+        );
+        const condition =
+            this.truthinessCondition(left) ??
+            this.context.fail(
+                expression.left,
+                "Logical value selection requires a truth-testable left operand.",
+            );
+        const result = this.context.allocateTemporaryCppName(label);
         this.context.emit({
             kind: "declaration",
             type: this.context.dataTypes.cppType(type),
             name: result,
-            initializer: absentObject
-                ? this.context.dataTypes.absentValue(type)
-                : this.compileKnownValueForSink(left, type, expression.left),
+            initializer: unselected(left, condition),
         });
         this.context.registerNativeBinding(result);
-        this.emitGuardedStore(
-            operator === ts.SyntaxKind.AmpersandAmpersandToken
-                ? condition
-                : `!(${condition})`,
-            () => {
-                const right = this.compileForSink(expression.right, type);
-                this.context.emit({
-                    kind: "expression",
-                    code: `${result} = ${right};`,
-                });
-            },
-        );
-        return this.leafValue(result, type);
+        const isAnd =
+            expression.operatorToken.kind ===
+            ts.SyntaxKind.AmpersandAmpersandToken;
+        this.emitGuardedStore(isAnd ? condition : `!(${condition})`, () => {
+            const right = this.compileForSink(expression.right, type);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${right};`,
+            });
+        });
+        return result;
     }
 
     /**
@@ -10713,95 +10739,63 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         const type = this.dataTypeAt(expression);
         if (!type) return undefined;
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical value selection requires a truth-testable left operand.",
-            );
         const leftType = this.context.checker.getTypeAtLocation(
             expression.left,
         );
-        let falsy: Value = left;
-        if (
-            !isJsonValue(left) &&
-            presentValuesTruthy(this.context.checker, leftType)
-        ) {
-            const absent = nullability(leftType);
-            if (absent.null && absent.undefined && type.kind === "json")
-                this.context.fail(
-                    expression.left,
-                    "A short circuit whose left operand may be null or undefined selects a value only where its storage tells them apart.",
-                );
-            falsy = {
-                kind: "json-null",
-                cpp: absent.null && !absent.undefined ? "" : "std::nullopt",
-            };
-        }
-        const result = this.context.allocateTemporaryCppName("logical_value");
-        this.context.emit({
-            kind: "declaration",
-            type: this.context.dataTypes.cppType(type),
-            name: result,
-            initializer: this.compileKnownValueForSink(
-                falsy,
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
                 type,
-                expression.left,
+                "logical_value",
+                (left) => {
+                    let falsy: Value = left;
+                    if (
+                        !isJsonValue(left) &&
+                        presentValuesTruthy(this.context.checker, leftType)
+                    ) {
+                        const absent = nullability(leftType);
+                        if (
+                            absent.null &&
+                            absent.undefined &&
+                            type.kind === "json"
+                        )
+                            this.context.fail(
+                                expression.left,
+                                "A short circuit whose left operand may be null or undefined selects a value only where its storage tells them apart.",
+                            );
+                        falsy = {
+                            kind: "json-null",
+                            cpp:
+                                absent.null && !absent.undefined
+                                    ? ""
+                                    : "std::nullopt",
+                        };
+                    }
+                    return this.compileKnownValueForSink(
+                        falsy,
+                        type,
+                        expression.left,
+                    );
+                },
             ),
-        });
-        this.context.registerNativeBinding(result);
-        this.emitGuardedStore(condition, () => {
-            const right = this.compileForSink(expression.right, type);
-            this.context.emit({
-                kind: "expression",
-                code: `${result} = ${right};`,
-            });
-        });
-        return this.leafValue(result, type);
+            type,
+        );
     }
 
     /** String-valued logical operators keep the selected value and a lazy RHS. */
     public compileStringLogicalValue(expression: ts.BinaryExpression): Value {
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical string selection requires a truth-testable left operand.",
-            );
-        const isAnd =
-            expression.operatorToken.kind ===
-            ts.SyntaxKind.AmpersandAmpersandToken;
-        const result = this.context.allocateTemporaryCppName("logical_string");
-        const selected = this.compileKnownValueForSink(
-            this.narrowOptional(left, expression.left, true),
+        // A falsy string left is "", the one value a falsy string has.
+        const result = this.compileLogicalSelection(
+            expression,
             { kind: "string" },
-            expression.left,
+            "logical_string",
+            (left, condition) =>
+                `${condition} ? ${this.compileKnownValueForSink(
+                    this.narrowOptional(left, expression.left, true),
+                    { kind: "string" },
+                    expression.left,
+                )} : std::string{}`,
         );
-        this.context.emit({
-            kind: "declaration",
-            type: "std::string",
-            name: result,
-            initializer: `${condition} ? ${selected} : std::string{}`,
-        });
-        this.emitGuardedStore(isAnd ? condition : `!(${condition})`, () => {
-            const right = this.compileForSink(expression.right, {
-                kind: "string",
-            });
-            this.context.emit({
-                kind: "expression",
-                code: `${result} = ${right};`,
-            });
-        });
         return { kind: "string", cpp: result };
     }
 
