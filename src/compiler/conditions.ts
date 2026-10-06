@@ -52,7 +52,6 @@ interface ConditionContext
             | "defaultEngine"
             | "emit"
             | "emitDiscardedValue"
-            | "emitExpressionAsStatement"
             | "enterRuntimeControlFlow"
             | "evaluationOrder"
             | "expectSameEngine"
@@ -199,25 +198,19 @@ export class ConditionLowerer {
             if (right === identity) return left;
             return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
         }
-        // `a.held = b.held = false`: an assignment's value is what it
-        // stored, so it runs as its statement and its target is read back.
+        // `if (a[i++] = v)`: the assignment's value (compileAssignmentValue).
         if (
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
         ) {
-            if (
-                someAnalysisNode(
-                    unwrapped.left,
-                    (node) =>
-                        ts.isCallExpression(node) || ts.isNewExpression(node),
-                )
-            )
+            const value = this.context.compileValue(unwrapped);
+            return (
+                this.context.dataLowerer.truthinessCondition(value) ??
                 this.context.fail(
-                    unwrapped.left,
-                    "An assignment used as a value reads its target back; a target containing a call must be bound to a local first.",
-                );
-            this.context.emitExpressionAsStatement(unwrapped);
-            return this.compileCondition(unwrapped.left);
+                    unwrapped,
+                    "Assigned value has no represented truthiness.",
+                )
+            );
         }
         if (
             ts.isBinaryExpression(unwrapped) &&

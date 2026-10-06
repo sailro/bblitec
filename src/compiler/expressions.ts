@@ -1576,21 +1576,6 @@ export class ExpressionLowerer {
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             return this.compileBrowserValue(unwrapped);
         }
-        // `const camera = (scene.camera = createArcRotateCamera(...))`: an
-        // assignment is an expression in JavaScript, and its value is the
-        // value assigned. Emit the assignment through the ordinary
-        // statement path and then READ THE TARGET, rather than compiling
-        // the right-hand side a second time -- the right side is commonly
-        // a factory call, and compiling it twice would construct twice.
-        // A target this compiler cannot read back refuses by naming the
-        // target, which is the honest failure.
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-            this.context.emitExpressionAsStatement(unwrapped);
-            return this.context.compileValue(unwrapped.left);
-        }
         // `(a, b)`: the left side runs for its effects and the value is
         // the right side's.
         if (

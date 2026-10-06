@@ -6742,6 +6742,109 @@ check(
 `,
 );
 
+check(
+    "assignment-values-evaluate-their-target-once",
+    `
+    const gate = new Float32Array([0, 1]);
+    const flags: boolean[] = [false, false];
+    let i = 0;
+    let hits = 0;
+    if ((flags[i++] = gate[1]! > 0)) hits++;
+    if (i !== 1 || !flags[0] || flags[1] || hits !== 1) throw new Error("boolean element condition");
+    const names: string[] = ["a", "b", "c"];
+    let j = 0;
+    const stored = (names[j++] = "x");
+    if ((names[j++] = "")) hits++;
+    if (j !== 2 || stored !== "x" || names.join(",") !== "x,,c" || hits !== 1) throw new Error("string elements");
+    interface Row { label: string | null; tags: string[] }
+    const rows: Row[] = [{ label: "r0", tags: [] }, { label: "r1", tags: [] }];
+    let k = 0;
+    const label = (rows[k++]!.label = "set");
+    if (k !== 1 || label !== "set" || rows[0]!.label !== "set" || rows[1]!.label !== "r1") throw new Error("record element field");
+    const tags = (rows[--k]!.tags = ["t"]);
+    tags.push("u");
+    if (k !== 0 || rows[0]!.tags.length !== 2 || rows[1]!.tags.length !== 0) throw new Error("assigned array identity");
+    let n = 0;
+    const counts = [1, 2];
+    const total = (counts[n++] = 5) + (counts[n++] = 6);
+    if (n !== 2 || total !== 11 || counts.join(",") !== "5,6") throw new Error("number elements");
+    const bytes = new Uint8Array(2);
+    let b = 0;
+    const raw = (bytes[b++] = 300);
+    if (b !== 1 || raw !== 300 || bytes[0] !== 44 || bytes[1] !== 0) throw new Error("typed array assignment value");
+    const holder = { f: false };
+    let calls = 0;
+    function owner(): { f: boolean } { calls++; return holder; }
+    const picked = (owner().f = gate[1]! > 0) ? 1 : 2;
+    if (picked !== 1 || calls !== 1 || !holder.f) throw new Error("call target");
+    const cursor = { node: 0 };
+    const next = [2, 0, 1];
+    let visits = 0;
+    while ((cursor.node = next[cursor.node]!) !== 0) visits++;
+    if (visits !== 2) throw new Error("loop condition store");
+`,
+);
+
+check(
+    "assignment-values-through-setters-yield-the-assigned-value",
+    `
+    const gate = new Float32Array([0, 1]);
+    class Gauge {
+        private level = 0;
+        get value(): number { return this.level * 10; }
+        set value(next: number) { this.level = Math.max(0, Math.min(1, next)); }
+    }
+    const gauge = new Gauge();
+    const assigned = (gauge.value = 5);
+    if (assigned !== 5 || gauge.value !== 10) throw new Error("setter value");
+    const negative = (gauge.value = -3 * gate[1]!);
+    if (negative !== -3 || gauge.value !== 0) throw new Error("normalized setter value");
+    if ((gauge.value = 0)) throw new Error("falsy assigned value");
+    const gauges: Gauge[] = [new Gauge(), new Gauge()];
+    let g = 0;
+    const half = (gauges[g++]!.value = 0.5);
+    if (g !== 1 || half !== 0.5 || gauges[0]!.value !== 5 || gauges[1]!.value !== 0) throw new Error("stored instance setter");
+    interface Labelled { label: string }
+    function labelled(): Labelled {
+        let text = "";
+        return { get label() { return "<" + text + ">"; }, set label(next: string) { text = next.trim(); } };
+    }
+    const items: Labelled[] = [labelled(), { label: "plain" }];
+    let c = 0;
+    const shown = (items[c++]!.label = " hi ");
+    if (c !== 1 || shown !== " hi " || items[0]!.label !== "<hi>" || items[1]!.label !== "plain") throw new Error("accessor slot");
+    const plain = (items[c]!.label = " p ");
+    if (plain !== " p " || items[1]!.label !== " p ") throw new Error("data slot");
+`,
+);
+
+check(
+    "chained-assignments-share-the-assigned-value",
+    `
+    const gate = new Float32Array([0, 1]);
+    interface Peer { id: number }
+    interface Slot { n: number; s: string; peer: Peer | null; list: number[]; maybe?: number }
+    const make = (): Slot => ({ n: 0, s: "", peer: null, list: [] });
+    const a = make(), b = make(), c = make();
+    a.n = b.n = c.n = 4 * gate[1]!;
+    a.s = b.s = c.s = "q";
+    const shared: Peer = { id: 1 };
+    a.peer = b.peer = c.peer = shared;
+    shared.id = 2;
+    if (a.peer!.id !== 2 || b.peer !== c.peer || a.peer !== shared) throw new Error("chained record identity");
+    a.list = b.list = c.list = [];
+    a.list.push(1);
+    if (c.list.length !== 1 || b.list !== a.list) throw new Error("chained array identity");
+    let x = 0, y = 0;
+    x = y = a.n = 9;
+    if (x !== 9 || y !== 9 || a.n !== 9 || b.n !== 4) throw new Error("chained locals");
+    const sum = (a.maybe = 3) + 1;
+    if (sum !== 4 || a.maybe !== 3) throw new Error("optional field value");
+    a.s = b.s = a.n > 5 ? "big" : "small";
+    if (a.s !== "big" || b.s !== "big" || c.s !== "q") throw new Error("chained conditional");
+`,
+);
+
 test("conditional record values refuse unrepresented key and absence shapes", () => {
     for (const [source, message] of [
         [
@@ -6755,10 +6858,6 @@ test("conditional record values refuse unrepresented key and absence shapes", ()
         [
             "const g = new Float32Array([1]); const r = { m() { return 1; }, ...(g[0]! > 0 ? { m: 2 } : {}) }; const n = r.m;",
             /conditionally present spread key 'm' cannot replace a method or accessor/,
-        ],
-        [
-            "const g = new Float32Array([1]); const o = { f: false }; function p(): { f: boolean } { return o; } const v = (p().f = g[0]! > 0) ? 1 : 2;",
-            /a target containing a call must be bound to a local first/,
         ],
         [
             "const g = new Float32Array([1]); function f(o: { x: number } | null | undefined): number | null | undefined { return o && o.x; } const v = f(g[0]! > 0 ? { x: 1 } : null);",

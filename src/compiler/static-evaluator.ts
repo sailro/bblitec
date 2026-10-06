@@ -762,7 +762,7 @@ export class StaticEvaluator {
         if (ts.isBinaryExpression(unwrapped)) {
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
                 const value = this.resolveValue(unwrapped);
-                if (value.kind === "number") {
+                if (isNumericValue(value)) {
                     return this.castNumber(value, precision);
                 }
                 this.fail(
