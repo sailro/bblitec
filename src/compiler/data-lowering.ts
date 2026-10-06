@@ -129,8 +129,10 @@ import {
     isJsonRootedExpression,
 } from "./json-bridge.js";
 import {
+    callbackMayWriteReceiver,
+    callbackTakesReceiver,
     compileDataMethodCall,
-    arrayCallbackReceiverPolicy,
+    readOnlyDataMethods,
 } from "./data-methods.js";
 import { resizingArrayMethods } from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
@@ -213,9 +215,10 @@ function isPathCpp(cpp: string): boolean {
 }
 
 /**
- * Resizing methods, rebinding, length writes and call arguments invalidate a
- * binding's fixed length. Element writes preserve length. Symbols keep
- * unrelated same-named bindings independent.
+ * Resizing methods, rebinding, length writes, call arguments and a callback
+ * method whose callback takes the receiver invalidate a binding's fixed
+ * length. Element writes preserve length. Symbols keep unrelated same-named
+ * bindings independent.
  */
 function resizedSymbols(
     checker: ts.TypeChecker,
@@ -237,8 +240,12 @@ function resizedSymbols(
                 ts.isPropertyAccessExpression(node.expression) &&
                 ts.isIdentifier(node.expression.expression) &&
                 (resizingArrayMethods.has(node.expression.name.text) ||
-                    arrayCallbackReceiverPolicy(node.expression.name.text)
-                        .invalidatesFacts)
+                    (readOnlyDataMethods.has(node.expression.name.text) &&
+                        callbackTakesReceiver(
+                            checker,
+                            node.expression.name.text,
+                            node.arguments[0],
+                        )))
             ) {
                 addIdentifier(node.expression.expression);
             }
@@ -6737,10 +6744,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType & { kind: "vector" | "span" },
         snapshotLength: boolean,
         initialize: (source: string) => void,
+        /** `element` is the visited element as a method keeps it. */
         emitBody: (
             result: Value,
             callback: ts.Expression,
-            source: string,
+            element: string,
             index: string,
         ) => void,
     ): void {
@@ -6761,14 +6769,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? callback
                 : undefined;
         const label = method === "forEach" ? "for_each" : method;
-        const receiverPolicy = arrayCallbackReceiverPolicy(method);
-        if (receiverPolicy.invalidatesFacts)
-            this.invalidateStaticElements(narrowed);
+        // A callback that may change the receiver walks the receiver and
+        // the length read at the call, checking each index against the
+        // live length (`callbackMayWriteReceiver`).
+        const writable = callbackMayWriteReceiver(this, call, callback);
+        if (writable) this.invalidateStaticElements(narrowed);
+        const holdsReceiver = writable && !narrowed.nativeVectorData;
         const source = this.context.allocateTemporaryCppName(`${label}_source`);
         const index = this.context.allocateTemporaryCppName(`${label}_index`);
         this.context.emit({
             kind: "declaration",
-            type: receiverPolicy.snapshotIdentity ? "auto" : "auto&&",
+            type: holdsReceiver ? "auto" : "auto&&",
             name: source,
             initializer: narrowed.cpp,
         });
@@ -6782,7 +6793,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             false,
             false,
             sourceType &&
-                `${!receiverPolicy.snapshotIdentity && narrowed.readOnly ? "const " : ""}${sourceType}`,
+                `${!holdsReceiver && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
         const storedCallback = identity
             ? undefined
@@ -6797,7 +6808,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // from its last index down.
         const reverse = method === "findLast" || method === "findLastIndex";
         let bound = `${source}.size()`;
-        if (snapshotLength || reverse) {
+        if (snapshotLength || reverse || writable) {
             const count = this.context.allocateTemporaryCppName(
                 `${label}_count`,
             );
@@ -6828,15 +6839,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
-                if (receiverPolicy.skipRemoved)
+                // An index the callback removed is skipped as JavaScript
+                // skips an absent element; `find*` would read it as
+                // undefined and `map` would leave a hole, which the
+                // element type and a dense result cannot hold.
+                if (writable)
                     this.context.emit(
-                        `if (${index} >= ${source}.size()) continue;`,
-                    );
-                // JavaScript would pass undefined for an index the callback
-                // removed before the walk reached it.
-                if (reverse)
-                    this.context.emit(
-                        `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
+                        [
+                            "forEach",
+                            "some",
+                            "every",
+                            "filter",
+                            "flatMap",
+                        ].includes(method)
+                            ? `if (${index} >= ${source}.size()) continue;`
+                            : `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
                     );
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
@@ -6844,7 +6861,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
                 const booleanConstructor =
                     this.context.libraryGlobal(callback) === "Boolean";
-                const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
+                // A method that keeps the element keeps the value the
+                // callback was given, read before the callback could
+                // replace or remove it.
+                const kept =
+                    writable &&
+                    (method === "find" ||
+                        method === "findLast" ||
+                        method === "filter")
+                        ? this.context.allocateTemporaryCppName(
+                              `${label}_element`,
+                          )
+                        : undefined;
+                if (kept)
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "auto",
+                        name: kept,
+                        initializer: `bbl::js::snapshot_value(${source}[${index}])`,
+                    });
+                const snapshotCpp =
+                    kept ?? `bbl::js::snapshot_value(${source}[${index}])`;
                 const callbackValue = this.leafValue(
                     snapshotCpp,
                     dataType.element,
@@ -6852,10 +6889,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const callbackArguments: Value[] = [
                     {
                         ...callbackValue,
-                        ...(callbackValue.cpp === snapshotCpp
+                        ...(!kept && callbackValue.cpp === snapshotCpp
                             ? { nativeOwnedRvalue: true as const }
                             : {}),
-                        nativeCaptures: elementValue.nativeCaptures,
+                        nativeCaptures: kept
+                            ? [this.context.registerNativeBinding(kept)]
+                            : elementValue.nativeCaptures,
                     },
                     {
                         kind: "number",
@@ -6945,7 +6984,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             ),
                         dataType: { kind: "boolean" },
                     };
-                emitBody(result, callback, source, index);
+                emitBody(
+                    result,
+                    callback,
+                    kept ?? `${source}[${index}]`,
+                    index,
+                );
             } finally {
                 this.context.leaveRuntimeIteration();
                 this.context.leaveRuntimeControlFlow();

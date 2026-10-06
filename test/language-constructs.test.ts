@@ -7633,3 +7633,55 @@ test("tuples stored as growable number arrays need growable storage", () => {
         /fixed-length tuple stored as a number array could grow through that array/,
     );
 });
+
+check(
+    "array-callbacks-walk-the-receiver-and-length-read-at-the-call",
+    `
+    const seen: number[] = [];
+    const popped: number[] = [1, 2, 3, 4];
+    popped.forEach((value, index, array) => { seen.push(value); if (index === 0) array.pop(); });
+    if (seen.join() !== "1,2,3" || popped.length !== 3) throw new Error("forEach skips a popped index");
+    const grown: number[] = [1, 2];
+    let visits = 0;
+    grown.forEach((value, _index, array) => { visits++; array.push(value * 10); });
+    if (visits !== 2 || grown.join() !== "1,2,10,20") throw new Error("forEach visits the length read at the call");
+    const truncated: number[] = [1, 2, 3, 4];
+    const probed: number[] = [];
+    const any = truncated.some((value) => { probed.push(value); truncated.length = 2; return false; });
+    if (any || probed.join() !== "1,2") throw new Error("some skips truncated indices");
+    const spliced: number[] = [5, 6, 7];
+    const tested: number[] = [];
+    const all = spliced.every((value, index, array) => { tested.push(value); array.splice(index, 1); return value > 0; });
+    if (!all || tested.join() !== "5,7" || spliced.join() !== "6") throw new Error("every skips spliced indices");
+    const replaced: number[] = [1, 2, 3, 4];
+    const kept = replaced.filter((value, index, array) => { array[index] = -value; if (index === 1) array.pop(); return value > 1; });
+    if (kept.join() !== "2,3" || replaced.join() !== "-1,-2,-3") throw new Error("filter keeps the value it read");
+    const scanned: number[] = [1, 2, 3];
+    const found = scanned.find((value, index, array) => { array[index] = 0; return value === 2; });
+    if (found !== 2 || scanned.join() !== "0,0,3") throw new Error("find keeps the value it read");
+    const summed: number[] = [1, 2, 3, 4];
+    const total = summed.reduce((sum, value, index, array) => { if (index === 0) array.splice(2); return sum + value; }, 0);
+    if (total !== 3) throw new Error("seeded reduce skips removed indices");
+    const unseeded: number[] = [1, 2, 3, 4];
+    const partial = unseeded.reduce((sum, value, _index, array) => { array.pop(); return sum + value; });
+    if (partial !== 6) throw new Error("unseeded reduce skips removed indices");
+    const shifted: number[] = [1, 2, 3, 4];
+    const fromRight = shifted.reduceRight((sum, value, _index, array) => { array.shift(); return sum + value; }, 0);
+    if (fromRight !== 16 || shifted.length !== 0) throw new Error("reduceRight reads each index still present");
+    const flattened: number[] = [1, 2, 3];
+    const pairs = flattened.flatMap((value, _index, array) => { array.length = 1; return [value, value]; });
+    if (pairs.join() !== "1,1") throw new Error("flatMap skips truncated indices");
+    let rebound: number[] = [1, 2, 3];
+    const original = rebound;
+    const order: number[] = [];
+    rebound.forEach((value) => { order.push(value); rebound = []; });
+    if (order.join() !== "1,2,3" || rebound.length !== 0 || original.length !== 3) throw new Error("the walk keeps the receiver it started with");
+    const listed: number[] = [1, 2, 3, 4];
+    function drop(): void { listed.pop(); }
+    const survivors = listed.filter(() => { drop(); return true; });
+    if (survivors.join() !== "1,2" || listed.length !== 2) throw new Error("a called function shrinks the receiver");
+    const ordered: number[] = [3, 1, 2];
+    const sorted = ordered.sort((a, b) => { if (ordered.length > 2) ordered.pop(); return a - b; });
+    if (sorted !== ordered || ordered.join() !== "1,2,3") throw new Error("sort writes back the values it collected");
+`,
+);
