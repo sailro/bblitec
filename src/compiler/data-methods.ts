@@ -1926,6 +1926,27 @@ function narrowedTagFilter(
         result.element.name === element.name
     )
         return undefined;
+    // Only a declared destination expecting the narrower tags takes them: a
+    // typed variable, a record field or a return. A generic call's parameter
+    // takes its type from this argument, so it names no destination.
+    let position: ts.Node = call;
+    while (ts.isParenthesizedExpression(position.parent))
+        position = position.parent;
+    const parent = position.parent;
+    if (
+        !(ts.isPropertyAssignment(parent) && parent.initializer === position) &&
+        !(ts.isVariableDeclaration(parent) && parent.type) &&
+        !ts.isReturnStatement(parent)
+    )
+        return undefined;
+    const contextual = lowerer.context.checker.getContextualType(call);
+    const destination =
+        contextual && lowerer.context.dataTypes.fromTsType(contextual, call);
+    if (
+        (destination?.kind !== "vector" && destination?.kind !== "span") ||
+        !dataTypesEqual(destination.element, result.element)
+    )
+        return undefined;
     const members = lowerer.context.dataTypes.enumMembers(element.name);
     return lowerer.context.dataTypes
         .enumMembers(result.element.name)

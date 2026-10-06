@@ -4958,6 +4958,11 @@ check(
     const kept: Candidate[] = source.filter((f): f is Candidate => f === "a");
     source[1] = "b";
     if (kept.length !== 1 || kept[0] !== "a") throw new Error("a fresh array");
+    interface Perk { jobs: readonly Failure[] }
+    const WIDE: readonly Failure[] = Object.freeze(source.filter(isCandidate));
+    const perk: Perk = { jobs: WIDE };
+    const widen: Array<(all: Failure[]) => Failure[]> = [(all) => all.filter(isCandidate)];
+    if (perk.jobs.join() !== "b" || widen[0]!(["c", "a"]).join() !== "a") throw new Error("a wider destination keeps the source tags");
 `,
 );
 
