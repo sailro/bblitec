@@ -8890,6 +8890,23 @@ test("lowers scene-created DOM controls to the retained native UI IR", () => {
     assert.doesNotMatch(result.cpp, /document|createElement|textContent/);
 });
 
+test("UI text reads the string a record type declares where a shared layout may hold it absent", () => {
+    // `{ x, y }` records coalesced with a city share the city layout, whose
+    // `name` storage they leave empty; a city's own name is still a string.
+    const result = compileSource(`
+        interface City { x: number; y: number; size: number; name: string }
+        const cities: City[] = [{ x: 1, y: 2, size: 5, name: "Rome" }];
+        const tiles: { x: number; y: number }[] = [{ x: 3, y: 4 }];
+        const visited = new Set<{ x: number; y: number }>();
+        const start = cities[1] ?? tiles[0]!;
+        visited.add(start);
+        const label = document.createElement("span");
+        label.textContent = cities[0]!.name;
+        document.body.appendChild(label);
+    `);
+    assert.match(result.cpp, /bbl::ui_set_text\([^;]*\(\*[^;]*->name\)\)/);
+});
+
 test("lowers retained UI properties, append, removal, and dynamic attributes", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

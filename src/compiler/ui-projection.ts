@@ -908,8 +908,13 @@ export class UiProjection {
         if (staticValue !== undefined) {
             return this.context.cppString(staticValue);
         }
+        // A field a shared record layout may hold absent is still the string
+        // its record type declares.
         const value = this.context.dataLowerer.stringReceiver(
-            this.context.compileValue(expression),
+            this.context.dataLowerer.narrowOptional(
+                this.context.compileValue(expression),
+                expression,
+            ),
             expression,
         );
         if (isStringValue(value)) {
