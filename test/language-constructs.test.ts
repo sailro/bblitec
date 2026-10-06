@@ -4696,3 +4696,142 @@ check(
     if (all[0]!.rgb[0] !== 9) throw new Error("nested arrays stay shared");
 `,
 );
+
+check(
+    "math-constants-and-members",
+    `
+    const ln2 = Math.LN2;
+    const read = [Math.E, Math.LN2, Math.LN10, Math.LOG2E, Math.LOG10E, Math.SQRT2, Math.SQRT1_2, Math.PI];
+    const spelled = [2.718281828459045, 0.6931471805599453, 2.302585092994046, 1.4426950408889634,
+        0.4342944819032518, 1.4142135623730951, 0.7071067811865476, 3.141592653589793];
+    for (let index = 0; index < read.length; ++index)
+        if (read[index] !== spelled[index]) throw new Error("constant " + index);
+    const lanes = new Float32Array(2);
+    lanes[0] = Math.E;
+    lanes[1] = Math.LOG10E * 2;
+    if (lanes[0] !== Math.fround(2.718281828459045) || lanes[1] !== Math.fround(0.8685889638065036)) throw new Error("float sink");
+    function bits(value: number): number { return Math.log(2 ** value) / ln2; }
+    if (Math.abs(bits(8) - 8) > 1e-12) throw new Error("module constant");
+    const xs = new Float64Array([0, -0, -1, Infinity, -Infinity, NaN, 1000, 1, -2, 1e-10]);
+    if (!Object.is(Math.log1p(xs[1]!), -0) || Math.log1p(xs[2]!) !== -Infinity || !Number.isNaN(Math.log1p(xs[8]!)))
+        throw new Error("log1p edges");
+    if (Math.abs(Math.log1p(xs[9]!) - 9.9999999995e-11) > 1e-24 || Math.log1p(xs[3]!) !== Infinity) throw new Error("log1p");
+    if (Math.expm1(xs[0]!) !== 0 || !Object.is(Math.expm1(xs[1]!), -0) || Math.expm1(xs[4]!) !== -1 || Math.expm1(xs[3]!) !== Infinity)
+        throw new Error("expm1 edges");
+    if (Math.abs(Math.expm1(xs[9]!) - 1.00000000005e-10) > 1e-24) throw new Error("expm1");
+    if (Math.log10(xs[6]!) !== 3 || Math.cosh(xs[0]!) !== 1 || Math.tanh(xs[3]!) !== 1 || !Object.is(Math.asinh(xs[1]!), -0) ||
+        Math.acosh(xs[7]!) !== 0 || Math.atanh(xs[7]!) !== Infinity || !Number.isNaN(Math.acosh(xs[0]!)))
+        throw new Error("hyperbolic");
+    if (Math.abs(Math.sinh(xs[7]!) - 1.1752011936438014) > 1e-15 || Math.abs(Math.atanh(0.5) - 0.5493061443340548) > 1e-15)
+        throw new Error("hyperbolic values");
+    const mapped = [xs[0]!, xs[7]!].map(Math.log1p);
+    if (mapped[0] !== 0 || Math.abs(mapped[1]! - Math.LN2) > 1e-15) throw new Error("member as callback");
+`,
+);
+
+check(
+    "string-searches-with-utf16-positions",
+    `
+    const words = ["a/b/c", "\\u00e9/\\u00fc/\\u20ac", "x\\ud83d\\ude00y\\ud83d\\ude00z"];
+    const s = words[0]!, u = words[1]!, e = words[2]!;
+    if (s.indexOf("/", 2) !== 3 || s.indexOf("/", -5) !== 1 || s.indexOf("/", NaN) !== 1 || s.indexOf("/", Infinity) !== -1 ||
+        s.indexOf("", 99) !== 5 || s.indexOf("c", 4.9) !== 4) throw new Error("indexOf position");
+    if (s.lastIndexOf("/") !== 3 || s.lastIndexOf("/", 2) !== 1 || s.lastIndexOf("/", -1) !== -1 || s.lastIndexOf("a", -1) !== 0 ||
+        s.lastIndexOf("/", NaN) !== 3 || s.lastIndexOf("") !== 5 || s.lastIndexOf("", 2) !== 2 || s.lastIndexOf("x") !== -1)
+        throw new Error("lastIndexOf");
+    if (u.indexOf("/") !== 1 || u.indexOf("\\u00fc", 1) !== 2 || u.lastIndexOf("/") !== 3 || u.indexOf("\\u20ac") !== 4 ||
+        u.lastIndexOf("/", 2) !== 1) throw new Error("non-ASCII indices");
+    if (e.indexOf("y") !== 3 || e.lastIndexOf("\\ud83d\\ude00") !== 4 || e.indexOf("\\ud83d\\ude00", 2) !== 4 ||
+        !e.includes("z", 6) || e.includes("y", 4) || e.indexOf("\\ude00") !== 2) throw new Error("surrogate indices");
+    if (!s.startsWith("b", 2) || !s.startsWith("a", -3) || s.startsWith("c", 99) || !s.startsWith("", 99) ||
+        !e.startsWith("y", 3) || !u.startsWith("\\u00fc", 2) || e.startsWith("y", 2)) throw new Error("startsWith position");
+    if (!s.endsWith("b", 3) || !s.endsWith("a", 1) || !s.endsWith("c", 99) || s.endsWith("a", -1) || !s.endsWith("", -1) ||
+        !e.endsWith("y", 4) || !u.endsWith("\\u00e9", 1) || s.endsWith("c", NaN)) throw new Error("endsWith position");
+    function find(text: string, at?: number): number { return text.indexOf("/", at); }
+    function ends(text: string, end?: number): boolean { return text.endsWith("b", end); }
+    function last(text: string, at?: number): number { return text.lastIndexOf("/", at); }
+    function starts(text: string, at?: number): boolean { return text.startsWith("a", at); }
+    if (find(s) !== 1 || find(s, 2) !== 3 || ends(s) || !ends(s, 3) || last(s) !== 3 || last(s, 0) !== -1 || !starts(s) || starts(s, 1))
+        throw new Error("optional positions");
+    let log = "";
+    function receiver(): string { log += "r"; return "a/b"; }
+    function needle(): string { log += "s"; return "/"; }
+    function position(): number { log += "p"; return 0; }
+    if (receiver().indexOf(needle(), position()) !== 1 || log !== "rsp") throw new Error("evaluation order " + log);
+    log = "";
+    if (!receiver().endsWith(needle(), position() + 2) || log !== "rsp") throw new Error("endsWith order " + log);
+`,
+);
+
+check(
+    "string-from-code-point",
+    `
+    const codes = [65, 0x1f600, 0xd83d, 0xde00, 0xd800];
+    const text = String.fromCodePoint(codes[0]!, codes[1]!, codes[2]!, codes[3]!);
+    if (text !== "A\\ud83d\\ude00\\ud83d\\ude00" || text.length !== 5) throw new Error("code points");
+    const lone = String.fromCodePoint(codes[4]!);
+    if (lone.length !== 1 || lone.charCodeAt(0) !== 0xd800 || String.fromCodePoint() !== "") throw new Error("lone surrogate");
+    const invalid = [-1, 1.5, NaN, 0x110000, Infinity];
+    let refused = 0;
+    for (const value of invalid) {
+        try { String.fromCodePoint(value); } catch (error) { if (error instanceof RangeError) refused++; }
+    }
+    if (refused !== invalid.length) throw new Error("range " + refused);
+`,
+);
+
+check(
+    "global-number-predicates-and-uri-codecs",
+    `
+    const values = [NaN, 1, Infinity, -0];
+    if (!isNaN(values[0]!) || isNaN(values[1]!) || isNaN(values[2]!) || isFinite(values[2]!) || !isFinite(values[3]!))
+        throw new Error("predicates");
+    const texts = ["http://x.y/a b?q=1&r=\\u00e9#h[]", "a%20b%2Fc%3F%23%41", "a%20b%2Fc%3F%23%C3%A9%F0%9F%98%80"];
+    if (encodeURI(texts[0]!) !== "http://x.y/a%20b?q=1&r=%C3%A9#h%5B%5D") throw new Error("encodeURI");
+    if (encodeURIComponent(texts[0]!) !== "http%3A%2F%2Fx.y%2Fa%20b%3Fq%3D1%26r%3D%C3%A9%23h%5B%5D") throw new Error("encodeURIComponent");
+    if (decodeURI(texts[1]!) !== "a b%2Fc%3F%23A") throw new Error("decodeURI keeps reserved escapes");
+    if (decodeURIComponent(texts[2]!) !== "a b/c?#\\u00e9\\ud83d\\ude00") throw new Error("decodeURIComponent");
+    if (decodeURIComponent(encodeURIComponent(texts[0]!)) !== texts[0]) throw new Error("round trip");
+    const malformed = ["%", "%2", "%zz", "%C3", "%C3%28", "%E0%80%80", "%ED%A0%80", "%F8%80%80%80%80", "%80", "%C0%AF"];
+    let refused = 0;
+    for (const text of malformed) {
+        try { decodeURIComponent(text); } catch (error) { if (error instanceof URIError) refused++; }
+        try { decodeURI(text); } catch (error) { if (error instanceof URIError) refused++; }
+    }
+    if (refused !== malformed.length * 2) throw new Error("malformed " + refused);
+    const lone = ["\\ud800"];
+    let unpaired = false;
+    try { encodeURI(lone[0]!); } catch (error) { unpaired = error instanceof URIError; }
+    if (!unpaired) throw new Error("unpaired surrogate");
+`,
+);
+
+check(
+    "date-utc-fields-and-date-utc",
+    `
+    const times = [0, -1, 951782400000, 8.64e15, -8.64e15, 1700000000123, -62198755200000];
+    for (const time of times) {
+        const date = new Date(time);
+        const rebuilt = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), date.getUTCHours(),
+            date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds());
+        if (rebuilt !== time) throw new Error("round trip " + time);
+    }
+    const before = new Date(times[1]!);
+    if (before.getUTCFullYear() !== 1969 || before.getUTCMonth() !== 11 || before.getUTCDate() !== 31 || before.getUTCDay() !== 3 ||
+        before.getUTCHours() !== 23 || before.getUTCMinutes() !== 59 || before.getUTCSeconds() !== 59 || before.getUTCMilliseconds() !== 999)
+        throw new Error("fields before the epoch");
+    const leap = new Date(times[2]!), first = new Date(times[4]!);
+    if (leap.getUTCMonth() !== 1 || leap.getUTCDate() !== 29 || leap.getUTCDay() !== 2 || first.getUTCFullYear() !== -271821 ||
+        first.getUTCMonth() !== 3 || first.getUTCDate() !== 20 || first.getUTCDay() !== 2) throw new Error("calendar fields");
+    const invalid = new Date(NaN);
+    if (!Number.isNaN(invalid.getUTCFullYear()) || !Number.isNaN(invalid.getUTCDay())) throw new Error("invalid date");
+    const years = [99, -1, 275760, 1e6, NaN];
+    if (Date.UTC(years[0]!, 0) !== Date.UTC(1999, 0) || Date.UTC(years[1]!, 0) !== -62198755200000 ||
+        Date.UTC(years[2]!, 8, 13) !== 8.64e15 || !Number.isNaN(Date.UTC(years[2]!, 8, 13, 0, 0, 0, 1)) ||
+        !Number.isNaN(Date.UTC(years[3]!, 0)) || !Number.isNaN(Date.UTC(years[4]!)))
+        throw new Error("Date.UTC years");
+    if (Date.UTC(2020, 13, 1) !== Date.UTC(2021, 1, 1) || Date.UTC(2020, -1, 1) !== Date.UTC(2019, 11, 1) ||
+        Date.UTC(2020, 0, 1, 25) !== Date.UTC(2020, 0, 2, 1) || Date.UTC(1970, 0, 1, 0, 0, 0, 0.9) !== 0 ||
+        Date.UTC(2020) !== 1577836800000 || Date.UTC(1970, 0, 2) !== 86400000) throw new Error("Date.UTC fields");
+`,
+);

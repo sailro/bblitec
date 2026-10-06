@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { EmissionMap } from "./emission-transaction.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { Value } from "./types.js";
 
@@ -81,6 +82,70 @@ export function compileDateNew(
     };
 }
 
+/** The calendar and clock fields the `get<Field>`/`getUTC<Field>` getters read. */
+const DATE_FIELDS: ReadonlyMap<string, string> = new EmissionMap([
+    ["FullYear", "year"],
+    ["Month", "month"],
+    ["Date", "date"],
+    ["Day", "weekday"],
+    ["Hours", "hours"],
+    ["Minutes", "minutes"],
+    ["Seconds", "seconds"],
+    ["Milliseconds", "milliseconds"],
+]);
+
+/**
+ * A Date field getter: `getUTC<Field>` reads the time value as UTC, `get<Field>`
+ * as local time in the host time zone, which the locale PAL resolves.
+ */
+function compileDateFieldGetter(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+    method: string,
+): Value | undefined {
+    const utc = method.startsWith("getUTC");
+    const field = DATE_FIELDS.get(method.slice(utc ? 6 : 3));
+    if (!method.startsWith("get") || field === undefined) return undefined;
+    const context = lowerer.context;
+    context.expectArgumentCount(call, 0, 0);
+    if (!utc) context.reachFeature("data:locale", call);
+    return {
+        kind: "number",
+        cpp: `bbl::${utc ? "js::date_utc_field" : "pal::date_local_field"}(${owner.cpp}, bbl::js::DateField::${field})`,
+        dataType: { kind: "number" },
+    };
+}
+
+/**
+ * `Date.UTC(year, month?, ...)`: each argument converts to a number in
+ * order; an omitted month is 0, an omitted day 1 and an omitted time field 0.
+ */
+export function compileDateUtc(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+): Value {
+    const context = lowerer.context;
+    if (call.arguments.length > 7 || call.arguments.some(ts.isSpreadElement))
+        context.fail(
+            call,
+            "Date.UTC takes a year and up to six numeric fields as separate arguments.",
+        );
+    context.reachJsData();
+    const defaults = ["std::numeric_limits<double>::quiet_NaN()", "0.0", "1.0"];
+    const fields = Array.from({ length: 7 }, (_, index) => {
+        const argument = call.arguments[index];
+        return argument
+            ? lowerer.compileNumberArgument(argument, "")
+            : (defaults[index] ?? "0.0");
+    });
+    return {
+        kind: "number",
+        cpp: `bbl::js::date_utc(${fields.join(", ")})`,
+        dataType: { kind: "number" },
+    };
+}
+
 export function compileDateMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -89,7 +154,17 @@ export function compileDateMethod(
 ): Value {
     const context = lowerer.context;
     context.reachJsData();
+    const getter = compileDateFieldGetter(lowerer, call, owner, method);
+    if (getter) return getter;
     switch (method) {
+        case "getTimezoneOffset":
+            context.expectArgumentCount(call, 0, 0);
+            context.reachFeature("data:locale", call);
+            return {
+                kind: "number",
+                cpp: `bbl::pal::date_time_zone_offset(${owner.cpp})`,
+                dataType: { kind: "number" },
+            };
         case "toISOString":
             context.expectArgumentCount(call, 0, 0);
             return {

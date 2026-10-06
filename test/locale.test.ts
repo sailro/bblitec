@@ -448,6 +448,79 @@ test("unlowered number format contracts refuse explicitly", () => {
     );
 });
 
+test("native local-time Date getters match JavaScript in the host zone", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required");
+        return;
+    }
+    const times = [
+        0, -1, 951782400000, 1000000000000, 1700000000123, 1719792000000,
+        -100000000000, 8.6e15,
+    ];
+    const getters = [
+        "getFullYear",
+        "getMonth",
+        "getDate",
+        "getDay",
+        "getHours",
+        "getMinutes",
+        "getSeconds",
+        "getMilliseconds",
+        "getTimezoneOffset",
+    ] as const;
+    const expectations = times
+        .flatMap((time) =>
+            getters.map((getter) => {
+                const expected = new Date(time)[getter]();
+                return `if (new Date(times[${times.indexOf(time)}]!).${getter}() !== ${expected}) throw new Error("${getter} ${time}");`;
+            }),
+        )
+        .join("\n");
+    const source = `
+        const times = [${times.join(", ")}];
+        ${expectations}
+        for (const time of times) {
+            const date = new Date(time);
+            const local = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours(),
+                date.getMinutes(), date.getSeconds(), date.getMilliseconds());
+            if (local !== time - date.getTimezoneOffset() * 60000) throw new Error("local fields " + time);
+        }
+        const invalid = new Date(NaN);
+        if (!Number.isNaN(invalid.getHours()) || !Number.isNaN(invalid.getTimezoneOffset())) throw new Error("invalid");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ESNext },
+        }).outputText,
+    );
+    const result = compileSource(source, {
+        fileName: "test/locale-date-entry.ts",
+    });
+    assert.ok(result.manifest.features.includes("data:locale"));
+    const directory = resolve("artifacts/locale-date-check");
+    mkdirSync(directory, { recursive: true });
+    const file = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(file, result.cpp);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+        "native/src/pal_locale.cpp",
+        "icu.lib",
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
+});
+
 test("unlowered collation option contracts refuse explicitly", () => {
     assert.throws(
         () =>

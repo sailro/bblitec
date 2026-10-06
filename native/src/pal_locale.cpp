@@ -8,6 +8,7 @@
 #ifdef _WIN32
 #include <icu.h>
 #else
+#include <unicode/ucal.h>
 #include <unicode/ucol.h>
 #include <unicode/uloc.h>
 #include <unicode/unorm2.h>
@@ -459,6 +460,29 @@ std::string normalize_string(const std::string& value, const std::string& form) 
     check_icu(status);
     output.resize(static_cast<std::size_t>(size));
     return js::string_from_code_units(output);
+}
+
+double local_time_zone_offset(double utc_milliseconds) {
+    // One calendar per thread, in the zone Intl.DateTimeFormat resolves.
+    struct ZoneCalendar {
+        std::string zone;
+        std::unique_ptr<UCalendar, decltype(&ucal_close)> calendar{nullptr, &ucal_close};
+    };
+    thread_local ZoneCalendar cache;
+    const auto zone = *js::make_date_time_format();
+    UErrorCode status = U_ZERO_ERROR;
+    if (!cache.calendar || cache.zone != zone) {
+        const auto id = js::string_code_units(zone);
+        cache.calendar.reset(
+            ucal_open(id.data(), icu_length(id.size()), "", UCAL_GREGORIAN, &status));
+        check_icu(status);
+        cache.zone = zone;
+    }
+    ucal_setMillis(cache.calendar.get(), utc_milliseconds, &status);
+    const auto standard = ucal_get(cache.calendar.get(), UCAL_ZONE_OFFSET, &status);
+    const auto daylight = ucal_get(cache.calendar.get(), UCAL_DST_OFFSET, &status);
+    check_icu(status);
+    return static_cast<double>(standard) + static_cast<double>(daylight);
 }
 
 namespace {

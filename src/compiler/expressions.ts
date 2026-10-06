@@ -4,7 +4,7 @@ import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
-import { EmissionSet, writable } from "./emission-transaction.js";
+import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 // Expression lowering: the value switch and its call dispatch.
@@ -104,7 +104,7 @@ import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
 import {
     FORMATTED_MATH_FOLDS,
-    mathMemberAccess,
+    mathConstantAccess,
     mathFunctionValue,
     mathMemberCall,
 } from "./math-intrinsics.js";
@@ -169,6 +169,14 @@ export const PURE_NUMBER_FORMATTERS = new EmissionSet([
     "toFixed",
     "toPrecision",
     "toExponential",
+]);
+
+/** The global URI codecs, each a runtime function of its argument's ToString. */
+const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
+    ["encodeURIComponent", "encode_uri_component"],
+    ["encodeURI", "encode_uri"],
+    ["decodeURIComponent", "decode_uri_component"],
+    ["decodeURI", "decode_uri"],
 ]);
 
 /**
@@ -829,11 +837,9 @@ export class ExpressionLowerer {
                 );
             }
             if (
-                mathMemberAccess(unwrapped, (expression) =>
+                mathConstantAccess(unwrapped, (expression) =>
                     this.context.libraryGlobal(expression),
-                ) &&
-                (unwrapped.name.text === "PI" ||
-                    unwrapped.name.text === "SQRT1_2")
+                )
             ) {
                 const staticNumber = staticNumberValue(this.context, unwrapped);
                 return {
@@ -2914,7 +2920,10 @@ export class ExpressionLowerer {
                     `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
             );
         }
-        if (this.context.libraryGlobal(callee) === "encodeURIComponent") {
+        const uriFunction = URI_FUNCTIONS.get(
+            this.context.libraryGlobal(callee) ?? "",
+        );
+        if (uriFunction) {
             this.context.expectArgumentCount(call, 1, 1);
             const argument = argumentAt(call, 0);
             const value = this.compileValue(argument);
@@ -2922,7 +2931,7 @@ export class ExpressionLowerer {
             return {
                 kind: "string",
                 dataType: { kind: "string" },
-                cpp: `bbl::js::encode_uri_component(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
+                cpp: `bbl::js::${uriFunction}(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
             };
         }
         // `parseFloat(<query text>)`: the same value browser-erasure already
@@ -5251,6 +5260,21 @@ export class ExpressionLowerer {
                         : call.arguments.length === 1
                           ? `bbl::js::string_from_char_code(${this.context.compileNumber(argumentAt(call, 0), "double")})`
                           : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
+                dataType: { kind: "string" },
+            };
+        }
+        if (staticOwner === "String" && callee.name.text === "fromCodePoint") {
+            const spread = call.arguments.find(ts.isSpreadElement);
+            if (spread)
+                this.context.fail(
+                    spread,
+                    "String.fromCodePoint takes its code points as separate arguments.",
+                );
+            this.context.reachJsData();
+            // A braced list evaluates its elements in order.
+            return {
+                kind: "data",
+                cpp: `bbl::js::string_from_code_points({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
                 dataType: { kind: "string" },
             };
         }

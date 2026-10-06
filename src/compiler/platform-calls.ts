@@ -34,6 +34,7 @@ import { isDocumentReceiver } from "./dom-targets.js";
 import type { DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
+import { compileDateUtc } from "./dates.js";
 import {
     parseUiSelectorSequence,
     splitUiSelectorList,
@@ -335,12 +336,12 @@ export class PlatformCalls {
         // same library function either way.
         const global = this.context.libraryGlobal(callee);
         if (global !== undefined) {
-            if (global === "isFinite") {
+            if (global === "isFinite" || global === "isNaN") {
                 this.context.expectArgumentCount(call, 1, 1);
                 return {
                     kind: "boolean",
                     cpp:
-                        `std::isfinite(` +
+                        `std::${global === "isNaN" ? "isnan" : "isfinite"}(` +
                         `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
@@ -420,6 +421,11 @@ export class PlatformCalls {
                 impure: true,
             };
         }
+        if (
+            callee.name.text === "UTC" &&
+            this.context.libraryGlobal(receiver) === "Date"
+        )
+            return compileDateUtc(this.context.dataLowerer, call);
         if (
             callee.name.text === "now" &&
             call.arguments.length === 0 &&
