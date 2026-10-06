@@ -6100,6 +6100,12 @@ export class UserFunctionLowerer {
             return argument;
         if (absent.null) {
             if (!mayBeUndefined) return argument;
+            // A default of `null` gives an undefined argument the value a
+            // null one already has: the one empty slot answers both.
+            if (
+                unwrapExpression(initializer).kind === ts.SyntaxKind.NullKeyword
+            )
+                return argument;
             return context.fail(
                 source ?? parameter.declaration,
                 "A default parameter requires a distinct undefined state when its argument can also be null.",

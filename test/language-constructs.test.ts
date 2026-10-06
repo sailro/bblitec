@@ -7799,6 +7799,24 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
 });
 
 check(
+    "null-defaults-take-null-and-undefined-arguments",
+    `
+    interface Claims { n: number }
+    function assign(out: number[], claims: Claims | null = null): number { return claims ? claims.n : -1; }
+    function filter(xs: number[], keep: ((x: number) => boolean) | null = null): number {
+        return keep ? xs.filter(keep).length : -1;
+    }
+    const stored: Array<typeof assign> = [assign];
+    const maybe: Array<Claims | null | undefined> = [undefined, null, { n: 3 }];
+    const out: number[] = [];
+    for (const m of maybe) out.push(assign(out, m), stored[0]!(out, m));
+    const keeps: Array<((x: number) => boolean) | null | undefined> = [undefined, null, (x) => x > 1];
+    for (const k of keeps) out.push(filter([1, 2, 3], k));
+    if (out.join(",") !== "-1,-1,-1,-1,3,3,-1,-1,2") throw new Error("null default " + out.join(","));
+`,
+);
+
+check(
     "calls-typed-never-by-narrowing-still-return",
     `
     interface Item { id: number }
