@@ -590,11 +590,8 @@ function unreachedRecordValue(
     // The node must yield the value: its own expression, a callback
     // returning it, or a fresh array holding it -- not an enclosing literal
     // or a record whose field is being converted.
-    const yields = (expression: ts.Expression): boolean => {
-        const own = lowerer.dataTypeAt(expression);
-        const record = own?.kind === "optional" ? own.inner : own;
-        return record?.kind === "struct" && record.name === name;
-    };
+    const yields = (expression: ts.Expression): boolean =>
+        recordTypeAt(lowerer, expression) === name;
     if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
         const returned = ts.isBlock(node.body)
             ? node.body.statements.find(ts.isReturnStatement)?.expression
@@ -605,13 +602,8 @@ function unreachedRecordValue(
             yieldsFreshObject(checker, node)
         );
     }
-    const own = lowerer.dataTypeAt(node);
-    if (own?.kind === "vector")
-        return (
-            own.element.kind === "struct" &&
-            own.element.name === name &&
-            yieldsFreshRecordElements(checker, node)
-        );
+    if (yieldsFreshRecordElements(checker, node))
+        return recordTypeAt(lowerer, node, { element: true }) === name;
     return (
         yields(node) &&
         (yieldsFreshObject(checker, node) ||
@@ -633,16 +625,29 @@ function recordExpression(
 ): ts.Expression | undefined {
     if (!ts.isExpression(node) || value.dataType?.kind !== "struct")
         return undefined;
+    return recordTypeAt(lowerer, node, { element: true }) ===
+        value.dataType.name
+        ? node
+        : undefined;
+}
+
+/**
+ * The record type `node`'s own type stores, read through an optional, and
+ * through an array's elements when `element` is set.
+ */
+function recordTypeAt(
+    lowerer: DataSinkHost,
+    node: ts.Expression,
+    { element = false }: { readonly element?: boolean } = {},
+): string | undefined {
     const own = lowerer.dataTypeAt(node);
     const record =
         own?.kind === "optional"
             ? own.inner
-            : own?.kind === "vector"
+            : element && own?.kind === "vector"
               ? own.element
               : own;
-    return record?.kind === "struct" && record.name === value.dataType.name
-        ? node
-        : undefined;
+    return record?.kind === "struct" ? record.name : undefined;
 }
 
 function accessorGetter(
