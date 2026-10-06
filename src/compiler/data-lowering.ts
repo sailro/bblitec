@@ -97,11 +97,7 @@ import {
     mathExtremeCall,
     mathExtremeCpp,
 } from "../lowering/pinned-operators.js";
-import {
-    ASSIGNMENT_OPERATORS,
-    COMPOUND_ASSIGNMENT_HELPERS,
-    compoundAssignmentValueCpp,
-} from "./statements.js";
+import { ASSIGNMENT_OPERATORS, compoundAssignmentValue } from "./statements.js";
 import {
     dataTypesEqual,
     isUndefinedDataType,
@@ -11309,13 +11305,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!operator) {
             return false;
         }
+        const staticRight = (): number | undefined =>
+            staticNumberValue(this.context, expression.right);
         // The number `target op= right` stores, from the old value.
-        const compoundNext = (previous: string): string =>
-            compoundAssignmentValueCpp(
+        const compoundNext = (previous: string): string => {
+            const next = compoundAssignmentValue(
                 operator,
                 previous,
                 this.context.compileNumber(expression.right, "double"),
+                staticRight(),
             );
+            if (next.jsData) this.context.reachJsData();
+            return next.cpp;
+        };
         const left = this.context.unwrap(expression.left);
         if (ts.isArrayLiteralExpression(left) && operator === "=") {
             return (
@@ -11703,25 +11705,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
             }
             const right = this.assignedNumber(source);
-            const helper = COMPOUND_ASSIGNMENT_HELPERS.has(operator);
-            if (helper) this.context.reachJsData();
+            const compound =
+                operator === "="
+                    ? undefined
+                    : compoundAssignmentValue(
+                          operator,
+                          previous,
+                          right,
+                          staticRight(),
+                      );
+            if (compound?.jsData) this.context.reachJsData();
             if (target.dataStore) {
-                const stored =
-                    operator === "="
-                        ? right
-                        : compoundAssignmentValueCpp(operator, previous, right);
                 this.context.emit({
                     kind: "expression",
-                    code: `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, stored)};`,
+                    code: `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, compound?.cpp ?? right)};`,
                 });
                 invalidateRootRecordSnapshot();
                 return true;
             }
             this.context.emit({
                 kind: "expression",
-                code: helper
-                    ? `${target.cpp} = ${compoundAssignmentValueCpp(operator, previous, right)};`
-                    : `${target.cpp} ${operator} ${right};`,
+                code:
+                    compound && !compound.native
+                        ? `${target.cpp} = ${compound.cpp};`
+                        : `${target.cpp} ${operator} ${right};`,
             });
             invalidateRootRecordSnapshot();
             return true;

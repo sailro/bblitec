@@ -587,6 +587,22 @@ check(
 `,
 );
 
+test("an exponent compound assignment with a static exponent spells std::pow as ** does", () => {
+    const { cpp } = compileSource(`
+    const h = new Float64Array([3, 2]);
+    let x = h[0]!;
+    x **= 2;
+    const o = { v: h[1]! };
+    o.v **= 3;
+    h[0] **= 0.5;
+    let y = h[1]!;
+    y = y ** 2;
+    if (x + o.v + h[0]! + y === 0) throw new Error("read");
+    `);
+    assert.doesNotMatch(cpp, /power_js/);
+    assert.equal(cpp.match(/std::pow\(/g)?.length, 4);
+});
+
 check(
     "numeric-updates-on-optional-and-entry-places",
     `

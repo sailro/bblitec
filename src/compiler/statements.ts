@@ -90,6 +90,7 @@ import {
 import { recordAt } from "./record-access.js";
 import { ownEntries, ownKeysKnown } from "./object-statics.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
+import { exponentiationCall } from "./math-intrinsics.js";
 import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
@@ -281,28 +282,50 @@ function bodyStatements(
  * The compound assignments whose C++ operator would not mean the JavaScript
  * one, by spelling, with the `bbl::js` helper each lowers through: a bitwise
  * form applies its operator's `JS_BITWISE_FUNCTIONS` helper, and `%=` is
- * JavaScript's floating remainder.
+ * JavaScript's floating remainder. `**=` lowers as `**` does.
  */
-export const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
+const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
     new EmissionMap([
         ["%=", "remainder_js"],
-        ["**=", "power_js"],
         ...[...JS_BITWISE_FUNCTIONS].map(([kind, helper]): [string, string] => [
             `${ts.tokenToString(kind)}=`,
             helper,
         ]),
     ]);
 
-/** The number `previous op= right` stores; a helper form reaches JS data. */
-export function compoundAssignmentValueCpp(
+/**
+ * The number `previous op= right` stores. `native` when C++'s own `op=`
+ * means JavaScript's; `jsData` when the spelling reaches the runtime
+ * helpers. `staticRight` is the right side generation knows, which lets
+ * `**=` spell `std::pow` as `**` does (`exponentiationCall`).
+ */
+export function compoundAssignmentValue(
     operator: string,
     previous: string,
     right: string,
-): string {
+    staticRight: number | undefined,
+): {
+    readonly cpp: string;
+    readonly native: boolean;
+    readonly jsData: boolean;
+} {
+    if (operator === "**=")
+        return {
+            ...exponentiationCall(previous, right, staticRight),
+            native: false,
+        };
     const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
     return helper
-        ? `bbl::js::${helper}(${previous}, ${right})`
-        : `(${previous} ${operator.slice(0, -1)} ${right})`;
+        ? {
+              cpp: `bbl::js::${helper}(${previous}, ${right})`,
+              native: false,
+              jsData: true,
+          }
+        : {
+              cpp: `(${previous} ${operator.slice(0, -1)} ${right})`,
+              native: true,
+              jsData: false,
+          };
 }
 
 /** `=` and the compound assignments the lowerings accept, by spelling. */
@@ -4604,17 +4627,13 @@ export class StatementLowerer {
                     return;
                 }
                 if (target.kind === "number") {
-                    const right = context.compileNumber(
-                        unwrapped.right,
-                        "double",
-                    );
                     context.emit({
                         kind: "expression",
                         code: this.numericAssignmentCpp(
                             context,
                             target.cpp,
                             operator,
-                            right,
+                            unwrapped.right,
                         ),
                     });
                 } else if (target.kind === "boolean" && operator === "=") {
@@ -4975,14 +4994,19 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         target: string,
         operator: string,
-        right: string,
+        right: ts.Expression,
     ): string {
-        const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-        if (!helper) {
-            return `${target} ${operator} ${right};`;
-        }
-        context.reachJsData();
-        return `${target} = bbl::js::${helper}(${target}, ${right});`;
+        const cpp = context.compileNumber(right, "double");
+        if (operator === "=") return `${target} = ${cpp};`;
+        const value = compoundAssignmentValue(
+            operator,
+            target,
+            cpp,
+            staticNumberValue(context, right),
+        );
+        if (value.native) return `${target} ${operator} ${cpp};`;
+        if (value.jsData) context.reachJsData();
+        return `${target} = ${value.cpp};`;
     }
 
     private emitCameraVectorSet(
