@@ -6027,9 +6027,9 @@ export class DataTypeRegistry {
                 // A member whose value is undefined is dropped too, so an own
                 // `f: T | undefined` field writes its key only while it holds
                 // a value; an `f: T | null` one writes null.
-                const emptyCpp = omittable
+                const definedCpp = omittable
                     ? undefined
-                    : this.undefinedFieldValueCpp(name, field, "member");
+                    : this.definedFieldValueCpp(name, field, "member");
                 const written = omittable
                     ? [
                           `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
@@ -6037,11 +6037,11 @@ export class DataTypeRegistry {
                           `        json_write(writer, *value.${field.name});`,
                           "    }",
                       ]
-                    : emptyCpp !== undefined
+                    : definedCpp !== undefined
                       ? [
                             "    {",
                             `        const auto& member = value.${field.name}${field.accessor ? ".get()" : ""};`,
-                            `        if (!(${emptyCpp})) {`,
+                            `        if (${definedCpp}) {`,
                             `            writer.key(${key});`,
                             "            json_write(writer, member);",
                             "        }",
@@ -6068,11 +6068,12 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The test that a non-`?` field's value `cpp` is JavaScript's undefined,
-     * which `JSON.stringify` omits; undefined when the field never holds
-     * undefined. A field whose empty slot may be null or undefined refuses.
+     * The test that a non-`?` field's value `cpp` is not JavaScript's
+     * undefined, which `JSON.stringify` omits; undefined when the field
+     * never holds undefined. A field whose empty slot may be null or
+     * undefined refuses.
      */
-    private undefinedFieldValueCpp(
+    private definedFieldValueCpp(
         structName: string,
         field: DataStructField,
         cpp: string,
@@ -6080,11 +6081,8 @@ export class DataTypeRegistry {
         if (field.optionalProperty) return undefined;
         const present = this.slotPresentCpp(field.type, cpp);
         if (present === undefined) return undefined;
-        const empty = present.startsWith("!")
-            ? present.slice(1)
-            : `!${present}`;
         // A document keeps undefined apart from null.
-        if (field.type.kind === "json") return empty;
+        if (field.type.kind === "json") return present;
         const absence = this.fieldPresences.get(
             `${structName}.${field.sourceName}`,
         )?.absence;
@@ -6093,7 +6091,7 @@ export class DataTypeRegistry {
                 this.jsonSerializedStructs.get(structName)!,
                 `JSON.stringify cannot tell whether an empty '${field.sourceName}' holds undefined (omitted) or null (written); its type admits both.`,
             );
-        return absence === "undefined" ? empty : undefined;
+        return absence === "undefined" ? present : undefined;
     }
 
     /**
