@@ -4960,3 +4960,38 @@ check(
     if (kept.length !== 1 || kept[0] !== "a") throw new Error("a fresh array");
 `,
 );
+
+check(
+    "record-spreads-copy-methods-into-struct-literals",
+    `
+    interface Live { update(dt: number): void; active(): boolean; count: number }
+    interface SwanLive extends Live { state(): string; height: number }
+    function createLive(count: number): Live {
+        let elapsed = 0;
+        return { update(dt) { elapsed += dt; }, active: () => elapsed > 1, count };
+    }
+    function createSwan(count: number): SwanLive {
+        const live = createLive(count);
+        return { ...live, state: () => (live.active() ? "awake" : "asleep"), height: 3 };
+    }
+    const swans: Array<typeof createSwan> = [createSwan];
+    const swan = swans[0]!(2);
+    if (swan.active() || swan.state() !== "asleep") throw new Error("initial state");
+    swan.update(2);
+    if (!swan.active() || swan.state() !== "awake" || swan.count !== 2 || swan.height !== 3) throw new Error("copied methods share state");
+`,
+);
+
+test("record spreads with accessors refuse in struct literals", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Clock { readonly now: number; tick(): void }
+            function clock(): Clock { let t = 0; return { get now() { return t; }, tick() { t++; } }; }
+            const make = (): Clock => ({ ...clock(), tick() {} });
+            const clocks: Array<typeof make> = [make];
+            clocks[0]!().tick();
+            `),
+        /A record with accessors spreads into a compile-time record, not a struct literal/,
+    );
+});

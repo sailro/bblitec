@@ -8635,10 +8635,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.compileValue(property.expression);
                 if (spread.kind === "record") {
                     declareDefault();
+                    // A spread reads each getter once; it copies the value.
+                    if (
+                        Object.keys(spread.recordGetters ?? {}).length ||
+                        Object.keys(spread.recordSetters ?? {}).length
+                    )
+                        this.context.fail(
+                            property,
+                            "A record with accessors spreads into a compile-time record, not a struct literal.",
+                        );
                     for (const [name, value] of Object.entries(
                         spread.recordProperties ?? {},
                     )) {
                         assign(name, value, property);
+                    }
+                    // Methods are own properties a spread copies too.
+                    for (const [name, method] of Object.entries(
+                        spread.recordMethods ?? {},
+                    )) {
+                        const field = this.context.dataTypes.structField(
+                            dataType.name,
+                            name,
+                            property,
+                        );
+                        if (field.type.kind !== "function")
+                            this.context.fail(
+                                property,
+                                `Method '${name}' requires a stored function field.`,
+                            );
+                        this.context.recordProxies.requireIndependentFunction(
+                            field,
+                            method,
+                        );
+                        const callback = this.context.compileStoredDataFunction(
+                            method,
+                            field.type,
+                            spread,
+                            ts.isMethodDeclaration(method) &&
+                                ts.isClassDeclaration(method.parent),
+                        );
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, callback)};`,
+                        });
+                        assigned.add(field.name);
                     }
                     continue;
                 }
