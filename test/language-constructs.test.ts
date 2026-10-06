@@ -8051,32 +8051,35 @@ check(
 `,
 );
 
-test("coalesced records refuse a copy the program could tell apart", () => {
-    assert.throws(
-        () =>
-            compileSource(`interface P { x: number; z: number }
-            interface C { x: number; w: number }
-            const items: P[] = [{ x: 1, z: 2 }];
-            const other: C = { x: 5, w: 6 };
-            function read(i: number): number { const p = items[i] ?? other; other.x = 60; return p.x; }
-            const unused = read(0);`),
-        /'C' record stored as 'P' would be a copy of the one object JavaScript keeps, and the program writes 'x'/,
-    );
-});
-
-test("record conversions refuse what neither a copy nor a shared layout holds", () => {
-    assert.throws(
-        () =>
-            compileSource(`interface S { a: number; extra: number }
-            interface T { a: number; note?: string }
-            const s: S = { a: 1, extra: 2 };
-            const t: T = s;
-            const seen = new Set<T>([t]);
-            const unused = seen.has(t);`),
-        /'S' record stored as 'T' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity/,
-    );
-});
-
+check(
+    "coalesced-records-of-two-wider-types-stay-one-object",
+    `
+    interface P { x: number; z: number }
+    interface C { x: number; w: number }
+    const items: P[] = [{ x: 1, z: 2 }];
+    const other: C = { x: 5, w: 6 };
+    function read(i: number): number { const p = items[i] ?? other; other.x = 60; return p.x; }
+    if (read(0) !== 1 || read(3) !== 60) throw new Error("selected record reads the written object");
+    if ((items[3] ?? other) !== other) throw new Error("selected identity");
+    if (JSON.stringify(other) !== '{"x":60,"w":6}' || JSON.stringify(items[0]) !== '{"x":1,"z":2}') throw new Error("each record keeps its own keys");
+`,
+);
+check(
+    "records-stored-as-a-type-of-other-fields-stay-one-object",
+    `
+    interface S { a: number; extra: number }
+    interface T { a: number; note?: string }
+    const s: S = { a: 1, extra: 2 };
+    const t: T = s;
+    const seen = new Set<T>([t]);
+    t.a = 3;
+    t.note = "n";
+    if (!seen.has(s) || s.a !== 3 || (s as T).note !== "n") throw new Error("one object keyed and written under both types");
+    if (Object.keys(s).join() !== "a,extra,note" || JSON.stringify(t) !== '{"a":3,"extra":2,"note":"n"}') throw new Error("keys of the one object");
+    const own: T = { a: 4 };
+    if ("extra" in own || JSON.stringify(own) !== '{"a":4}') throw new Error("a record of the other type holds the field absent");
+`,
+);
 check(
     "arrays-of-records-lent-to-reading-callees",
     `
@@ -8103,48 +8106,31 @@ check(
 `,
 );
 
-test("arrays of records are lent only to callees that keep neither them nor their elements", () => {
-    const shapes = `interface Emit { x: number; y: number; z: number }
-        interface Wheel { x: number; z: number; label?: string }`;
-    const copied =
-        /'Emit' record stored as 'Wheel' would be a copy of the one object JavaScript keeps, and the array holding them is one shared array/;
-    // The callee keeps an element.
-    assert.throws(
-        () =>
-            compileSource(`${shapes}
-            class Keeper {
-                kept: Wheel | undefined;
-                keep(wheels: readonly Wheel[]): void { this.kept = wheels[0]; }
-            }
-            const keeper = new Keeper();
-            const points: Emit[] = [{ x: 1, y: 2, z: 3 }];
-            keeper.keep(points);
-            points.push({ x: 4, y: 5, z: 6 });
-            keeper.keep(points);
-            const unused = keeper.kept?.x;`),
-        copied,
-    );
-    // The call grows the original array while the callee reads the copy.
-    assert.throws(
-        () =>
-            compileSource(`${shapes}
-            class Store {
-                points: Emit[] = [{ x: 1, y: 2, z: 3 }];
-                grow(): void { this.points.push({ x: 0, y: 0, z: 0 }); }
-            }
-            class Summer {
-                total = 0;
-                sum(wheels: readonly Wheel[], store: Store): void { store.grow(); for (const wheel of wheels) this.total += wheel.x; }
-            }
-            const store = new Store();
-            const summer = new Summer();
-            summer.sum(store.points, store);
-            summer.sum(store.points, store);
-            const unused = summer.total;`),
-        copied,
-    );
-});
-
+check(
+    "arrays-of-records-kept-or-grown-by-callees-stay-one-array",
+    `
+    interface Emit { x: number; y: number; z: number }
+    interface Wheel { x: number; z: number; label?: string }
+    const kept: Wheel[] = [];
+    function keep(wheels: readonly Wheel[]): void { kept.push(wheels[0]!); }
+    const points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+    keep(points);
+    points[0]!.x = 9;
+    if (kept[0]!.x !== 9 || kept[0] !== points[0]) throw new Error("a kept element is the array's own record");
+    class Store {
+        points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+        grow(): void { this.points.push({ x: 4, y: 0, z: 0 }); }
+    }
+    class Summer {
+        total = 0;
+        sum(wheels: Wheel[], store: Store): void { store.grow(); for (const wheel of wheels) this.total += wheel.x; }
+    }
+    const store = new Store();
+    const summer = new Summer();
+    summer.sum(store.points, store);
+    if (summer.total !== 5 || store.points.length !== 2) throw new Error("the callee walks the array the call grew " + summer.total);
+`,
+);
 check(
     "records-lent-to-reading-callees-see-writes-the-call-runs",
     `
@@ -8167,6 +8153,58 @@ check(
     if (readAfterSetter(new Probe(), second) !== 7) throw new Error("a setter writes the original");
 `,
 );
+
+check(
+    "records-converted-to-two-wider-types-stay-one-object",
+    `
+    interface P { x: number }
+    interface Labeled { x: number; label?: string }
+    interface Weighted { x: number; w?: number }
+    const p: P = { x: 1 };
+    const labeled: Labeled = p;
+    const weighted: Weighted = p;
+    labeled.x = 5;
+    if (weighted.x !== 5 || p.x !== 5) throw new Error("one object under three types");
+    labeled.label = "a";
+    weighted.w = 2;
+    if ((labeled as P) !== (weighted as P) || (weighted as P) !== p) throw new Error("one identity");
+    if (Object.keys(p).sort().join() !== "label,w,x") throw new Error("keys added through either view " + Object.keys(p).join());
+    const plain: Labeled = { x: 3 };
+    if ("label" in plain || "w" in plain || Object.keys(plain).join() !== "x") throw new Error("a member's own record holds the others' fields absent");
+    const seen = new Set<P>([labeled]);
+    if (!seen.has(weighted) || !seen.has(p)) throw new Error("keyed identity");
+`,
+);
+
+check(
+    "narrower-records-reached-through-wider-arrays-copy-their-absence",
+    `
+    interface Wide { a: number; b: number }
+    interface Narrow { a: number }
+    const wides: Wide[] = [{ a: 1, b: 2 }];
+    const narrows: Narrow[] = wides;
+    narrows.push({ a: 3 });
+    const second = wides[1]!;
+    if (Object.keys(second).join() !== "a" || JSON.stringify(second) !== '{"a":3}') throw new Error("narrower record keys");
+    const copy = { ...second };
+    if (copy.a !== 3 || "b" in copy || Object.keys(copy).join() !== "a") throw new Error("narrower record copied through a wider array");
+    const first = { ...wides[0]! };
+    if (first.a !== 1 || first.b !== 2 || Object.keys(first).join() !== "a,b") throw new Error("wider record copy");
+`,
+);
+
+test("records of one object refuse a property no one layout stores both ways", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface S { v: number }
+            interface T { v: number | string }
+            const s: S = { v: 1 };
+            const t: T = s;
+            t.v = "x";
+            const unused = s.v;`),
+        /'S' record stored as 'T' would be a copy of the one object JavaScript keeps, and the program writes 'v' of such records; no shared layout holds both record types/,
+    );
+});
 
 check(
     "any-assertions-leave-record-copies-unobservable",
@@ -8318,34 +8356,29 @@ check(
 `,
 );
 
-test("a shared array in a nested member refuses a copy no shared layout holds", () => {
-    const shapes = `interface Emit { x: number; y: number; z: number }
-        interface Wheel { x: number; z: number; label?: string }
-        interface Holder { points: Wheel[] }
-        const points: Emit[] = [{ x: 1, y: 2, z: 3 }];`;
-    const copied =
-        /'Emit' record stored as 'Wheel' would be a copy of the one object JavaScript keeps, and the array holding them is one shared array/;
-    for (const use of [
-        // a literal field, at any depth
-        `const holder: Holder = { points };`,
-        `const outer: { inner: Holder } = { inner: { points } };`,
-        // a conditional arm, a spread member, an array element
-        `const flag = points.length > 0; const holder: Holder = { points: flag ? points : [] };`,
-        `const base = { points }; const holder: Holder = { ...base };`,
-        `const lists: Wheel[][] = [points];`,
-        // a member of a fresh record is not fresh
-        `function make(): { points: Emit[] } { return { points }; } const holder: Holder = make();`,
-    ])
-        assert.throws(
-            () =>
-                compileSource(
-                    `${shapes}\n${use}\npoints.push({ x: 4, y: 5, z: 6 });`,
-                ),
-            copied,
-            use,
-        );
-});
-
+check(
+    "shared-arrays-in-nested-members-of-another-record-type-stay-one-array",
+    `
+    interface Emit { x: number; y: number; z: number }
+    interface Wheel { x: number; z: number; label?: string }
+    interface Holder { points: Wheel[] }
+    const points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+    const holder: Holder = { points };
+    const outer: { inner: Holder } = { inner: { points } };
+    const flag = points.length > 0;
+    const chosen: Holder = { points: flag ? points : [] };
+    const base = { points };
+    const spread: Holder = { ...base };
+    const lists: Wheel[][] = [points];
+    function make(): { points: Emit[] } { return { points }; }
+    const made: Holder = make();
+    points.push({ x: 4, y: 5, z: 6 });
+    if (holder.points !== points || outer.inner.points !== points || chosen.points !== points || spread.points !== points || lists[0] !== points || made.points !== points)
+        throw new Error("one array under every member type");
+    holder.points[1]!.label = "rear";
+    if (holder.points.length !== 2 || (points[1] as Wheel).label !== "rear") throw new Error("one array, one record");
+`,
+);
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

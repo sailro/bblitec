@@ -9952,15 +9952,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 entry.presence?.emptySlot === "ambiguous" &&
                 targetField.type.kind === "optional" &&
                 options.fresh?.(targetField.name) === true;
-            // The source's own type declares the field required, so its
-            // records hold it, absent-capable storage or not.
+            // A field a shared layout holds absent for other record types is
+            // present when the source's own type declares it required,
+            // unless that type's storage can hold such a record (a narrower
+            // record pushed through an array view, or asserted to it): then
+            // its slot says.
             const presentCpp =
                 raw ||
                 (sourceField.sharedAbsent &&
                     declared !== undefined &&
-                    (declared.flags & ts.SymbolFlags.Optional) === 0)
+                    (declared.flags & ts.SymbolFlags.Optional) === 0 &&
+                    !this.context.dataTypes.mayHoldNarrower(declaredType))
                     ? undefined
                     : entry.presence?.ownCpp;
+            // A copy that can lack a field its new object requires gives
+            // that object the source's layout, absent fields and all.
+            if (
+                sourceField.sharedAbsent &&
+                presentCpp !== undefined &&
+                !targetField.optionalProperty &&
+                targetField.type.kind !== "optional"
+            )
+                this.context.dataTypes.joinSpreadTarget(
+                    sourceType,
+                    target.type,
+                );
             const value = raw
                 ? {
                       ...this.leafValue(
