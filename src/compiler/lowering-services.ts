@@ -81,12 +81,6 @@ export interface NativeFunctionBodyOptions {
     compileReturn?: (expression: ts.Expression, type: DataType) => string;
 }
 
-/** The label after an inlined body that its early returns jump to. */
-export interface InlineReturnLabel {
-    readonly label: string;
-    readonly used: boolean;
-}
-
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
     emitNativeThrow(
@@ -447,12 +441,16 @@ export interface LoweringServices {
         emitBody: () => void,
         byReference?: ClosureBorrowing,
     ): CapturedClosure;
-    beginInlineFrame(wrapped: boolean, returnLabel?: InlineReturnLabel): void;
+    beginInlineFrame(): void;
     endInlineFrame(): void;
+    /** An inlined body whose bare early returns break out of it or jump past it. */
+    emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label",
+        emitBody: () => T,
+    ): T;
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;
     activeNativeReturnType(): DataType | "void" | undefined;
-    activeInlineWrapper(): boolean;
-    activeInlineReturnLabel(): InlineReturnLabel | undefined;
     emitNativeReturn(statement: ts.ReturnStatement): void;
     emitNativeYield(expression: ts.YieldExpression): void;
     activeGeneratorType(): DataType<"iterator"> | undefined;

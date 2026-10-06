@@ -25,7 +25,6 @@ import {
     writable,
 } from "./compiler/emission-transaction.js";
 import type {
-    InlineReturnLabel,
     LoweringServices,
     LoweringStatement,
     NativeFunctionBodyOptions,
@@ -804,8 +803,6 @@ class Compiler implements LoweringServices {
           } & NativeFunctionBodyOptions)
         | {
               kind: "inline";
-              wrapped: boolean;
-              returnLabel?: InlineReturnLabel;
               engineScopeDepth: number;
           }
     > = emissionArray([]);
@@ -5065,12 +5062,13 @@ class Compiler implements LoweringServices {
         const expression = only.expression;
         const leading = statements.slice(0, -1);
         const earlyReturn = firstReturn(leading);
+        let resultType: DataType | undefined;
         if (earlyReturn) {
             // Early returns are function control flow: the body runs as a
             // native lambda of the getter's represented result type.
             const signature =
                 this.checker.getSignatureFromDeclaration(accessor);
-            const resultType = signature
+            resultType = signature
                 ? this.dataTypes.fromTsType(
                       this.checker.getReturnTypeOfSignature(signature),
                       accessor,
@@ -5081,25 +5079,6 @@ class Compiler implements LoweringServices {
                     earlyReturn,
                     "A getter with early returns requires a represented result flow.",
                 );
-            return this.withRecordScopes(owner, () => {
-                this.bindings.pushScope(this.allocateUserFunctionPrefix());
-                const previousThis = this.activeThis();
-                this.defineThis(receiver ?? owner);
-                try {
-                    return {
-                        ...this.userFunctions.emitValueLambda(
-                            this,
-                            statements,
-                            this.dataTypes.ownReturnedArray(resultType),
-                            false,
-                        ),
-                        impure: true,
-                    };
-                } finally {
-                    this.defineThis(previousThis);
-                    this.bindings.popScope();
-                }
-            });
         }
         return this.withRecordScopes(owner, () => {
             if (leading.length)
@@ -5111,10 +5090,20 @@ class Compiler implements LoweringServices {
             // identity in classInstances is not a reliable dispatch guard.
             this.defineThis(receiver ?? owner);
             try {
-                emitReachableStatements(this, leading);
                 // A getter is an evaluation, even when its return happens
                 // to lower to a field read. Optional chains must consume it
                 // once and keep any nested method calls behind their guard.
+                if (resultType)
+                    return {
+                        ...this.userFunctions.emitValueLambda(
+                            this,
+                            statements,
+                            this.dataTypes.ownReturnedArray(resultType),
+                            false,
+                        ),
+                        impure: true,
+                    };
+                emitReachableStatements(this, leading);
                 return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
@@ -6223,16 +6212,24 @@ class Compiler implements LoweringServices {
         if (binding) this.useNativeBinding(binding);
     }
 
-    public beginInlineFrame(
-        wrapped: boolean,
-        returnLabel?: InlineReturnLabel,
-    ): void {
+    public beginInlineFrame(): void {
         this.returnFrames.push({
             kind: "inline",
-            wrapped,
-            ...(returnLabel ? { returnLabel } : {}),
             engineScopeDepth: this.bindings.variableScopes.length,
         });
+    }
+
+    public emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label",
+        emitBody: () => T,
+    ): T {
+        return this.statements.emitInlinedBody(
+            this,
+            declaration,
+            returns,
+            emitBody,
+        );
     }
 
     public endInlineFrame(): void {
@@ -6305,16 +6302,6 @@ class Compiler implements LoweringServices {
     public activeNativeReturnType(): DataType | "void" | undefined {
         const top = this.returnFrames.at(-1);
         return top?.kind === "native" ? top.type : undefined;
-    }
-
-    public activeInlineWrapper(): boolean {
-        const top = this.returnFrames.at(-1);
-        return top?.kind === "inline" && top.wrapped;
-    }
-
-    public activeInlineReturnLabel(): InlineReturnLabel | undefined {
-        const top = this.returnFrames.at(-1);
-        return top?.kind === "inline" ? top.returnLabel : undefined;
     }
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {
@@ -6558,7 +6545,8 @@ class Compiler implements LoweringServices {
                 code: `co_return [&]() -> ${type} { ${statement} }();`,
                 transfer: "suspend",
             });
-        } else this.emit(statement);
+        } else
+            this.emit({ kind: "control", code: statement, transfer: "throw" });
     }
 
     public emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean {

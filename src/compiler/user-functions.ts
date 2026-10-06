@@ -1509,6 +1509,7 @@ export interface UserFunctionContext
             | "emitNativeCallbackStorage"
             | "beginInlineFrame"
             | "endInlineFrame"
+            | "emitInlinedBody"
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
             | "registerNativeBinding"
@@ -4302,7 +4303,6 @@ export class UserFunctionLowerer {
         return this.declarationIdentifier(declaration).text;
     }
 
-    /** Invokes a callback over values supplied by a lowering operation. */
     /**
      * The global `Boolean` passed as a callback (`filter(Boolean)`):
      * ToBoolean of its first argument.
@@ -4338,6 +4338,7 @@ export class UserFunctionLowerer {
         };
     }
 
+    /** Invokes a callback over values supplied by a lowering operation. */
     public compileCallbackWithValues(
         context: UserFunctionContext,
         declaration:
@@ -5507,44 +5508,30 @@ export class UserFunctionLowerer {
                     discardReturn,
                 );
             }
-            // Bare returns inside loops or switches leave a void body by a
-            // jump to the end of its own scope.
-            const returnLabel =
-                ir.needsLocalNative && !ir.returnExpression
-                    ? {
-                          label: context.allocateTemporaryCppName(
-                              "inline_return",
-                          ),
-                          used: false,
-                      }
-                    : undefined;
-            if (ir.needsWrapper) {
-                context.emit({ kind: "open", code: "do {", breaks: true });
-                context.increaseIndent();
-            } else if (returnLabel) {
-                context.emit({ kind: "open", code: "{" });
-                context.increaseIndent();
-            }
-            context.beginInlineFrame(ir.needsWrapper, returnLabel);
+            // Bare early returns break out of a wrapper around the body; ones
+            // inside loops or switches leave a void body by a jump to the end
+            // of its own scope.
+            const returns = ir.needsWrapper
+                ? "break"
+                : ir.needsLocalNative && !ir.returnExpression
+                  ? "label"
+                  : undefined;
+            context.beginInlineFrame();
             let terminated = false;
             try {
-                terminated = emitReachableStatements(context, ir.statements);
+                const emitBody = (): boolean =>
+                    emitReachableStatements(context, ir.statements);
+                terminated = returns
+                    ? context.emitInlinedBody(ir.declaration, returns, emitBody)
+                    : emitBody();
             } finally {
                 context.endInlineFrame();
-            }
-            if (ir.needsWrapper) {
-                context.decreaseIndent();
-                context.emit({ kind: "close", code: "} while (false);" });
-            } else if (returnLabel) {
-                context.decreaseIndent();
-                context.emit({ kind: "close", code: "}" });
-                if (returnLabel.used) context.emit(`${returnLabel.label}:;`);
             }
             if (terminated || !ir.returnExpression)
                 return {
                     kind: "void",
                     cpp: "",
-                    ...(terminated && !ir.needsWrapper && !returnLabel
+                    ...(terminated && !returns
                         ? { abruptCompletion: true }
                         : {}),
                 };

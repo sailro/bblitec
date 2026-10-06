@@ -440,6 +440,10 @@ test("labeled jumps refuse what they cannot leave", () => {
             "let n = 0; outer: for (let i = 0; i < 3; i++) { switch (i) { case 1: for (let j = 0; j < 2; j++) { if (j === 1) continue outer; n++; } break; default: n += 10; } }",
             /labeled continue cannot leave a switch or try statement/,
         ],
+        [
+            "let n = 0; loop: for (let i = 0; i < 3; i++) { switch (i) { case 0: if (n > 0) break; n++; continue loop; default: n += 10; } n++; }",
+            /switch case with an early break cannot also continue an enclosing loop/,
+        ],
     ] as const)
         assert.throws(() => compileSource(source), message);
 });
@@ -6616,6 +6620,29 @@ check(
     const over = { tint: 9, ...read(gate[0]!) };
     const under = { tint: 9, ...read(gate[1]!) };
     if (over.tint !== 9 || under.tint !== 5) throw new Error("struct spread override");
+`,
+);
+
+check(
+    "for-in-over-conditional-keys-with-nested-exits",
+    `
+    const gate = new Float32Array([0, 1]);
+    const record = { name: "a", ...(gate[1]! > 0 ? { extra: 4 } : {}), ...(gate[0]! > 0 ? { skipped: 1 } : {}), tail: true };
+    let visited = "";
+    for (const key in record) {
+        let inner = 0;
+        for (let i = 0; i < 4; i++) {
+            if (i === 1) continue;
+            if (i === 3) break;
+            inner += i;
+        }
+        switch (key.length) {
+            case 4: visited += "4"; break;
+            default: visited += "d";
+        }
+        visited += key + inner;
+    }
+    if (visited !== "4name2dextra24tail2") throw new Error("for in with nested exits " + visited);
 `,
 );
 
