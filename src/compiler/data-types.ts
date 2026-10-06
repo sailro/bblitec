@@ -1163,7 +1163,7 @@ export class DataTypeRegistry {
     public mayHoldNarrower(type: ts.Type): boolean {
         return (
             this.recordComponentOf(type)?.holdsNarrower.has(
-                recordIdentity(type),
+                recordIdentity(this.checker, type),
             ) === true
         );
     }
@@ -1171,7 +1171,7 @@ export class DataTypeRegistry {
     /** The component a record type's records share their layout with. */
     private recordComponentOf(type: ts.Type): RecordComponent | undefined {
         return this.recordComponents.size
-            ? this.recordComponents.get(recordIdentity(type))
+            ? this.recordComponents.get(recordIdentity(this.checker, type))
             : undefined;
     }
 
@@ -1506,8 +1506,9 @@ export class DataTypeRegistry {
      * `argument` needs only the call's writes. Otherwise the two types join
      * one record component (`record-components.ts`) through a storage
      * replay, after which both map to one struct and no conversion is left;
-     * types no one layout holds (`layoutsCompatible`), or still separate
-     * after their join, refuse, naming the types.
+     * types no one layout holds (`layoutsCompatible`; a union's layout,
+     * `requireUnionHolds`), or still separate after their join, refuse,
+     * naming the types.
      */
     public storeRecordAs(
         sourceType: DataType<"struct">,
@@ -1578,7 +1579,9 @@ export class DataTypeRegistry {
             (union ||
                 layoutsCompatible(this.checker, source.type, target.type)) &&
             !this.joined(source.type, target.type)
-        )
+        ) {
+            // A record a union stores keeps its fields in the union's layout.
+            if (union) this.requireUnionHolds(targetType, source.type, node);
             throw new NativeRecordStorageRequired({
                 ...source,
                 joins: [
@@ -1593,6 +1596,7 @@ export class DataTypeRegistry {
                     },
                 ],
             });
+        }
         // One object cannot take the layouts of two record unions.
         if (source?.type.isUnion() && target && union)
             this.fail(
@@ -4023,42 +4027,11 @@ export class DataTypeRegistry {
             ]);
             return key;
         }
-        // A generic alias symbol names the factory, not one instantiation.
-        // `Record<ClosedKeys, T>` and `Record<string, U>` therefore share the
-        // global `Record` symbol while exposing different property sets. Key
-        // instantiated aliases by the checker type itself so one mapping
-        // cannot poison the next; non-generic aliases and named interfaces
-        // retain their stable symbol identity.
-        if (type.aliasSymbol && (type.aliasTypeArguments?.length ?? 0) > 0) {
-            return type;
-        }
-        // The same collision exists one level down, where a generic interface
-        // or class is instantiated rather than aliased: `WorkspaceRaycastHit<P>`
-        // and `WorkspaceRaycastHit<Part>` are two types sharing one declaration
-        // symbol, and keying both by that symbol hands the second whatever the
-        // first resolved to.
-        const objectType = type as ts.ObjectType;
-        if (
-            (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
-            this.checker.getTypeArguments(type as ts.TypeReference).length > 0
-        ) {
-            return type;
-        }
-        // And the same collision again where there is no name to share at all:
-        // an inline `{ part: P; distance: number }` is written once, so every
-        // instantiation of it carries that one type literal's symbol while the
-        // checker mints a type per instantiation. The instantiated type is its
-        // own identity; an anonymous object that was never instantiated is the
-        // one shape its symbol names, and keeps it.
-        if (
-            (objectType.objectFlags &
-                (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
-            (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)
-        ) {
-            return type;
-        }
-        const own = type.aliasSymbol ?? type.symbol ?? type;
-        // The members of a record component are one struct.
+        // A name several checker types share keys each by the type
+        // (`recordIdentity`): `Record<ClosedKeys, T>` and `Record<string, U>`
+        // expose different property sets. The members of a record component
+        // are one struct.
+        const own = recordIdentity(this.checker, type);
         return this.recordComponents.get(own)?.key ?? own;
     }
 

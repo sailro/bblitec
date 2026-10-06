@@ -8177,6 +8177,54 @@ check(
 );
 
 check(
+    "records-stored-as-an-engine-record-type-stay-one-object",
+    `
+    type VatClip = import("@babylonjs/lite").VatClip;
+    interface Holder { frozen: { fromRow: number; frameCount: number; fps: number }; slot: number }
+    const holder: Holder = { frozen: { fromRow: 0, frameCount: 1, fps: 0 }, slot: 0 };
+    const gait: (VatClip | undefined)[] = [undefined, { fromRow: 4, frameCount: 2, fps: 12 }];
+    function sum(a: VatClip, b: VatClip): number { return a.fps + b.fps; }
+    function pick(hold: boolean): VatClip {
+        Object.assign(holder.frozen, { fromRow: 2, frameCount: 3, fps: 24 });
+        const fallback = gait[1]!;
+        const clip = hold ? holder.frozen : gait[holder.slot] ?? fallback;
+        return clip;
+    }
+    const held = pick(true);
+    if (held !== holder.frozen || sum(held, gait[1]!) !== 36) throw new Error("one object under the engine type");
+    holder.frozen.fps = 30;
+    if (held.fps !== 30 || pick(false) !== gait[1]) throw new Error("writes reach the held record");
+`,
+);
+
+check(
+    "fresh-records-stored-as-a-mapped-record-type",
+    `
+    interface Debug { kind: string; slot: number; open: number | null; id: number; matrix: readonly number[] }
+    type FieldDebug = Omit<Debug, "kind" | "id"> & { slot: number };
+    interface Field { instances(key: number): readonly FieldDebug[] }
+    const owners = new Map<number, number[]>([[1, [0, 1]]]);
+    const values = [new Float32Array([1, 2]), new Float32Array([3, 4])];
+    function makeField(): Field {
+        return {
+            instances(key) {
+                const slots = owners.get(key);
+                if (!slots) return [];
+                return slots.flatMap((slot) => values.map((m) => ({ open: slot > 0 ? m[0]! : null, slot, matrix: Array.from(m.subarray(slot, slot + 1)) })));
+            },
+        };
+    }
+    const fields = new Map<string, Field>([["door", makeField()]]);
+    const out: Debug[] = [];
+    for (const [kind, field] of fields)
+        for (const item of field.instances(1)) out.push({ kind, slot: item.slot, open: item.open, id: 1, matrix: item.matrix });
+    const list = fields.get("door")!.instances(1);
+    if (out.length !== 4 || out[3]!.slot !== 1 || out[2]!.open !== 1 || out[0]!.open !== null || out[3]!.matrix[0] !== 4) throw new Error("records of a mapped type");
+    if (Object.keys(list[0]!).join() !== "open,slot,matrix") throw new Error("keys of the fresh records " + Object.keys(list[0]!).join());
+`,
+);
+
+check(
     "narrower-records-reached-through-wider-arrays-copy-their-absence",
     `
     interface Wide { a: number; b: number }

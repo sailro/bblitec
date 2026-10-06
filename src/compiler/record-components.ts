@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { declarationOrigin } from "./symbols.js";
+import { declarationOrigin, type DeclarationOrigin } from "./symbols.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -28,44 +28,71 @@ export interface RecordComponent {
     readonly holdsNarrower: ReadonlySet<ts.Symbol | ts.Type>;
 }
 
-/** The identity a record type keeps across the program: its declared name, or itself. */
-export function recordIdentity(type: ts.Type): ts.Symbol | ts.Type {
-    return type.aliasSymbol ?? type.symbol ?? type;
+/**
+ * The identity a record type keeps across the program: its declared name,
+ * or the type itself where a name is shared by several types -- an
+ * instantiated generic alias (`Record<K, T>` and `Record<string, U>`
+ * share `Record`), an instantiated generic interface or class, an
+ * instantiated type literal (every instantiation carries the literal's
+ * one symbol) -- or where there is no name.
+ */
+export function recordIdentity(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ts.Symbol | ts.Type {
+    const object = type as ts.ObjectType;
+    const instantiated =
+        (type.aliasSymbol !== undefined &&
+            (type.aliasTypeArguments?.length ?? 0) > 0) ||
+        ((object.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+            checker.getTypeArguments(type as ts.TypeReference).length > 0) ||
+        (object.objectFlags &
+            (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
+            (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated);
+    return instantiated ? type : (type.aliasSymbol ?? type.symbol ?? type);
 }
 
+/** Libraries whose record types keep the layout their declarations give them. */
+const FIXED_LAYOUT_ORIGINS: ReadonlySet<DeclarationOrigin> = new Set([
+    "default-lib",
+    "dom",
+    "webgpu",
+]);
+
 /**
- * Whether a type is a plain record a component can hold: an object type
- * the program declares (an interface, a type literal, an object literal's
- * type, or an intersection of them) with properties and no call, construct
- * or index signature, that is not a class instance, an array or a generic
- * instantiation.
+ * Whether a type is a plain record a component can hold: an object type,
+ * or an intersection of them, with properties and no call, construct or
+ * index signature, that is not an array or a class instance, every
+ * property declared by the program or the engine.
  */
 export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
-    if (type.isIntersection())
-        return type.types.every((part) => isPlainRecord(checker, part));
-    if ((type.flags & ts.TypeFlags.Object) === 0 || type.isUnion())
-        return false;
-    const object = type as ts.ObjectType;
+    const parts = type.isIntersection() ? type.types : [type];
     if (
+        parts.some(
+            (part) =>
+                (part.flags & ts.TypeFlags.Object) === 0 ||
+                part.symbol?.declarations?.some(ts.isClassLike) === true,
+        ) ||
         checker.isArrayLikeType(type) ||
         type.getCallSignatures().length > 0 ||
         type.getConstructSignatures().length > 0 ||
-        checker.getIndexInfosOfType(type).length > 0 ||
-        (type.aliasTypeArguments?.length ?? 0) > 0 ||
-        ((object.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
-            checker.getTypeArguments(type as ts.TypeReference).length > 0) ||
-        (object.objectFlags & ts.ObjectFlags.Instantiated) !== 0 ||
-        checker.getPropertiesOfType(type).length === 0
+        checker.getIndexInfosOfType(type).length > 0
     )
         return false;
-    const declarations = type.symbol?.declarations ?? [];
+    const properties = checker.getPropertiesOfType(type);
     return (
-        declarations.length > 0 &&
-        declarations.every(
-            (declaration) =>
-                !ts.isClassLike(declaration) &&
-                declarationOrigin(declaration) === "program" &&
-                !declaration.getSourceFile().isDeclarationFile,
+        properties.length > 0 &&
+        properties.every(
+            ({ declarations }) =>
+                declarations !== undefined &&
+                declarations.length > 0 &&
+                declarations.every(
+                    (declaration) =>
+                        !ts.isClassLike(declaration.parent) &&
+                        !FIXED_LAYOUT_ORIGINS.has(
+                            declarationOrigin(declaration),
+                        ),
+                ),
         )
     );
 }
@@ -119,8 +146,8 @@ export function recordComponents(
     };
     const joined = new Map<ts.Symbol | ts.Type, Set<ts.Symbol | ts.Type>>();
     const join = (left: ts.Type, right: ts.Type): void => {
-        const a = recordIdentity(left);
-        const b = recordIdentity(right);
+        const a = recordIdentity(checker, left);
+        const b = recordIdentity(checker, right);
         if (!types.has(a)) {
             types.set(a, left);
             parent.set(a, a);
@@ -161,12 +188,12 @@ export function recordComponents(
     const holdsNarrower = new Set<ts.Symbol | ts.Type>();
     for (const { source, target, kind } of joins)
         if (kind === "element" && lacks(target, source))
-            holdsNarrower.add(recordIdentity(source));
+            holdsNarrower.add(recordIdentity(checker, source));
         else if (
             (kind === "assertion" && lacks(source, target)) ||
             kind === "spread"
         )
-            holdsNarrower.add(recordIdentity(target));
+            holdsNarrower.add(recordIdentity(checker, target));
     const groups = new Map<ts.Symbol | ts.Type, ts.Type[]>();
     for (const [identity, type] of types) {
         const root = find(identity);
@@ -199,7 +226,7 @@ export function recordComponents(
                 : {}),
         };
         for (const member of members)
-            components.set(recordIdentity(member), component);
+            components.set(recordIdentity(checker, member), component);
     }
     return components;
 }
@@ -222,7 +249,7 @@ function heldRecords(
     }
     return isPlainRecord(checker, a) &&
         isPlainRecord(checker, b) &&
-        recordIdentity(a) !== recordIdentity(b)
+        recordIdentity(checker, a) !== recordIdentity(checker, b)
         ? [a, b]
         : undefined;
 }
