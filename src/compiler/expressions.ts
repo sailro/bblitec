@@ -1199,19 +1199,16 @@ export class ExpressionLowerer {
             const value = this.compileObjectValue(unwrapped);
             if (value) return value;
         }
-        if (ts.isPostfixUnaryExpression(unwrapped)) {
-            const value =
-                this.context.dataLowerer.compilePostfixValue(unwrapped);
-            if (value) {
-                return value;
-            }
-        }
-        if (ts.isPrefixUnaryExpression(unwrapped)) {
-            const value =
-                this.context.dataLowerer.compilePrefixValue(unwrapped);
-            if (value) {
-                return value;
-            }
+        if (isUpdateExpression(unwrapped)) {
+            const updated =
+                this.context.dataLowerer.compileUpdateValue(unwrapped);
+            if (updated) return updated;
+            // An operand that does not lower names its own cause first.
+            this.context.compileValue(unwrapped.operand);
+            this.context.fail(
+                unwrapped,
+                "An increment or decrement requires a number, optional number or dictionary entry.",
+            );
         }
         if (ts.isTemplateExpression(unwrapped)) {
             return this.compileTemplate(unwrapped);

@@ -272,6 +272,366 @@ check(
 );
 
 check(
+    "switch-fallthrough-and-final-clauses",
+    `
+    function final(k: number): number { let r = 0; switch (k) { case 1: r = 1; break; default: r = 2; } return r; }
+    function through(k: number): number { let r = 0; switch (k) { case 1: r += 1; case 2: r += 10; break; default: r = 100; } return r; }
+    function middle(k: number): string { let r = ""; switch (k) { case 1: r += "a"; default: r += "d"; case 2: r += "b"; break; case 3: r += "c"; } return r; }
+    function early(k: string): number { let r = 0; switch (k) { case "a": r += 1; case "b": if (r > 0) break; r += 2; case "c": r += 4; } return r; }
+    function trailing(k: number): number { let r = 0; switch (k) { case 1: r = 1; break; case 2: case 3: } return r; }
+    if (final(1) !== 1 || final(3) !== 2) throw new Error("final clause");
+    if (through(1) !== 11 || through(2) !== 10 || through(3) !== 100) throw new Error("fallthrough");
+    if (middle(1) + middle(2) + middle(3) + middle(9) !== "adbbcdb") throw new Error("default in the middle");
+    if (early("a") !== 1 || early("b") !== 6 || early("c") !== 4 || early("z") !== 0) throw new Error("early break");
+    if (trailing(1) !== 1 || trailing(2) !== 0) throw new Error("trailing labels");
+    const kind: string = "a";
+    let folded = 0;
+    switch (kind) { case "a": folded += 1; case "b": folded += 2; break; case "c": folded += 4; }
+    if (folded !== 3) throw new Error("static fallthrough");
+    let n = 0;
+    for (let i = 0; i < 4; i++) {
+        switch (i % 3) { case 0: n += 1; case 1: if (i === 1) continue; n += 10; break; default: n += 100; }
+        n += 1000;
+    }
+    if (n !== 3122) throw new Error("continue through a fallthrough switch " + n);
+    const stored: Array<typeof middle> = [middle];
+    if (stored[0]!(1) !== "adb" || stored[0]!(9) !== "db") throw new Error("stored fallthrough");
+`,
+);
+
+check(
+    "switch-maybe-absent-discriminants",
+    `
+    type Reason = "wet" | "dry" | "far";
+    function text(reason: string | null): number { switch (reason) { case null: return 0; case "prop": case "tree": return 1; default: return 2; } }
+    function pick(reason: Reason | null | undefined): Reason | null { switch (reason) { case "wet": case "dry": return reason; default: return null; } }
+    function both(reason: Reason | null | undefined): number { switch (reason) { case "wet": return 1; case null: return 2; case undefined: return 3; default: return 4; } }
+    function field(input: { by?: Reason | null; wood: boolean }): string { switch (input.by) { case "wet": return "w"; case "far": return input.wood ? "f" : "g"; default: return "-"; } }
+    function count(value?: number): number { switch (value) { case undefined: return 0; case 1: return 10; default: return -1; } }
+    const texts: Array<typeof text> = [text];
+    const picks: Array<typeof pick> = [pick];
+    const boths: Array<typeof both> = [both];
+    const fields: Array<typeof field> = [field];
+    const counts: Array<typeof count> = [count];
+    if (text("tree") !== 1 || text(null) !== 0 || text("x") !== 2) throw new Error("inline nullable string");
+    if (texts[0]!("prop") !== 1 || texts[0]!(null) !== 0 || texts[0]!("x") !== 2) throw new Error("stored nullable string");
+    if (pick("wet") !== "wet" || pick(null) !== null || picks[0]!("dry") !== "dry" || picks[0]!(undefined) !== null || picks[0]!("far") !== null) throw new Error("optional union");
+    const all: Array<Reason | null | undefined> = ["wet", null, undefined, "dry"];
+    let order = "";
+    for (const reason of all) order += both(reason) + "" + boths[0]!(reason);
+    if (order !== "11223344") throw new Error("null and undefined labels " + order);
+    if (field({ by: "wet", wood: false }) !== "w" || field({ wood: true }) !== "-" || fields[0]!({ by: "far", wood: true }) !== "f" ||
+        fields[0]!({ by: null, wood: true }) !== "-" || fields[0]!({ wood: false }) !== "-") throw new Error("optional field");
+    if (count() !== 0 || counts[0]!() !== 0 || counts[0]!(1) !== 10 || counts[0]!(2) !== -1) throw new Error("optional number");
+`,
+);
+
+test("switch refuses an absent label over a number", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(v: number): number { switch (v) { case null: return 0; default: return 1; } } const unused = f(2);",
+            ),
+        /null or undefined case label requires a discriminant that holds null and undefined apart/,
+    );
+});
+
+check(
+    "unrolled-loop-runtime-exits",
+    `
+    interface Template { id: string; weight: number; when?: (n: number) => boolean; }
+    const TEMPLATES: readonly Template[] = [
+        { id: "a", weight: 1 },
+        { id: "b", weight: 2, when: (n) => n > 2 },
+        { id: "c", weight: 4, when: (n) => n > 5 },
+        { id: "d", weight: 8, when: (n) => n !== 7 },
+    ];
+    function pick(n: number, stop: string): string {
+        let text = "";
+        let total = 0;
+        for (const template of TEMPLATES) {
+            if (template.when && !template.when(n)) continue;
+            text += template.id;
+            if (template.id === stop) break;
+            total += template.weight;
+        }
+        return text + total;
+    }
+    function firstHeavy(n: number): string {
+        let found = "-";
+        for (const template of TEMPLATES) {
+            if (template.when && !template.when(n)) continue;
+            if (template.weight < 2) continue;
+            found = template.id;
+            break;
+        }
+        return found;
+    }
+    function labeled(n: number): number {
+        let count = 0;
+        outer: for (const template of TEMPLATES) {
+            if (template.when && !template.when(n)) continue outer;
+            if (template.weight > 4) break outer;
+            count += template.weight;
+        }
+        return count;
+    }
+    if (pick(1, "z") !== "ad9" || pick(3, "c") !== "abd11" || pick(6, "b") !== "ab1" || pick(7, "x") !== "abc7")
+        throw new Error("continue and break " + pick(1, "z") + pick(3, "c") + pick(6, "b") + pick(7, "x"));
+    if (firstHeavy(1) !== "d" || firstHeavy(3) !== "b" || firstHeavy(7) !== "b") throw new Error("static exit after a runtime one");
+    if (labeled(1) !== 1 || labeled(3) !== 3 || labeled(7) !== 7) throw new Error("labeled exits of the loop itself");
+    const stored: Array<typeof pick> = [pick];
+    if (stored[0]!(3, "d") !== "abd3") throw new Error("stored unrolled exits");
+`,
+);
+
+check(
+    "labeled-continue-of-an-outer-loop",
+    `
+    let n = 0;
+    outer: for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            if (j === 1) continue outer;
+            if (i === 2) break outer;
+            n++;
+        }
+    }
+    if (n !== 2) throw new Error("labeled continue " + n);
+    let text = "";
+    outer: for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            for (let k = 0; k < 3; k++) {
+                if (k === 1) continue outer;
+                text += "" + i + j + k + ",";
+            }
+            text += "x";
+        }
+        text += "y";
+    }
+    if (text !== "000,100,200,") throw new Error("deep labeled continue " + text);
+    let i = 0;
+    let sum = 0;
+    scan: while (i < 4) {
+        i++;
+        const values = [1, 2, 3];
+        for (const value of values) {
+            if (value === i) continue scan;
+            sum += value;
+        }
+        sum += 100;
+    }
+    if (sum !== 110) throw new Error("while labeled continue " + sum);
+`,
+);
+
+test("labeled jumps refuse what they cannot leave", () => {
+    const templates =
+        "interface T { id: string; when?: (n: number) => boolean; } const TS: readonly T[] = [{ id: 'a' }, { id: 'b', when: (n) => n > 1 }]; let c = 0;";
+    for (const [source, message] of [
+        [
+            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) continue outer; c++; } }`,
+            /labeled continue of a statically unrolled loop is not lowered/,
+        ],
+        [
+            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) break outer; c++; } }`,
+            /labeled break out of a statically unrolled loop is not lowered/,
+        ],
+        [
+            "let n = 0; outer: for (let i = 0; i < 3; i++) { switch (i) { case 1: for (let j = 0; j < 2; j++) { if (j === 1) continue outer; n++; } break; default: n += 10; } }",
+            /labeled continue cannot leave a switch or try statement/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "for-of-over-a-constructed-collection",
+    `
+    function plan(source: string, hosts: readonly string[] | undefined, known: (key: string) => boolean): string {
+        const out: string[] = [];
+        for (const seed of new Set<string>([source, ...(hosts ?? [])])) {
+            if (!known(seed)) continue;
+            if (seed === "stop") break;
+            out.push(seed);
+        }
+        return out.join();
+    }
+    const plans: Array<typeof plan> = [plan];
+    if (plan("a", ["b", "a", "c"], (key) => key !== "b") !== "a,c" || plans[0]!("a", undefined, () => true) !== "a" ||
+        plans[0]!("a", ["stop", "z"], () => true) !== "a") throw new Error("constructed set");
+    let keys = "";
+    for (const [key, value] of new Map<string, number>([["x", 1], ["y", 2]])) keys += key + value;
+    if (keys !== "x1y2") throw new Error("constructed map");
+`,
+);
+
+check(
+    "never-typed-returns",
+    `
+    interface Box { kind: string; size: number; tags: Map<string, number> }
+    function fail(message: string): never { throw new Error("box: " + message); }
+    function decode(text: string): Box {
+        if (text.length === 0) fail("empty");
+        let size: number;
+        try {
+            size = Number.parseInt(text, 10);
+            if (Number.isNaN(size)) throw new Error("nan");
+        } catch {
+            return fail("malformed");
+        }
+        const tags = new Map<string, number>();
+        tags.set("size", size);
+        return { kind: "box", size, tags };
+    }
+    function message(text: string, decoder: (text: string) => Box): string {
+        try { return "" + decoder(text).size; } catch (error) { return (error as Error).message; }
+    }
+    const decoders: Array<typeof decode> = [decode];
+    if (decode("12").tags.get("size") !== 12 || message("x", decode) !== "box: malformed" || message("", decode) !== "box: empty")
+        throw new Error("inline never returns");
+    if (message("7", decoders[0]!) !== "7" || message("y", decoders[0]!) !== "box: malformed") throw new Error("stored never returns");
+    const failures: Array<(message: string) => never> = [fail];
+    function pick(index: number): number { if (index < 0) return failures[0]!("negative"); return index * 2; }
+    const picks: Array<typeof pick> = [pick];
+    let caught = "";
+    try { picks[0]!(-1); } catch (error) { caught = (error as Error).message; }
+    if (picks[0]!(3) !== 6 || caught !== "box: negative") throw new Error("stored never-returning callee " + caught);
+`,
+);
+
+check(
+    "getter-early-returns-and-boolean-predicates",
+    `
+    function counter(limit: number) {
+        let disposed = false;
+        const values = new Float32Array([1, 2, 3]);
+        return {
+            get value(): number {
+                if (disposed || limit < 0) return -1;
+                for (const v of values) if (v > limit) return v;
+                return values[0]! > 0 ? 0 : 1;
+            },
+            dispose(): void { disposed = true; },
+        };
+    }
+    function read(source: { readonly value: number }): number { return source.value; }
+    const made: Array<typeof counter> = [counter];
+    const c = made[0]!(1);
+    if (read(c) !== 2 || counter(5).value !== 0 || counter(-1).value !== -1) throw new Error("getter early returns");
+    c.dispose();
+    if (read(c) !== -1) throw new Error("getter after dispose");
+    function label(a: string, b: string): string { return [a.trim(), b.trim(), ""].filter(Boolean).join(" "); }
+    const labels: Array<typeof label> = [label];
+    const numbers = [0, 3, NaN, -1];
+    if (label(" x ", "") !== "x" || labels[0]!("a", "b") !== "a b" || numbers.filter(Boolean).join() !== "3,-1" ||
+        !numbers.some(Boolean) || numbers.every(Boolean) || numbers.find(Boolean) !== 3 || numbers.findIndex(Boolean) !== 1)
+        throw new Error("Boolean predicate");
+`,
+);
+
+check(
+    "conditional-expression-statements",
+    `
+    let log = "";
+    function a(): void { log += "a"; }
+    function b(): number { log += "b"; return 1; }
+    function c(): string { log += "c"; return "c"; }
+    const set = new Set<string>();
+    const values: number[] = [];
+    function run(k: number): void { k === 0 ? a() : k === 1 ? b() : c(); }
+    function toggle(key: string, on: boolean): void { on ? set.add(key) : set.delete(key); }
+    function mixed(flag: boolean): void { flag ? a() : values.push(1); }
+    const runs: Array<typeof run> = [run];
+    const toggles: Array<typeof toggle> = [toggle];
+    const mixes: Array<typeof mixed> = [mixed];
+    run(0); runs[0]!(1); runs[0]!(2);
+    toggles[0]!("a", true); toggles[0]!("b", true); toggles[0]!("a", false);
+    mixes[0]!(true); mixes[0]!(false);
+    const always = true;
+    always ? a() : b();
+    if (log !== "abcaa" || set.size !== 1 || !set.has("b") || values.length !== 1) throw new Error("conditional statements " + log);
+`,
+);
+
+check(
+    "exponent-compound-assignment",
+    `
+    const h = [2, 10];
+    let p = h[0]! ** h[1]!;
+    p **= 0.5;
+    if (p !== 32) throw new Error("local");
+    const o = { v: 3 };
+    o.v **= 2;
+    const a = [2];
+    a[0]! **= 3;
+    if (o.v !== 9 || a[0] !== 8) throw new Error("field and element");
+    const edge = [1, -1, NaN, Infinity, 0];
+    let one = edge[0]!;
+    one **= edge[2]!;
+    let minus = edge[1]!;
+    minus **= edge[3]!;
+    if (!Number.isNaN(one) || !Number.isNaN(minus) || !Number.isNaN(edge[0]! ** edge[3]!) || edge[2]! ** edge[4]! !== 1)
+        throw new Error("JavaScript exponent edges");
+`,
+);
+
+check(
+    "numeric-updates-on-optional-and-entry-places",
+    `
+    type Job = "none" | "a" | "b";
+    const JOBS = ["a", "b"] as const;
+    type Counts = Record<Exclude<Job, "none">, number>;
+    function empty(): Counts { const counts = {} as Counts; for (const job of JOBS) counts[job] = 0; return counts; }
+    function living(villagers: readonly { job?: Job }[]): Counts {
+        const counts = empty();
+        for (const v of villagers) { if (!v.job || v.job === "none") continue; counts[v.job]++; }
+        return counts;
+    }
+    const stored: Array<typeof living> = [living];
+    const census = stored[0]!([{ job: "a" }, { job: "none" }, {}, { job: "a" }, { job: "b" }]);
+    if (census.a !== 2 || census.b !== 1) throw new Error("optional field increments");
+    const sparse = {} as Counts;
+    sparse.a = 4;
+    const before = sparse.a++;
+    const after = ++sparse.a;
+    const missing = sparse.b++;
+    if (before !== 4 || after !== 6 || !Number.isNaN(missing) || !Number.isNaN(sparse.b)) throw new Error("optional slot values");
+    sparse.a -= 1;
+    sparse.a **= 2;
+    if (sparse.a !== 25) throw new Error("optional slot compound");
+    const tally: Record<string, number> = {};
+    let reads = 0;
+    function key(name: string): string { reads++; return name; }
+    for (const word of ["x", "y", "x"]) { tally[word] = tally[word] ?? 0; tally[key(word)]!++; }
+    const old = tally["x"]!--;
+    const fresh = ++tally["y"]!;
+    tally["z"] = 1;
+    tally["z"]! += 4;
+    tally.w = 2;
+    tally.w! *= 3;
+    const absent = tally["q"]!++;
+    if (reads !== 3 || old !== 2 || tally["x"] !== 1 || fresh !== 2 || tally["z"] !== 5 || tally["w"] !== 6 ||
+        !Number.isNaN(absent) || !Number.isNaN(tally["q"])) throw new Error("dictionary entries");
+    const slots = new Map<string, { batch: number; next: number }>();
+    slots.set("k", { batch: 7, next: 0 });
+    const assigned: { slot: number }[] = [{ slot: -1 }, { slot: -1 }, { slot: -1 }];
+    for (let i = 0; i < assigned.length; i++) { const g = slots.get("k")!; assigned[i]!.slot = g.next++; }
+    if (assigned.map((item) => item.slot).join() !== "0,1,2" || slots.get("k")!.next !== 3) throw new Error("field postfix value");
+`,
+);
+
+test("numeric updates refuse places without a number", () => {
+    for (const source of [
+        "const t: Record<string, number | string> = {}; t['k'] = 1; (t['k'] as number)++;",
+        "function f(o: { v?: number | null }): number { return o.v!++; } const fs: Array<typeof f> = [f]; const unused = fs[0]!({ v: 1 });",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /increment or decrement requires a number, optional number or dictionary entry/,
+        );
+});
+
+check(
     "integer-loop-counters",
     `
     const values: number[] = [5, 7, 11, 13];

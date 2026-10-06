@@ -121,3 +121,32 @@ export function firstReturn(
     }
     return undefined;
 }
+
+/** A call typed never: TypeScript's own rule for a call that cannot return. */
+export function callsNever(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    let call = expression;
+    while (
+        ts.isParenthesizedExpression(call) ||
+        ts.isAwaitExpression(call) ||
+        ts.isNonNullExpression(call)
+    )
+        call = call.expression;
+    return (
+        ts.isCallExpression(call) &&
+        (checker.getTypeAtLocation(call).flags & ts.TypeFlags.Never) !== 0
+    );
+}
+
+/** A `return` of a never-typed call: it throws where it stands. */
+export function returnsNever(
+    checker: ts.TypeChecker,
+    statement: ts.ReturnStatement,
+): boolean {
+    return (
+        statement.expression !== undefined &&
+        callsNever(checker, statement.expression)
+    );
+}

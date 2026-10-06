@@ -6922,24 +6922,26 @@ test("lowers numeric switch statements to native branches", () => {
     assert.match(result.cpp, /\} else \{/);
 });
 
-test("rejects switch cases that fall through with statements", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                function pick(value: number): number {
-                    switch (value) {
-                        case 1:
-                            value += 1;
-                        case 2:
-                            return value;
-                        default:
-                            return 0;
-                    }
-                }
-                const picked = pick(1);
-            `),
-        /Non-empty switch cases must end with break or return/,
+test("selects a falling-through switch clause by index", () => {
+    const result = compileSource(`
+        function pick(value: number): number {
+            switch (value) {
+                case 1:
+                    value += 1;
+                case 2:
+                    return value;
+                default:
+                    return 0;
+            }
+        }
+        const picks: Array<typeof pick> = [pick];
+        const picked = picks[0]!(1);
+    `);
+    assert.match(
+        result.cpp,
+        /const int v_bblite_switch_\d+_selected = \(v_bblite_switch_\d+ == 1\.0\) \? 0 : \(v_bblite_switch_\d+ == 2\.0\) \? 1 : 2;/,
     );
+    assert.match(result.cpp, /if \(v_bblite_switch_\d+_selected <= 1\) \{/);
 });
 
 test("keeps for-of over static arrays native", () => {

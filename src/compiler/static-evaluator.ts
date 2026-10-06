@@ -829,7 +829,8 @@ export class StaticEvaluator {
                 ts.SyntaxKind.AsteriskAsteriskToken
             ) {
                 const [left, right] = this.numericOperands(unwrapped);
-                const compiled = `std::pow(${left}, ${right})`;
+                this.onJsData();
+                const compiled = `bbl::js::power_js(${left}, ${right})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
