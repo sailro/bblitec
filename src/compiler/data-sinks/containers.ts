@@ -8,6 +8,7 @@ import {
     yieldsFreshObject,
     yieldsFreshRecordElements,
 } from "../fresh-records.js";
+import { ownEntries } from "../object-statics.js";
 import { argumentOnlyRead, arrayLentForCall } from "../record-observations.js";
 import { resolvedSymbol } from "../symbols.js";
 import { unwrapExpression } from "../syntax.js";
@@ -346,34 +347,30 @@ function valueMap(
     if (value.kind === "record") {
         // A key a conditional spread wrote is stored while it is own, in
         // creation order.
-        const entries = Object.entries(value.recordProperties ?? {}).map(
-            ([name, member]) => lowerer.recordMemberEntry(name, member, node),
-        );
+        const entries = ownEntries(lowerer.ownObjectContext(), value, node)!;
         const conditional = entries.some(
-            (entry) => entry.presentCpp !== undefined,
+            (entry) => entry.presence !== undefined,
         );
-        const stores = entries.map(
-            ({ key: name, value: entry, presentCpp }) => {
-                const key =
-                    dataType.key.kind === "string"
-                        ? lowerer.context.cppString(name)
-                        : dataType.key.kind === "number"
-                          ? doubleLiteral(Number(name))
-                          : lowerer.context.fail(
-                                node,
-                                "Compile-time open Records require string or number keys.",
-                            );
-                const stored = lowerer.compileKnownValueForSink(
-                    entry,
-                    dataType.value,
-                    node,
-                );
-                if (!conditional) return `{${key}, ${stored}}`;
-                return presentCpp
-                    ? `if (${presentCpp}) own.set(${key}, ${stored});`
-                    : `own.set(${key}, ${stored});`;
-            },
-        );
+        const stores = entries.map(({ key: name, value: entry, presence }) => {
+            const key =
+                dataType.key.kind === "string"
+                    ? lowerer.context.cppString(name)
+                    : dataType.key.kind === "number"
+                      ? doubleLiteral(Number(name))
+                      : lowerer.context.fail(
+                            node,
+                            "Compile-time open Records require string or number keys.",
+                        );
+            const stored = lowerer.compileKnownValueForSink(
+                entry,
+                dataType.value,
+                node,
+            );
+            if (!conditional) return `{${key}, ${stored}}`;
+            return presence
+                ? `if (${presence.ownCpp}) own.set(${key}, ${stored});`
+                : `own.set(${key}, ${stored});`;
+        });
         lowerer.context.reachJsData();
         const cppType = lowerer.context.dataTypes.cppType(dataType);
         return conditional

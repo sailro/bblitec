@@ -8,7 +8,7 @@ export type DataSinkHost = Pick<
     | "context"
     | "compileStringSink"
     | "compileKnownValueForSink"
-    | "recordMemberEntry"
+    | "ownObjectContext"
     | "compileForSink"
     | "compileDataPath"
     | "narrowOptional"

@@ -9120,30 +9120,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 property,
                             );
                             // A `?` field is copied while it is own.
-                            for (const { key, value, presentCpp } of entries) {
+                            for (const { key, value, presence } of entries) {
                                 const cpp = this.compileKnownValueForSink(
                                     value,
                                     dataType.value,
                                     property,
                                 );
-                                if (presentCpp) {
+                                this.emitWhileOwn(presence?.ownCpp, () =>
                                     this.context.emit({
-                                        kind: "open",
-                                        code: `if (${presentCpp}) {`,
-                                    });
-                                    this.context.increaseIndent();
-                                }
-                                this.context.emit({
-                                    kind: "expression",
-                                    code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
-                                });
-                                if (presentCpp) {
-                                    this.context.decreaseIndent();
-                                    this.context.emit({
-                                        kind: "close",
-                                        code: "}",
-                                    });
-                                }
+                                        kind: "expression",
+                                        code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
+                                    }),
+                                );
                             }
                             continue;
                         }
@@ -9495,14 +9483,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): OwnEntry {
         if (!member.conditionalOwnKey) return { key, value: member };
         this.context.useNativeValue(member);
-        const presentCpp =
+        const ownCpp =
             presenceFlagCpp(member) ??
             (member.dataType &&
                 this.context.dataTypes.slotPresentCpp(
                     member.dataType,
                     member.cpp,
                 ));
-        if (!presentCpp)
+        if (!ownCpp)
             return this.context.fail(
                 node,
                 "A record key a conditional spread decides needs a represented absent value.",
@@ -9513,7 +9501,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 member.dataType?.kind === "optional"
                     ? this.presentOptionalValue(member, member.dataType.inner)
                     : member,
-            presentCpp,
+            presence: { ownCpp },
             slot: member,
         };
     }
@@ -9609,14 +9597,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : `object ${operation}`,
             );
             const raw =
-                entry.presentCpp !== undefined &&
-                !sourceField.presentForTags &&
+                entry.presence?.emptySlot === "ambiguous" &&
                 targetField.type.kind === "optional" &&
-                options.fresh?.(targetField.name) === true &&
-                this.context.dataTypes.ownPropertyPresence(
-                    sourceType.name,
-                    sourceField,
-                ) === "nullable";
+                options.fresh?.(targetField.name) === true;
             // The source's own type declares the field required, so its
             // records hold it, absent-capable storage or not.
             const presentCpp =
@@ -9625,7 +9608,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     declared !== undefined &&
                     (declared.flags & ts.SymbolFlags.Optional) === 0)
                     ? undefined
-                    : entry.presentCpp;
+                    : entry.presence?.ownCpp;
             const value = raw
                 ? {
                       ...this.leafValue(
@@ -9652,8 +9635,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return assigned;
     }
 
-    /** The own-object services the struct entry walks read. */
-    private ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
+    /** The own-object services the own-entry walks read. */
+    public ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
         return {
             dataTypes: this.context.dataTypes,
             dataLowerer: this,
@@ -9754,7 +9737,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 : value,
                             property,
                         );
-                        this.emitWhileOwn(entry.presentCpp, () =>
+                        this.emitWhileOwn(entry.presence?.ownCpp, () =>
                             this.context.emit({
                                 kind: "expression",
                                 code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(entry.value, field.type, property)};`,
@@ -10379,8 +10362,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const ownWhile = (key: string): string | undefined => {
                 const property = narrowed.recordProperties?.[key];
                 return property
-                    ? this.recordMemberEntry(key, property, ownerNode)
-                          .presentCpp
+                    ? this.recordMemberEntry(key, property, ownerNode).presence
+                          ?.ownCpp
                     : undefined;
             };
             const inherited = (key: string): boolean =>
@@ -10508,16 +10491,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        const present = this.context.dataTypes.ownPropertyPresentCpp(
+        const presence = this.context.dataTypes.ownPresence(
             structName,
             field,
             ownerCpp,
             this.context.dataTypes.isReferenceStruct(structName) ? "->" : ".",
             node,
         );
-        if (present === undefined) return "true";
+        if (presence === undefined) return "true";
         this.context.reachJsData();
-        return present;
+        return presence.ownCpp;
     }
 
     /**
