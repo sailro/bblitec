@@ -604,10 +604,16 @@ export class DeclarationLowerer {
                 );
                 return;
             }
-            let dataType = this.context.dataTypes.fromTsType(
-                this.context.checker.getTypeAtLocation(declaration.name),
+            const declaredType = this.context.checker.getTypeAtLocation(
                 declaration.name,
             );
+            let dataType = this.context.dataTypes.fromTsType(
+                declaredType,
+                declaration.name,
+            );
+            // Only an assignment gives this binding a value.
+            if (dataType)
+                dataType = this.reboundBindingStorage(dataType, declaredType);
             dataType ??= inferUninitializedHandle(
                 declaration,
                 this.context.checker,
@@ -2477,6 +2483,8 @@ export class DeclarationLowerer {
             annotated =
                 this.context.dataTypes.markStoredObjectReferences(annotated);
         }
+        if (annotated && this.context.sharedClosures.identifierIsRebound(name))
+            annotated = this.reboundBindingStorage(annotated, declaredType);
         if (annotated?.kind === "enum" && sharedClosureStorage) {
             const initializer = this.context.compileValue(
                 declaration.initializer,
@@ -3026,6 +3034,25 @@ export class DeclarationLowerer {
             this.context.bindings.defineVariable(name, represented);
         }
         return true;
+    }
+
+    /**
+     * A rebound binding holds whichever object was assigned last. A readonly
+     * array it holds is owned, like a parameter's, and a record is a shared
+     * object, so each assignment reseats the name instead of copying into
+     * the object an alias still names.
+     */
+    private reboundBindingStorage(
+        type: DataType,
+        declaredType: ts.Type,
+    ): DataType {
+        const owned = this.context.dataTypes.ownReadonlyArray(
+            type,
+            declaredType,
+        );
+        return owned.kind === "struct"
+            ? this.context.dataTypes.markStoredObjectReferences(owned)
+            : owned;
     }
 
     private hasReadonlyEngineField(type: DataType, node: ts.Node): boolean {

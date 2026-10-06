@@ -1122,6 +1122,212 @@ check(
 );
 
 check(
+    "rebound-readonly-arrays-own-their-arrays",
+    `
+    interface Surface { y: number; holes: readonly number[]; }
+    const NO_HOLES: readonly number[] = Object.freeze([]);
+    const NONE: readonly Surface[] = Object.freeze([]);
+    function profile(kind: number): { tops: readonly Surface[]; envelope: readonly Surface[] } {
+        const wall: Surface = { y: 1, holes: NO_HOLES };
+        let tops: readonly Surface[];
+        let envelope: readonly Surface[];
+        switch (kind) {
+            case 0:
+                tops = NONE;
+                envelope = [wall, { y: 2, holes: NO_HOLES }];
+                break;
+            default:
+                tops = [{ y: kind, holes: NO_HOLES }];
+                envelope = [wall];
+                break;
+        }
+        return { tops, envelope };
+    }
+    const flat = profile(3);
+    const pitched = profile(0);
+    if (flat.tops.length !== 1 || flat.tops[0]!.y !== 3 || pitched.tops.length !== 0) throw new Error("assigned arrays");
+    if (pitched.envelope.length !== 2 || flat.envelope[0]!.y !== 1) throw new Error("assigned literals");
+    if (pitched.tops !== NONE || profile(0).tops !== pitched.tops) throw new Error("shared constant identity");
+    interface Fact { key: string; score: number; }
+    function createStore(read: () => readonly Fact[]) {
+        let candidates: readonly Fact[] = [];
+        let current: readonly Fact[] = [];
+        return {
+            refresh(): readonly Fact[] {
+                candidates = read();
+                current = candidates.filter((fact) => fact.score > 0);
+                return current;
+            },
+            list: () => current,
+            candidates: () => candidates,
+        };
+    }
+    const source: Fact[] = [{ key: "a", score: 1 }, { key: "b", score: 0 }];
+    const store = createStore(() => source);
+    if (store.list().length !== 0 || store.candidates().length !== 0) throw new Error("initial arrays");
+    const published = store.refresh();
+    if (store.candidates() !== source || store.list() !== published || published.length !== 1) throw new Error("rebound identity");
+    source.push({ key: "c", score: 2 });
+    source[0]!.score = 9;
+    if (store.candidates().length !== 3 || store.list()[0]!.score !== 9) throw new Error("alias after rebinding");
+    let members: readonly number[] = [];
+    const before = members;
+    const next = [1, 2];
+    members = next;
+    next.push(3);
+    if (members.length !== 3 || before.length !== 0 || members === before) throw new Error("rebinding copies");
+`,
+);
+
+check(
+    "rebound-readonly-array-identity-comparisons",
+    `
+    interface Collider { x: number; }
+    let indexed: readonly Collider[] | null = null;
+    let builds = 0;
+    function narrow(colliders: readonly Collider[]): number {
+        if (colliders !== indexed) {
+            indexed = colliders;
+            builds++;
+        }
+        return colliders.length;
+    }
+    function serves(colliders: readonly Collider[]): boolean { return indexed === colliders; }
+    function indexedSet(): readonly Collider[] | null { return indexed; }
+    const first: Collider[] = [{ x: 1 }];
+    const second: Collider[] = [{ x: 1 }];
+    narrow(first);
+    narrow(first);
+    narrow(second);
+    if (builds !== 2 || !serves(second) || serves(first) || indexedSet() !== second) throw new Error("identity cache");
+    second.push({ x: 2 });
+    if (indexedSet()!.length !== 2) throw new Error("retained alias");
+    indexed = null;
+    if (indexedSet() !== null || serves(second)) throw new Error("cleared cache");
+    interface FadeState { readonly members: readonly number[]; readonly fade: number; }
+    function createPacker(getState: () => Readonly<FadeState>) {
+        let packed: readonly number[] | null = null;
+        let packs = 0;
+        const pack = (members: readonly number[]): void => { packed = members; packs++; };
+        return {
+            refresh(): number {
+                const state = getState();
+                if (packed !== state.members) pack(state.members);
+                return packs;
+            },
+            packed: () => packed,
+        };
+    }
+    let fadeState: FadeState = { members: [4, 5], fade: 1 };
+    const packer = createPacker(() => fadeState);
+    packer.refresh();
+    if (packer.refresh() !== 1 || packer.packed() !== fadeState.members) throw new Error("field identity");
+    fadeState = { members: [4, 5], fade: 0 };
+    if (packer.refresh() !== 2 || packer.packed() !== fadeState.members) throw new Error("replaced field identity");
+`,
+);
+
+check(
+    "rebound-records-alias-the-assigned-object",
+    `
+    interface Sky { horizon: number[]; gold: number; }
+    function normalize(gold?: number): Sky { return { horizon: [1, 2], gold: gold ?? 0.5 }; }
+    let sky: Sky = { horizon: [0, 0], gold: 0 };
+    function configure(gold: number): void { sky = normalize(gold); }
+    const original = sky;
+    configure(2);
+    if (sky.gold !== 2 || original.gold !== 0 || original === sky) throw new Error("rebinding copies");
+    const alias = sky;
+    alias.gold = 7;
+    if (sky.gold !== 7) throw new Error("alias after rebinding");
+    sky = original;
+    original.gold = 3;
+    if (sky !== original || sky.gold !== 3) throw new Error("rebinding to an earlier object");
+    interface Policy { available: boolean; ids: number[]; }
+    function world(seed: number) {
+        let n = seed;
+        let current: Policy;
+        const read = (): Policy => ({ available: n % 2 === 0, ids: [n] });
+        current = read();
+        const first = current;
+        return {
+            refresh: (): void => { n++; current = read(); },
+            available: () => current.available,
+            id: () => current.ids[0]!,
+            first: () => first,
+            current: () => current,
+        };
+    }
+    const w = world(2);
+    if (!w.available() || w.id() !== 2 || w.first() !== w.current()) throw new Error("initial record");
+    w.refresh();
+    if (w.available() || w.id() !== 3 || w.first() === w.current() || w.first().ids[0] !== 2) throw new Error("refreshed record");
+`,
+);
+
+check(
+    "rebound-optional-shared-storage",
+    `
+    function levels(grid: Uint8Array | null, size: number): number {
+        let scratch: Int32Array | null = null;
+        let current: Uint8Array | Int32Array | null = grid ?? null;
+        if (!current) {
+            scratch ??= new Int32Array(size);
+            for (let i = 0; i < size; i++) scratch[i] = i * 2;
+            current = scratch;
+        }
+        const lv = current;
+        if (scratch) scratch[0] = 9;
+        return lv instanceof Int32Array ? lv[0]! + lv.length : lv.length;
+    }
+    if (levels(null, 3) !== 12 || levels(new Uint8Array([4, 5]), 3) !== 2) throw new Error("typed-array union");
+    function byteSum(buffer: ArrayBuffer): number { return new Uint8Array(buffer)[0]! + buffer.byteLength; }
+    function split(bytes: Uint8Array): number {
+        let bin: ArrayBuffer | null = null;
+        const body = bytes.slice(1, 3);
+        bin = body.buffer as ArrayBuffer;
+        body[0] = 42;
+        if (!bin) throw new Error("missing buffer");
+        return byteSum(bin);
+    }
+    if (split(new Uint8Array([1, 2, 3, 4])) !== 44) throw new Error("buffer alias");
+    interface Peer { key: string; }
+    function createAligner<P extends Peer>() {
+        let peers: readonly P[] | null = null;
+        return {
+            begin(next: readonly P[]): void { peers = next; },
+            end(): void { peers = null; },
+            count: (): number => (peers ? peers.length : -1),
+        };
+    }
+    const aligner = createAligner<Peer>();
+    const list: Peer[] = [{ key: "a" }];
+    aligner.begin(list);
+    list.push({ key: "b" });
+    if (aligner.count() !== 2) throw new Error("generic readonly alias");
+    aligner.end();
+    if (aligner.count() !== -1) throw new Error("cleared alias");
+`,
+);
+
+test("borrowed array views refuse rebinding and identity", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function pick(a: ArrayLike<number>, b: ArrayLike<number>): number { let view: ArrayLike<number> = a; if (a.length === 0) view = b; return view.length; } const unused = pick([1], [2]);",
+            ),
+        /'view' holds a span; rebinding it would copy/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "function same(a: ArrayLike<number>, b: ArrayLike<number>): boolean { return a === b; } const xs = [1]; const unused = same(xs, xs);",
+            ),
+        /A borrowed array view cannot preserve JavaScript object identity in a comparison/,
+    );
+});
+
+check(
     "record-accessors-are-stored-native-accessors",
     `
     "use strict";

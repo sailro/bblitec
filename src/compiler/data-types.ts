@@ -2256,10 +2256,7 @@ export class DataTypeRegistry {
                 return mapped
                     ? [
                           markIdentityFunctions(
-                              this.ownReadonlyArrayParameter(
-                                  mapped,
-                                  parameterType,
-                              ),
+                              this.ownReadonlyArray(mapped, parameterType),
                           ),
                       ]
                     : [undefined];
@@ -4275,15 +4272,13 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A readonly Array parameter is still a JavaScript object. Its callee
+     * A readonly Array is still a JavaScript object. A parameter's callee
      * can retain it in a record, callback or another container without
-     * returning an array directly. ArrayLike remains a borrowed view: it
-     * does not promise an Array owner.
+     * returning an array directly, and a rebound binding holds whichever
+     * array was assigned last. ArrayLike remains a borrowed view: it does
+     * not promise an Array owner.
      */
-    public ownReadonlyArrayParameter(
-        type: DataType,
-        sourceType: ts.Type,
-    ): DataType {
+    public ownReadonlyArray(type: DataType, sourceType: ts.Type): DataType {
         const inner = type.kind === "optional" ? type.inner : type;
         if (inner.kind !== "span") return type;
         const concrete = this.checker.getNonNullableType(
