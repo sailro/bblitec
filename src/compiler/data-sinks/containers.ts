@@ -7,10 +7,7 @@ import {
     DynamicBindingStorageRequired,
     initializedVariableDeclaration,
 } from "../dynamic-binding-storage.js";
-import {
-    yieldsFreshObject,
-    yieldsFreshRecordElements,
-} from "../fresh-records.js";
+import { unaliasedValue } from "./aliasing.js";
 import { ownEntries } from "../object-statics.js";
 import { argumentOnlyRead, arrayLentForCall } from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
@@ -206,24 +203,14 @@ function valueVector(
         const result =
             lowerer.context.allocateTemporaryCppName("project_result");
         const destinationCpp = lowerer.context.dataTypes.cppType(dataType);
-        // Elements of a fresh array are records nothing else reaches. The
-        // array is the converted expression's value, never its container's.
-        const array = lowerer.convertedExpression(node);
-        const own = array ? lowerer.dataTypeAt(array) : undefined;
-        const freshElements =
-            array !== undefined &&
-            own?.kind === "vector" &&
-            dataTypesEqual(own.element, value.dataType.element) &&
-            yieldsFreshRecordElements(lowerer.context.checker, array);
         // The projection is a second array. JavaScript keeps one, so the
-        // records of an array the program still holds share one layout;
-        // where none holds both types, a callee that only reads the array
-        // borrows the copy for the call.
-        if (
-            !freshElements &&
-            value.dataType.element.kind === "struct" &&
-            !(array && yieldsFreshArray(lowerer, array))
-        )
+        // records of an array the program still holds share one layout,
+        // and a callee that only reads the array borrows a copy for the
+        // call; a new array is the projection's own, its elements judged
+        // one by one unless nothing else holds them either.
+        const array = lowerer.convertedExpression(node);
+        const unaliased = unaliasedValue(lowerer, value, node);
+        if (!unaliased && value.dataType.element.kind === "struct")
             lowerer.context.dataTypes.storeRecordAs(
                 value.dataType.element,
                 dataType.element,
@@ -239,7 +226,9 @@ function valueVector(
         const projected = lowerer.compileMemberForSink(
             {
                 ...lowerer.leafValue(item, value.dataType.element),
-                ...(freshElements ? { freshRecord: true as const } : {}),
+                ...(unaliased === "elements"
+                    ? { unaliased: "object" as const }
+                    : {}),
             },
             dataType.element,
             node,
@@ -270,16 +259,7 @@ function requireGrowableTuple(
 ): void {
     const converted = lowerer.convertedExpression(node);
     const expression = converted && unwrapExpression(converted);
-    const own = expression ? lowerer.dataTypeAt(expression) : undefined;
-    // A call that creates its result owns it; a selection (`??`, `?:`)
-    // marked fresh may still yield a stored tuple.
-    if (
-        own?.kind === "tuple" &&
-        expression &&
-        ((value.freshData && ts.isCallExpression(expression)) ||
-            yieldsFreshObject(lowerer.context.checker, expression))
-    )
-        return;
+    if (unaliasedValue(lowerer, value, node)) return;
     // A callee that only reads the array cannot grow or retain it.
     if (expression && argumentOnlyRead(lowerer.context.checker, expression))
         return;
@@ -296,47 +276,6 @@ function requireGrowableTuple(
     lowerer.context.fail(
         node,
         "A fixed-length tuple stored as a number array could grow through that array, which its native storage cannot follow; give it number[] storage or store a copy ([...tuple]).",
-    );
-}
-
-/** Methods and statics that return a new array of the receiver's elements. */
-const ARRAY_COPIES = new Set([
-    "concat",
-    "filter",
-    "flat",
-    "flatMap",
-    "map",
-    "slice",
-    "toReversed",
-    "toSorted",
-    "toSpliced",
-    "with",
-    "from",
-    "of",
-    "values",
-]);
-
-/** Whether an array expression evaluates to an array no other reference holds. */
-function yieldsFreshArray(
-    lowerer: DataSinkHost,
-    expression: ts.Expression,
-): boolean {
-    const unwrapped = unwrapExpression(expression);
-    return (
-        yieldsFreshObject(lowerer.context.checker, unwrapped) ||
-        (ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ARRAY_COPIES.has(unwrapped.expression.name.text) &&
-            (lowerer.context.checker.isArrayLikeType(
-                lowerer.context.checker.getTypeAtLocation(
-                    unwrapped.expression.expression,
-                ),
-            ) ||
-                ["Array", "Object"].includes(
-                    lowerer.context.libraryGlobal(
-                        unwrapped.expression.expression,
-                    ) ?? "",
-                )))
     );
 }
 

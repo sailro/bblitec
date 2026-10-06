@@ -19,16 +19,12 @@ import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
-    yieldsFreshObject,
-    yieldsFreshRecordElements,
-} from "../fresh-records.js";
-import {
     completeLiteralSelf,
     homeReceiver,
     literalSelf,
     type LiteralSelf,
 } from "../home-object-methods.js";
-import { returnedRecordLocal } from "../record-observations.js";
+import { unaliasedValue } from "./aliasing.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -461,7 +457,7 @@ function valueStruct(
         // nothing else reaches, or one whose copy nothing can tell apart, is
         // copied; any other source shares one layout with the target or
         // refuses.
-        if (!unreachedRecordValue(lowerer, value, node))
+        if (!unaliasedValue(lowerer, value, node))
             lowerer.context.dataTypes.storeRecordAs(
                 sourceType,
                 dataType,
@@ -572,59 +568,6 @@ function valueStruct(
             : aggregate;
     }
     return undefined;
-}
-
-/**
- * A struct value whose copy nothing else can observe: one no other reference
- * holds (an element of a fresh array, a fresh record, a callback's fresh
- * result), or a returned local that is the last reference to its record.
- */
-function unreachedRecordValue(
-    lowerer: DataSinkHost,
-    value: Value,
-    node: ts.Node,
-): boolean {
-    if (value.freshRecord) return true;
-    if (value.dataType?.kind !== "struct") return false;
-    const name = value.dataType.name;
-    const checker = lowerer.context.checker;
-    // The expression must yield the value: its own expression, a callback
-    // returning it, or a fresh array it is an element of -- never a
-    // container it was read out of (`convertedExpression`).
-    const record = (type: DataType | undefined): boolean =>
-        isRecordNamed(type, name);
-    const yields = (expression: ts.Expression): boolean =>
-        record(lowerer.dataTypeAt(expression));
-    const freshElements = (array: ts.Expression | undefined): boolean => {
-        const own = array && lowerer.dataTypeAt(array);
-        return (
-            array !== undefined &&
-            own?.kind === "vector" &&
-            record(own.element) &&
-            yieldsFreshRecordElements(checker, array)
-        );
-    };
-    const expression = lowerer.convertedExpression(node);
-    if (!expression) return freshElements(lowerer.convertedElementOf(node));
-    if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
-        const returned = ts.isBlock(expression.body)
-            ? expression.body.statements.find(ts.isReturnStatement)?.expression
-            : expression.body;
-        return (
-            returned !== undefined &&
-            yields(returned) &&
-            yieldsFreshObject(checker, expression)
-        );
-    }
-    if (lowerer.dataTypeAt(expression)?.kind === "vector")
-        return freshElements(expression);
-    return (
-        yields(expression) &&
-        (yieldsFreshObject(checker, expression) ||
-            returnedRecordLocal(checker, expression, (initializer) =>
-                yieldsFreshObject(checker, initializer),
-            ))
-    );
 }
 
 /**
