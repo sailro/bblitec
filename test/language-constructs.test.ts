@@ -6297,6 +6297,32 @@ check(
 `,
 );
 
+check(
+    "tuples-stored-as-number-arrays-grow-together",
+    `
+    const store: number[][] = [];
+    function keep(values: number[]): number { store.push(values); return values.length; }
+    const lane: [number, number] = [1, 2];
+    if (keep(lane) !== 2) throw new Error("length");
+    store[0]!.push(3);
+    if (lane.length !== 3 || store[0] !== lane || lane[2] !== 3) throw new Error("grown through a retained array");
+    const direct: [number, number] = [4, 5];
+    const view: number[] = direct;
+    view.push(6);
+    if (direct.length !== 3 || view !== direct) throw new Error("grown through a local array");
+    interface Holder { values: number[] }
+    const pair: [number, number] = [7, 8];
+    const holder: Holder = { values: pair };
+    holder.values.push(9);
+    pair[0] = 70;
+    if (pair.length !== 3 || holder.values[0] !== 70) throw new Error("grown through a field");
+    function fresh(): [number, number] { return [1, 1]; }
+    const owned: number[] = fresh();
+    owned.push(2);
+    if (owned.length !== 3) throw new Error("fresh tuple adopted");
+`,
+);
+
 test("coalesced records refuse a copy the program could tell apart", () => {
     assert.throws(
         () =>
@@ -6331,5 +6357,24 @@ test("record conversions refuse what neither a copy nor a shared layout holds", 
             const other: Narrow = { a: 3 };
             const unused = w.a + other.a;`),
         /missing required field 'b'\. 'Narrow' records share the 'Wide' layout/,
+    );
+});
+
+test("tuples stored as growable number arrays need growable storage", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface H { pos: [number, number] }
+            const h: H = { pos: [1, 2] };
+            const store: number[][] = [];
+            store.push(h.pos);`),
+        /fixed-length tuple stored as a number array could grow through that array/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`const store: number[][] = [];
+            function keep(lane: [number, number]): void { store.push(lane); }
+            const lanes: Array<[number, number]> = [[1, 2], [3, 4]];
+            for (const lane of lanes) keep(lane);`),
+        /fixed-length tuple stored as a number array could grow through that array/,
     );
 });

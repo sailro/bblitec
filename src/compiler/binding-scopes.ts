@@ -284,6 +284,24 @@ export class BindingScopes {
         return undefined;
     }
 
+    /** The innermost initialized variable declaration whose live binding is spelled `cpp`. */
+    public variableDeclarationOf(
+        cpp: string,
+    ): ts.VariableDeclaration | undefined {
+        for (let index = this.variableScopes.length - 1; index >= 0; index--)
+            for (const [symbol, binding] of this.variableScopes[index]!) {
+                const declaration = symbol.valueDeclaration;
+                if (
+                    binding.value.cpp === cpp &&
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer
+                )
+                    return declaration;
+            }
+        return undefined;
+    }
+
     /** The earliest live declaration sharing this record, before any lexical aliases. */
     public recordDeclaration(
         value: Value,

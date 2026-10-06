@@ -996,6 +996,18 @@ export class NativeFunctionLowerer {
                         );
                     return path.cpp;
                 }
+                // A tuple lends its storage to a callee proven to keep it;
+                // one the callee may retain needs growable storage.
+                const lent =
+                    path &&
+                    this.adaptedReferenceArgument(
+                        path,
+                        parameter,
+                        dataType,
+                        expression,
+                        directKernel,
+                    );
+                if (lent !== undefined) return lent;
                 return this.context.dataLowerer.compileForSink(
                     expression,
                     dataType,
