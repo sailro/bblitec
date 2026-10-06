@@ -155,6 +155,37 @@ test("a refused value return is the calling statement's refusal", () => {
     assert.deepEqual(report.statements, { attempted: 8, refused: 4 });
 });
 
+test("a record whose native initializer refused refuses where it is stored", () => {
+    // The binding's storage demand was met, but its initializer refused, so
+    // the store that demanded it refuses too instead of ending the survey.
+    const { report } = surveySource(
+        `
+        type Failure = "a" | "b" | "c";
+        type Candidate = "a" | "b";
+        interface Facts { id: number; failures: Candidate[] }
+        const store = new Map<number, Facts>();
+        export function record(id: number, failures: Failure[]): void {
+            const facts: Facts = { id, failures: failures.slice() as Candidate[] };
+            store.set(id, facts);
+        }
+        const roots: Array<typeof record> = [record];
+        roots[0]!(1, ["a", "c"]);
+    `,
+        { fileName: resolve("survey-refused-binding.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.equal(report.terminal, undefined);
+    assert.ok(
+        report.refusals.some(
+            (refusal) =>
+                refusal.site.line === 8 &&
+                refusal.message ===
+                    "Record 'facts' has no native object: its initializer could not be stored natively.",
+        ),
+        listed(report),
+    );
+});
+
 test("a survey names a class member's refusal by its qualified name", () => {
     // The census, refusals and `--source-profile` share one function name.
     const { report } = surveySource(

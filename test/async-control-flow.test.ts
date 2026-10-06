@@ -218,6 +218,7 @@ test("Promise.allSettled retains ordered values and original rejection identitie
             if(mixed[0].status!=="fulfilled"||mixed[0].value!==original)throw new Error("object fulfillment identity");
             if(mixed[1].status!=="fulfilled"||mixed[1].value!==7)throw new Error("immediate settlement");
             if(mixed[2].status!=="rejected"||mixed[2].reason!==first)throw new Error("immediate rejection");
+            if(!("value" in mixed[1])||"reason" in mixed[1]||"value" in mixed[2]||Object.keys(mixed[2]).join()!=="status,reason")throw new Error("settlement own keys");
             const empty:Promise<number>[]=[];
             let synchronous=true;
             const done=Promise.allSettled(empty).then(values=>{if(synchronous||values.length)throw new Error("empty settlement ordering");});

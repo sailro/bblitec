@@ -5249,3 +5249,307 @@ check(
     if (record.copy[0] !== 1 || record.list.join() !== "4,5,1,2,3") throw new Error("spreads copy where the record is built");
 `,
 );
+
+check(
+    "absent-optional-properties-of-narrower-records",
+    `
+    interface FieldSource {
+        readonly tex: Uint8Array;
+        readonly res: number;
+        readonly dirtyRow0?: number;
+        readonly dirtyRow1?: number;
+    }
+    interface ShapeField {
+        clear(): void;
+        readonly tex: Uint8Array;
+        readonly res: number;
+        readonly version: number;
+    }
+    interface DirtyField {
+        readonly tex: Uint8Array;
+        readonly res: number;
+        dirtyRow0: number;
+        dirtyRow1: number;
+    }
+    function rowsToSend(field: FieldSource): number {
+        const row0 = field.dirtyRow0;
+        const row1 = field.dirtyRow1;
+        if (row0 === undefined || row1 === undefined) return field.res;
+        return row1 < row0 ? 0 : row1 - row0 + 1;
+    }
+    function shapeField(res: number): ShapeField {
+        const tex = new Uint8Array(res * res * 4);
+        let version = 0;
+        return { clear() { tex.fill(0); version++; }, tex, res, get version() { return version; } };
+    }
+    const sendShape = (field: ShapeField): number => rowsToSend(field);
+    const sendDirty = (field: DirtyField): number => rowsToSend(field);
+    const senders: Array<(field: ShapeField) => number> = [sendShape];
+    const shape = shapeField(8);
+    const dirty: DirtyField = { tex: new Uint8Array(4), res: 4, dirtyRow0: 1, dirtyRow1: 2 };
+    if (senders[0]!(shape) !== 8 || sendDirty(dirty) !== 2) throw new Error("absent rows read undefined");
+    dirty.dirtyRow1 = 0;
+    if (sendDirty(dirty) !== 0) throw new Error("present rows stay live");
+
+    interface Encoding { on: string; off: string }
+    interface ToggleOptions { key: string; fallback: boolean; stored: string | null; encoding?: Encoding }
+    const ON_OFF: Encoding = { on: "on", off: "off" };
+    function toggle(options: ToggleOptions): boolean {
+        const encoding = options.encoding ?? ON_OFF;
+        return options.stored === encoding.on ? true : options.stored === encoding.off ? false : options.fallback;
+    }
+    function advice(options: { stored: string | null }): boolean {
+        return toggle({ ...options, key: "advice", fallback: true });
+    }
+    const toggles: Array<typeof advice> = [advice];
+    if (toggles[0]!({ stored: "off" }) || !toggles[0]!({ stored: null })) throw new Error("absent encoding");
+
+    interface FamilyMetadata { family?: unknown; legacy?: unknown }
+    function familyOf(metadata: Readonly<FamilyMetadata>): string {
+        if (metadata.family === undefined) return metadata.legacy ? "plaster" : "bricks";
+        return typeof metadata.family === "string" ? metadata.family : "other";
+    }
+    interface Manifest { name: string; legacy: boolean }
+    const describe = (manifest: Manifest): string => manifest.name + ":" + familyOf(manifest);
+    const manifests: Manifest[] = [{ name: "a", legacy: true }, { name: "b", legacy: false }];
+    if (manifests.map(describe).join(",") !== "a:plaster,b:bricks") throw new Error("absent unknown property");
+
+    function homeId(entity: { kind: string }): number {
+        const seq = entity.kind === "house" && "seq" in entity && typeof entity.seq === "number" ? entity.seq : undefined;
+        return seq ?? -1;
+    }
+    const homes: Array<(kind: string) => number> = [(kind) => homeId({ kind })];
+    if (homes[0]!("house") !== -1) throw new Error("absent key after in");
+
+    interface Moved { x: number; tag: string }
+    function nudge(target: { x: number; step?: number }): void { target.x += target.step ?? 1; }
+    const moved: Moved[] = [{ x: 1, tag: "a" }];
+    const nudges: Array<(item: Moved) => void> = [(item) => nudge(item)];
+    nudges[0]!(moved[0]!);
+    if (moved[0]!.x !== 2) throw new Error("the record keeps its identity");
+
+    interface Labelled { a: number; extra?: number; label?: string }
+    function twice(value: number | undefined): number { return value === undefined ? -1 : value * 2; }
+    function uses(source: Labelled): string {
+        let held: number | undefined = source.extra;
+        const first = twice(source.extra);
+        held = held ?? 4;
+        const values = [source.extra, source.a];
+        return first + "," + held + "," + typeof source.extra + ",x" + source.label + "-" + (source.label ?? "none") + "," + (values[0] === undefined);
+    }
+    const reads: Array<(item: { a: number }) => string> = [(item) => uses(item)];
+    const used = reads[0]!({ a: 1 });
+    if (used !== "-1,4,undefined,xundefined-none,true") throw new Error(used);
+    interface Signed { x: number; tint?: [number, number, number]; onDone?: () => void }
+    function signature(p: Signed): string {
+        p.onDone?.();
+        return p.x.toFixed(1) + "," + (p.tint?.join(",") ?? "") + "," + (p.tint?.length ?? -1);
+    }
+    const signatures: Array<(item: { x: number }) => string> = [(item) => signature(item)];
+    if (signatures[0]!({ x: 1 }) !== "1.0,,-1") throw new Error("absent optional chains");
+
+    interface Appearance { seed?: number; pattern?: number; foot?: number }
+    function sanitize<T extends Appearance>(record: T): T {
+        const clean = { ...record };
+        if (typeof clean.seed !== "number") delete clean.seed;
+        if (clean.foot === undefined) delete clean.foot;
+        return clean;
+    }
+    interface Kept { pattern: number; foot?: number }
+    const sanitizers: Array<(item: Kept) => string> = [(item) => JSON.stringify(sanitize(item))];
+    if (sanitizers[0]!({ pattern: 2, foot: 3 }) !== '{"pattern":2,"foot":3}' || sanitizers[0]!({ pattern: 2 }) !== '{"pattern":2}')
+        throw new Error("deleting absent and present properties");
+`,
+);
+
+test("absent property reads refuse properties a converted record may carry", () => {
+    const declarations = `
+    interface Narrow { a: number }
+    interface View { a: number; b?: number }
+    function readB(v: View): number { return v.b ?? -1; }
+    function make(a: number): { a: number; b: number } { return { a, b: a * 2 }; }
+    const list: Narrow[] = [{ a: 3 }];
+    `;
+    for (const body of [
+        "list.push(make(1)); const read = readB(list[0]!);",
+        "const read = readB(list[0]!); list.push(make(1));",
+        "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
+    ])
+        assert.throws(
+            () => compileSource(declarations + body),
+            /Property 'b' is not stored by '\w+' records, but a record converted into that storage may carry it/,
+        );
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Source { a: number; b?: number }
+            interface Shape { a: number }
+            function make(): Shape { return { a: 1 }; }
+            const read = (make() as Source).b;
+            `),
+        /has no field 'b'/,
+    );
+});
+
+check(
+    "union-tags-admitting-several-literals",
+    `
+    type Job = "farmer" | "potter" | "priest";
+    type Requirement =
+        | { id: string; kind: "default" | "field" | "pond"; satisfied: boolean }
+        | { id: string; kind: "staffedAnyOf"; jobs: readonly Job[]; satisfied: boolean }
+        | { id: string; kind: "mana"; satisfied: boolean; current: number; goal: number };
+    function label(requirement: Requirement): string {
+        if (requirement.kind === "staffedAnyOf") return "jobs:" + requirement.jobs.join("|");
+        if (requirement.kind === "mana") return "mana:" + requirement.current + "/" + requirement.goal;
+        return requirement.kind + (requirement.satisfied ? "+" : "-");
+    }
+    const requirements: Requirement[] = [
+        { id: "a", kind: "field", satisfied: true },
+        { id: "b", kind: "staffedAnyOf", jobs: ["farmer", "potter"], satisfied: false },
+        { id: "c", kind: "mana", satisfied: false, current: 3, goal: 40 },
+        { id: "d", kind: "pond", satisfied: false },
+    ];
+    const labels: Array<typeof label> = [label];
+    const text = requirements.map(labels[0]!).join(",");
+    if (text !== "field+,jobs:farmer|potter,mana:3/40,pond-") throw new Error(text);
+    const pond = requirements[3]!;
+    if (pond.kind === "staffedAnyOf" || pond.kind === "mana" || pond.kind !== "pond") throw new Error("tag set member");
+    const alias = requirements[1]!;
+    if (alias.kind === "staffedAnyOf") alias.satisfied = true;
+    if (!requirements[1]!.satisfied) throw new Error("arm identity");
+    function plain(kind: "default" | "field" | "pond", id: string): Requirement {
+        return { id, kind, satisfied: kind !== "pond" };
+    }
+    const kinds: Array<"default" | "field" | "pond"> = ["pond", "default"];
+    const made = kinds.map((kind, index) => plain(kind, "r" + index));
+    made.push({ id: "m", kind: "mana", current: 2, goal: 4, satisfied: true });
+    if (made.map(labels[0]!).join(",") !== "pond-,default+,mana:2/4") throw new Error("run-time tags");
+`,
+);
+
+test("union arms whose tag literals overlap keep their common fields", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'type Overlap = { kind: "a" | "b"; x: number } | { kind: "b" | "c"; y: string }; const items: Overlap[] = [{ kind: "a", x: 1 }];',
+            ),
+        /Struct literal has unknown field 'x'/,
+    );
+});
+
+check(
+    "union-arm-own-keys-follow-tags",
+    `
+    type Requirement =
+        | { id: string; kind: "field" | "pond"; satisfied: boolean }
+        | { id: string; kind: "staffedAnyOf"; satisfied: boolean; jobs: readonly string[] }
+        | { id: string; kind: "mana"; satisfied: boolean; current: number; extra?: number };
+    const requirements: Requirement[] = [
+        { id: "a", kind: "field", satisfied: true },
+        { id: "b", kind: "staffedAnyOf", satisfied: false, jobs: ["farmer"] },
+        { id: "c", kind: "mana", satisfied: false, current: 3 },
+        { id: "d", kind: "mana", satisfied: false, current: 3, extra: 1 },
+    ];
+    const has = requirements.map((r) => ("jobs" in r ? "j" : "-") + ("current" in r ? "c" : "-") + ("extra" in r ? "e" : "-")).join(",");
+    if (has !== "---,j--,-c-,-ce") throw new Error(has);
+    const keys = requirements.map((r) => Object.keys(r).join("+")).join(",");
+    if (keys !== "id+kind+satisfied,id+kind+satisfied+jobs,id+kind+satisfied+current,id+kind+satisfied+current+extra") throw new Error(keys);
+    const json = requirements.map((r) => JSON.stringify(r)).join("");
+    if (json !== '{"id":"a","kind":"field","satisfied":true}{"id":"b","kind":"staffedAnyOf","satisfied":false,"jobs":["farmer"]}{"id":"c","kind":"mana","satisfied":false,"current":3}{"id":"d","kind":"mana","satisfied":false,"current":3,"extra":1}') throw new Error(json);
+    interface Circle { kind: "circle"; x: number; radius: number; grow?: number }
+    interface Rect { kind: "rect"; cx: number; halfW: number; grow?: number }
+    type Boundary = Circle | Rect;
+    const reach = (boundary: Boundary): number => (boundary.grow ?? 0) + (boundary.kind === "circle" ? boundary.radius + boundary.x : boundary.halfW + boundary.cx);
+    const pair = (a: { boundary: Boundary }, b: { boundary: Boundary }): number => reach({ ...a.boundary, grow: 0 }) + reach({ ...b.boundary, grow: 1 });
+    const pairs: Array<typeof pair> = [pair];
+    const hosts: Array<{ boundary: Boundary }> = [
+        { boundary: { kind: "circle", x: 1, radius: 2, grow: 5 } },
+        { boundary: { kind: "rect", cx: 1, halfW: 3 } },
+    ];
+    if (pairs[0]!(hosts[0]!, hosts[1]!) !== 8 || hosts[0]!.boundary.grow !== 5) throw new Error("spread arm override");
+`,
+);
+
+check(
+    "spread-struct-literals-omit-absent-optional-fields",
+    `
+    interface Arch { span: number }
+    interface WallOptions { width: number; seed: number; arch?: Arch; groundY?: () => number; dims?: number[] }
+    function compose(o: WallOptions): string {
+        return o.width + ":" + (o.arch ? o.arch.span : "none") + ":" + (o.groundY ? o.groundY() : -1) + ":" + (o.dims ? o.dims.length : 0);
+    }
+    function crown(width: number, dims: number[] | undefined): string {
+        const options: WallOptions = { width, seed: 3, ...(dims && dims.length > 0 ? { dims } : {}) };
+        return compose(options);
+    }
+    function arched(width: number, span: number): string {
+        const options: WallOptions = { ...{ width, seed: 1 }, arch: { span }, groundY: () => width * 2 };
+        return compose(options);
+    }
+    const crowns: Array<typeof crown> = [crown];
+    const arches: Array<typeof arched> = [arched];
+    if (crowns[0]!(2, [1, 2]) !== "2:none:-1:2" || crowns[0]!(4, undefined) !== "4:none:-1:0") throw new Error("absent optional fields");
+    if (arches[0]!(3, 5) !== "3:5:6:0") throw new Error("present optional fields");
+`,
+);
+
+check(
+    "type-guard-filters-narrow-string-tags",
+    `
+    type Failure = "a" | "b" | "c";
+    type Candidate = "a" | "b";
+    const isCandidate = (f: Failure): f is Candidate => f !== "c";
+    interface Facts { id: number; failures: Candidate[] }
+    function facts(id: number, failures: Failure[]): Facts {
+        return { id, failures: failures.filter(isCandidate) };
+    }
+    const roots: Array<typeof facts> = [facts];
+    const made = roots[0]!(1, ["a", "c", "b"]);
+    if (made.failures.join(",") !== "a,b") throw new Error("filtered tags");
+    const source: Failure[] = ["c", "a"];
+    const kept: Candidate[] = source.filter((f): f is Candidate => f === "a");
+    source[1] = "b";
+    if (kept.length !== 1 || kept[0] !== "a") throw new Error("a fresh array");
+    interface Perk { jobs: readonly Failure[] }
+    const WIDE: readonly Failure[] = Object.freeze(source.filter(isCandidate));
+    const perk: Perk = { jobs: WIDE };
+    const widen: Array<(all: Failure[]) => Failure[]> = [(all) => all.filter(isCandidate)];
+    if (perk.jobs.join() !== "b" || widen[0]!(["c", "a"]).join() !== "a") throw new Error("a wider destination keeps the source tags");
+`,
+);
+
+check(
+    "record-spreads-copy-methods-into-struct-literals",
+    `
+    interface Live { update(dt: number): void; active(): boolean; count: number }
+    interface SwanLive extends Live { state(): string; height: number }
+    function createLive(count: number): Live {
+        let elapsed = 0;
+        return { update(dt) { elapsed += dt; }, active: () => elapsed > 1, count };
+    }
+    function createSwan(count: number): SwanLive {
+        const live = createLive(count);
+        return { ...live, state: () => (live.active() ? "awake" : "asleep"), height: 3 };
+    }
+    const swans: Array<typeof createSwan> = [createSwan];
+    const swan = swans[0]!(2);
+    if (swan.active() || swan.state() !== "asleep") throw new Error("initial state");
+    swan.update(2);
+    if (!swan.active() || swan.state() !== "awake" || swan.count !== 2 || swan.height !== 3) throw new Error("copied methods share state");
+`,
+);
+
+test("record spreads with accessors refuse in struct literals", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Clock { readonly now: number; tick(): void }
+            function clock(): Clock { let t = 0; return { get now() { return t; }, tick() { t++; } }; }
+            const make = (): Clock => ({ ...clock(), tick() {} });
+            const clocks: Array<typeof make> = [make];
+            clocks[0]!().tick();
+            `),
+        /A record with accessors spreads into a compile-time record, not a struct literal/,
+    );
+});

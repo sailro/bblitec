@@ -16,6 +16,7 @@ import {
 import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -330,10 +331,34 @@ function valueStruct(
                 value,
                 node,
             );
+            // A binding already given its own storage is still a record
+            // only when lowering its initializer into that storage refused.
+            if (
+                declaration &&
+                lowerer.context.dynamicBindings.get(declaration) !== undefined
+            )
+                lowerer.context.fail(
+                    node,
+                    `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
+                );
             if (declaration)
                 throw new DynamicBindingStorageRequired(declaration, "source");
         }
         lowerer.context.dataTypes.cppType(dataType);
+        lowerer.context.dataTypes.noteRecordConversion(
+            dataType,
+            [
+                ...new Set([
+                    ...Object.keys(value.recordProperties ?? {}),
+                    ...Object.keys(value.recordMethods ?? {}),
+                    ...Object.keys(value.recordGetters ?? {}),
+                    ...Object.keys(value.recordSetters ?? {}),
+                ]),
+            ].filter(
+                (property) =>
+                    !fields.some((field) => field.sourceName === property),
+            ),
+        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const getter = value.recordGetters?.[field.sourceName];
@@ -418,6 +443,14 @@ function valueStruct(
             node,
             "accessors",
         );
+        lowerer.context.dataTypes.noteRecordConversion(
+            dataType,
+            [...sourceFields.keys()].filter(
+                (property) =>
+                    !fields.some((field) => field.sourceName === property),
+            ),
+            sourceType,
+        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const source = sourceFields.get(field.sourceName);
@@ -469,6 +502,9 @@ function valueStruct(
             node,
             "accessors",
         );
+        lowerer.context.dataTypes.noteRecordConversion(dataType, [
+            UNKNOWN_PROPERTIES,
+        ]);
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const key = lowerer.context.cppString(field.sourceName);

@@ -51,6 +51,7 @@ import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
+import { AbsentRecordProperties } from "./absent-record-properties.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
@@ -145,6 +146,17 @@ function literalTagValue(
         return checker.typeToString(type);
     }
     return undefined;
+}
+
+/** The literals a tag property admits: one literal, or a union of them. */
+function literalTagValues(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly string[] | undefined {
+    const values = (type.isUnion() ? type.types : [type]).map((member) =>
+        literalTagValue(checker, member),
+    );
+    return values.every((value) => value !== undefined) ? values : undefined;
 }
 
 /** The pinned type name each handle kind is declared as. */
@@ -900,11 +912,21 @@ export class DataTypeRegistry {
     >();
     /** Lowered reads of a field's presence, checked again once every shape is known. */
     private readonly fieldPresenceReads = new EmissionMap<string, ts.Node>();
+    /** A tagged union field's own-key presence within the arms declaring it. */
+    private readonly armFieldPresence = new EmissionMap<
+        string,
+        OwnPropertyPresence
+    >();
+    /** Lowered tag-decided presence reads, checked again once every shape is known. */
+    private readonly armPresenceReads = new EmissionMap<string, ts.Node>();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
     private readonly partialRecords = new EmissionSet<
         ts.Symbol | ts.Type | string
     >();
+    private readonly absentProperties = new AbsentRecordProperties(
+        (node, message) => this.fail(node, message),
+    );
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -2982,56 +3004,79 @@ export class DataTypeRegistry {
                             property.valueDeclaration ??
                             property.declarations?.[0] ??
                             node;
-                        const value = literalTagValue(
+                        const values = literalTagValues(
                             this.checker,
                             this.checker.getTypeOfSymbolAtLocation(
                                 property,
                                 declaration,
                             ),
                         );
-                        return value === undefined
+                        return values === undefined
                             ? []
-                            : [[property.name, value] as const];
+                            : [[property.name, values] as const];
                     }),
                 ),
         );
         // Several tags may distinguish an arm: a boolean success flag can group
         // multiple failures, whose reason then selects the remaining payload.
+        // An arm's tag may admit several literals; it distinguishes the arms
+        // whose literals are disjoint from them. Single literals are preferred.
         const distinguish = (
             index: number,
             others: number[],
             exclude?: string,
-        ) => {
-            const conditions: Array<{ discriminant: string; value: string }> =
-                [];
+        ):
+            | Array<Array<{ discriminant: string; value: string }>>
+            | undefined => {
+            const conditions: Array<{
+                discriminant: string;
+                values: readonly string[];
+            }> = [];
             let remaining = others;
             while (remaining.length > 0) {
                 const candidates = [...tags[index]!]
                     .filter(([name]) => name !== exclude)
-                    .map(([name, value]) => ({
+                    .map(([name, values]) => ({
                         discriminant: name,
-                        value,
-                        covered: remaining.filter(
-                            (other) =>
-                                tags[other]!.has(name) &&
-                                tags[other]!.get(name) !== value,
-                        ),
+                        values,
+                        covered: remaining.filter((other) => {
+                            const otherValues = tags[other]!.get(name);
+                            return (
+                                otherValues !== undefined &&
+                                !otherValues.some((value) =>
+                                    values.includes(value),
+                                )
+                            );
+                        }),
                     }))
+                    .filter((candidate) => candidate.covered.length > 0)
                     .sort(
                         (left, right) =>
+                            Number(left.values.length > 1) -
+                                Number(right.values.length > 1) ||
                             right.covered.length - left.covered.length,
                     );
                 const selected = candidates[0];
-                if (!selected?.covered.length) return undefined;
-                conditions.push({
-                    discriminant: selected.discriminant,
-                    value: selected.value,
-                });
+                if (!selected) return undefined;
+                conditions.push(selected);
                 remaining = remaining.filter(
                     (other) => !selected.covered.includes(other),
                 );
             }
-            return conditions;
+            // Every combination of the selected tags' literals is one
+            // alternative the arm may hold.
+            return conditions.reduce<
+                Array<Array<{ discriminant: string; value: string }>>
+            >(
+                (alternatives, { discriminant, values }) =>
+                    alternatives.flatMap((alternative) =>
+                        values.map((value) => [
+                            ...alternative,
+                            { discriminant, value },
+                        ]),
+                    ),
+                [[]],
+            );
         };
         const indices = type.types.map((_member, index) => index);
         if (
@@ -3055,6 +3100,7 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const armPresences: (OwnPropertyPresence | undefined)[] = [];
         for (const propertyName of propertyNames) {
             const memberProperties = propertiesByMember.flatMap(
                 (properties) => {
@@ -3175,24 +3221,24 @@ export class DataTypeRegistry {
                                   throw new Error(
                                       "A union field must be distinguished by another tag.",
                                   );
-                              return [conditions];
+                              return conditions;
                           }),
                       }
                     : {}),
             });
             // A field some arms lack is an own key by tag, which no
-            // presence read decides.
-            presences.push(
-                propertyTypes.length < type.types.length
-                    ? "ambiguous"
-                    : unionPresence(
-                          memberProperties,
-                          propertyTypes,
-                          fields.at(-1)!.type,
-                      ),
+            // presence read decides; its presence within those arms is
+            // kept apart for reads that test the tags.
+            const presence = unionPresence(
+                memberProperties,
+                propertyTypes,
+                fields.at(-1)!.type,
             );
+            const tagged = propertyTypes.length < type.types.length;
+            presences.push(tagged ? "ambiguous" : presence);
+            armPresences.push(tagged ? presence : undefined);
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, armPresences);
     }
 
     private fromTupleType(
@@ -3777,6 +3823,7 @@ export class DataTypeRegistry {
         provisionalName: string,
         fields: DataStructField[],
         presences: OwnPropertyPresence[],
+        armPresences: readonly (OwnPropertyPresence | undefined)[] = [],
     ): DataType<"struct"> {
         // A union's stored element and a callback's declared result share an
         // object when their field layouts agree, regardless of mapping path.
@@ -3792,6 +3839,12 @@ export class DataTypeRegistry {
                 ? existing.name
                 : provisionalName;
         this.recordFieldPresence(name, fields, presences);
+        this.recordFieldPresence(
+            name,
+            fields,
+            armPresences,
+            this.armFieldPresence,
+        );
         if (name === provisionalName)
             this.registerStructDefinition(key, { name, fields });
         return { kind: "struct", name };
@@ -3805,13 +3858,15 @@ export class DataTypeRegistry {
     private recordFieldPresence(
         structName: string,
         fields: readonly DataStructField[],
-        presences: readonly OwnPropertyPresence[],
+        presences: readonly (OwnPropertyPresence | undefined)[],
+        into = this.fieldPresence,
     ): void {
         fields.forEach((field, index) => {
             const key = `${structName}.${field.sourceName}`;
-            const presence = presences[index]!;
-            const previous = this.fieldPresence.get(key);
-            this.fieldPresence.set(
+            const presence = presences[index];
+            if (presence === undefined) return;
+            const previous = into.get(key);
+            into.set(
                 key,
                 previous === undefined || previous === presence
                     ? presence
@@ -3827,9 +3882,10 @@ export class DataTypeRegistry {
     public ownPropertyPresence(
         structName: string,
         field: DataStructField,
+        recorded: ReadonlyMap<string, OwnPropertyPresence> = this.fieldPresence,
     ): OwnPropertyPresence {
         return (
-            this.fieldPresence.get(`${structName}.${field.sourceName}`) ??
+            recorded.get(`${structName}.${field.sourceName}`) ??
             (field.optionalProperty || field.uncheckedProperty
                 ? storedPresence(field.type, false)
                 : "own")
@@ -3848,19 +3904,89 @@ export class DataTypeRegistry {
         slot: string,
         node: ts.Node,
     ): string | undefined {
-        const presence = this.ownPropertyPresence(structName, field);
+        const key = `${structName}.${field.sourceName}`;
+        // A field only some union arms declare is own when the record's
+        // tags select one of them, and then as those arms declare it.
+        const tags = this.tagPresenceCpp(structName, field, slot);
+        const presence = this.ownPropertyPresence(
+            structName,
+            field,
+            tags === undefined ? this.fieldPresence : this.armFieldPresence,
+        );
         if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
-        if (presence === "own") return undefined;
-        this.fieldPresenceReads.set(`${structName}.${field.sourceName}`, node);
+        if (tags !== undefined) this.armPresenceReads.set(key, node);
+        if (presence === "own") return tags;
+        if (tags === undefined) this.fieldPresenceReads.set(key, node);
         const stored = field.accessorReceiver ? `${slot}.has_own()` : slot;
-        if (presence === "nullable")
-            return `bbl::js::held_own_property(${stored}, ${stringLiteral(field.sourceName)})`;
-        if (field.accessorReceiver) return stored;
-        return field.type.kind === "optional"
-            ? optionalPresentCpp(slot)
-            : field.type.kind === "json"
-              ? `!${slot}.is_undefined()`
-              : `static_cast<bool>(${slot})`;
+        const held =
+            presence === "nullable"
+                ? `bbl::js::held_own_property(${stored}, ${stringLiteral(field.sourceName)})`
+                : field.accessorReceiver
+                  ? stored
+                  : field.type.kind === "optional"
+                    ? optionalPresentCpp(slot)
+                    : field.type.kind === "json"
+                      ? `!${slot}.is_undefined()`
+                      : `static_cast<bool>(${slot})`;
+        return tags === undefined ? held : `(${tags}) && ${held}`;
+    }
+
+    /**
+     * The run-time test that a record's tags select a union arm declaring
+     * `field`, read beside `slot`; undefined for a field every arm declares.
+     */
+    private tagPresenceCpp(
+        structName: string,
+        field: DataStructField,
+        slot: string,
+    ): string | undefined {
+        const definition = this.structsByName.get(structName);
+        const access = ["->", "."].find((candidate) =>
+            slot.endsWith(`${candidate}${field.name}`),
+        );
+        if (
+            !definition ||
+            !field.presentForTags ||
+            field.accessor ||
+            access === undefined
+        )
+            return undefined;
+        const owner = slot.slice(0, -(access.length + field.name.length));
+        return this.tagConditionCpp(
+            definition,
+            field.presentForTags,
+            (tag) => `${owner}${access}${tag.name}`,
+            "bblscene::",
+        );
+    }
+
+    /** Tag alternatives as C++: any alternative, each a conjunction of tag literals. */
+    private tagConditionCpp(
+        definition: DataStructDefinition,
+        alternatives: NonNullable<DataStructField["presentForTags"]>,
+        member: (tag: DataStructField) => string,
+        namespace: string,
+    ): string {
+        return alternatives
+            .map(
+                (alternative) =>
+                    `(${alternative
+                        .map(({ discriminant, value }) => {
+                            const tag = definition.fields.find(
+                                (candidate) =>
+                                    candidate.sourceName === discriminant,
+                            )!;
+                            const literal =
+                                tag.type.kind === "enum"
+                                    ? `${namespace}${tag.type.name}::${this.enumMemberIdentifier(this.enumsByName.get(tag.type.name)!, value)}`
+                                    : tag.type.kind === "string"
+                                      ? JSON.stringify(value)
+                                      : value;
+                            return `${member(tag)} == ${literal}`;
+                        })
+                        .join(" && ")})`,
+            )
+            .join(" || ");
     }
 
     private refuseAmbiguousPresence(
@@ -3875,8 +4001,14 @@ export class DataTypeRegistry {
 
     /** A presence read stays sound only if no later shape made its field ambiguous. */
     private checkFieldPresenceReads(): void {
-        for (const [key, node] of this.fieldPresenceReads) {
-            if (this.fieldPresence.get(key) !== "ambiguous") continue;
+        for (const [key, node] of [
+            ...[...this.fieldPresenceReads].filter(
+                ([key]) => this.fieldPresence.get(key) === "ambiguous",
+            ),
+            ...[...this.armPresenceReads].filter(
+                ([key]) => this.armFieldPresence.get(key) === "ambiguous",
+            ),
+        ]) {
             const [structName, sourceName] = splitPresenceKey(key);
             const field = this.structsByName
                 .get(structName)
@@ -4834,6 +4966,61 @@ export class DataTypeRegistry {
         return found;
     }
 
+    /**
+     * Whether `structName`'s records provably lack `property`, so a read of
+     * it is `undefined`: no record type the struct stands for declares it.
+     * Class instances, proxies and views of open records keep their own
+     * lookup.
+     */
+    public absentRecordProperty(
+        structName: string,
+        property: string,
+        node: ts.Node,
+    ): boolean {
+        if (!this.lacksRecordProperty(structName, property)) return false;
+        this.absentProperties.read(structName, property, node);
+        return true;
+    }
+
+    /**
+     * Whether no record type `structName` stands for declares `property`.
+     * Unlike a read, deleting it needs no check against conversions: the
+     * JavaScript object lacks it afterwards either way.
+     */
+    public lacksRecordProperty(structName: string, property: string): boolean {
+        const definition = this.structsByName.get(structName);
+        if (
+            !definition ||
+            this.isClassStruct(structName) ||
+            !AbsentRecordProperties.omittable(property) ||
+            definition.fields.some(
+                (field) =>
+                    field.sourceName === property || field.name === property,
+            )
+        )
+            return false;
+        const source = this.nativeRecordSources.get(structName);
+        return !(
+            source &&
+            (this.recordViews.has(source.identity) ||
+                this.proxyRecords.has(source.identity))
+        );
+    }
+
+    /**
+     * A record converted into `target` storage, carrying `extra` properties
+     * beyond its fields; a struct source also passes on what was carried
+     * into it.
+     */
+    public noteRecordConversion(
+        target: DataType<"struct">,
+        extra: readonly string[],
+        source?: DataType<"struct">,
+    ): void {
+        if (source?.name === target.name) return;
+        this.absentProperties.noteConversion(target.name, extra, source?.name);
+    }
+
     private failAccessorField(field: DataStructField, node: ts.Node): never {
         return this.fail(
             node,
@@ -5408,13 +5595,11 @@ export class DataTypeRegistry {
                 `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value) {`,
                 "    writer.begin_object();",
             );
-            for (const field of definition?.fields ?? []) {
-                if (isUndefinedDataType(field.type)) {
-                    lines.push(
+            const fieldLines = (field: DataStructField): string[] => {
+                if (isUndefinedDataType(field.type))
+                    return [
                         `    static_cast<void>(value.${field.name}${field.accessor ? ".get()" : ""});`,
-                    );
-                    continue;
-                }
+                    ];
                 const key = stringLiteral(field.sourceName);
                 if (
                     field.optionalProperty &&
@@ -5429,13 +5614,12 @@ export class DataTypeRegistry {
                             slot,
                             this.jsonSerializedStructs.get(name)!,
                         ) ?? "true";
-                    lines.push(
+                    return [
                         `    if (${present}) {`,
                         `        writer.key(${key});`,
                         `        json_write(writer, ${slot});`,
                         "    }",
-                    );
-                    continue;
+                    ];
                 }
                 // An `f?: T` property is JavaScript's `undefined` when it is not
                 // set, and `JSON.stringify` drops such a member outright. An
@@ -5447,20 +5631,28 @@ export class DataTypeRegistry {
                         field.type.inner.kind === "struct" &&
                         this.isReferenceStruct(field.type.inner.name)
                     );
-                if (omittable) {
-                    lines.push(
-                        `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
-                        `        writer.key(${key});`,
-                        `        json_write(writer, *value.${field.name});`,
-                        "    }",
-                    );
-                    continue;
-                }
-                lines.push(
-                    `    writer.key(${key});`,
-                    `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
-                );
-            }
+                const written = omittable
+                    ? [
+                          `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
+                          `        writer.key(${key});`,
+                          `        json_write(writer, *value.${field.name});`,
+                          "    }",
+                      ]
+                    : [
+                          `    writer.key(${key});`,
+                          `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
+                      ];
+                // A field only some union arms declare is written for them.
+                return field.presentForTags && definition
+                    ? [
+                          `    if (${this.tagConditionCpp(definition, field.presentForTags, (tag) => `value.${tag.name}`, "")}) {`,
+                          ...written.map((line) => `    ${line}`),
+                          "    }",
+                      ]
+                    : written;
+            };
+            for (const field of definition?.fields ?? [])
+                lines.push(...fieldLines(field));
             lines.push("    writer.end_object();", "}", "");
         }
         return lines;
@@ -5472,6 +5664,7 @@ export class DataTypeRegistry {
      */
     public renderPreamble(structuredClone = false): DataPreamble {
         this.checkFieldPresenceReads();
+        this.absentProperties.check();
         const used = this.reachableNamedTypes();
         if (
             used.structs.size === 0 &&
@@ -5676,50 +5869,12 @@ export class DataTypeRegistry {
                               `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, Visitor&& visitor) {`,
                               ...cloneFields.map((field) => {
                                   if (field.presentForTags) {
-                                      const condition = field.presentForTags
-                                          .map(
-                                              (alternative) =>
-                                                  `(${alternative
-                                                      .map(
-                                                          ({
-                                                              discriminant,
-                                                              value,
-                                                          }) => {
-                                                              const tag =
-                                                                  definition.fields.find(
-                                                                      (
-                                                                          candidate,
-                                                                      ) =>
-                                                                          candidate.sourceName ===
-                                                                          discriminant,
-                                                                  )!;
-                                                              let literal =
-                                                                  tag.type
-                                                                      .kind ===
-                                                                  "string"
-                                                                      ? JSON.stringify(
-                                                                            value,
-                                                                        )
-                                                                      : value;
-                                                              if (
-                                                                  tag.type
-                                                                      .kind ===
-                                                                  "enum"
-                                                              ) {
-                                                                  const enumType =
-                                                                      tag.type;
-                                                                  const definition =
-                                                                      this.enumsByName.get(
-                                                                          enumType.name,
-                                                                      )!;
-                                                                  literal = `${enumType.name}::${this.enumMemberIdentifier(definition, value)}`;
-                                                              }
-                                                              return `record.${tag.name} == ${literal}`;
-                                                          },
-                                                      )
-                                                      .join(" && ")})`,
-                                          )
-                                          .join(" || ");
+                                      const condition = this.tagConditionCpp(
+                                          definition,
+                                          field.presentForTags,
+                                          (tag) => `record.${tag.name}`,
+                                          "",
+                                      );
                                       return `        visitor.when(${stringLiteral(field.sourceName)}, record.${field.name}, ${condition});`;
                                   }
                                   return `        visitor(${stringLiteral(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;

@@ -38,6 +38,7 @@ import {
 import { compileMapInitializer } from "./collection-methods.js";
 import {
     absenceKind,
+    admitsUndefined,
     arrayElementType,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
@@ -48,6 +49,7 @@ import { compileWeakRefNew } from "./weak-refs.js";
 import {
     DynamicBindingStorageRequired,
     requireDynamicBindingStorage,
+    type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
@@ -193,6 +195,11 @@ function namesStableOwner(owner: Value): boolean {
         owner.stableOwnerCpp !== undefined ||
         cppIdentifierPattern.test(owner.cpp)
     );
+}
+
+/** A native variable or member path, which evaluates without effects. */
+function isPathCpp(cpp: string): boolean {
+    return /^[\w:]+(?:(?:->|\.)\w+)*$/.test(cpp);
 }
 
 /**
@@ -343,7 +350,13 @@ interface DataLoweringContext extends Pick<
     | "requireEngine"
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
-> {}
+> {
+    /** Declarations a storage demand retyped, by declaration. */
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+}
 
 /**
  * `owned` — the local holds a value it constructed.
@@ -3224,6 +3237,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : value;
     }
 
+    /**
+     * A read of a property the record's type admits as absent (optional,
+     * or typed to include undefined) and its struct does not store: the
+     * record lacks it, so the read is `undefined`. The receiver is a path,
+     * so skipping its evaluation skips no effect.
+     */
+    private absentPropertyRead(
+        owner: Value,
+        dataType: DataType<"struct">,
+        access: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = access.name.text;
+        const symbol = this.context.checker.getSymbolAtLocation(access.name);
+        if (
+            !symbol ||
+            ((symbol.flags & ts.SymbolFlags.Optional) === 0 &&
+                !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
+        )
+            return undefined;
+        if (owner.impure || !isPathCpp(owner.cpp)) return undefined;
+        if (
+            !this.context.dataTypes.absentRecordProperty(
+                dataType.name,
+                property,
+                access,
+            )
+        )
+            return undefined;
+        return { kind: "json-null", cpp: "std::nullopt" };
+    }
+
     private propertyRead(
         ownerValue: Value,
         access: ts.PropertyAccessExpression,
@@ -3320,6 +3364,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // owns all three.
                 return undefined;
             }
+            const absent = this.absentPropertyRead(owner, dataType, access);
+            if (absent) return absent;
             const field = this.context.dataTypes.structField(
                 dataType.name,
                 property,
@@ -8870,10 +8916,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.compileValue(property.expression);
                 if (spread.kind === "record") {
                     declareDefault();
+                    // A spread reads each getter once; it copies the value.
+                    if (
+                        Object.keys(spread.recordGetters ?? {}).length ||
+                        Object.keys(spread.recordSetters ?? {}).length
+                    )
+                        this.context.fail(
+                            property,
+                            "A record with accessors spreads into a compile-time record, not a struct literal.",
+                        );
                     for (const [name, value] of Object.entries(
                         spread.recordProperties ?? {},
                     )) {
                         assign(name, value, property);
+                    }
+                    // Methods are own properties a spread copies too.
+                    for (const [name, method] of Object.entries(
+                        spread.recordMethods ?? {},
+                    )) {
+                        const field = this.context.dataTypes.structField(
+                            dataType.name,
+                            name,
+                            property,
+                        );
+                        if (field.type.kind !== "function")
+                            this.context.fail(
+                                property,
+                                `Method '${name}' requires a stored function field.`,
+                            );
+                        this.context.recordProxies.requireIndependentFunction(
+                            field,
+                            method,
+                        );
+                        const callback = this.context.compileStoredDataFunction(
+                            method,
+                            field.type,
+                            spread,
+                            ts.isMethodDeclaration(method) &&
+                                ts.isClassDeclaration(method.parent),
+                        );
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, callback)};`,
+                        });
+                        assigned.add(field.name);
                     }
                     continue;
                 }
@@ -8914,6 +9000,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
+                    // A spread copies every own property, including any a
+                    // record converted into the source storage carried.
+                    this.context.dataTypes.noteRecordConversion(
+                        dataType,
+                        [],
+                        spread.dataType,
+                    );
                     const sourceMember =
                         this.context.dataTypes.isReferenceStruct(
                             spread.dataType.name,
@@ -9004,11 +9097,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         declareDefault();
+        // An absent optional field keeps the default the declaration
+        // stored, as a struct literal omitting it does.
         const missing = this.context.dataTypes
             .structFields(dataType.name, literal)
             .find(
                 (field) =>
-                    field.type.kind !== "optional" && !assigned.has(field.name),
+                    field.type.kind !== "optional" &&
+                    !field.defaultWhenMissing &&
+                    !assigned.has(field.name),
             );
         if (missing) {
             this.context.fail(
@@ -9252,6 +9349,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
+            // Deleting a property the record lacks changes nothing.
+            const owner = this.compileDataPath(target.expression, "read");
+            if (
+                owner?.kind === "data" &&
+                owner.dataType?.kind === "struct" &&
+                !owner.impure &&
+                isPathCpp(owner.cpp) &&
+                this.context.dataTypes.lacksRecordProperty(
+                    owner.dataType.name,
+                    target.name.text,
+                )
+            )
+                return;
             const field = this.compileDataPath(target, "write");
             if (
                 field?.dataType?.kind === "function" ||
@@ -9541,23 +9651,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ? "->"
             : ".";
         const slot = `${ownerCpp}${access}${field.name}`;
-        // A union arm's field is narrowed by its tag, not its storage.
+        // A union arm's field is own when the record's tags select an arm
+        // declaring it.
         if (field.presentForTags && field.type.kind === "undefined")
             this.context.fail(
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        if (
-            field.presentForTags &&
-            !(
-                field.optionalProperty &&
-                field.type.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(field.type.name)
-            )
-        )
-            return field.type.kind === "optional"
-                ? optionalPresentCpp(slot)
-                : "true";
         const present = this.context.dataTypes.ownPropertyPresentCpp(
             structName,
             field,

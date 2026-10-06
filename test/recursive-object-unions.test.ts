@@ -46,30 +46,33 @@ function check(name: string, source: string, realm = false): void {
     });
 }
 
-test("variant-specific optional references refuse ambiguous own-key membership", () => {
-    for (const initialize of [
-        "const items:Item[]=[{kind:'branch'}];",
-        "const items:Item[]=[{kind:'branch',next:undefined}];",
-        "const items:Item[]=[{kind:'branch'}];if(items[0]!.kind==='branch')items[0]!.next=undefined;",
-        "const items:Item[]=[{kind:'branch',next:{kind:'leaf'}}];if(items[0]!.kind==='branch')delete items[0]!.next;",
-    ]) {
-        for (const membership of [
-            "Object.hasOwn(items[0]!,'next');",
-            "'next' in items[0]!;",
-            "function has(value:Item,key:string){return Object.hasOwn(value,key);}has(items[0]!,'next');",
-            "function has(value:Item,key:string){return key in value;}has(items[0]!,'next');",
-        ]) {
-            assert.throws(
-                () =>
-                    compileSource(`
-                        type Item={kind:'leaf'}|{kind:'branch';next?:Item};
-                        ${initialize}
-                        ${membership}
-                    `),
-                /Own-property presence of 'next' is not represented/,
-            );
-        }
-    }
+check(
+    "variant-specific-optional-references-decide-membership-by-tags",
+    `
+    type Item={kind:'leaf'}|{kind:'branch';next?:Item};
+    function has(value:Item,key:string){return key in value;}
+    function owns(value:Item,key:string){return Object.hasOwn(value,key);}
+    const items:Item[]=[{kind:'branch'},{kind:'leaf'},{kind:'branch',next:{kind:'leaf'}}];
+    const report=()=>items.map((item)=>('next' in item?'i':'-')+(Object.hasOwn(item,'next')?'o':'-')+(has(item,'next')?'h':'-')+(owns(item,'next')?'w':'-')+Object.keys(item).length).join(',');
+    if(report()!=='----1,----1,iohw2')throw new Error(report());
+    const last=items[2]!;
+    if(last.kind==='branch')delete last.next;
+    const first=items[0]!;
+    if(first.kind==='branch')first.next=items[1]!;
+    if(report()!=='iohw2,----1,----1')throw new Error(report());
+    `,
+);
+
+test("tagged fields whose arms disagree on own-key presence refuse membership", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                type Item={kind:'a';x?:number}|{kind:'b';x:number|undefined}|{kind:'c'};
+                const items:Item[]=[{kind:'a'},{kind:'b',x:undefined},{kind:'c'}];
+                const has=items.map((item)=>'x' in item);
+            `),
+        /Own-property presence of 'x' is not represented/,
+    );
 });
 
 check(

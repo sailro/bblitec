@@ -592,6 +592,14 @@ function compileObjectAssign(
             return Object.entries(value.recordProperties ?? {});
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
+            // The copy includes any property a record converted into the
+            // source storage carried.
+            if (target.kind === "data" && target.dataType?.kind === "struct")
+                context.dataTypes.noteRecordConversion(
+                    target.dataType,
+                    [],
+                    value.dataType,
+                );
             return structEntries(context, value, value.dataType, source);
         }
         return context.fail(
