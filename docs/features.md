@@ -181,7 +181,7 @@ Finite record Proxies support literal get/set traps, optional-key deletion and v
 of existing data properties; Reflect.get preserves represented getter receivers. Empty/class targets,
 dynamic-this methods, other traps, descriptor-inspecting traps and definitions requiring new
 property attributes refuse. Symbol and FinalizationRegistry values refuse.
-Array/object aliases normally retain identity. Stored callbacks can copy plain value-layout records,
+Array/object aliases normally retain identity; a `const` alias of an array field refuses use after that field resizes. Stored callbacks can copy plain value-layout records,
 including records captured through optional/defaulted parameters; later field replacements may not
 propagate between caller and callback. Spreads and object rest copy own scalar fields and share nested objects.
 Object enumeration places numeric index keys before insertion-ordered names. Fixed record key

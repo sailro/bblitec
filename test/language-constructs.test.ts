@@ -1252,6 +1252,78 @@ check(
 );
 
 check(
+    "field-aliases-survive-sibling-field-resizes",
+    `
+    class Store {
+        private flags: number[] = [];
+        private pending: number[] = [];
+        private scratch: number[] = [];
+        private firstChild: number[] = [];
+        private nextSibling: number[] = [];
+        add(parent: number): number {
+            const slot = this.flags.length;
+            this.flags.push(0);
+            this.firstChild.push(-1);
+            this.nextSibling.push(-1);
+            if (parent >= 0) { this.nextSibling[slot] = this.firstChild[parent]!; this.firstChild[parent] = slot; }
+            return slot;
+        }
+        markSubtree(slot: number): void {
+            const stack = this.scratch;
+            stack.length = 0;
+            this.mark(slot);
+            stack.push(slot);
+            while (stack.length > 0) {
+                const node = stack.pop()!;
+                let child = this.firstChild[node]!;
+                while (child >= 0) {
+                    this.mark(child);
+                    stack.push(child);
+                    child = this.nextSibling[child]!;
+                }
+            }
+        }
+        private mark(slot: number): void {
+            if (this.flags[slot] === 1) return;
+            this.flags[slot] = 1;
+            this.pending.push(slot);
+        }
+        seal(): string {
+            const marked = this.pending.join(",");
+            for (const slot of this.pending) this.flags[slot] = 0;
+            this.pending.length = 0;
+            return marked;
+        }
+    }
+    interface Options { transforms: Store; label: string; }
+    function createController(options: Options) {
+        const { transforms } = options;
+        return {
+            attach: (parent: number): number => transforms.add(parent),
+            dirty: (root: number): string => { transforms.markSubtree(root); return transforms.seal(); },
+        };
+    }
+    const factories: Array<typeof createController> = [createController];
+    const controller = factories[0]!({ transforms: new Store(), label: "a" });
+    const root = controller.attach(-1);
+    const child = controller.attach(root);
+    controller.attach(child);
+    controller.attach(root);
+    if (controller.dirty(root) !== "0,3,1,2" || controller.dirty(child) !== "1,2") throw new Error("subtree marks");
+`,
+);
+
+test("an alias into a field container refuses after that container resizes", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "class Store { private scratch: number[] = []; fill(): number { const stack = this.scratch; this.scratch.push(1); stack.push(2); return stack.length; } } function create(options: { store: Store }) { const { store } = options; return { fill: () => store.fill() }; } const factories: Array<typeof create> = [create]; const unused = factories[0]!({ store: new Store() }).fill();",
+            ),
+        /'stack' refers into a container that was resized after the binding/,
+    );
+});
+
+check(
     "rebound-records-alias-the-assigned-object",
     `
     interface Sky { horizon: number[]; gold: number; }
