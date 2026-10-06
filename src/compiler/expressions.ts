@@ -4433,9 +4433,12 @@ export class ExpressionLowerer {
                 inferred =
                     this.context.dataTypes.markStoredObjectReferences(stored);
         }
-        // A selected fresh readonly array must outlive its branch's temporaries.
+        // A selected fresh readonly array, present or absent, must outlive
+        // its branch's temporaries.
+        const selectedArray =
+            inferred?.kind === "optional" ? inferred.inner : inferred;
         const conditionalType =
-            inferred?.kind === "span"
+            inferred && selectedArray?.kind === "span"
                 ? this.context.dataTypes.markStoredObjectReferences(inferred)
                 : inferred?.kind === "enum"
                   ? { kind: "string" as const }

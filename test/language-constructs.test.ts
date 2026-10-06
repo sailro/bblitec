@@ -1228,6 +1228,30 @@ check(
 );
 
 check(
+    "nullable-readonly-array-conditionals-own-the-selected-array",
+    `
+    interface Sample { c: number; h: number; }
+    interface Geom { eave: number; chain: readonly Sample[] | null; }
+    let cached: readonly Sample[] | null = null;
+    function chainFor(round: number): readonly Sample[] {
+        if (cached !== null && cached.length === round + 1) return cached;
+        const chain: Sample[] = [];
+        for (let i = 0; i <= round; i++) chain.push({ c: i, h: round - i });
+        cached = chain;
+        return chain;
+    }
+    function geom(eave: number, round: number): Geom {
+        return { eave, chain: round > 0 ? chainFor(round) : null };
+    }
+    function heightWith(g: Geom, c: number): number { return g.chain ? g.chain[0]!.h + c : g.eave; }
+    function height(eave: number, round: number, c: number): number { return heightWith(geom(eave, round), c); }
+    const heights: Array<typeof height> = [height];
+    if (heights[0]!(5, 2, 1) !== 3 || heights[0]!(5, 0, 1) !== 5) throw new Error("selected chain");
+    if (geom(1, 2).chain !== geom(3, 2).chain || geom(1, 0).chain !== null) throw new Error("selected chain identity");
+`,
+);
+
+check(
     "rebound-records-alias-the-assigned-object",
     `
     interface Sky { horizon: number[]; gold: number; }
