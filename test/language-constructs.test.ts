@@ -2763,6 +2763,226 @@ check(
 );
 
 check(
+    "typed-array-set-and-constructor-sources",
+    `
+    function negate(m: Float32Array): Float32Array | null { return m[0] === 0 ? null : Float32Array.from(m, (v) => -v); }
+    const identity = new Float32Array([1, 0, 0, 1]);
+    const target = new Float32Array(12);
+    const inverse = negate(new Float32Array([2, 3]));
+    if (inverse) target.set(inverse as ArrayLike<number>);
+    target.set((negate(new Float32Array([0])) ?? identity) as unknown as ArrayLike<number>, 4);
+    const checked = negate(new Float32Array([5]));
+    if (!checked) throw new Error("present source");
+    target.set(checked as unknown as ArrayLike<number>, 8);
+    if (target.join() !== "-2,-3,0,0,1,0,0,1,-5,0,0,0") throw new Error("narrowed and selected sources");
+    interface Part { uvs: Float32Array; uvs2?: Float32Array; mask?: Uint8Array; }
+    const merged: Part = { uvs: new Float32Array(4), uvs2: new Float32Array(4), mask: new Uint8Array(3) };
+    const parts: Part[] = [{ uvs: new Float32Array([1, 2]) }, { uvs: new Float32Array([3, 4]), uvs2: new Float32Array([7, 8]), mask: new Uint8Array([256, 9]) }];
+    let offset = 0;
+    for (const part of parts) {
+        merged.uvs2?.set(part.uvs2 ?? part.uvs, offset);
+        if (part.mask) merged.mask?.set(part.mask, offset / 2);
+        offset += 2;
+    }
+    if (merged.uvs2!.join() !== "1,2,7,8" || merged.mask!.join() !== "0,0,9") throw new Error("optional targets and sources");
+    function load(into: Float32Array, source: Float32Array | Float64Array, at: number): void { into.set(source, at); }
+    const lanes = new Float32Array(3);
+    load(lanes, new Float64Array([0.1, 2]), 1);
+    load(lanes, new Float32Array([4]), 0);
+    if (lanes[0] !== 4 || lanes[1] !== Math.fround(0.1) || lanes[2] !== 2) throw new Error("union source converts its member");
+    const unique = Float32Array.from(new Set([3, 1, 3]));
+    const wrapped = new Uint16Array(new Set([70000, -1]));
+    if (unique.join() !== "3,1" || wrapped.join() !== "4464,65535") throw new Error("Set sources");
+    const words = new Uint16Array([1, 65535, 7]);
+    const widened = Uint32Array.from(new Uint16Array(words.buffer, 2, 2));
+    const signed = new Int8Array(new Uint8Array([200, 5]));
+    if (widened.join() !== "65535,7" || signed.join() !== "-56,5") throw new Error("constructed sources");
+    const shared = new Uint8Array([1, 2, 3, 4, 5]);
+    shared.set(shared.subarray(0, 3), 2);
+    if (shared.join() !== "1,2,1,2,3") throw new Error("overlapping set");
+`,
+);
+
+check(
+    "array-buffer-slice",
+    `
+    const bin = new ArrayBuffer(12);
+    const bytes = new Uint8Array(bin);
+    for (let i = 0; i < 12; i++) bytes[i] = i;
+    const middle = bin.slice(4, 8);
+    bytes[5] = 99;
+    if (middle.byteLength !== 4 || new Uint8Array(middle)[1] !== 5 || middle === bin) throw new Error("slice copies its range");
+    if (new Uint8Array(bin.slice(-3))[0] !== 9 || bin.slice(-3).byteLength !== 3) throw new Error("relative begin");
+    if (bin.slice(8, 4).byteLength !== 0 || bin.slice().byteLength !== 12 || bin.slice(2, 100).byteLength !== 10 || bin.slice(1, -1).byteLength !== 10) throw new Error("clamped range");
+    const words = new Uint32Array(bin.slice(4, 12));
+    const floats = new Float32Array(bin.slice(0, 8));
+    if (words.length !== 2 || words[1] !== 0x0b0a0908 || floats.length !== 2) throw new Error("views over a slice");
+    const widened = Uint32Array.from(new Uint16Array(bin.slice(8, 12)));
+    if (widened.join() !== "2312,2826") throw new Error("from over a constructed view");
+    if (bytes.subarray(-2).join() !== "10,11" || bytes.slice(-3, -1).join() !== "9,10" || bytes.subarray(10, 2).length !== 0) throw new Error("relative Uint8Array ranges");
+`,
+);
+
+check(
+    "typed-array-union-reads",
+    `
+    function bytes(values: Float32Array | Uint32Array): Uint8Array {
+        return new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
+    }
+    const floats = new Float32Array([1]);
+    const viewed = new Uint32Array(new ArrayBuffer(16), 4, 2);
+    viewed[0] = 0x01020304;
+    const fromFloats = bytes(floats), fromWords = bytes(viewed);
+    if (fromFloats.length !== 4 || fromFloats[3] !== 0x3f || fromWords.length !== 8 || fromWords.byteOffset !== 4 || fromWords[0] !== 4) throw new Error("union buffer range");
+    fromWords[1] = 0xff;
+    if (viewed[0] !== 0x0102ff04) throw new Error("views alias the union member's buffer");
+    function differs(published: Float32Array | Float64Array | undefined, count: number): boolean {
+        if (!published || published.length < count) return true;
+        for (let index = 0; index < count; index++) if (published[index] !== index) return true;
+        return false;
+    }
+    if (differs(new Float64Array([0, 1, 2]), 3) || differs(new Float32Array([0, 1]), 2) || !differs(undefined, 1) || !differs(new Float32Array([0, 2]), 2) || !differs(new Float64Array(1), 2)) throw new Error("optional union length and elements");
+    function connected(levels: Uint8Array | Int32Array | null): number {
+        const lv = levels;
+        const same = lv ? (a: number, b: number): boolean => lv[a] === lv[b] : undefined;
+        let count = 0;
+        for (let i = 1; i < 4; i++) if (same && same(i - 1, i)) count++;
+        for (let i = 1; i < 4; i++) if (!levels || levels[i - 1] === -1) count += 10;
+        return count;
+    }
+    if (connected(new Uint8Array([1, 1, 2, 2])) !== 2 || connected(new Int32Array([-1, -1, -1, 0])) !== 32 || connected(null) !== 30) throw new Error("union elements in closures");
+    function pick(bytes: boolean): Uint8Array | Int32Array { return bytes ? new Uint8Array([255, 1]) : new Int32Array([-5, -6]); }
+    const state = { current: pick(true) };
+    let reads = 0;
+    function next(): number { state.current = pick(false); return reads++; }
+    const first = state.current[next()];
+    if (first !== 255 || state.current[1] !== -6 || reads !== 1 || state.current.length !== 2) throw new Error("owner read before its index, index read once");
+    function size(value: Float32Array | string): number { return value.length; }
+    if (size("abc") + size(new Float32Array(2)) !== 5) throw new Error("length of a string or typed array");
+`,
+);
+
+check(
+    "typed-array-spreads-and-reverse",
+    `
+    const floats = new Float32Array([1.5, -2, 3]);
+    const copied = [...floats];
+    copied[0] = 9;
+    const joined = [0, ...new Uint8Array([7, 8]), 9];
+    if (copied.length !== 3 || copied[0] !== 9 || floats[0] !== 1.5 || joined.join() !== "0,7,8,9") throw new Error("array spreads");
+    const text = new Uint8Array([104, 105, 33, 63]);
+    if (String.fromCharCode(...text.subarray(0, 3)) !== "hi!" || String.fromCharCode(72, ...text.subarray(1, 2)) !== "Hi") throw new Error("fromCharCode spreads");
+    let chunked = "";
+    for (let i = 0; i < text.length; i += 3) chunked += String.fromCharCode(...text.subarray(i, i + 3));
+    interface Analysis { errors: Float32Array; }
+    const analysis: Analysis = { errors: new Float32Array([0.5, 2]) };
+    const metadata = { errors: [...analysis.errors] };
+    analysis.errors[0] = 7;
+    if (chunked !== "hi!?" || metadata.errors.join() !== "0.5,2") throw new Error("chunked and record-field spreads");
+    if (Math.max(...floats) !== 3 || Math.min(...floats, ...new Int8Array([-7])) !== -7 || Math.max(...new Float64Array(0)) !== -Infinity) throw new Error("Math spreads");
+    const order = new Float32Array([1, 2, 3, 4]);
+    const reversed = order.reverse();
+    if (reversed !== order || order.join() !== "4,3,2,1") throw new Error("reverse in place");
+    const view = new Int16Array(new ArrayBuffer(10), 2, 3);
+    view.set([1, 2, 3]);
+    view.subarray(1).reverse();
+    if (view.join() !== "1,3,2" || new Int16Array(view.buffer)[2] !== 3) throw new Error("reverse through a view");
+`,
+);
+
+check(
+    "typed-array-view-optional-offset",
+    `
+    interface Layout { byteLength?: number; }
+    function tail(bin: ArrayBuffer, layout: Layout): Uint8Array { return new Uint8Array(bin, layout.byteLength); }
+    const bin = new ArrayBuffer(6);
+    if (tail(bin, { byteLength: 4 }).length !== 2 || tail(bin, {}).length !== 6 || tail(bin, {}).byteOffset !== 0) throw new Error("optional byte offset");
+    function floats(buffer: ArrayBuffer, offset: number | undefined, length: number): Float32Array { return new Float32Array(buffer, offset, length); }
+    const buffer = new ArrayBuffer(16);
+    if (floats(buffer, 8, 2).byteOffset !== 8 || floats(buffer, undefined, 3).length !== 3 || floats(buffer, undefined, 1).byteOffset !== 0) throw new Error("optional offset with a length");
+`,
+);
+
+check(
+    "binary-asserted-and-default-absent-values",
+    `
+    const worldOf = new Map<number, Float32Array>();
+    worldOf.set(1, new Float32Array([4, 5]));
+    interface Root { name: string; world: Float32Array; }
+    function root(inherited: Root | null, starts: boolean): Root | null {
+        return starts ? { name: "n", world: worldOf.get(1)! } : inherited;
+    }
+    const made = root(null, true);
+    if (!made || made.world !== worldOf.get(1) || root(made, false) !== made || root(null, false) !== null) throw new Error("asserted map value in a record");
+    made.world[0] = 9;
+    if (worldOf.get(1)![0] !== 9) throw new Error("asserted value aliases the stored array");
+    function first(n: number, policies: Uint8Array | undefined = undefined): number { return policies ? policies[0]! : n; }
+    function count(values: number[] | undefined = undefined): number { return values ? values.length : -1; }
+    const firsts: Array<typeof first> = [first];
+    const counts: Array<typeof count> = [count];
+    if (firsts[0]!(2) !== 2 || firsts[0]!(2, new Uint8Array([7])) !== 7 || firsts[0]!(3, undefined) !== 3) throw new Error("undefined default of a stored function");
+    if (counts[0]!() !== -1 || counts[0]!([1, 2]) !== 2) throw new Error("undefined default of an array parameter");
+`,
+);
+
+check(
+    "typed-array-constructor-values",
+    `
+    function grow<T extends Uint8Array | Int32Array | Float32Array>(value: T, length: number): T {
+        const Constructor = value.constructor as { new (length: number): T };
+        const next = new Constructor(length);
+        next.set(value);
+        return next;
+    }
+    const bytes = grow(new Uint8Array([1, 255]), 3);
+    const floats = grow(new Float32Array([0.5]), 2);
+    const words = grow(new Int32Array([-7]), 1);
+    if (!(bytes instanceof Uint8Array) || bytes.join() !== "1,255,0" || !(floats instanceof Float32Array) || floats.join() !== "0.5,0" || words[0] !== -7) throw new Error("constructor of each kind");
+    const source = new Uint16Array([70000, 3]);
+    const Same = source.constructor as { new (length: number): Uint16Array; from(values: ArrayLike<number>): Uint16Array };
+    const copied = Same.from([1, 65537]);
+    if (copied.join() !== "1,1" || new Same(2).length !== 2 || copied === source) throw new Error("constructor statics");
+    function factory(value: Float64Array): () => Float64Array {
+        const Kind = value.constructor as { new (length: number): Float64Array };
+        return () => new Kind(3);
+    }
+    if (factory(new Float64Array(1))().length !== 3) throw new Error("constructor captured by a closure");
+`,
+);
+
+test("typed-array unions and views refuse what they do not represent", () => {
+    const pick =
+        "function pick(text: boolean): Float32Array | string { return text ? 'ab' : new Float32Array(2); }";
+    for (const [source, message] of [
+        [
+            "function pick(f: boolean): Float32Array | Uint8Array { return f ? new Float32Array(2) : new Uint8Array(2); } const v = pick(true); v[0] = 1;",
+            /Element writes through a data union are not supported/,
+        ],
+        [
+            `${pick} const v = pick(true); const unused = v[0];`,
+            /Element access is not supported on data union/,
+        ],
+        [
+            `${pick} const v = pick(true); const unused = (v as { byteLength: number }).byteLength;`,
+            /Unsupported data property 'byteLength' on string/,
+        ],
+        [
+            "function f(b: ArrayBuffer, n: number | undefined): Uint8Array { return new Uint8Array(b, 0, n); } const unused = f(new ArrayBuffer(2), 1);",
+            /Expected number, received data/,
+        ],
+        [
+            "const t = new Float32Array(2); const u = t.reverse(1 as never); const unused = u.length;",
+            /TypedArray\.reverse expects no arguments/,
+        ],
+        [
+            "const C = new Float32Array(1).constructor; const unused: string = C.name;",
+            /Unsupported property value 'C\.name' \(owner typed-array-constructor/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
     "contextual-record-map-spreads",
     `
     interface Item { name: string; category: "first" | "second"; metadata: { size: number } | null; }

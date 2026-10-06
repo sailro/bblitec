@@ -249,9 +249,9 @@ const opaqueSink = {
     expression: (
         type: DataType,
         lowerer: DataSinkHost,
-        _expression: ts.Expression,
+        expression: ts.Expression,
         unwrapped: ts.Expression,
-    ): string => lowerer.requireDataValue(unwrapped, type).cpp,
+    ): string => lowerer.requireDataValue(unwrapped, type, expression).cpp,
     value: (
         type: DataType,
         _lowerer: DataSinkHost,

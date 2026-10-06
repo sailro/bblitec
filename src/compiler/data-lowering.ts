@@ -40,6 +40,7 @@ import {
     absenceKind,
     admitsUndefined,
     arrayElementType,
+    nullability,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
@@ -93,12 +94,14 @@ import {
     isUndefinedDataType,
     doubleLiteral,
     isBinaryDataType,
+    isNumericSequenceType,
     isTypedArrayType,
     isOpaqueReference,
     isHandleKind,
     passesByReference,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
+    typedArrayConstructorName,
     typedArrayStem,
     typedArrayStoreExpression,
     tupleComponents,
@@ -129,6 +132,7 @@ import { isTrsVectorName } from "./assignments.js";
 import {
     isAssignmentExpression,
     expressionMayRunCode,
+    hasNonNullAssertion,
     isUpdateExpression,
     iteratorMethodCall,
     rootExpression,
@@ -857,14 +861,20 @@ export class DataLowerer {
                             this.context.allocateTemporaryCppName(
                                 "rest_source",
                             );
+                        // A typed array spreads the numbers its elements hold.
+                        const spreadType = this.dataTypeAt(argument.expression);
                         this.context.emit({
                             kind: "declaration",
                             type: "const auto",
                             name: source,
-                            initializer: this.compileForSink(
-                                argument.expression,
-                                parameter,
-                            ),
+                            initializer:
+                                isTypedArrayType(spreadType) &&
+                                parameter.element.kind === "number"
+                                    ? `bbl::js::typed_array_numbers(${this.compileForSink(argument.expression, spreadType)})`
+                                    : this.compileForSink(
+                                          argument.expression,
+                                          parameter,
+                                      ),
                         });
                         const item =
                             this.context.allocateTemporaryCppName("rest_item");
@@ -2701,6 +2711,72 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A read every member of a data union answers, lowered once over each
+     * member's own storage and selected at run time by the member the union
+     * holds (`std::visit`), as JavaScript reads the property or element of
+     * whichever object the binding refers to. Every member's read must have
+     * one result type; a member without the read refuses through `read`.
+     */
+    private unionMemberRead(
+        owner: Value,
+        members: readonly DataType[],
+        node: ts.Node,
+        read: (member: Value) => Value,
+        captures: readonly NativeCaptureBinding[] = owner.nativeCaptures ?? [],
+    ): Value {
+        const parameter = this.context.allocateTemporaryCppName("union_member");
+        let resultType: DataType | undefined;
+        const arms = members.map((member) => {
+            let body = "";
+            const lines = this.context.captureEmittedLines(() => {
+                const result = read(this.leafValue(parameter, member));
+                const type =
+                    result.dataType ??
+                    (result.kind === "number" ||
+                    result.kind === "boolean" ||
+                    result.kind === "string"
+                        ? { kind: result.kind }
+                        : undefined);
+                if (
+                    !type ||
+                    result.optionalFoundCpp !== undefined ||
+                    result.slotFoundCpp !== undefined ||
+                    (resultType && !dataTypesEqual(resultType, type))
+                )
+                    this.context.fail(
+                        node,
+                        "A read through a data union requires one result " +
+                            "type across its members.",
+                    );
+                resultType = type;
+                body = `return ${this.compileKnownValueForSink(result, type, node)};`;
+            });
+            return { member, body: [...lines, body].join(" ") };
+        });
+        const resultCpp = this.context.dataTypes.cppType(resultType!);
+        const memberType = `${parameter}_type`;
+        const visitor =
+            new Set(arms.map((arm) => arm.body)).size === 1
+                ? arms[0]!.body
+                : `using ${memberType} = std::decay_t<decltype(${parameter})>; ` +
+                  arms
+                      .map((arm, index) =>
+                          index === arms.length - 1
+                              ? `{ ${arm.body} }`
+                              : `if constexpr (std::is_same_v<${memberType}, ` +
+                                `${this.context.dataTypes.cppType(arm.member)}>) { ${arm.body} } else `,
+                      )
+                      .join("");
+        return {
+            ...this.leafValue(
+                `std::visit([&](const auto& ${parameter}) -> ${resultCpp} { ${visitor} }, ${owner.cpp})`,
+                resultType!,
+            ),
+            nativeCaptures: captures,
+        };
+    }
+
+    /**
      * `left ?? right` over the data model — the general operator, taken
      * after the handle-collection concept and the static-record fold have
      * both declined.
@@ -3354,6 +3430,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `'${access.expression.getText()}' may be null here; narrow it before member access.`,
             );
         }
+        if (dataType.kind === "union") {
+            return this.unionMemberRead(
+                owner,
+                dataType.members,
+                access,
+                (member) =>
+                    this.propertyRead(member, access) ??
+                    this.context.fail(
+                        access,
+                        `Unsupported data property '${property}' on union member ${member.dataType?.kind}.`,
+                    ),
+            );
+        }
         if (dataType.kind === "struct") {
             if (
                 this.context.dataTypes.isClassStruct(dataType.name) &&
@@ -3502,6 +3591,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType: { kind: "number" },
                 };
             }
+        }
+        // The storage kind fixes the class of every value it holds.
+        if (isTypedArrayType(dataType) && property === "constructor") {
+            if (expressionMayRunCode(access.expression))
+                this.context.emitDiscardedValue(owner);
+            return {
+                kind: "typed-array-constructor",
+                cpp: "",
+                typedArrayConstructor: dataType.kind,
+            };
         }
         if (dataType.kind === "arraybuffer" && property === "byteLength") {
             return {
@@ -3785,6 +3884,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     index.staticString,
                     access,
                 ) ?? { kind: "json-null", cpp: "std::nullopt" }
+            );
+        }
+        if (dataType.kind === "union") {
+            if (
+                !dataType.members.every(
+                    (member) =>
+                        isTypedArrayType(member) ||
+                        member.kind === "vector" ||
+                        member.kind === "span" ||
+                        member.kind === "tuple",
+                )
+            )
+                this.context.fail(
+                    access,
+                    "Element access is not supported on data union.",
+                );
+            if (mode === "write")
+                this.context.fail(
+                    access,
+                    "Element writes through a data union are not supported; narrow it to one member first.",
+                );
+            // The owner is read before the index, which may rebind it; the
+            // index is read once, whichever member reads it.
+            const receiver = this.indexMayChangeOwner(access)
+                ? this.context.bindings.retainedValue(owner, "indexed_union")
+                : owner;
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            let member = index;
+            if (index.staticNumber === undefined) {
+                const pinned =
+                    this.context.allocateTemporaryCppName("union_index");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: pinned,
+                    initializer: this.compileKnownValueForSink(
+                        index,
+                        { kind: "number" },
+                        access.argumentExpression,
+                    ),
+                });
+                member = {
+                    ...this.leafValue(pinned, { kind: "number" }),
+                    nativeCaptures: [
+                        this.context.registerNativeBinding(pinned),
+                    ],
+                };
+            }
+            return this.unionMemberRead(
+                receiver,
+                dataType.members,
+                access,
+                (value) =>
+                    this.elementRead(value, access, "read", member) ??
+                    this.context.fail(
+                        access,
+                        "Element access is not supported on data union.",
+                    ),
+                [
+                    ...(receiver.nativeCaptures ?? []),
+                    ...(member.nativeCaptures ?? []),
+                ],
             );
         }
         if (
@@ -5945,7 +6108,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (callee.name.text !== "from" && callee.name.text !== "of")
         )
             return undefined;
-        const name = this.context.libraryGlobal(callee.expression);
+        const name = this.typedArrayClass(callee.expression);
         const kind =
             name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) return undefined;
@@ -6102,6 +6265,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         type,
                     );
                 }
+                // A typed array spreads the numbers its elements hold.
+                if (spread.kind === "data" && isTypedArrayType(spread.dataType))
+                    spread = {
+                        kind: "data",
+                        cpp: `bbl::js::typed_array_numbers(${spread.cpp})`,
+                        dataType: { kind: "span", element: { kind: "number" } },
+                    };
                 if (
                     spread.kind !== "data" ||
                     (spread.dataType?.kind !== "vector" &&
@@ -7362,10 +7532,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * The typed-array class a `new` or static-factory callee names: the
+     * global itself, or a binding holding a typed array's `constructor`.
+     */
+    private typedArrayClass(callee: ts.Expression): string | undefined {
+        const name = this.context.libraryGlobal(callee);
+        if (name !== undefined)
+            return TYPED_ARRAY_KINDS.has(name) ? name : undefined;
+        const unwrapped = this.context.unwrap(callee);
+        const declaration = ts.isIdentifier(unwrapped)
+            ? declaredSymbol(this.context.checker, unwrapped)?.valueDeclaration
+            : undefined;
+        const read =
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer
+                ? this.context.unwrap(declaration.initializer)
+                : undefined;
+        const constructorRead =
+            read !== undefined &&
+            ts.isPropertyAccessExpression(read) &&
+            read.name.text === "constructor";
+        const bound =
+            constructorRead && ts.isIdentifier(unwrapped)
+                ? this.context.bindings.lookupOptional(unwrapped)
+                : undefined;
+        return bound?.kind === "typed-array-constructor" &&
+            bound.typedArrayConstructor
+            ? typedArrayConstructorName(bound.typedArrayConstructor)
+            : undefined;
+    }
+
     public compileTypedArrayNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        const name = this.context.libraryGlobal(expression.expression);
+        const name = this.typedArrayClass(expression.expression);
         const kind =
             name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) {
@@ -7455,8 +7657,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "view_buffer",
                 unwrapped,
             ).cpp;
-            const numericArgument = (argument: ts.Expression): string => {
-                const value = this.context.compileNumber(argument, "double");
+            const numericArgument = (
+                argument: ts.Expression,
+                value = this.context.compileNumber(argument, "double"),
+            ): string => {
                 const temporary =
                     this.context.allocateTemporaryCppName("view_index");
                 this.context.emit({
@@ -7469,8 +7673,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? `bbl::js::buffer_view_index(${temporary})`
                     : temporary;
             };
+            // ToIndex reads an absent byte offset (undefined, or null as
+            // ToNumber 0) as zero.
+            const offsetArgument = (argument: ts.Expression): string => {
+                const absent = nullability(
+                    this.context.checker.getTypeAtLocation(argument),
+                );
+                if (!absent.null && !absent.undefined)
+                    return numericArgument(argument);
+                const value = this.context.compileValue(argument);
+                if (
+                    value.kind === "json-null" ||
+                    isUndefinedDataType(value.dataType)
+                ) {
+                    this.context.emitDiscardedValue(value);
+                    return numericArgument(argument, "0.0");
+                }
+                if (
+                    value.kind !== "data" ||
+                    value.dataType?.kind !== "optional" ||
+                    value.dataType.inner.kind !== "number" ||
+                    presenceFlagCpp(value) !== undefined
+                )
+                    return numericArgument(
+                        argument,
+                        this.compileKnownValueForSink(
+                            value,
+                            { kind: "number" },
+                            argument,
+                        ),
+                    );
+                const offset = this.context.bindings.pinValueToTemporary(
+                    value,
+                    "view_offset",
+                ).cpp;
+                return numericArgument(
+                    argument,
+                    `(${optionalPresentCpp(offset)} ? ${optionalValueCpp(offset)} : 0.0)`,
+                );
+            };
             const offset = arguments_[1]
-                ? `, ${numericArgument(arguments_[1])}`
+                ? `, ${offsetArgument(arguments_[1])}`
                 : "";
             const length = arguments_[2]
                 ? `, ${numericArgument(arguments_[2])}`
@@ -7545,12 +7788,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (ts.isCallExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
-        const staticSource =
+        // Any other expression whose type is not a number is a sequence or
+        // nothing (`a ?? b`, a conditional, a constructed view); a number is
+        // the constructor's length.
+        const compiled =
             source ??
             (ts.isIdentifier(unwrapped) ||
-            ts.isPropertyAccessExpression(unwrapped)
+            ts.isPropertyAccessExpression(unwrapped) ||
+            (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                ts.TypeFlags.NumberLike) ===
+                0
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        // A guarded optional or union reads as the member the checker
+        // narrowed it to, under any assertion the source wrote.
+        const staticSource =
+            compiled && this.narrowOptional(compiled, unwrapped);
         if (staticSource?.kind === "camera-world-matrix") {
             const engine = this.context.requireEngine(staticSource, unwrapped);
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
@@ -7594,15 +7847,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // already applies to a `number[]` -- so one arm serves them all. A
         // runtime tuple joins them because its lanes are doubles too: the
         // three components of a colour a scene computed.
-        if (
-            staticSource?.kind === "data" &&
-            (isTypedArrayType(staticSource.dataType) ||
-                staticSource.dataType?.kind === "tuple" ||
-                ((staticSource.dataType?.kind === "vector" ||
-                    staticSource.dataType?.kind === "span") &&
-                    staticSource.dataType.element.kind === "number"))
-        ) {
+        if (staticSource?.kind !== "data" || !staticSource.dataType)
+            return undefined;
+        const sourceType = staticSource.dataType;
+        if (isNumericSequenceType(sourceType)) {
             return `bbl::js::${prefix}_array_from(${staticSource.cpp})`;
+        }
+        // A Set iterates its numbers in insertion order, as both the
+        // constructor and `from` read any iterable.
+        if (sourceType.kind === "set" && sourceType.element.kind === "number")
+            return `bbl::js::${prefix}_array_from(bbl::js::array_from_iterable<double>(${staticSource.cpp}))`;
+        // A union of sequences converts the member it holds at run time.
+        if (
+            sourceType.kind === "union" &&
+            sourceType.members.every(isNumericSequenceType)
+        ) {
+            const member = this.context.allocateTemporaryCppName("source");
+            return (
+                `std::visit([](const auto& ${member}) { ` +
+                `return bbl::js::${prefix}_array_from(${member}); }, ${staticSource.cpp})`
+            );
         }
         return undefined;
     }
@@ -8381,15 +8645,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return false;
     }
 
+    /**
+     * The data value `expression` produces for a `dataType` sink. `source`
+     * is the expression as written, whose `!` asserts the value present.
+     */
     public requireDataValue(
         expression: ts.Expression,
         dataType: DataType,
+        source: ts.Expression = expression,
     ): Value {
         const raw =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
         const value =
-            raw.kind === "data" ? this.narrowOptional(raw, expression) : raw;
+            raw.kind === "data"
+                ? this.narrowOptional(
+                      raw,
+                      expression,
+                      hasNonNullAssertion(source),
+                  )
+                : raw;
         if (
             value.kind === "data" &&
             value.dataType &&
@@ -13618,11 +13893,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             : undefined) ??
                         this.compileDataPath(spread.expression, "read") ??
                         this.context.compileValue(spread.expression);
-                    const iterable = this.narrowOptional(
+                    const narrowedIterable = this.narrowOptional(
                         rawIterable,
                         spread.expression,
                         true,
                     );
+                    // A typed array spreads the numbers its elements hold.
+                    const iterable: Value =
+                        narrowedIterable.kind === "data" &&
+                        isTypedArrayType(narrowedIterable.dataType)
+                            ? {
+                                  kind: "data",
+                                  cpp: `bbl::js::typed_array_numbers(${narrowedIterable.cpp})`,
+                                  dataType: {
+                                      kind: "span",
+                                      element: { kind: "number" },
+                                  },
+                              }
+                            : narrowedIterable;
                     this.invalidateRecordArrayFacts(iterable);
                     if (
                         this.context.dataTypes.carriesBorrowedPlatformEvent(
