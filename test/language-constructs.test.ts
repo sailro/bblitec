@@ -5032,6 +5032,39 @@ check(
 `,
 );
 
+check(
+    "json-stringify-omits-undefined-record-members",
+    `
+    interface Row { id: number; note?: string; label: string | undefined; parent: number | null; tags: Array<string | undefined> }
+    interface Doc { rows: Row[]; inner: { maybe: number | undefined; nested: { deep?: number; deeper: string | undefined } } }
+    const rows: Row[] = [
+        { id: 1, label: undefined, parent: null, tags: ["a", undefined] },
+        { id: 2, note: "n", label: "x", parent: 3, tags: [] },
+    ];
+    const doc: Doc = { rows, inner: { maybe: undefined, nested: { deeper: undefined } } };
+    const expected = '{"rows":[{"id":1,"parent":null,"tags":["a",null]},{"id":2,"note":"n","label":"x","parent":3,"tags":[]}],"inner":{"nested":{}}}';
+    if (JSON.stringify(doc) !== expected) throw new Error("document " + JSON.stringify(doc));
+    rows[1]!.label = undefined;
+    rows[1]!.note = undefined;
+    doc.inner.maybe = 4;
+    doc.inner.nested.deeper = "d";
+    const changed = '{"rows":[{"id":1,"parent":null,"tags":["a",null]},{"id":2,"parent":3,"tags":[]}],"inner":{"maybe":4,"nested":{"deeper":"d"}}}';
+    if (JSON.stringify(doc) !== changed) throw new Error("changed " + JSON.stringify(doc));
+    const values: Array<number | undefined> = [1, undefined];
+    if (JSON.stringify(values) !== "[1,null]" || JSON.stringify(rows[0]) !== '{"id":1,"parent":null,"tags":["a",null]}')
+        throw new Error("arrays keep null");
+    const record = { a: 1, b: values[1], c: values[0] };
+    if (JSON.stringify(record) !== '{"a":1,"c":1}') throw new Error("record member " + JSON.stringify(record));
+    interface Loose { value: unknown; id: number }
+    const loose: Loose[] = [{ value: undefined, id: 1 }, { value: JSON.parse("[2]") as unknown, id: 2 }];
+    if (JSON.stringify(loose) !== '[{"id":1},{"value":[2],"id":2}]') throw new Error("unknown member " + JSON.stringify(loose));
+    class Slot { held: number | undefined = undefined; owner: number | null = null; }
+    const slots = [new Slot(), new Slot()];
+    slots[1]!.held = 3;
+    if (JSON.stringify(slots) !== '[{"owner":null},{"held":3,"owner":null}]') throw new Error("class fields " + JSON.stringify(slots));
+`,
+);
+
 test("dynamic object and built-in boundaries refuse explicitly", () => {
     const refusals: Array<[string, RegExp]> = [
         [

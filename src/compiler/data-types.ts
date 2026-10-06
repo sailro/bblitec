@@ -733,6 +733,25 @@ function storedPresence(
     return admitsNull ? "nullable" : "stored";
 }
 
+/**
+ * What an empty native slot of a field holds as a JavaScript value: the
+ * absent values its property types admit, `either` when they admit both.
+ */
+export type FieldAbsence = "undefined" | "null" | "either";
+
+function valueAbsence(types: readonly ts.Type[]): FieldAbsence | undefined {
+    const absent = types.map(nullability);
+    const admitsNull = absent.some((each) => each.null);
+    const admitsUndefined = absent.some((each) => each.undefined);
+    return admitsNull
+        ? admitsUndefined
+            ? "either"
+            : "null"
+        : admitsUndefined
+          ? "undefined"
+          : undefined;
+}
+
 /** One field from a property every member of a union declares. */
 function unionPresence(
     properties: readonly ts.Symbol[],
@@ -900,6 +919,8 @@ export class DataTypeRegistry {
     >();
     /** Lowered reads of a field's presence, checked again once every shape is known. */
     private readonly fieldPresenceReads = new EmissionMap<string, ts.Node>();
+    /** What each field's empty slot holds, merged over every type shape the struct stands for. */
+    private readonly fieldAbsence = new EmissionMap<string, FieldAbsence>();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
     private readonly partialRecords = new EmissionSet<
@@ -2824,6 +2845,7 @@ export class DataTypeRegistry {
 
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         for (const property of common) {
             const memberProperties = propertiesByMember.map((properties) =>
                 properties.find(({ name }) => name === property.name)!,
@@ -2883,9 +2905,10 @@ export class DataTypeRegistry {
                     : {}),
             });
             presences.push(unionPresence(memberProperties, memberTypes, first));
+            absences.push(valueAbsence(memberTypes));
         }
 
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, absences);
     }
 
     /** Required, non-null payloads use their existing empty storage for an absent union key. */
@@ -2921,6 +2944,7 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         for (const [propertyName, members] of byName) {
             const memberTypes = members.map((member) =>
                 this.checker.getTypeOfSymbolAtLocation(
@@ -2970,8 +2994,9 @@ export class DataTypeRegistry {
             presences.push(
                 absent ? "stored" : unionPresence(members, memberTypes, first),
             );
+            absences.push(valueAbsence(memberTypes));
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, absences);
     }
 
     /**
@@ -3078,6 +3103,7 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         for (const propertyName of propertyNames) {
             const memberProperties = propertiesByMember.flatMap(
                 (properties) => {
@@ -3214,8 +3240,9 @@ export class DataTypeRegistry {
                           fields.at(-1)!.type,
                       ),
             );
+            absences.push(valueAbsence(propertyTypes));
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, absences);
     }
 
     private fromTupleType(
@@ -3706,6 +3733,7 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         const partial = this.isPartialRecord(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
@@ -3779,6 +3807,7 @@ export class DataTypeRegistry {
                     ? storedPresence(mapped, nullability(propertyType).null)
                     : "own",
             );
+            absences.push(valueAbsence([propertyType]));
         }
         if (partial || proxy) {
             this.referenceStructNames.add(provisionalName);
@@ -3793,13 +3822,19 @@ export class DataTypeRegistry {
             // is visible to the dispatcher after the call.
             this.referenceStructNames.add(provisionalName);
         }
-        return this.internMappedStruct(provisionalName, fields, presences);
+        return this.internMappedStruct(
+            provisionalName,
+            fields,
+            presences,
+            absences,
+        );
     }
 
     private internMappedStruct(
         provisionalName: string,
         fields: DataStructField[],
         presences: OwnPropertyPresence[],
+        absences: readonly (FieldAbsence | undefined)[],
     ): DataType<"struct"> {
         // A union's stored element and a callback's declared result share an
         // object when their field layouts agree, regardless of mapping path.
@@ -3815,6 +3850,9 @@ export class DataTypeRegistry {
                 ? existing.name
                 : provisionalName;
         this.recordFieldPresence(name, fields, presences);
+        fields.forEach((field, index) =>
+            this.recordFieldAbsence(name, field, absences[index]),
+        );
         if (name === provisionalName)
             this.registerStructDefinition(key, { name, fields });
         return { kind: "struct", name };
@@ -3841,6 +3879,21 @@ export class DataTypeRegistry {
                     : "ambiguous",
             );
         });
+    }
+
+    /** Merges what one type shape's empty slot holds: shapes that disagree leave `either`. */
+    private recordFieldAbsence(
+        structName: string,
+        field: DataStructField,
+        absence: FieldAbsence | undefined,
+    ): void {
+        if (absence === undefined) return;
+        const key = `${structName}.${field.sourceName}`;
+        const previous = this.fieldAbsence.get(key);
+        this.fieldAbsence.set(
+            key,
+            previous === undefined || previous === absence ? absence : "either",
+        );
     }
 
     /**
@@ -3964,7 +4017,7 @@ export class DataTypeRegistry {
         this.referenceStructNames.add(name);
         this.registerStructDefinition(`class#${name}`, {
             name,
-            fields: this.classStructFields(declaration, type),
+            fields: this.classStructFields(declaration, type, name),
         });
         return { kind: "struct", name };
     }
@@ -4014,7 +4067,11 @@ export class DataTypeRegistry {
         this.referenceStructNames.add(name);
         const fields: DataStructField[] = [];
         classes.forEach((member, index) => {
-            for (const field of this.classStructFields(member, types[index]!)) {
+            for (const field of this.classStructFields(
+                member,
+                types[index]!,
+                name,
+            )) {
                 if (field.name === classTagMember) {
                     this.fail(
                         node,
@@ -4073,6 +4130,7 @@ export class DataTypeRegistry {
     private classStructFields(
         declaration: ts.ClassDeclaration,
         type: ts.Type,
+        structName: string,
     ): DataStructField[] {
         const table = this.classHierarchy.table(declaration);
         const errorBase = classErrorBase(table);
@@ -4148,6 +4206,11 @@ export class DataTypeRegistry {
             };
             fields.push(field);
             fieldsByName.set(sourceName, field);
+            this.recordFieldAbsence(
+                structName,
+                field,
+                valueAbsence([propertyType]),
+            );
         }
         return fields;
     }
@@ -5481,6 +5544,26 @@ export class DataTypeRegistry {
                     );
                     continue;
                 }
+                // A member whose value is undefined is dropped too, so an own
+                // `f: T | undefined` field writes its key only while it holds
+                // a value; an `f: T | null` one writes null.
+                const emptyCpp = this.undefinedFieldValueCpp(
+                    name,
+                    field,
+                    "member",
+                );
+                if (emptyCpp !== undefined) {
+                    lines.push(
+                        "    {",
+                        `        const auto& member = value.${field.name}${field.accessor ? ".get()" : ""};`,
+                        `        if (!(${emptyCpp})) {`,
+                        `            writer.key(${key});`,
+                        "            json_write(writer, member);",
+                        "        }",
+                        "    }",
+                    );
+                    continue;
+                }
                 lines.push(
                     `    writer.key(${key});`,
                     `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
@@ -5489,6 +5572,37 @@ export class DataTypeRegistry {
             lines.push("    writer.end_object();", "}", "");
         }
         return lines;
+    }
+
+    /**
+     * The test that a non-`?` field's value `cpp` is JavaScript's undefined,
+     * which `JSON.stringify` omits; undefined when the field never holds
+     * undefined. A field whose empty slot may be null or undefined refuses.
+     */
+    private undefinedFieldValueCpp(
+        structName: string,
+        field: DataStructField,
+        cpp: string,
+    ): string | undefined {
+        if (field.optionalProperty) return undefined;
+        if (field.type.kind === "json") return `${cpp}.is_undefined()`;
+        const empty =
+            field.type.kind === "optional"
+                ? `!${optionalPresentCpp(cpp)}`
+                : field.type.kind === "struct" &&
+                    this.isReferenceStruct(field.type.name)
+                  ? `!static_cast<bool>(${cpp})`
+                  : undefined;
+        if (empty === undefined) return undefined;
+        const absence = this.fieldAbsence.get(
+            `${structName}.${field.sourceName}`,
+        );
+        if (absence === "either")
+            this.fail(
+                this.jsonSerializedStructs.get(structName)!,
+                `JSON.stringify cannot tell whether an empty '${field.sourceName}' holds undefined (omitted) or null (written); its type admits both.`,
+            );
+        return absence === "undefined" ? empty : undefined;
     }
 
     /**
