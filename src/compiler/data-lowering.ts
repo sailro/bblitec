@@ -9273,9 +9273,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         for (const property of literal.properties) {
             if (ts.isSpreadAssignment(property)) {
-                const spread =
+                const source =
                     this.compileDataPath(property.expression, "read") ??
                     this.context.compileValue(property.expression);
+                // A union or optional source spreads the member its
+                // narrowing selects.
+                const spread =
+                    source.kind === "data"
+                        ? this.narrowOptional(source, property.expression)
+                        : source;
                 if (spread.kind === "record") {
                     declareDefault();
                     // A spread reads each getter once; it copies the value.
@@ -9724,6 +9730,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.bindings.invalidateRecordProperties(narrowed);
                 return;
             }
+            // A key generation knows (a literal, or a specialized key
+            // parameter) names one optional struct field.
+            const keyType = this.context.checker.getTypeAtLocation(
+                target.argumentExpression,
+            );
+            const staticKey =
+                key.staticString ??
+                (keyType.isStringLiteral() ? keyType.value : undefined);
+            if (
+                staticKey !== undefined &&
+                narrowed?.dataType?.kind === "struct"
+            ) {
+                this.context.emitDiscardedValue(key);
+                this.deleteStructField(
+                    narrowed,
+                    narrowed.dataType,
+                    staticKey,
+                    target,
+                );
+                return;
+            }
         }
         if (ts.isPropertyAccessExpression(target)) {
             const recordOwner = this.context.resolveRecordValue(
@@ -9802,6 +9829,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             expression,
             "delete is lowered for dictionary entries, optional struct fields and compile-time record properties.",
         );
+    }
+
+    /** `delete owner[key]` for a key generation knows: the `?` field's storage empties. */
+    private deleteStructField(
+        owner: Value,
+        type: DataType<"struct">,
+        key: string,
+        node: ts.Node,
+    ): void {
+        const field = this.context.dataTypes.structField(type.name, key, node);
+        const slot = `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`;
+        if (field.type.kind === "optional") {
+            this.context.reachJsData();
+            this.context.emit({
+                kind: "expression",
+                code: `${slot} = std::nullopt;`,
+            });
+        } else if (
+            field.optionalProperty &&
+            (field.type.kind === "function" ||
+                (field.type.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(field.type.name)))
+        )
+            this.context.emit({ kind: "expression", code: `${slot} = {};` });
+        else
+            this.context.fail(
+                node,
+                `'${key}' is a required field of its type; only an optional field can be deleted.`,
+            );
+        this.invalidateStaticElements(this.leafValue(slot, field.type));
+        this.context.bindings.invalidateRecordProperties(owner);
     }
 
     /** `key in object` as a condition. */
@@ -13734,6 +13792,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ).tupleElements!;
             name.elements.forEach((binding, index) => {
                 if (ts.isOmittedExpression(binding)) return;
+                // A struct value destructures by its fields, as a for...of
+                // over struct elements does.
+                const structValue = pair[index]?.dataType;
+                if (
+                    ts.isObjectBindingPattern(binding.name) &&
+                    !binding.initializer &&
+                    !binding.dotDotDotToken &&
+                    structValue?.kind === "struct"
+                ) {
+                    const owner =
+                        this.context.allocateTemporaryCppName("entry_binding");
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "const auto&",
+                        name: owner,
+                        initializer: pair[index]!.cpp,
+                    });
+                    this.bindIterationVariable(
+                        binding.name,
+                        owner,
+                        structValue,
+                        template,
+                        define,
+                    );
+                    return;
+                }
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||
@@ -13742,7 +13826,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ) {
                     this.context.fail(
                         binding,
-                        "Entry destructuring supports plain identifiers.",
+                        "Entry destructuring supports plain identifiers and struct patterns.",
                     );
                 }
                 if (binding.dotDotDotToken) {

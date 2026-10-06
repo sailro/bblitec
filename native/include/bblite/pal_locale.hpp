@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
@@ -25,6 +26,22 @@ struct CollationOptions {
 [[nodiscard]] double compare_strings(const std::string& left, const std::string& right,
                                      const std::vector<std::string>& locales,
                                      const CollationOptions& options);
+
+/** Milliseconds the host time zone adds to UTC at a time value, daylight saving included. */
+[[nodiscard]] double local_time_zone_offset(double utc_milliseconds);
+
+/** A local-time Date getter: the field of LocalTime(t) in the host time zone. */
+[[nodiscard]] inline double date_local_field(const js::Date& date, js::DateField field) {
+    const double time = *date;
+    return std::isnan(time) ? time
+                            : js::date_time_field(time + local_time_zone_offset(time), field);
+}
+
+/** `Date.prototype.getTimezoneOffset`: (t - LocalTime(t)) in minutes. */
+[[nodiscard]] inline double date_time_zone_offset(const js::Date& date) {
+    const double time = *date;
+    return std::isnan(time) ? time : (time - (time + local_time_zone_offset(time))) / 60000.0;
+}
 
 [[nodiscard]] inline std::vector<std::string> requested_locales(std::nullopt_t) { return {}; }
 [[nodiscard]] inline std::vector<std::string> requested_locales(const std::string& locale) {

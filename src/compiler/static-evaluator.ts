@@ -87,9 +87,8 @@ import {
     jsBitwiseCall,
 } from "../lowering/pinned-operators.js";
 import {
-    MATH_CONSTANTS,
     MATH_MEMBERS,
-    mathMemberAccess,
+    mathConstantAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
 
@@ -862,20 +861,17 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         }
-        // The constants a float sink has a single-precision spelling for
-        // are spelled that way; every other `Math` constant reads at
-        // double width through the property arm below.
-        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
+        // A `Math` constant is its double; a float sink takes the
+        // single-precision spelling where the runtime has one.
         const numericConstant = numberConstant(unwrapped, this.libraryGlobal);
         if (numericConstant !== undefined) {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
         }
-        const constant =
-            mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
-        if (constant?.floatCpp !== undefined) {
+        const constant = mathConstantAccess(unwrapped, this.libraryGlobal);
+        if (constant) {
             return precision === "float"
-                ? constant.floatCpp
+                ? (constant.floatCpp ?? cppFloatLiteral(constant.value))
                 : cppDoubleLiteral(constant.value);
         }
         const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
@@ -1063,7 +1059,6 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
         const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
         return (
             ts.isNumericLiteral(unwrapped) ||
@@ -1093,9 +1088,7 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            (mathConstant !== undefined &&
-                (mathConstant.name.text === "PI" ||
-                    mathConstant.name.text === "SQRT1_2")) ||
+            mathConstantAccess(unwrapped, this.libraryGlobal) !== undefined ||
             (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }

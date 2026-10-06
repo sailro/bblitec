@@ -6446,3 +6446,479 @@ check(
     if (kept.scrub !== "a" || replaced.scrub !== "b") throw new Error("typed spread override");
 `,
 );
+
+check(
+    "math-constants-and-members",
+    `
+    const ln2 = Math.LN2;
+    const read = [Math.E, Math.LN2, Math.LN10, Math.LOG2E, Math.LOG10E, Math.SQRT2, Math.SQRT1_2, Math.PI];
+    const spelled = [2.718281828459045, 0.6931471805599453, 2.302585092994046, 1.4426950408889634,
+        0.4342944819032518, 1.4142135623730951, 0.7071067811865476, 3.141592653589793];
+    for (let index = 0; index < read.length; ++index)
+        if (read[index] !== spelled[index]) throw new Error("constant " + index);
+    const lanes = new Float32Array(2);
+    lanes[0] = Math.E;
+    lanes[1] = Math.LOG10E * 2;
+    if (lanes[0] !== Math.fround(2.718281828459045) || lanes[1] !== Math.fround(0.8685889638065036)) throw new Error("float sink");
+    function bits(value: number): number { return Math.log(2 ** value) / ln2; }
+    if (Math.abs(bits(8) - 8) > 1e-12) throw new Error("module constant");
+    const xs = new Float64Array([0, -0, -1, Infinity, -Infinity, NaN, 1000, 1, -2, 1e-10]);
+    if (!Object.is(Math.log1p(xs[1]!), -0) || Math.log1p(xs[2]!) !== -Infinity || !Number.isNaN(Math.log1p(xs[8]!)))
+        throw new Error("log1p edges");
+    if (Math.abs(Math.log1p(xs[9]!) - 9.9999999995e-11) > 1e-24 || Math.log1p(xs[3]!) !== Infinity) throw new Error("log1p");
+    if (Math.expm1(xs[0]!) !== 0 || !Object.is(Math.expm1(xs[1]!), -0) || Math.expm1(xs[4]!) !== -1 || Math.expm1(xs[3]!) !== Infinity)
+        throw new Error("expm1 edges");
+    if (Math.abs(Math.expm1(xs[9]!) - 1.00000000005e-10) > 1e-24) throw new Error("expm1");
+    if (Math.log10(xs[6]!) !== 3 || Math.cosh(xs[0]!) !== 1 || Math.tanh(xs[3]!) !== 1 || !Object.is(Math.asinh(xs[1]!), -0) ||
+        Math.acosh(xs[7]!) !== 0 || Math.atanh(xs[7]!) !== Infinity || !Number.isNaN(Math.acosh(xs[0]!)))
+        throw new Error("hyperbolic");
+    if (Math.abs(Math.sinh(xs[7]!) - 1.1752011936438014) > 1e-15 || Math.abs(Math.atanh(0.5) - 0.5493061443340548) > 1e-15)
+        throw new Error("hyperbolic values");
+    const mapped = [xs[0]!, xs[7]!].map(Math.log1p);
+    if (mapped[0] !== 0 || Math.abs(mapped[1]! - Math.LN2) > 1e-15) throw new Error("member as callback");
+`,
+);
+
+check(
+    "string-searches-with-utf16-positions",
+    `
+    const words = ["a/b/c", "\\u00e9/\\u00fc/\\u20ac", "x\\ud83d\\ude00y\\ud83d\\ude00z"];
+    const s = words[0]!, u = words[1]!, e = words[2]!;
+    if (s.indexOf("/", 2) !== 3 || s.indexOf("/", -5) !== 1 || s.indexOf("/", NaN) !== 1 || s.indexOf("/", Infinity) !== -1 ||
+        s.indexOf("", 99) !== 5 || s.indexOf("c", 4.9) !== 4) throw new Error("indexOf position");
+    if (s.lastIndexOf("/") !== 3 || s.lastIndexOf("/", 2) !== 1 || s.lastIndexOf("/", -1) !== -1 || s.lastIndexOf("a", -1) !== 0 ||
+        s.lastIndexOf("/", NaN) !== 3 || s.lastIndexOf("") !== 5 || s.lastIndexOf("", 2) !== 2 || s.lastIndexOf("x") !== -1)
+        throw new Error("lastIndexOf");
+    if (u.indexOf("/") !== 1 || u.indexOf("\\u00fc", 1) !== 2 || u.lastIndexOf("/") !== 3 || u.indexOf("\\u20ac") !== 4 ||
+        u.lastIndexOf("/", 2) !== 1) throw new Error("non-ASCII indices");
+    if (e.indexOf("y") !== 3 || e.lastIndexOf("\\ud83d\\ude00") !== 4 || e.indexOf("\\ud83d\\ude00", 2) !== 4 ||
+        !e.includes("z", 6) || e.includes("y", 4) || e.indexOf("\\ude00") !== 2) throw new Error("surrogate indices");
+    if (!s.startsWith("b", 2) || !s.startsWith("a", -3) || s.startsWith("c", 99) || !s.startsWith("", 99) ||
+        !e.startsWith("y", 3) || !u.startsWith("\\u00fc", 2) || e.startsWith("y", 2)) throw new Error("startsWith position");
+    if (!s.endsWith("b", 3) || !s.endsWith("a", 1) || !s.endsWith("c", 99) || s.endsWith("a", -1) || !s.endsWith("", -1) ||
+        !e.endsWith("y", 4) || !u.endsWith("\\u00e9", 1) || s.endsWith("c", NaN)) throw new Error("endsWith position");
+    function find(text: string, at?: number): number { return text.indexOf("/", at); }
+    function ends(text: string, end?: number): boolean { return text.endsWith("b", end); }
+    function last(text: string, at?: number): number { return text.lastIndexOf("/", at); }
+    function starts(text: string, at?: number): boolean { return text.startsWith("a", at); }
+    if (find(s) !== 1 || find(s, 2) !== 3 || ends(s) || !ends(s, 3) || last(s) !== 3 || last(s, 0) !== -1 || !starts(s) || starts(s, 1))
+        throw new Error("optional positions");
+    let log = "";
+    function receiver(): string { log += "r"; return "a/b"; }
+    function needle(): string { log += "s"; return "/"; }
+    function position(): number { log += "p"; return 0; }
+    if (receiver().indexOf(needle(), position()) !== 1 || log !== "rsp") throw new Error("evaluation order " + log);
+    log = "";
+    if (!receiver().endsWith(needle(), position() + 2) || log !== "rsp") throw new Error("endsWith order " + log);
+`,
+);
+
+check(
+    "string-from-code-point",
+    `
+    const codes = [65, 0x1f600, 0xd83d, 0xde00, 0xd800];
+    const text = String.fromCodePoint(codes[0]!, codes[1]!, codes[2]!, codes[3]!);
+    if (text !== "A\\ud83d\\ude00\\ud83d\\ude00" || text.length !== 5) throw new Error("code points");
+    const lone = String.fromCodePoint(codes[4]!);
+    if (lone.length !== 1 || lone.charCodeAt(0) !== 0xd800 || String.fromCodePoint() !== "") throw new Error("lone surrogate");
+    const invalid = [-1, 1.5, NaN, 0x110000, Infinity];
+    let refused = 0;
+    for (const value of invalid) {
+        try { String.fromCodePoint(value); } catch (error) { if (error instanceof RangeError) refused++; }
+    }
+    if (refused !== invalid.length) throw new Error("range " + refused);
+`,
+);
+
+check(
+    "global-number-predicates-and-uri-codecs",
+    `
+    const values = [NaN, 1, Infinity, -0];
+    if (!isNaN(values[0]!) || isNaN(values[1]!) || isNaN(values[2]!) || isFinite(values[2]!) || !isFinite(values[3]!))
+        throw new Error("predicates");
+    const texts = ["http://x.y/a b?q=1&r=\\u00e9#h[]", "a%20b%2Fc%3F%23%41", "a%20b%2Fc%3F%23%C3%A9%F0%9F%98%80"];
+    if (encodeURI(texts[0]!) !== "http://x.y/a%20b?q=1&r=%C3%A9#h%5B%5D") throw new Error("encodeURI");
+    if (encodeURIComponent(texts[0]!) !== "http%3A%2F%2Fx.y%2Fa%20b%3Fq%3D1%26r%3D%C3%A9%23h%5B%5D") throw new Error("encodeURIComponent");
+    if (decodeURI(texts[1]!) !== "a b%2Fc%3F%23A") throw new Error("decodeURI keeps reserved escapes");
+    if (decodeURIComponent(texts[2]!) !== "a b/c?#\\u00e9\\ud83d\\ude00") throw new Error("decodeURIComponent");
+    if (decodeURIComponent(encodeURIComponent(texts[0]!)) !== texts[0]) throw new Error("round trip");
+    const malformed = ["%", "%2", "%zz", "%C3", "%C3%28", "%E0%80%80", "%ED%A0%80", "%F8%80%80%80%80", "%80", "%C0%AF"];
+    let refused = 0;
+    for (const text of malformed) {
+        try { decodeURIComponent(text); } catch (error) { if (error instanceof URIError) refused++; }
+        try { decodeURI(text); } catch (error) { if (error instanceof URIError) refused++; }
+    }
+    if (refused !== malformed.length * 2) throw new Error("malformed " + refused);
+    const lone = ["\\ud800"];
+    let unpaired = false;
+    try { encodeURI(lone[0]!); } catch (error) { unpaired = error instanceof URIError; }
+    if (!unpaired) throw new Error("unpaired surrogate");
+`,
+);
+
+check(
+    "date-utc-fields-and-date-utc",
+    `
+    const times = [0, -1, 951782400000, 8.64e15, -8.64e15, 1700000000123, -62198755200000];
+    for (const time of times) {
+        const date = new Date(time);
+        const rebuilt = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), date.getUTCHours(),
+            date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds());
+        if (rebuilt !== time) throw new Error("round trip " + time);
+    }
+    const before = new Date(times[1]!);
+    if (before.getUTCFullYear() !== 1969 || before.getUTCMonth() !== 11 || before.getUTCDate() !== 31 || before.getUTCDay() !== 3 ||
+        before.getUTCHours() !== 23 || before.getUTCMinutes() !== 59 || before.getUTCSeconds() !== 59 || before.getUTCMilliseconds() !== 999)
+        throw new Error("fields before the epoch");
+    const leap = new Date(times[2]!), first = new Date(times[4]!);
+    if (leap.getUTCMonth() !== 1 || leap.getUTCDate() !== 29 || leap.getUTCDay() !== 2 || first.getUTCFullYear() !== -271821 ||
+        first.getUTCMonth() !== 3 || first.getUTCDate() !== 20 || first.getUTCDay() !== 2) throw new Error("calendar fields");
+    const invalid = new Date(NaN);
+    if (!Number.isNaN(invalid.getUTCFullYear()) || !Number.isNaN(invalid.getUTCDay())) throw new Error("invalid date");
+    const years = [99, -1, 275760, 1e6, NaN];
+    if (Date.UTC(years[0]!, 0) !== Date.UTC(1999, 0) || Date.UTC(years[1]!, 0) !== -62198755200000 ||
+        Date.UTC(years[2]!, 8, 13) !== 8.64e15 || !Number.isNaN(Date.UTC(years[2]!, 8, 13, 0, 0, 0, 1)) ||
+        !Number.isNaN(Date.UTC(years[3]!, 0)) || !Number.isNaN(Date.UTC(years[4]!)))
+        throw new Error("Date.UTC years");
+    if (Date.UTC(2020, 13, 1) !== Date.UTC(2021, 1, 1) || Date.UTC(2020, -1, 1) !== Date.UTC(2019, 11, 1) ||
+        Date.UTC(2020, 0, 1, 25) !== Date.UTC(2020, 0, 2, 1) || Date.UTC(1970, 0, 1, 0, 0, 0, 0.9) !== 0 ||
+        Date.UTC(2020) !== 1577836800000 || Date.UTC(1970, 0, 2) !== 86400000) throw new Error("Date.UTC fields");
+`,
+);
+
+check(
+    "element-reads-of-absent-receivers",
+    `
+    interface Control { u: number; lat?: number }
+    interface Options { size: number; controls?: readonly Control[]; extra?: Float32Array }
+    function lateral(controls: readonly Control[] | undefined): number {
+        let sum = 0;
+        for (let i = 0; i < (controls?.length ?? 0); i++) {
+            const control = controls![i]!;
+            if (control.lat === undefined) continue;
+            sum += control.lat * control.u;
+        }
+        return sum;
+    }
+    function pack(options: Options): number[] {
+        const out: number[] = [];
+        for (let i = 0; i < options.size; i++) out.push(options.extra?.[i] ?? -1);
+        return out;
+    }
+    const plain: Options = { size: 2 };
+    if (lateral(plain.controls) !== 0 || pack(plain).join() !== "-1,-1") throw new Error("absent optional reads");
+    let reads = 0;
+    function index(): number { reads++; return 0; }
+    function optionalRead(options: { list?: number[] }): number | undefined { return options.list?.[index()]; }
+    function assertedRead(options: { list?: number[] }): number { return options.list![index()]!; }
+    if (optionalRead({}) !== undefined || reads !== 0) throw new Error("optional index short-circuits");
+    let threw = false;
+    try { assertedRead({}); } catch (error) { threw = error instanceof TypeError; }
+    if (!threw || reads !== 1) throw new Error("asserted read evaluates its key, then throws");
+`,
+);
+
+check(
+    "delete-struct-fields-by-known-key",
+    `
+    interface Style { tint?: number; label?: string; scale?: number; size: number }
+    const setNumber = <T extends object, K extends keyof T>(target: T, key: K, value: number | undefined): void => {
+        if (value === undefined) delete target[key];
+        else target[key] = value as T[K];
+    };
+    const setTint = (target: { tint?: number }, key: "tint", value: number | null): void => {
+        if (value) target[key] = value;
+        else delete target[key];
+    };
+    const style: Style = { tint: 1, label: "a", scale: 2, size: 3 };
+    const inputs = [undefined, 4];
+    setNumber(style, "scale", inputs[0]);
+    setTint(style, "tint", null);
+    delete style["label"];
+    if ("scale" in style || "tint" in style || "label" in style || style.size !== 3) throw new Error("deleted fields");
+    if (Object.keys(style).join() !== "size" || JSON.stringify(style) !== '{"size":3}') throw new Error("own keys after delete");
+    setNumber(style, "scale", inputs[1]);
+    setTint(style, "tint", 5);
+    if (style.scale !== 4 || style.tint !== 5) throw new Error("restored fields");
+`,
+);
+
+check(
+    "object-assign-copies-own-optional-struct-fields",
+    `
+    interface Mix { amount?: number; material?: string; tint?: [number, number, number] }
+    function copy(source: Readonly<Mix>): Mix {
+        return {
+            ...(source.amount !== undefined ? { amount: source.amount } : {}),
+            ...(source.material !== undefined ? { material: source.material } : {}),
+            ...(source.tint ? { tint: [...source.tint] as [number, number, number] } : {}),
+        };
+    }
+    function replace(target: Mix, source: Readonly<Mix>): void {
+        const next = copy(source);
+        delete target.amount; delete target.material; delete target.tint;
+        Object.assign(target, next);
+    }
+    const target: Mix = { amount: 1, tint: [1, 2, 3] };
+    replace(target, { material: "stone" });
+    if (target.amount !== undefined || target.material !== "stone" || "tint" in target) throw new Error("replaced fields");
+    if (Object.keys(target).join() !== "material") throw new Error("own keys " + Object.keys(target).join());
+    let reads = 0;
+    function source(): Mix { reads++; return { amount: 7, tint: [4, 5, 6] }; }
+    Object.assign(target, source());
+    if (reads !== 1 || target.amount !== 7 || target.material !== "stone" || target.tint![2] !== 6) throw new Error("source read once");
+    interface Door { kind: string; y?: number }
+    function commit(existing: Door, candidate: Door): Door {
+        Object.assign(existing, candidate);
+        if (candidate.y === undefined) delete existing.y;
+        return existing;
+    }
+    const doors: Door[] = [{ kind: "a", y: 3 }, { kind: "b" }];
+    const door = commit(doors[0]!, doors[1]!);
+    if (door !== doors[0] || door.kind !== "b" || "y" in door) throw new Error("door commit");
+`,
+);
+
+check(
+    "object-entries-of-documents-and-dictionaries",
+    `
+    function strings(raw: unknown): Record<string, string> {
+        const p: Record<string, string> = {};
+        if (!raw || typeof raw !== "object") return p;
+        const fact = raw as { p?: unknown };
+        if (fact.p && typeof fact.p === "object") {
+            for (const [k, v] of Object.entries(fact.p)) if (typeof v === "string") p[k] = v;
+        }
+        return p;
+    }
+    const doc = JSON.parse('{"p":{"b":"x","2":"two","a":1}}') as unknown;
+    const read = strings(doc);
+    if (Object.keys(read).join() !== "2,b" || read["b"] !== "x" || read["2"] !== "two") throw new Error("document entries");
+    interface State { issue: number; lastUsed: Record<string, number> }
+    function counts(raw: unknown): Record<string, number> {
+        const state = raw as Partial<Record<keyof State, unknown>> | undefined;
+        const out: Record<string, number> = {};
+        if (!state || !state.lastUsed || typeof state.lastUsed !== "object") return out;
+        for (const [id, n] of Object.entries(state.lastUsed)) if (Number.isFinite(n)) out[id] = n as number;
+        return out;
+    }
+    const used: Record<string, number> = {};
+    used["z"] = 2;
+    used["a"] = Number.NaN;
+    used["1"] = 5;
+    const saved: State = { issue: 1, lastUsed: used };
+    const restored = counts(saved);
+    if (Object.keys(restored).join() !== "1,z" || restored["z"] !== 2) throw new Error("dictionary entries " + Object.keys(restored).join());
+    function digest(table: Readonly<Record<string, unknown>>): string {
+        const fields: string[] = [];
+        for (const [name, value] of Object.entries(table)) if (typeof value === "number") fields.push(name + "=" + value);
+        return fields.sort().join(";");
+    }
+    if (digest(used) !== "1=5;a=NaN;z=2") throw new Error("unknown-valued entries " + digest(used));
+`,
+);
+
+check(
+    "record-lookup-with-document-key",
+    `
+    const SIGN: Record<string, number> = { door: -1, "2": 5 };
+    function sign(raw: unknown): number {
+        const node = raw as { name: string };
+        return SIGN[node.name] ?? 1;
+    }
+    const nodes = JSON.parse('[{"name":"door"},{"name":"pane"},{"name":2},{}]') as unknown[];
+    const signs = nodes.map(sign);
+    if (signs.join() !== "-1,1,5,1") throw new Error("document keys " + signs.join());
+`,
+);
+
+check(
+    "branded-primitives-are-their-primitive",
+    `
+    type SourceId = string & { readonly __source: unique symbol };
+    type Meters = number & { readonly __unit: "m" };
+    interface Row { source: SourceId; cycle: number; length: Meters }
+    function source(id: string): SourceId { return id as SourceId; }
+    const rows = new Map<number, Row>();
+    rows.set(1, { source: source("well"), cycle: 2, length: 3 as Meters });
+    const row = rows.get(1)!;
+    const ids = new Set<SourceId>([row.source]);
+    if (row.source !== "well" || row.source.length !== 4 || !ids.has(source("well")) || row.length + 1 !== 4)
+        throw new Error("branded values");
+`,
+);
+
+check(
+    "object-spread-of-a-narrowed-union-member",
+    `
+    type Policy = "durable" | "fresh";
+    interface Portion { kind: string; nutrition: number; policy: Policy; expires: number | null }
+    function normalize(raw: number | Readonly<Portion>): Portion | null {
+        if (typeof raw === "number") return raw > 0 ? { kind: "generic", nutrition: raw, policy: "durable", expires: null } : null;
+        if (!(raw.nutrition > 0)) return null;
+        const expiry = raw.policy === "durable" ? null : Number.isFinite(raw.expires) && raw.expires! >= 1 ? Math.trunc(raw.expires!) : null;
+        if (raw.policy !== "durable" && expiry === null) return null;
+        return { ...raw, expires: expiry };
+    }
+    const inputs: Array<number | Portion> = [2, { kind: "bread", nutrition: 1, policy: "fresh", expires: 3.5 }];
+    const first = normalize(inputs[0]!), second = normalize(inputs[1]!);
+    if (first?.kind !== "generic" || second?.kind !== "bread" || second.expires !== 3 || second === inputs[1])
+        throw new Error("spread member");
+    if ((inputs[1] as Portion).expires !== 3.5) throw new Error("spread copies its source");
+`,
+);
+
+check(
+    "map-entry-struct-destructuring",
+    `
+    interface Host { boundary: { kind: string }; size: number }
+    const byKey = new Map<string, { host: Host; count: number }>();
+    byKey.set("tower:a", { host: { boundary: { kind: "circle" }, size: 2 }, count: 1 });
+    byKey.set("house:b", { host: { boundary: { kind: "rect" }, size: 3 }, count: 5 });
+    const seen: string[] = [];
+    for (const [key, { host, count: total }] of byKey)
+        if (key.startsWith("tower:") || host.boundary.kind === "rect") seen.push(key + "=" + (host.size * total));
+    if (seen.join() !== "tower:a=2,house:b=15") throw new Error("entries " + seen.join());
+`,
+);
+
+check(
+    "json-stringify-omits-undefined-record-members",
+    `
+    interface Row { id: number; note?: string; label: string | undefined; parent: number | null; tags: Array<string | undefined> }
+    interface Doc { rows: Row[]; inner: { maybe: number | undefined; nested: { deep?: number; deeper: string | undefined } } }
+    const rows: Row[] = [
+        { id: 1, label: undefined, parent: null, tags: ["a", undefined] },
+        { id: 2, note: "n", label: "x", parent: 3, tags: [] },
+    ];
+    const doc: Doc = { rows, inner: { maybe: undefined, nested: { deeper: undefined } } };
+    const expected = '{"rows":[{"id":1,"parent":null,"tags":["a",null]},{"id":2,"note":"n","label":"x","parent":3,"tags":[]}],"inner":{"nested":{}}}';
+    if (JSON.stringify(doc) !== expected) throw new Error("document " + JSON.stringify(doc));
+    rows[1]!.label = undefined;
+    rows[1]!.note = undefined;
+    doc.inner.maybe = 4;
+    doc.inner.nested.deeper = "d";
+    const changed = '{"rows":[{"id":1,"parent":null,"tags":["a",null]},{"id":2,"parent":3,"tags":[]}],"inner":{"maybe":4,"nested":{"deeper":"d"}}}';
+    if (JSON.stringify(doc) !== changed) throw new Error("changed " + JSON.stringify(doc));
+    const values: Array<number | undefined> = [1, undefined];
+    if (JSON.stringify(values) !== "[1,null]" || JSON.stringify(rows[0]) !== '{"id":1,"parent":null,"tags":["a",null]}')
+        throw new Error("arrays keep null");
+    const record = { a: 1, b: values[1], c: values[0] };
+    if (JSON.stringify(record) !== '{"a":1,"c":1}') throw new Error("record member " + JSON.stringify(record));
+    interface Loose { value: unknown; id: number }
+    const loose: Loose[] = [{ value: undefined, id: 1 }, { value: JSON.parse("[2]") as unknown, id: 2 }];
+    if (JSON.stringify(loose) !== '[{"id":1},{"value":[2],"id":2}]') throw new Error("unknown member " + JSON.stringify(loose));
+    class Slot { held: number | undefined = undefined; owner: number | null = null; }
+    const slots = [new Slot(), new Slot()];
+    slots[1]!.held = 3;
+    if (JSON.stringify(slots) !== '[{"owner":null},{"held":3,"owner":null}]') throw new Error("class fields " + JSON.stringify(slots));
+`,
+);
+
+check(
+    "object-literal-key-order-follows-creation",
+    `
+    const values = [1, 2, 3, 4];
+    const name = "n" + values[0], extra = values[1]!, tail = values[2]! > 2;
+    const between = { name, ...{ extra }, tail };
+    if (JSON.stringify(between) !== '{"name":"n1","extra":2,"tail":true}') throw new Error("between " + JSON.stringify(between));
+    if (Object.keys(between).join() !== "name,extra,tail") throw new Error("keys " + Object.keys(between).join());
+    const keys: string[] = [];
+    for (const key in between) keys.push(key);
+    if (keys.join() !== "name,extra,tail") throw new Error("for-in " + keys.join());
+    const before = { ...{ extra, tail }, name };
+    if (JSON.stringify(before) !== '{"extra":2,"tail":true,"name":"n1"}') throw new Error("before " + JSON.stringify(before));
+    const after = { tail, name, ...{ extra } };
+    if (JSON.stringify(after) !== '{"tail":true,"name":"n1","extra":2}') throw new Error("after " + JSON.stringify(after));
+    const base = { a: values[0]!, b: values[1]! };
+    const overwritten = { z: values[3]!, ...base, a: values[2]!, c: 0 };
+    if (JSON.stringify(overwritten) !== '{"z":4,"a":3,"b":2,"c":0}' || Object.keys(overwritten).join() !== "z,a,b,c")
+        throw new Error("overwritten " + JSON.stringify(overwritten));
+    const spreadOver = { a: 0, q: values[0]!, ...base };
+    if (JSON.stringify(spreadOver) !== '{"a":1,"q":1,"b":2}') throw new Error("spread overwrite " + JSON.stringify(spreadOver));
+    const numeric = { b: 1, ...{ 2: "two", a: 0 }, 1: "one" };
+    if (JSON.stringify(numeric) !== '{"1":"one","2":"two","b":1,"a":0}') throw new Error("integer keys " + JSON.stringify(numeric));
+    const rows = [between];
+    rows.push({ ...between, extra: values[3]! });
+    const stored = rows[values[0]!]!;
+    const storedKeys: string[] = [];
+    for (const key in stored) storedKeys.push(key);
+    if (JSON.stringify(rows) !== '[{"name":"n1","extra":2,"tail":true},{"name":"n1","extra":4,"tail":true}]' ||
+        Object.keys(stored).join() !== "name,extra,tail" || storedKeys.join() !== "name,extra,tail")
+        throw new Error("stored records " + JSON.stringify(rows));
+`,
+);
+
+test("dynamic object and built-in boundaries refuse explicitly", () => {
+    const refusals: Array<[string, RegExp]> = [
+        [
+            "const codes = [65, 66]; console.log(String.fromCodePoint(...codes));",
+            /String\.fromCodePoint takes its code points as separate arguments/,
+        ],
+        [
+            "const parts: [number, number] = [2020, 1]; console.log(Date.UTC(...parts));",
+            /Date\.UTC takes a year and up to six numeric fields as separate arguments/,
+        ],
+        [
+            `const s = ["abc"];
+            const i = (s[0]! as unknown as { indexOf(a: string, b: number, c: number): number }).indexOf("b", 0, 1);
+            console.log(i);`,
+            /String\.indexOf expects a search string and an optional position/,
+        ],
+        [
+            `interface S { size: number; tint?: number }
+            const clear = <T extends object, K extends keyof T>(t: T, k: K): void => { delete t[k]; };
+            const s: S = { size: 1, tint: 2 };
+            clear(s, "size");
+            console.log(s.size);`,
+            /'size' is a required field of its type; only an optional field can be deleted/,
+        ],
+        [
+            `const doc = JSON.parse("{}") as unknown;
+            if (doc && typeof doc === "object") {
+                const { a, ...rest } = doc as { a?: unknown; b?: unknown };
+                console.log(a, rest);
+            }`,
+            /Object rest over a parsed document is not represented/,
+        ],
+        [
+            `interface M { a?: number; b?: string }
+            const ms: M[] = [{ a: 1 }];
+            console.log(Object.assign({}, ms[0]!));`,
+            /Enumerating a struct with optional properties as a fixed list requires known own keys/,
+        ],
+        [
+            `const names = ["\\u00e9"]; console.log(/\\p{L}/u.test(names[0]!));`,
+            /Reached RegExp literals support the g and i flags, not 'u'/,
+        ],
+    ];
+    for (const [source, message] of refusals)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "object-destructuring-of-documents",
+    `
+    function read(raw: string | null): { n: number; k: number | null } {
+        const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+        if (!parsed || typeof parsed !== "object") return { n: 0, k: null };
+        const { n, k } = parsed as { n?: unknown; k?: unknown };
+        return {
+            n: typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : 0,
+            k: typeof k === "number" && Number.isFinite(k) ? k : null,
+        };
+    }
+    const r = read('{"n":2,"k":3.5}');
+    if (r.n !== 2 || r.k !== 3.5 || read(null).n !== 0 || read('{"n":-1}').k !== null) throw new Error("members");
+    let defaults = 0;
+    function fallback(): number { defaults++; return 7; }
+    function withDefault(raw: string): number {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== "object") return -1;
+        const { n = fallback(), "k": renamed } = parsed as { n?: unknown; k?: unknown };
+        return (typeof n === "number" ? n : -2) + (renamed === undefined ? 100 : 0);
+    }
+    if (withDefault("{}") !== 107 || withDefault('{"n":1,"k":0}') !== 1 || withDefault('{"n":null}') !== 98 || defaults !== 1)
+        throw new Error("defaults " + defaults);
+`,
+);

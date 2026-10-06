@@ -747,6 +747,25 @@ function storedPresence(
     return admitsNull ? "nullable" : "stored";
 }
 
+/**
+ * What an empty native slot of a field holds as a JavaScript value: the
+ * absent values its property types admit, `either` when they admit both.
+ */
+export type FieldAbsence = "undefined" | "null" | "either";
+
+function valueAbsence(types: readonly ts.Type[]): FieldAbsence | undefined {
+    const absent = types.map(nullability);
+    const admitsNull = absent.some((each) => each.null);
+    const admitsUndefined = absent.some((each) => each.undefined);
+    return admitsNull
+        ? admitsUndefined
+            ? "either"
+            : "null"
+        : admitsUndefined
+          ? "undefined"
+          : undefined;
+}
+
 /** One field from a property every member of a union declares. */
 function unionPresence(
     properties: readonly ts.Symbol[],
@@ -921,6 +940,8 @@ export class DataTypeRegistry {
     >();
     /** Lowered tag-decided presence reads, checked again once every shape is known. */
     private readonly armPresenceReads = new EmissionMap<string, ts.Node>();
+    /** What each field's empty slot holds, merged over every type shape the struct stands for. */
+    private readonly fieldAbsence = new EmissionMap<string, FieldAbsence>();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
     private readonly partialRecords = new EmissionSet<
@@ -1710,6 +1731,26 @@ export class DataTypeRegistry {
                     );
                 return this.fromTsType(constrained[0]!, node);
             }
+            // A primitive intersected with object types (a branded
+            // `string & { readonly brand: unique symbol }`) holds only
+            // values of that primitive: the object members are phantom.
+            const primitives = constrained.filter(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.StringLike |
+                            ts.TypeFlags.NumberLike |
+                            ts.TypeFlags.BooleanLike)) !==
+                    0,
+            );
+            if (
+                primitives.length === 1 &&
+                constrained.every(
+                    (member) =>
+                        member === primitives[0] ||
+                        (member.flags & ts.TypeFlags.Object) !== 0,
+                )
+            )
+                return this.fromTsType(primitives[0]!, node);
             return this.fromStructType(type, node);
         }
         if ((type.flags & ts.TypeFlags.Object) === 0) {
@@ -2869,6 +2910,7 @@ export class DataTypeRegistry {
 
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         for (const property of common) {
             const memberProperties = propertiesByMember.map((properties) =>
                 properties.find(({ name }) => name === property.name)!,
@@ -2928,9 +2970,10 @@ export class DataTypeRegistry {
                     : {}),
             });
             presences.push(unionPresence(memberProperties, memberTypes, first));
+            absences.push(valueAbsence(memberTypes));
         }
 
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, absences);
     }
 
     /** Required, non-null payloads use their existing empty storage for an absent union key. */
@@ -2966,6 +3009,7 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         for (const [propertyName, members] of byName) {
             const memberTypes = members.map((member) =>
                 this.checker.getTypeOfSymbolAtLocation(
@@ -3015,8 +3059,9 @@ export class DataTypeRegistry {
             presences.push(
                 absent ? "stored" : unionPresence(members, memberTypes, first),
             );
+            absences.push(valueAbsence(memberTypes));
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, absences);
     }
 
     /**
@@ -3147,6 +3192,7 @@ export class DataTypeRegistry {
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
         const armPresences: (OwnPropertyPresence | undefined)[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         for (const propertyName of propertyNames) {
             const memberProperties = propertiesByMember.flatMap(
                 (properties) => {
@@ -3283,8 +3329,15 @@ export class DataTypeRegistry {
             const tagged = propertyTypes.length < type.types.length;
             presences.push(tagged ? "ambiguous" : presence);
             armPresences.push(tagged ? presence : undefined);
+            absences.push(valueAbsence(propertyTypes));
         }
-        return this.internMappedStruct(name, fields, presences, armPresences);
+        return this.internMappedStruct(
+            name,
+            fields,
+            presences,
+            absences,
+            armPresences,
+        );
     }
 
     private fromTupleType(
@@ -3744,9 +3797,63 @@ export class DataTypeRegistry {
         return { kind: "undefined" };
     }
 
+    /**
+     * The own keys an object literal creates, in JavaScript's order: integer
+     * keys ascending, then the others as written, a spread inserting its
+     * source's keys where it stands and a later key keeping the position of
+     * the one it overwrites. TypeScript orders a spread's synthesized type
+     * otherwise. Undefined for a type no object literal declares, or one
+     * with a computed key.
+     */
+    private objectLiteralKeyOrder(type: ts.Type): string[] | undefined {
+        const literal = type.symbol?.declarations?.[0];
+        if (!literal || !ts.isObjectLiteralExpression(literal))
+            return undefined;
+        const keys: string[] = [];
+        for (const property of literal.properties) {
+            const names = ts.isSpreadAssignment(property)
+                ? (() => {
+                      const source = this.checker.getNonNullableType(
+                          this.checker.getTypeAtLocation(property.expression),
+                      );
+                      return (
+                          this.objectLiteralKeyOrder(source) ??
+                          this.checker
+                              .getPropertiesOfType(source)
+                              .map((symbol) => symbol.name)
+                      );
+                  })()
+                : property.name && propertyNameText(property.name);
+            if (names === undefined) return undefined;
+            for (const name of typeof names === "string" ? [names] : names)
+                if (!keys.includes(name)) keys.push(name);
+        }
+        const index = (key: string): number | undefined =>
+            /^(0|[1-9]\d*)$/.test(key) && Number(key) < 2 ** 32 - 1
+                ? Number(key)
+                : undefined;
+        return [
+            ...keys
+                .filter((key) => index(key) !== undefined)
+                .sort((left, right) => index(left)! - index(right)!),
+            ...keys.filter((key) => index(key) === undefined),
+        ];
+    }
+
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
     private structProperties(type: ts.Type): readonly ts.Symbol[] {
-        const properties = this.checker.getPropertiesOfType(type);
+        const declared = this.checker.getPropertiesOfType(type);
+        // A literal's fields follow the order its own keys are created in.
+        const order = this.objectLiteralKeyOrder(type);
+        const properties = order
+            ? [...declared].sort((left, right) => {
+                  const at = (symbol: ts.Symbol): number => {
+                      const position = order.indexOf(symbol.name);
+                      return position < 0 ? order.length : position;
+                  };
+                  return at(left) - at(right);
+              })
+            : declared;
         if (!type.isIntersection()) return properties;
         const byName = new Map(
             properties.map((property) => [property.name, property]),
@@ -3775,6 +3882,7 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: OwnPropertyPresence[] = [];
+        const absences: Array<FieldAbsence | undefined> = [];
         const partial = this.isPartialRecord(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
@@ -3848,6 +3956,7 @@ export class DataTypeRegistry {
                     ? storedPresence(mapped, nullability(propertyType).null)
                     : "own",
             );
+            absences.push(valueAbsence([propertyType]));
         }
         if (partial || proxy) {
             this.referenceStructNames.add(provisionalName);
@@ -3862,13 +3971,19 @@ export class DataTypeRegistry {
             // is visible to the dispatcher after the call.
             this.referenceStructNames.add(provisionalName);
         }
-        return this.internMappedStruct(provisionalName, fields, presences);
+        return this.internMappedStruct(
+            provisionalName,
+            fields,
+            presences,
+            absences,
+        );
     }
 
     private internMappedStruct(
         provisionalName: string,
         fields: DataStructField[],
         presences: OwnPropertyPresence[],
+        absences: readonly (FieldAbsence | undefined)[],
         armPresences: readonly (OwnPropertyPresence | undefined)[] = [],
     ): DataType<"struct"> {
         // A union's stored element and a callback's declared result share an
@@ -3890,6 +4005,9 @@ export class DataTypeRegistry {
             fields,
             armPresences,
             this.armFieldPresence,
+        );
+        fields.forEach((field, index) =>
+            this.recordFieldAbsence(name, field, absences[index]),
         );
         if (name === provisionalName)
             this.registerStructDefinition(key, { name, fields });
@@ -3919,6 +4037,21 @@ export class DataTypeRegistry {
                     : "ambiguous",
             );
         });
+    }
+
+    /** Merges what one type shape's empty slot holds: shapes that disagree leave `either`. */
+    private recordFieldAbsence(
+        structName: string,
+        field: DataStructField,
+        absence: FieldAbsence | undefined,
+    ): void {
+        if (absence === undefined) return;
+        const key = `${structName}.${field.sourceName}`;
+        const previous = this.fieldAbsence.get(key);
+        this.fieldAbsence.set(
+            key,
+            previous === undefined || previous === absence ? absence : "either",
+        );
     }
 
     /**
@@ -4119,7 +4252,7 @@ export class DataTypeRegistry {
         this.referenceStructNames.add(name);
         this.registerStructDefinition(`class#${name}`, {
             name,
-            fields: this.classStructFields(declaration, type),
+            fields: this.classStructFields(declaration, type, name),
         });
         return { kind: "struct", name };
     }
@@ -4169,7 +4302,11 @@ export class DataTypeRegistry {
         this.referenceStructNames.add(name);
         const fields: DataStructField[] = [];
         classes.forEach((member, index) => {
-            for (const field of this.classStructFields(member, types[index]!)) {
+            for (const field of this.classStructFields(
+                member,
+                types[index]!,
+                name,
+            )) {
                 if (field.name === classTagMember) {
                     this.fail(
                         node,
@@ -4228,6 +4365,7 @@ export class DataTypeRegistry {
     private classStructFields(
         declaration: ts.ClassDeclaration,
         type: ts.Type,
+        structName: string,
     ): DataStructField[] {
         const table = this.classHierarchy.table(declaration);
         const errorBase = classErrorBase(table);
@@ -4303,6 +4441,11 @@ export class DataTypeRegistry {
             };
             fields.push(field);
             fieldsByName.set(sourceName, field);
+            this.recordFieldAbsence(
+                structName,
+                field,
+                valueAbsence([propertyType]),
+            );
         }
         return fields;
     }
@@ -5677,6 +5820,12 @@ export class DataTypeRegistry {
                         field.type.inner.kind === "struct" &&
                         this.isReferenceStruct(field.type.inner.name)
                     );
+                // A member whose value is undefined is dropped too, so an own
+                // `f: T | undefined` field writes its key only while it holds
+                // a value; an `f: T | null` one writes null.
+                const emptyCpp = omittable
+                    ? undefined
+                    : this.undefinedFieldValueCpp(name, field, "member");
                 const written = omittable
                     ? [
                           `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
@@ -5684,10 +5833,20 @@ export class DataTypeRegistry {
                           `        json_write(writer, *value.${field.name});`,
                           "    }",
                       ]
-                    : [
-                          `    writer.key(${key});`,
-                          `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
-                      ];
+                    : emptyCpp !== undefined
+                      ? [
+                            "    {",
+                            `        const auto& member = value.${field.name}${field.accessor ? ".get()" : ""};`,
+                            `        if (!(${emptyCpp})) {`,
+                            `            writer.key(${key});`,
+                            "            json_write(writer, member);",
+                            "        }",
+                            "    }",
+                        ]
+                      : [
+                            `    writer.key(${key});`,
+                            `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
+                        ];
                 // A field only some union arms declare is written for them.
                 return field.presentForTags && definition
                     ? [
@@ -5702,6 +5861,37 @@ export class DataTypeRegistry {
             lines.push("    writer.end_object();", "}", "");
         }
         return lines;
+    }
+
+    /**
+     * The test that a non-`?` field's value `cpp` is JavaScript's undefined,
+     * which `JSON.stringify` omits; undefined when the field never holds
+     * undefined. A field whose empty slot may be null or undefined refuses.
+     */
+    private undefinedFieldValueCpp(
+        structName: string,
+        field: DataStructField,
+        cpp: string,
+    ): string | undefined {
+        if (field.optionalProperty) return undefined;
+        if (field.type.kind === "json") return `${cpp}.is_undefined()`;
+        const empty =
+            field.type.kind === "optional"
+                ? `!${optionalPresentCpp(cpp)}`
+                : field.type.kind === "struct" &&
+                    this.isReferenceStruct(field.type.name)
+                  ? `!static_cast<bool>(${cpp})`
+                  : undefined;
+        if (empty === undefined) return undefined;
+        const absence = this.fieldAbsence.get(
+            `${structName}.${field.sourceName}`,
+        );
+        if (absence === "either")
+            this.fail(
+                this.jsonSerializedStructs.get(structName)!,
+                `JSON.stringify cannot tell whether an empty '${field.sourceName}' holds undefined (omitted) or null (written); its type admits both.`,
+            );
+        return absence === "undefined" ? empty : undefined;
     }
 
     /**

@@ -4,7 +4,7 @@ import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
-import { EmissionSet, writable } from "./emission-transaction.js";
+import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 // Expression lowering: the value switch and its call dispatch.
@@ -106,7 +106,7 @@ import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
 import {
     FORMATTED_MATH_FOLDS,
-    mathMemberAccess,
+    mathConstantAccess,
     mathFunctionValue,
     mathMemberCall,
 } from "./math-intrinsics.js";
@@ -171,6 +171,14 @@ export const PURE_NUMBER_FORMATTERS = new EmissionSet([
     "toFixed",
     "toPrecision",
     "toExponential",
+]);
+
+/** The global URI codecs, each a runtime function of its argument's ToString. */
+const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
+    ["encodeURIComponent", "encode_uri_component"],
+    ["encodeURI", "encode_uri"],
+    ["decodeURIComponent", "decode_uri_component"],
+    ["decodeURI", "decode_uri"],
 ]);
 
 /**
@@ -863,11 +871,9 @@ export class ExpressionLowerer {
                 );
             }
             if (
-                mathMemberAccess(unwrapped, (expression) =>
+                mathConstantAccess(unwrapped, (expression) =>
                     this.context.libraryGlobal(expression),
-                ) &&
-                (unwrapped.name.text === "PI" ||
-                    unwrapped.name.text === "SQRT1_2")
+                )
             ) {
                 const staticNumber = staticNumberValue(this.context, unwrapped);
                 return {
@@ -3223,7 +3229,10 @@ export class ExpressionLowerer {
                     `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
             );
         }
-        if (this.context.libraryGlobal(callee) === "encodeURIComponent") {
+        const uriFunction = URI_FUNCTIONS.get(
+            this.context.libraryGlobal(callee) ?? "",
+        );
+        if (uriFunction) {
             this.context.expectArgumentCount(call, 1, 1);
             const argument = argumentAt(call, 0);
             const value = this.compileValue(argument);
@@ -3231,7 +3240,7 @@ export class ExpressionLowerer {
             return {
                 kind: "string",
                 dataType: { kind: "string" },
-                cpp: `bbl::js::encode_uri_component(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
+                cpp: `bbl::js::${uriFunction}(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
             };
         }
         // `parseFloat(<query text>)`: the same value browser-erasure already
@@ -4234,6 +4243,48 @@ export class ExpressionLowerer {
         return value;
     }
 
+    /**
+     * An index of an absent (null or undefined) receiver: an optional chain
+     * short-circuits to undefined without evaluating the key; any other read
+     * evaluates the key, then throws JavaScript's TypeError, typed as the
+     * element it would have read.
+     */
+    private compileAbsentElementAccess(
+        owner: Value,
+        unwrapped: ts.ElementAccessExpression,
+    ): Value {
+        if (
+            unwrapped.questionDotToken ||
+            (ts.isOptionalChain(unwrapped) && owner.optionalChainShortCircuited)
+        )
+            return {
+                kind: "json-null",
+                cpp: "std::nullopt",
+                optionalChainShortCircuited: true,
+            };
+        const type = this.context.dataLowerer.dataTypeAt(unwrapped);
+        if (!type)
+            return this.context.fail(
+                unwrapped.expression,
+                "Element access is not supported for json-null.",
+            );
+        this.context.emitDiscardedValue(
+            this.compileValue(unwrapped.argumentExpression),
+        );
+        const absent = nullability(
+            this.context.checker.getTypeAtLocation(
+                this.context.unwrap(unwrapped.expression),
+            ),
+        );
+        this.context.reachJsData();
+        return this.context.dataLowerer.leafValue(
+            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${this.context.cppString(
+                `Cannot read properties of ${absent.null && !absent.undefined ? "null" : "undefined"}`,
+            )})`,
+            type,
+        );
+    }
+
     private compileIndexedValue(
         unwrapped: ts.ElementAccessExpression,
         expression: ts.Expression,
@@ -4347,6 +4398,8 @@ export class ExpressionLowerer {
             return collectionElement;
         }
         const owner = this.compileValue(unwrapped.expression);
+        if (owner.kind === "json-null")
+            return this.compileAbsentElementAccess(owner, unwrapped);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,
@@ -4459,13 +4512,20 @@ export class ExpressionLowerer {
         }
         if (owner.kind === "record") {
             const rawKey = this.compileValue(unwrapped.argumentExpression);
-            const key =
+            const narrowedKey =
                 rawKey.kind === "data"
                     ? this.context.dataLowerer.narrowOptional(
                           rawKey,
                           unwrapped.argumentExpression,
                       )
                     : rawKey;
+            // A document key selects the property its ToString names.
+            const key = isJsonValue(narrowedKey)
+                ? this.context.dataLowerer.leafValue(
+                      `${narrowedKey.cpp}.to_string()`,
+                      { kind: "string" },
+                  )
+                : narrowedKey;
             const property =
                 key.kind === "string"
                     ? key.staticString
@@ -5860,6 +5920,21 @@ export class ExpressionLowerer {
                         : call.arguments.length === 1
                           ? `bbl::js::string_from_char_code(${this.context.compileNumber(argumentAt(call, 0), "double")})`
                           : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
+                dataType: { kind: "string" },
+            };
+        }
+        if (staticOwner === "String" && callee.name.text === "fromCodePoint") {
+            const spread = call.arguments.find(ts.isSpreadElement);
+            if (spread)
+                this.context.fail(
+                    spread,
+                    "String.fromCodePoint takes its code points as separate arguments.",
+                );
+            this.context.reachJsData();
+            // A braced list evaluates its elements in order.
+            return {
+                kind: "data",
+                cpp: `bbl::js::string_from_code_points({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
                 dataType: { kind: "string" },
             };
         }

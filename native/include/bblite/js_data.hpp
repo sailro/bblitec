@@ -2421,6 +2421,118 @@ std::string macos_time_zone();
     return make_ref<double>(date_time_clip(milliseconds));
 }
 
+/** The calendar and clock fields a Date getter reads from a time value. */
+enum class DateField { year, month, date, weekday, hours, minutes, seconds, milliseconds };
+
+namespace date_detail {
+constexpr double milliseconds_per_day = 86400000.0;
+
+/** Proleptic Gregorian days since 1970-01-01 (Hinnant's days_from_civil). */
+[[nodiscard]] constexpr std::int64_t days_from_civil(std::int64_t year, unsigned month,
+                                                     unsigned day) {
+    year -= month <= 2 ? 1 : 0;
+    const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+    const auto year_of_era = static_cast<unsigned>(year - era * 400);
+    const unsigned day_of_year = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+    const unsigned day_of_era =
+        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    return era * 146097 + static_cast<std::int64_t>(day_of_era) - 719468;
+}
+
+struct CivilDate {
+    std::int64_t year;
+    unsigned month; // 1..12
+    unsigned day;   // 1..31
+};
+
+/** The civil date of a day count since 1970-01-01 (Hinnant's civil_from_days). */
+[[nodiscard]] constexpr CivilDate civil_from_days(std::int64_t days) {
+    days += 719468;
+    const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    const auto day_of_era = static_cast<unsigned>(days - era * 146097);
+    const unsigned year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    const unsigned day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    const unsigned shifted_month = (5 * day_of_year + 2) / 153;
+    const unsigned day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    const unsigned month = shifted_month < 10 ? shifted_month + 3 : shifted_month - 9;
+    return {static_cast<std::int64_t>(year_of_era) + era * 400 + (month <= 2 ? 1 : 0), month, day};
+}
+
+/** ToIntegerOrInfinity over a finite number. */
+[[nodiscard]] inline double integer(double value) { return std::trunc(value) + 0.0; }
+} // namespace date_detail
+
+/** One field of an integral time value read as UTC: NaN for an invalid date. */
+[[nodiscard]] inline double date_time_field(double time, DateField field) {
+    using namespace date_detail;
+    if (std::isnan(time))
+        return time;
+    // A clipped time value is an integer within 8.64e15, exact in 64 bits.
+    constexpr std::int64_t day_length = 86400000;
+    const auto milliseconds = static_cast<std::int64_t>(time);
+    std::int64_t day = milliseconds / day_length, within_day = milliseconds % day_length;
+    if (within_day < 0) {
+        within_day += day_length;
+        --day;
+    }
+    switch (field) {
+    case DateField::year:
+        return static_cast<double>(civil_from_days(day).year);
+    case DateField::month:
+        return static_cast<double>(civil_from_days(day).month - 1);
+    case DateField::date:
+        return static_cast<double>(civil_from_days(day).day);
+    case DateField::weekday:
+        return static_cast<double>(((day + 4) % 7 + 7) % 7);
+    case DateField::hours:
+        return static_cast<double>(within_day / 3600000);
+    case DateField::minutes:
+        return static_cast<double>(within_day / 60000 % 60);
+    case DateField::seconds:
+        return static_cast<double>(within_day / 1000 % 60);
+    case DateField::milliseconds:
+        return static_cast<double>(within_day % 1000);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+[[nodiscard]] inline double date_utc_field(const Date& date, DateField field) {
+    return date_time_field(*date, field);
+}
+
+/**
+ * `Date.UTC`: MakeDate(MakeDay(year, month, date), MakeTime(...)) clipped,
+ * a year 0..99 meaning 1900..1999. Years and months beyond V8's ranges are NaN.
+ */
+[[nodiscard]] inline double date_utc(double year, double month, double date, double hours,
+                                     double minutes, double seconds, double milliseconds) {
+    using namespace date_detail;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (!std::isnan(year)) {
+        const double truncated = integer(year);
+        if (truncated >= 0.0 && truncated <= 99.0)
+            year = 1900.0 + truncated;
+    }
+    if (!std::isfinite(hours) || !std::isfinite(minutes) || !std::isfinite(seconds) ||
+        !std::isfinite(milliseconds))
+        return nan;
+    const double time = integer(hours) * 3600000.0 + integer(minutes) * 60000.0 +
+                        integer(seconds) * 1000.0 + integer(milliseconds);
+    if (!std::isfinite(year) || !std::isfinite(month) || !std::isfinite(date) ||
+        std::abs(year) > 1000000.0 || std::abs(month) > 10000000.0)
+        return nan;
+    const double whole_month = integer(month);
+    const double year_month = integer(year) + std::floor(whole_month / 12.0);
+    const double month_in_year = whole_month - std::floor(whole_month / 12.0) * 12.0;
+    const auto first = static_cast<double>(days_from_civil(
+        static_cast<std::int64_t>(year_month), static_cast<unsigned>(month_in_year) + 1, 1));
+    const double day = first + integer(date) - 1.0;
+    const double value = day * milliseconds_per_day + time;
+    return std::isfinite(value) ? date_time_clip(value) : nan;
+}
+
 [[nodiscard]] inline std::string date_iso_string(const Date& date) {
     if (!std::isfinite(*date))
         throw std::runtime_error("Invalid time value");
@@ -2450,6 +2562,11 @@ std::string macos_time_zone();
            digits(static_cast<unsigned>(calendar.day()), 2) + "T" +
            digits(clock.hours().count(), 2) + ":" + digits(clock.minutes().count(), 2) + ":" +
            digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
+}
+
+/** A property read of null or undefined: JavaScript's TypeError, typed as the read's result. */
+template <typename T> [[nodiscard]] T absent_receiver_read(const char* message) {
+    throw NamedError("TypeError", message);
 }
 
 /**
@@ -3415,11 +3532,6 @@ infinity_at(std::string_view value, std::size_t index) {
     return result;
 }
 
-[[nodiscard]] inline double string_index_of(const std::string& value, const std::string& search) {
-    const auto index = value.find(search);
-    return index == std::string::npos ? -1.0 : static_cast<double>(index);
-}
-
 // JavaScript string iteration yields one Unicode code point as a string.
 // Native strings are UTF-8, so retain each complete encoded sequence.
 [[nodiscard]] inline Array<std::string> string_characters(const std::string& value) {
@@ -3523,6 +3635,71 @@ private:
     while (const auto unit = cursor.next())
         units.push_back(*unit);
     return units;
+}
+
+/** Whether every byte is ASCII, so byte offsets are UTF-16 code unit indices. */
+[[nodiscard]] inline bool string_is_ascii(std::string_view value) {
+    return std::all_of(value.begin(), value.end(),
+                       [](char byte) { return static_cast<unsigned char>(byte) < 0x80u; });
+}
+
+/** A position argument: ToIntegerOrInfinity (NaN is 0) clamped to [0, length]. */
+[[nodiscard]] inline std::size_t string_position(double position, std::size_t length) {
+    if (!(position > 0.0))
+        return 0;
+    const double integer = std::trunc(position);
+    return integer >= static_cast<double>(length) ? length : static_cast<std::size_t>(integer);
+}
+
+[[nodiscard]] inline double string_found_index(std::size_t index) {
+    return index == std::string::npos ? -1.0 : static_cast<double>(index);
+}
+
+/** `String.prototype.indexOf`: the first UTF-16 index at or after the position. */
+[[nodiscard]] inline double string_index_of(const std::string& value, const std::string& search,
+                                            double position = 0.0) {
+    if (string_is_ascii(value))
+        return string_found_index(value.find(search, string_position(position, value.size())));
+    const auto units = string_code_units(value);
+    return string_found_index(
+        units.find(string_code_units(search), string_position(position, units.size())));
+}
+
+/** `String.prototype.lastIndexOf`: the last UTF-16 index at or before the position (NaN is +∞). */
+[[nodiscard]] inline double string_last_index_of(const std::string& value,
+                                                 const std::string& search, double position) {
+    const double from = std::isnan(position) ? std::numeric_limits<double>::infinity() : position;
+    if (string_is_ascii(value))
+        return string_found_index(value.rfind(search, string_position(from, value.size())));
+    const auto units = string_code_units(value);
+    return string_found_index(
+        units.rfind(string_code_units(search), string_position(from, units.size())));
+}
+
+/** `String.prototype.startsWith` with a UTF-16 start position. */
+[[nodiscard]] inline bool string_starts_with(const std::string& value, const std::string& prefix,
+                                             double position) {
+    if (string_is_ascii(value))
+        return std::string_view(value)
+            .substr(string_position(position, value.size()))
+            .starts_with(prefix);
+    const auto units = string_code_units(value);
+    return std::u16string_view(units)
+        .substr(string_position(position, units.size()))
+        .starts_with(string_code_units(prefix));
+}
+
+/** `String.prototype.endsWith` with a UTF-16 end position. */
+[[nodiscard]] inline bool string_ends_with(const std::string& value, const std::string& suffix,
+                                           double end_position) {
+    if (string_is_ascii(value))
+        return std::string_view(value)
+            .substr(0, string_position(end_position, value.size()))
+            .ends_with(suffix);
+    const auto units = string_code_units(value);
+    return std::u16string_view(units)
+        .substr(0, string_position(end_position, units.size()))
+        .ends_with(string_code_units(suffix));
 }
 
 [[nodiscard]] inline std::string string_from_code_units(const std::u16string& units) {
@@ -3799,6 +3976,24 @@ template <typename Range>
 
 [[nodiscard]] inline std::string string_from_char_codes(std::initializer_list<double> values) {
     return string_from_char_codes<std::initializer_list<double>>(values);
+}
+
+/** `String.fromCodePoint`: each value must be an integer code point; adjacent surrogates pair. */
+[[nodiscard]] inline std::string string_from_code_points(std::initializer_list<double> values) {
+    std::u16string units;
+    units.reserve(values.size());
+    for (const double value : values) {
+        if (!(value >= 0.0 && value <= 1114111.0) || std::trunc(value) != value)
+            throw NamedError("RangeError", "Invalid code point " + number_to_string(value));
+        auto point = static_cast<std::uint32_t>(value);
+        if (point > 0xffffu) {
+            point -= 0x10000u;
+            units.push_back(static_cast<char16_t>(0xd800u + (point >> 10u)));
+            units.push_back(static_cast<char16_t>(0xdc00u + (point & 0x3ffu)));
+        } else
+            units.push_back(static_cast<char16_t>(point));
+    }
+    return string_from_code_units(units);
 }
 
 // The padding `padStart`/`padEnd` adds: none once the value reaches the
