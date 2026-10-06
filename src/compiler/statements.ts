@@ -3035,14 +3035,19 @@ export class StatementLowerer {
                           )
                         : undefined;
                     if (present) {
-                        context.emit({ kind: "open", code: `if (${present}) {` });
+                        context.emit({
+                            kind: "open",
+                            code: `if (${present}) {`,
+                        });
                         context.increaseIndent();
                         context.enterRuntimeControlFlow();
                     }
                     try {
                         // No exit leaves this loop (refused above), so each
                         // key's iteration stands alone under its guard.
-                        this.emitUnrolledLoop(context, statement, [bindKey(key)]);
+                        this.emitUnrolledLoop(context, statement, [
+                            bindKey(key),
+                        ]);
                     } finally {
                         if (present) {
                             context.leaveRuntimeControlFlow();
