@@ -5136,6 +5136,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A lane of a tuple whose elements share union storage, bound as the
+     * type its binding declares: the union member that lane holds.
+     */
+    public narrowBindingLane(value: Value, name: ts.BindingName): Value {
+        const type =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        return value.kind === "data" &&
+            type?.kind === "union" &&
+            ts.isIdentifier(name)
+            ? this.narrowOptional(value, name)
+            : value;
+    }
+
+    /**
      * Reads one binding from a native vector for an array destructuring
      * declaration. A concrete reached binding cannot represent JavaScript's
      * out-of-range `undefined`, so use the ordinary checked index path.
@@ -13615,7 +13631,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 defineItem(
                     element_.name,
                     element.kind === "vector"
-                        ? this.readVectorBindingElement(source, index, element_)
+                        ? this.narrowBindingLane(
+                              this.readVectorBindingElement(
+                                  source,
+                                  index,
+                                  element_,
+                              ),
+                              element_.name,
+                          )
                         : this.fixedTupleElement(source, index, element_)!,
                 );
             });

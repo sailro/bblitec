@@ -6323,6 +6323,22 @@ check(
 `,
 );
 
+check(
+    "heterogeneous-tuple-lanes-destructure-as-declared",
+    `
+    const pair: [string, (id: number) => string] = ["tower", (id) => "tower#" + id];
+    const [key, keyOf] = pair;
+    if (key !== "tower" || keyOf(4) !== "tower#4") throw new Error("destructured pair");
+    const pairs: Array<[string, (id: number) => string, number]> = [["a", (id) => "a" + id, 1], ["b", (id) => "b" + id, 2]];
+    let out = "";
+    for (const [name, nameOf, weight] of pairs) out += name + nameOf(weight);
+    const [first, firstOf] = pairs[1]!;
+    if (out !== "aa1bb2" || first !== "b" || firstOf(3) !== "b3") throw new Error("destructured lanes");
+    function apply([label, format]: [string, (value: number) => string], value: number): string { return label + "=" + format(value); }
+    if (apply(["v", (value) => value.toFixed(1)], 2) !== "v=2.0") throw new Error("parameter lanes");
+`,
+);
+
 test("coalesced records refuse a copy the program could tell apart", () => {
     assert.throws(
         () =>
