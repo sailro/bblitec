@@ -436,10 +436,11 @@ function valueStruct(
                         property.callbackDeclaration,
                     );
                 const stored = property
-                    ? lowerer.compileKnownValueForSink(
+                    ? lowerer.compileMemberForSink(
                           property,
                           field.type,
                           node,
+                          field.sourceName,
                       )
                     : field.defaultWhenMissing
                       ? "{}"
@@ -530,10 +531,11 @@ function valueStruct(
                         );
                     return sourceCpp;
                 }
-                return lowerer.compileKnownValueForSink(
+                return lowerer.compileMemberForSink(
                     lowerer.leafValue(sourceCpp, source.type),
                     field.type,
                     node,
+                    field.sourceName,
                 );
             })
             .join(", ")}}`;
@@ -595,65 +597,74 @@ function unreachedRecordValue(
     node: ts.Node,
 ): boolean {
     if (value.freshRecord) return true;
-    if (!ts.isExpression(node) || value.dataType?.kind !== "struct")
-        return false;
+    if (value.dataType?.kind !== "struct") return false;
     const name = value.dataType.name;
     const checker = lowerer.context.checker;
-    // The node must yield the value: its own expression, a callback
-    // returning it, or a fresh array holding it -- not an enclosing literal
-    // or a record whose field is being converted.
-    const yields = (expression: ts.Expression): boolean => {
-        const own = lowerer.dataTypeAt(expression);
-        const record = own?.kind === "optional" ? own.inner : own;
-        return record?.kind === "struct" && record.name === name;
+    // The expression must yield the value: its own expression, a callback
+    // returning it, or a fresh array it is an element of -- never a
+    // container it was read out of (`convertedExpression`).
+    const record = (type: DataType | undefined): boolean => {
+        const inner = type?.kind === "optional" ? type.inner : type;
+        return inner?.kind === "struct" && inner.name === name;
     };
-    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-        const returned = ts.isBlock(node.body)
-            ? node.body.statements.find(ts.isReturnStatement)?.expression
-            : node.body;
+    const yields = (expression: ts.Expression): boolean =>
+        record(lowerer.dataTypeAt(expression));
+    const freshElements = (array: ts.Expression | undefined): boolean => {
+        const own = array && lowerer.dataTypeAt(array);
+        return (
+            array !== undefined &&
+            own?.kind === "vector" &&
+            record(own.element) &&
+            yieldsFreshRecordElements(checker, array)
+        );
+    };
+    const expression = lowerer.convertedExpression(node);
+    if (!expression) return freshElements(lowerer.convertedElementOf(node));
+    if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+        const returned = ts.isBlock(expression.body)
+            ? expression.body.statements.find(ts.isReturnStatement)?.expression
+            : expression.body;
         return (
             returned !== undefined &&
             yields(returned) &&
-            yieldsFreshObject(checker, node)
+            yieldsFreshObject(checker, expression)
         );
     }
-    const own = lowerer.dataTypeAt(node);
-    if (own?.kind === "vector")
-        return (
-            own.element.kind === "struct" &&
-            own.element.name === name &&
-            yieldsFreshRecordElements(checker, node)
-        );
+    if (lowerer.dataTypeAt(expression)?.kind === "vector")
+        return freshElements(expression);
     return (
-        yields(node) &&
-        (yieldsFreshObject(checker, node) ||
-            returnedRecordLocal(checker, node, (initializer) =>
+        yields(expression) &&
+        (yieldsFreshObject(checker, expression) ||
+            returnedRecordLocal(checker, expression, (initializer) =>
                 yieldsFreshObject(checker, initializer),
             ))
     );
 }
 
 /**
- * The expression a converted struct value is the value of, or the array
- * it is projected out of as an element, if `node` is it: a copy handed to a
- * callee that only reads that argument lives for the call.
+ * The expression a converted struct value is the value of, or the array an
+ * element was read out of: a copy handed to a callee that only reads that
+ * argument lives for the call.
  */
 function recordExpression(
     lowerer: DataSinkHost,
     value: Value,
     node: ts.Node,
 ): ts.Expression | undefined {
-    if (!ts.isExpression(node) || value.dataType?.kind !== "struct")
-        return undefined;
-    const own = lowerer.dataTypeAt(node);
-    const record =
-        own?.kind === "optional"
-            ? own.inner
-            : own?.kind === "vector"
-              ? own.element
-              : own;
-    return record?.kind === "struct" && record.name === value.dataType.name
-        ? node
+    if (value.dataType?.kind !== "struct") return undefined;
+    const name = value.dataType.name;
+    const record = (type: DataType | undefined): boolean => {
+        const inner = type?.kind === "optional" ? type.inner : type;
+        return inner?.kind === "struct" && inner.name === name;
+    };
+    const array = lowerer.convertedElementOf(node);
+    const elements = array && lowerer.dataTypeAt(array);
+    if (elements?.kind === "vector" && record(elements.element)) return array;
+    const expression = lowerer.convertedExpression(node);
+    if (!expression) return undefined;
+    const own = lowerer.dataTypeAt(expression);
+    return record(own?.kind === "vector" ? own.element : own)
+        ? expression
         : undefined;
 }
 
@@ -734,10 +745,11 @@ function valueEnummap(
         const compiled = new EmissionMap(
             written.map((name) => [
                 name,
-                lowerer.compileKnownValueForSink(
+                lowerer.compileMemberForSink(
                     properties[name]!,
                     dataType.element,
                     node,
+                    name,
                 ),
             ]),
         );

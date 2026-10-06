@@ -380,6 +380,48 @@ export function objectProperty(
 }
 
 /**
+ * The expression a literal's member takes its value from: the last plain
+ * or shorthand property of an object literal writing `key`, with no spread
+ * or computed key after it that may write it too, or an array literal's
+ * element at index `key` when no spread shifts the indices. Undefined where
+ * the syntax does not name one.
+ */
+export function literalMember(
+    expression: ts.Expression,
+    key: string | number,
+): ts.Expression | undefined {
+    const literal = unwrapExpression(expression);
+    if (typeof key === "number") {
+        if (
+            !ts.isArrayLiteralExpression(literal) ||
+            literal.elements.some(ts.isSpreadElement)
+        )
+            return undefined;
+        const element = literal.elements[key];
+        return element && !ts.isOmittedExpression(element)
+            ? element
+            : undefined;
+    }
+    if (!ts.isObjectLiteralExpression(literal)) return undefined;
+    let found: ts.Expression | undefined;
+    for (const property of literal.properties) {
+        const name =
+            property.name === undefined
+                ? undefined
+                : propertyNameText(property.name);
+        if (ts.isSpreadAssignment(property) || name === undefined)
+            found = undefined;
+        else if (name === key)
+            found = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : ts.isShorthandPropertyAssignment(property)
+                  ? property.name
+                  : undefined;
+    }
+    return found;
+}
+
+/**
  * The names a statement declares in its scope: a variable statement's
  * bindings, through object and array patterns, or a named function, class
  * or enum declaration's own name.

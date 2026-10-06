@@ -162,8 +162,13 @@ function valueVector(
             lowerer.context.sceneManifest.recordDataLightSlot(entry, index),
         );
         return `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${elements
-            .map((entry) =>
-                lowerer.compileKnownValueForSink(entry, dataType.element, node),
+            .map((entry, index) =>
+                lowerer.compileMemberForSink(
+                    entry,
+                    dataType.element,
+                    node,
+                    index,
+                ),
             )
             .join(", ")}}`;
     }
@@ -198,14 +203,15 @@ function valueVector(
         const result =
             lowerer.context.allocateTemporaryCppName("project_result");
         const destinationCpp = lowerer.context.dataTypes.cppType(dataType);
-        // Elements of a fresh array are records nothing else reaches.
-        const own = ts.isExpression(node)
-            ? lowerer.dataTypeAt(node)
-            : undefined;
+        // Elements of a fresh array are records nothing else reaches. The
+        // array is the converted expression's value, never its container's.
+        const array = lowerer.convertedExpression(node);
+        const own = array ? lowerer.dataTypeAt(array) : undefined;
         const freshElements =
+            array !== undefined &&
             own?.kind === "vector" &&
             dataTypesEqual(own.element, value.dataType.element) &&
-            yieldsFreshRecordElements(lowerer.context.checker, node);
+            yieldsFreshRecordElements(lowerer.context.checker, array);
         // The projection is a second array. JavaScript keeps one, so the
         // records of an array the program still holds share one layout;
         // where none holds both types, a callee that only reads the array
@@ -213,7 +219,7 @@ function valueVector(
         if (
             !freshElements &&
             value.dataType.element.kind === "struct" &&
-            !(ts.isExpression(node) && yieldsFreshArray(lowerer, node))
+            !(array && yieldsFreshArray(lowerer, array))
         )
             lowerer.context.dataTypes.storeRecordAs(
                 value.dataType.element,
@@ -223,15 +229,15 @@ function valueVector(
                 {
                     sharedArray: true,
                     lentForCall:
-                        ts.isExpression(node) &&
+                        array !== undefined &&
                         arrayLentForCall(
                             lowerer.context.checker,
                             lowerer.context.program.getSourceFiles(),
-                            node,
+                            array,
                         ),
                 },
             );
-        const projected = lowerer.compileKnownValueForSink(
+        const projected = lowerer.compileMemberForSink(
             {
                 ...lowerer.leafValue(item, value.dataType.element),
                 ...(freshElements ? { freshRecord: true as const } : {}),
@@ -263,9 +269,8 @@ function requireGrowableTuple(
     value: Value,
     node: ts.Node,
 ): void {
-    const expression = ts.isExpression(node)
-        ? unwrapExpression(node)
-        : undefined;
+    const converted = lowerer.convertedExpression(node);
+    const expression = converted && unwrapExpression(converted);
     const own = expression ? lowerer.dataTypeAt(expression) : undefined;
     // A call that creates its result owns it; a selection (`??`, `?:`)
     // marked fresh may still yield a stored tuple.
@@ -363,10 +368,11 @@ function valueMap(
                                 node,
                                 "Compile-time open Records require string or number keys.",
                             );
-                const stored = lowerer.compileKnownValueForSink(
+                const stored = lowerer.compileMemberForSink(
                     entry,
                     dataType.value,
                     node,
+                    name,
                 );
                 if (!conditional) return `{${key}, ${stored}}`;
                 return presentCpp
@@ -412,8 +418,13 @@ function valueSpan(
         return `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${(
             value.tupleElements ?? []
         )
-            .map((entry) =>
-                lowerer.compileKnownValueForSink(entry, dataType.element, node),
+            .map((entry, index) =>
+                lowerer.compileMemberForSink(
+                    entry,
+                    dataType.element,
+                    node,
+                    index,
+                ),
             )
             .join(", ")}}`;
     }
@@ -484,10 +495,11 @@ function valueProduct(
         lowerer.context.reachJsData();
         return `${lowerer.context.dataTypes.cppType(dataType)}{${value.tupleElements
             .map((entry, index) =>
-                lowerer.compileKnownValueForSink(
+                lowerer.compileMemberForSink(
                     entry,
                     dataType.elements[index]!,
                     node,
+                    index,
                 ),
             )
             .join(", ")}}`;
