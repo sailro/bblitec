@@ -6843,8 +6843,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
-                const booleanConstructor =
-                    this.context.libraryGlobal(callback) === "Boolean";
                 const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
                 const callbackValue = this.leafValue(
                     snapshotCpp,
@@ -6891,50 +6889,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             callbackArguments,
                             call,
                         )
-                      : booleanConstructor
-                        ? dataType.element.kind === "boolean"
-                            ? {
-                                  kind: "boolean" as const,
-                                  cpp: elementValue.cpp,
-                                  dataType: { kind: "boolean" as const },
-                              }
-                            : dataType.element.kind === "number"
-                              ? (this.context.reachJsData(),
-                                {
-                                    kind: "boolean" as const,
-                                    cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
-                                    dataType: { kind: "boolean" as const },
-                                })
-                              : dataType.element.kind === "string"
-                                ? {
-                                      kind: "boolean" as const,
-                                      cpp: `!(${elementValue.cpp}).empty()`,
-                                      dataType: { kind: "boolean" as const },
-                                  }
-                                : {
-                                      kind: "boolean" as const,
-                                      cpp:
-                                          this.truthinessCondition(
-                                              elementValue,
-                                          ) ??
-                                          this.context.fail(
-                                              callback,
-                                              `Boolean array callbacks require elements with a JavaScript truthiness, not ${dataType.element.kind}.`,
-                                          ),
-                                      dataType: { kind: "boolean" as const },
-                                  }
-                        : predicate
-                          ? this.context.compilePredicateWithValues(
-                                local!,
-                                callbackArguments,
-                                call,
-                            )
-                          : this.context.compileCallbackWithValues(
-                                local!,
-                                callbackArguments,
-                                call,
-                                method === "forEach",
-                            );
+                      : predicate
+                        ? this.context.compilePredicateWithValues(
+                              local!,
+                              callbackArguments,
+                              call,
+                          )
+                        : this.context.compileCallbackWithValues(
+                              local!,
+                              callbackArguments,
+                              call,
+                              method === "forEach",
+                          );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
                         kind: "boolean",
