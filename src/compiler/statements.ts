@@ -89,10 +89,7 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
-import {
-    nativeStatementCode,
-    renderNativeEmission,
-} from "./native-statements.js";
+import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -1133,21 +1130,14 @@ export class StatementLowerer {
         ) {
             // The returned expression throws; no value reaches the caller. A
             // native function still needs a path that leaves it, unless the
-            // lowered expression already ends in one.
+            // lowered expression already ends in a transfer of control.
             const lowered = context.captureEmittedStatements(() =>
                 this.emitExpression(context, statement.expression!),
             );
             context.emitCapturedStatements(lowered);
-            const last = lowered.at(-1);
             if (
                 context.activeNativeReturnType() !== undefined &&
-                !(
-                    last &&
-                    (last.statement.kind === "control" ||
-                        /^(?:throw |std::rethrow_exception\()/.test(
-                            nativeStatementCode(last.statement),
-                        ))
-                )
+                lowered.at(-1)?.statement.kind !== "control"
             )
                 context.emit({
                     kind: "control",

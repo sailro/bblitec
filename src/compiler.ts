@@ -6553,7 +6553,8 @@ class Compiler implements LoweringServices {
                 code: `co_return [&]() -> ${type} { ${statement} }();`,
                 transfer: "suspend",
             });
-        } else this.emit(statement);
+        } else
+            this.emit({ kind: "control", code: statement, transfer: "throw" });
     }
 
     public emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean {
