@@ -330,7 +330,7 @@ test("writes through widened checked-object aliases refuse", () => {
     `,
                 { fileName: join(directory, "entry.ts") },
             ),
-        /writes through aliases are outside the supported subset/,
+        /would be a copy of the one object JavaScript keeps, and the program writes 'value' of such records; no shared layout holds both record types/,
     );
 });
 
