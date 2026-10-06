@@ -76,6 +76,7 @@ import {
     expressionMayRunCode,
     regularExpressionParts,
     unwrapExpression,
+    wrappedParent,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -86,6 +87,7 @@ import {
     OBJECT_STATIC_HANDLERS,
     compileObjectPrototypeCall,
     ownObjectEntries,
+    recordOwnArray,
     recordPropertyKeys,
     structOwnArray,
     structOwnEntries,
@@ -294,6 +296,38 @@ export interface ExpressionContext
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
         > {}
+
+/**
+ * Whether an expression's value is an object spread's operand, directly or
+ * as an arm of a conditional that is one.
+ */
+function spreadsItsValue(expression: ts.Expression): boolean {
+    let current: ts.Expression = expression;
+    for (;;) {
+        const parent = wrappedParent(current);
+        if (ts.isSpreadAssignment(parent)) return true;
+        if (
+            !ts.isConditionalExpression(parent) ||
+            unwrapExpression(parent.condition) === current
+        )
+            return false;
+        current = parent;
+    }
+}
+
+/**
+ * Whether a prepared conditional arm's value is read after its preparation
+ * runs (`hoistedArmValue`): a record or tuple's members, or a data value's
+ * found flag or identity beside its storage.
+ */
+function hoistsPreparedArm(value: Value): boolean {
+    return value.kind === "record" || value.kind === "tuple"
+        ? value.optionalFoundCpp === undefined &&
+              value.objectIdentityCpp === undefined
+        : value.kind === "data" &&
+              (value.optionalFoundCpp !== undefined ||
+                  value.objectIdentityCpp !== undefined);
+}
 
 /**
  * One operand of a string concatenation, spelled as what `bbl::js::concat`
@@ -1266,6 +1300,8 @@ export class ExpressionLowerer {
             if (concatenated) return concatenated;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            if (this.context.dataLowerer.pairedAbsence(unwrapped))
+                return this.compileBooleanValue(unwrapped);
             const logical =
                 this.context.dataLowerer.compileRecordLogicalValue(unwrapped);
             if (logical) return logical;
@@ -1570,6 +1606,11 @@ export class ExpressionLowerer {
                   )
                 : target;
         }
+        if (ts.isBinaryExpression(unwrapped)) {
+            const selected =
+                this.context.dataLowerer.compileLogicalAndValue(unwrapped);
+            if (selected) return selected;
+        }
 
         this.context.fail(
             unwrapped,
@@ -1805,6 +1846,16 @@ export class ExpressionLowerer {
                 this.context,
                 object,
                 object.dataType,
+                resultType,
+                projection,
+                call,
+            );
+            if (array) return array;
+        }
+        if (resultType?.kind === "vector") {
+            const array = recordOwnArray(
+                this.context,
+                object,
                 resultType,
                 projection,
                 call,
@@ -2060,16 +2111,23 @@ export class ExpressionLowerer {
     /**
      * A conditional branch's resource value with its preparation moved into
      * the lambda that spells it, so `selectValue` selects it lazily. A
-     * value whose other spellings (members, elements, a found flag) could
-     * name the moved temporaries refuses instead.
+     * record or tuple, or a value read beside a found flag or identity, is
+     * built by a lambda run only when `guard` selects the arm and read from
+     * what it returned (`hoistedArmValue`); one whose members cannot move
+     * refuses.
      */
     private lazyArmValue(
         arm: { value: Value; lines: string[] },
         node: ts.Expression,
+        guard: () => string,
     ): Value {
         if (arm.lines.length === 0) return arm.value;
         const value =
             projectAssetContainer(this.context, arm.value, node) ?? arm.value;
+        const hoisted = hoistsPreparedArm(value)
+            ? this.hoistedArmValue(arm.lines, value, node, guard)
+            : undefined;
+        if (hoisted) return hoisted;
         if (
             value.kind === "record" ||
             value.kind === "tuple" ||
@@ -2088,6 +2146,156 @@ export class ExpressionLowerer {
                 value.cpp,
             ),
         };
+    }
+
+    /**
+     * A prepared record or tuple arm whose run-time members a lambda
+     * returns as one tuple, called only when `guard` holds; undefined when
+     * a member has no plain native value to move.
+     */
+    private hoistedArmValue(
+        lines: readonly string[],
+        value: Value,
+        node: ts.Expression,
+        guard: () => string,
+    ): Value | undefined {
+        if (
+            this.context.options.workers &&
+            someAnalysisNode(node, ts.isAwaitExpression, { functions: "skip" })
+        )
+            return undefined;
+        // Every member is a record, a tuple, a compile-time value or a plain
+        // native value the tuple can hold.
+        const movable = (member: Value): boolean =>
+            member.kind === "record"
+                ? !member.classDeclaration &&
+                  Object.keys(member.recordMethods ?? {}).length === 0 &&
+                  Object.keys(member.recordGetters ?? {}).length === 0 &&
+                  Object.keys(member.recordSetters ?? {}).length === 0 &&
+                  Object.values(member.recordProperties ?? {}).every(movable)
+                : member.kind === "tuple"
+                  ? (member.tupleElements ?? []).every(movable)
+                  : member.cpp.length === 0 ||
+                    member.staticNumber !== undefined ||
+                    member.staticString !== undefined ||
+                    member.staticBoolean !== undefined ||
+                    (member.kind === "data" && member.dataType !== undefined) ||
+                    member.kind === "number" ||
+                    member.kind === "boolean" ||
+                    member.kind === "string";
+        if (!movable(value)) return undefined;
+        const members: Value[] = [];
+        const expressions: string[] = [];
+        const holder = this.context.allocateTemporaryCppName("arm_members");
+        // One run-time spelling moved into the returned tuple.
+        const move = (cpp: string): string => {
+            expressions.push(cpp);
+            return `std::get<${expressions.length - 1}>(*${holder})`;
+        };
+        const moved = (member: Value): Value => {
+            if (member.kind === "record")
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: Object.fromEntries(
+                        Object.entries(member.recordProperties ?? {}).map(
+                            ([key, property]) => [key, moved(property)],
+                        ),
+                    ),
+                };
+            if (member.kind === "tuple")
+                return {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: (member.tupleElements ?? []).map(moved),
+                };
+            if (
+                member.cpp.length === 0 ||
+                member.staticNumber !== undefined ||
+                member.staticString !== undefined ||
+                member.staticBoolean !== undefined
+            )
+                return member;
+            members.push(member);
+            const read = move(member.cpp);
+            const kind = member.kind;
+            const result: Value =
+                kind === "data" && member.dataType
+                    ? this.context.dataLowerer.leafValue(read, member.dataType)
+                    : kind === "string"
+                      ? { kind, cpp: `std::string(${read})` }
+                      : {
+                            kind: kind === "number" ? "number" : "boolean",
+                            cpp: read,
+                        };
+            // A found flag, stated truthiness or identity is read beside
+            // the value.
+            return {
+                ...result,
+                ...(member.optionalFoundCpp !== undefined
+                    ? { optionalFoundCpp: move(member.optionalFoundCpp) }
+                    : {}),
+                ...(member.truthinessCpp !== undefined
+                    ? { truthinessCpp: move(member.truthinessCpp) }
+                    : {}),
+                ...(member.objectIdentityCpp !== undefined
+                    ? { objectIdentityCpp: move(member.objectIdentityCpp) }
+                    : {}),
+                ...(member.conditionalOwnKey
+                    ? { conditionalOwnKey: true as const }
+                    : {}),
+            };
+        };
+        const rebuilt = moved(value);
+        // The condition, read once, is pinned ahead of the arm.
+        const selected = guard();
+        const build = this.context.allocateTemporaryCppName("arm_build");
+        for (const member of members) this.context.useNativeValue(member);
+        const tuple = `std::make_tuple(${expressions.join(", ")})`;
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: build,
+            initializer: `[&]() {\n${lines.join("\n")}\nreturn ${tuple};\n}`,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: `std::optional<decltype(${build}())>`,
+            name: holder,
+            initializer: "",
+            initialization: "default",
+        });
+        const binding = this.context.registerNativeBinding(holder);
+        this.context.emit({
+            kind: "expression",
+            code: `if (${selected}) ${holder}.emplace(${build}());`,
+        });
+        const capture = (member: Value): Value =>
+            member.kind === "record"
+                ? {
+                      ...member,
+                      recordProperties: Object.fromEntries(
+                          Object.entries(member.recordProperties ?? {}).map(
+                              ([key, property]) => [key, capture(property)],
+                          ),
+                      ),
+                  }
+                : member.kind === "tuple"
+                  ? {
+                        ...member,
+                        tupleElements: (member.tupleElements ?? []).map(
+                            capture,
+                        ),
+                    }
+                  : [
+                          member.cpp,
+                          member.optionalFoundCpp,
+                          member.truthinessCpp,
+                          member.objectIdentityCpp,
+                      ].some((cpp) => cpp?.includes(holder))
+                    ? { ...member, nativeCaptures: [binding] }
+                    : member;
+        return capture(rebuilt);
     }
 
     private compileBooleanValue(expression: ts.Expression): Value {
@@ -2115,6 +2323,7 @@ export class ExpressionLowerer {
         whenTrue: Value,
         whenFalse: Value,
         node: ts.Node,
+        path: readonly string[] = [],
     ): Value {
         this.context.dataLowerer.invalidateRecordArrayFacts(whenTrue);
         this.context.dataLowerer.invalidateRecordArrayFacts(whenFalse);
@@ -2123,6 +2332,7 @@ export class ExpressionLowerer {
             whenTrue,
             whenFalse,
             node,
+            path,
         );
         // Static aggregates retain their dependencies on each selected lane.
         // Every native expression also reads its condition, even when a branch
@@ -2144,11 +2354,16 @@ export class ExpressionLowerer {
         };
     }
 
+    /**
+     * `path` names the record member or tuple element of the conditional
+     * `node`'s result being selected, for {@link selectedDataType}.
+     */
     private selectValueInner(
         selection: NativeExpression,
         whenTrue: Value,
         whenFalse: Value,
         node: ts.Node,
+        path: readonly string[],
     ): Value {
         const condition = selection.cpp;
         if (whenTrue.kind !== whenFalse.kind) {
@@ -2212,6 +2427,7 @@ export class ExpressionLowerer {
                         element,
                         falseElements[index]!,
                         node,
+                        [...path, String(index)],
                     ),
                 ),
             };
@@ -2259,12 +2475,18 @@ export class ExpressionLowerer {
                 const trueValue = trueProperties[name];
                 const falseValue = falseProperties[name];
                 if (trueValue && falseValue) {
-                    selected[name] = this.selectValue(
+                    const merged = this.selectValue(
                         selection,
                         trueValue,
                         falseValue,
                         node,
+                        [...path, name],
                     );
+                    selected[name] =
+                        trueValue.conditionalOwnKey ||
+                        falseValue.conditionalOwnKey
+                            ? { ...merged, conditionalOwnKey: true }
+                            : merged;
                     continue;
                 }
                 const present = trueValue ?? falseValue!;
@@ -2276,7 +2498,11 @@ export class ExpressionLowerer {
                           ? { kind: "boolean" as const }
                           : present.kind === "string"
                             ? { kind: "string" as const }
-                            : undefined);
+                            : this.selectedDataType(
+                                  node,
+                                  [...path, name],
+                                  true,
+                              ));
                 if (!inner) {
                     this.context.fail(
                         node,
@@ -2313,12 +2539,17 @@ export class ExpressionLowerer {
                     cpp: absent,
                     dataType: optional,
                 };
-                selected[name] = this.selectValue(
-                    selection,
-                    trueValue ? populatedValue : absentValue,
-                    trueValue ? absentValue : populatedValue,
-                    node,
-                );
+                // The key is own only where its arm was taken.
+                selected[name] = {
+                    ...this.selectValue(
+                        selection,
+                        trueValue ? populatedValue : absentValue,
+                        trueValue ? absentValue : populatedValue,
+                        node,
+                        [...path, name],
+                    ),
+                    conditionalOwnKey: true,
+                };
             }
             const selectedRecord: Value = {
                 kind: "record",
@@ -2466,6 +2697,72 @@ export class ExpressionLowerer {
                 nullDefaulted(whenFalse, whenTrue, `!(${condition})`);
             if (guarded) return guarded;
         }
+        // Two arms that both read as `undefined` (a void call, `undefined`):
+        // the selected one runs for its effects.
+        const undefinedArm = (value: Value): boolean =>
+            (value.kind === "void" &&
+                !value.abruptCompletion &&
+                !value.coroutineResult) ||
+            (value.kind === "json-null" && value.cpp === "std::nullopt");
+        if (
+            whenTrue.kind !== whenFalse.kind &&
+            undefinedArm(whenTrue) &&
+            undefinedArm(whenFalse)
+        ) {
+            const effect = (value: Value): string =>
+                value.kind === "void" && value.cpp.length > 0
+                    ? `static_cast<void>(${value.cpp})`
+                    : "void()";
+            return {
+                kind: "void",
+                cpp: `(${condition} ? ${effect(whenTrue)} : ${effect(whenFalse)})`,
+            };
+        }
+        // Data-model branches of different native kinds, or one without
+        // storage of its own (a literal record, a function, `null`), select
+        // as the storage of the conditional's type, each converted inside its
+        // own arm; a type the checker cannot name is the one data branch's
+        // own. Engine resources and promises keep the refusal below.
+        const dataModel = (value: Value): boolean =>
+            [
+                "data",
+                "number",
+                "boolean",
+                "string",
+                "record",
+                "tuple",
+                "callback",
+                "json-null",
+            ].includes(value.kind);
+        if (
+            (whenTrue.kind !== whenFalse.kind ||
+                whenTrue.cpp.length === 0 ||
+                whenFalse.cpp.length === 0) &&
+            dataModel(whenTrue) &&
+            dataModel(whenFalse)
+        ) {
+            const data =
+                whenTrue.kind === "data" && whenFalse.kind !== "data"
+                    ? whenTrue
+                    : whenFalse.kind === "data" && whenTrue.kind !== "data"
+                      ? whenFalse
+                      : undefined;
+            const type = this.selectedDataType(node, path) ?? data?.dataType;
+            const converted =
+                type &&
+                this.context.probeEmission(() => {
+                    try {
+                        return [
+                            this.selectedArmValue(whenTrue, type, node),
+                            this.selectedArmValue(whenFalse, type, node),
+                        ] as const;
+                    } catch (error) {
+                        if (error instanceof CompileError) return undefined;
+                        throw error;
+                    }
+                });
+            if (converted) [whenTrue, whenFalse] = converted;
+        }
         if (
             whenTrue.kind !== whenFalse.kind ||
             whenTrue.cpp.length === 0 ||
@@ -2514,6 +2811,91 @@ export class ExpressionLowerer {
             delete writable(conditional).spriteDepthMode;
         }
         return conditional;
+    }
+
+    /**
+     * The storage of what the conditional `node` selects at `path` (a
+     * member or element of its result): its type where the conditional is
+     * expected (a spread into a typed record), else in the conditional or
+     * one of its arms. `present` drops the absence an arm without the
+     * member adds.
+     */
+    private selectedDataType(
+        node: ts.Node,
+        path: readonly string[],
+        present = false,
+    ): DataType | undefined {
+        if (!ts.isConditionalExpression(node)) return undefined;
+        const checker = this.context.checker;
+        const at = (type: ts.Type | undefined): ts.Type | undefined => {
+            for (const name of path) {
+                const property =
+                    type &&
+                    checker.getPropertyOfType(
+                        checker.getNonNullableType(type),
+                        name,
+                    );
+                type =
+                    property &&
+                    checker.getTypeOfSymbolAtLocation(property, node);
+            }
+            return type && present ? checker.getNonNullableType(type) : type;
+        };
+        for (const owner of [
+            checker.getContextualType(node),
+            checker.getTypeAtLocation(node),
+            checker.getTypeAtLocation(node.whenTrue),
+            checker.getTypeAtLocation(node.whenFalse),
+        ]) {
+            const type = at(owner);
+            const mapped =
+                type && this.context.dataTypes.fromStoredTsType(type, node);
+            if (mapped) return mapped;
+        }
+        return undefined;
+    }
+
+    /**
+     * A conditional arm's value as `type`'s storage. A conversion that
+     * prepares its value runs inside the arm's lambda, so only the selected
+     * arm converts.
+     */
+    private selectedArmValue(
+        value: Value,
+        type: DataType,
+        node: ts.Node,
+    ): Value {
+        if (
+            value.kind === "data" &&
+            value.dataType &&
+            dataTypesEqual(value.dataType, type)
+        )
+            return value;
+        const {
+            value: { value: cpp, lines },
+            nativeCaptures,
+        } = this.context.captureNativeDependencies(() =>
+            this.context.dataLowerer.compileArm(() =>
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    node,
+                ),
+            ),
+        );
+        return {
+            kind: "data",
+            cpp: ts.isExpression(node)
+                ? this.context.dataLowerer.armExpression(node, lines, cpp, type)
+                : lines.length === 0
+                  ? cpp
+                  : this.context.fail(
+                        node,
+                        "A conditional branch that prepares its value must be bound to its own declaration first.",
+                    ),
+            dataType: type,
+            nativeCaptures,
+        };
     }
 
     private canHoistRecordValue(value: Value): boolean {
@@ -4579,28 +4961,62 @@ export class ExpressionLowerer {
             // runs that preparation only when selected: the data sink keeps
             // each arm's lines inside it, and a resource the sink does not
             // convert selects as itself, its preparation moved into the
-            // lambda that spells it.
+            // lambda that spells it. A spread's operand keeps the record
+            // an unprepared one selects: its keys are what the spread copies.
+            const aggregate = (arm: { value: Value; lines: string[] }) =>
+                arm.lines.length > 0 &&
+                (arm.value.kind === "record" || arm.value.kind === "tuple");
+            const spreadOperand =
+                spreadsItsValue(unwrapped) &&
+                (aggregate(trueArm) || aggregate(falseArm));
             const sunk =
-                conditionalType &&
-                this.context.probeEmission(() => {
-                    try {
-                        return this.context.dataLowerer.compileConditionalForSink(
-                            unwrapped,
-                            conditionalType,
-                            condition,
-                            { whenTrue: trueArm, whenFalse: falseArm },
-                        );
-                    } catch (error) {
-                        if (error instanceof CompileError) return undefined;
-                        throw error;
-                    }
-                });
+                conditionalType && !spreadOperand
+                    ? this.context.probeEmission(() => {
+                          try {
+                              return this.context.dataLowerer.compileConditionalForSink(
+                                  unwrapped,
+                                  conditionalType,
+                                  condition,
+                                  { whenTrue: trueArm, whenFalse: falseArm },
+                              );
+                          } catch (error) {
+                              if (error instanceof CompileError)
+                                  return undefined;
+                              throw error;
+                          }
+                      })
+                    : undefined;
             if (conditionalType && sunk !== undefined)
                 return this.context.dataValue(sunk, conditionalType);
+            // An arm whose prepared members are read after it runs needs the
+            // condition once, ahead of both.
+            let pinned: NativeExpression | undefined;
+            const selected = (): NativeExpression => {
+                if (pinned) return pinned;
+                const value = this.context.bindings.pinValueToTemporary(
+                    { kind: "boolean", ...selection },
+                    "arm_selected",
+                    unwrapped.condition,
+                );
+                return (pinned = {
+                    cpp: value.cpp,
+                    nativeCaptures: value.nativeCaptures ?? [],
+                });
+            };
+            const whenTrue = this.lazyArmValue(
+                trueArm,
+                unwrapped.whenTrue,
+                () => selected().cpp,
+            );
+            const whenFalse = this.lazyArmValue(
+                falseArm,
+                unwrapped.whenFalse,
+                () => `!(${selected().cpp})`,
+            );
             return this.selectValue(
-                selection,
-                this.lazyArmValue(trueArm, unwrapped.whenTrue),
-                this.lazyArmValue(falseArm, unwrapped.whenFalse),
+                pinned ?? selection,
+                whenTrue,
+                whenFalse,
                 unwrapped,
             );
         }
@@ -4824,6 +5240,52 @@ export class ExpressionLowerer {
             ordered[index]
                 ? pinOperand(this.context, value, node, "record_member")
                 : this.builtLane(value, node);
+        // A key a spread writes only while it is own replaces an earlier
+        // one only then.
+        const replaceWhileOwn = (
+            key: string,
+            value: Value,
+            property: ts.SpreadAssignment,
+        ): void => {
+            const existing = properties[key];
+            if (!existing)
+                this.context.fail(
+                    property,
+                    `A conditionally present spread key '${key}' cannot replace a method or accessor.`,
+                );
+            const held = this.context.bindings.pinValueToTemporary(
+                value,
+                "spread_member",
+                property.expression,
+            );
+            // Both values select as the storage the key holds when present.
+            const type =
+                held.dataType?.kind === "optional"
+                    ? held.dataType.inner
+                    : held.dataType;
+            const present = this.context.dataLowerer.conditionalKeyValue(held);
+            const merged = this.selectValue(
+                this.context.captureNativeExpression(() =>
+                    this.context.dataLowerer.conditionalKeyPresentCpp(
+                        held,
+                        property,
+                    ),
+                ),
+                type
+                    ? this.selectedArmValue(present, type, property.expression)
+                    : present,
+                type
+                    ? this.selectedArmValue(existing, type, property.expression)
+                    : existing,
+                property.expression,
+            );
+            storeProperty(
+                key,
+                existing.conditionalOwnKey
+                    ? { ...merged, conditionalOwnKey: true }
+                    : merged,
+            );
+        };
         for (const [index, property] of unwrapped.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
@@ -4834,24 +5296,56 @@ export class ExpressionLowerer {
                     spread.kind === "data" &&
                     spread.dataType?.kind === "struct"
                 ) {
-                    const entries = structOwnEntries(
+                    const optional = structOwnEntries(
                         this.context,
                         spread,
                         spread.dataType,
                         property,
+                    ).some((entry) => entry.presentCpp);
+                    if (optional && allowDictionarySpread) return undefined;
+                    // A `?` field whose storage says whether it is own
+                    // becomes a key the record holds while it is present.
+                    const entries = structOwnEntries(
+                        this.context,
+                        optional
+                            ? this.context.bindings.pinValueToTemporary(
+                                  spread,
+                                  "spread_source",
+                                  property.expression,
+                              )
+                            : spread,
+                        spread.dataType,
+                        property,
                     );
-                    if (entries.some((entry) => entry.presentCpp)) {
-                        if (allowDictionarySpread) return undefined;
+                    if (
+                        entries.some(
+                            (entry) => entry.presentCpp && !entry.stored,
+                        )
+                    )
                         this.context.fail(
                             property,
                             "A struct with optional properties spreads into a dictionary or a struct; a compile-time record needs keys known at generation.",
                         );
+                    for (const { key, value, stored } of entries) {
+                        if (!stored) {
+                            storeProperty(
+                                key,
+                                member(value, index, property.expression),
+                            );
+                            continue;
+                        }
+                        const conditional: Value = {
+                            ...stored,
+                            conditionalOwnKey: true,
+                        };
+                        if (ownKeys.has(key))
+                            replaceWhileOwn(key, conditional, property);
+                        else
+                            storeProperty(
+                                key,
+                                member(conditional, index, property.expression),
+                            );
                     }
-                    for (const { key, value } of entries)
-                        storeProperty(
-                            key,
-                            member(value, index, property.expression),
-                        );
                     continue;
                 }
                 if (
@@ -4893,6 +5387,10 @@ export class ExpressionLowerer {
                               kind: "json-null" as const,
                               cpp: "std::nullopt",
                           });
+                    if (value.conditionalOwnKey && ownKeys.has(key)) {
+                        replaceWhileOwn(key, value, property);
+                        continue;
+                    }
                     storeProperty(
                         key,
                         readsGetters

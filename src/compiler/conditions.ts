@@ -52,6 +52,7 @@ interface ConditionContext
             | "defaultEngine"
             | "emit"
             | "emitDiscardedValue"
+            | "emitExpressionAsStatement"
             | "enterRuntimeControlFlow"
             | "evaluationOrder"
             | "expectSameEngine"
@@ -122,6 +123,9 @@ export class ConditionLowerer {
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
         ) {
+            const absence =
+                this.context.dataLowerer.pairedAbsenceComparison(unwrapped);
+            if (absence !== undefined) return absence;
             const left = this.compileCondition(unwrapped.left);
             // Fold browser-derived constants before lowering the remaining
             // runtime condition. Scene 12 deliberately combines its pinned
@@ -194,6 +198,26 @@ export class ConditionLowerer {
             if (left === identity) return right;
             if (right === identity) return left;
             return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
+        }
+        // `a.held = b.held = false`: an assignment's value is what it
+        // stored, so it runs as its statement and its target is read back.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            if (
+                someAnalysisNode(
+                    unwrapped.left,
+                    (node) =>
+                        ts.isCallExpression(node) || ts.isNewExpression(node),
+                )
+            )
+                this.context.fail(
+                    unwrapped.left,
+                    "An assignment used as a value reads its target back; a target containing a call must be bound to a local first.",
+                );
+            this.context.emitExpressionAsStatement(unwrapped);
+            return this.compileCondition(unwrapped.left);
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
