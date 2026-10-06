@@ -113,6 +113,8 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
     ["exp", { arity: 1, cpp: compilerOnly("exp") }],
     ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
+    // The pinned layer's `<cmath>` spelling; scene code lowers `Math.pow`
+    // through `exponentiationCall`, as it lowers `**`.
     ["pow", { arity: 2, cpp: shared("pow") }],
     ["atan2", { arity: 2, cpp: shared("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
@@ -165,6 +167,25 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         },
     ],
 ]);
+
+/**
+ * JavaScript exponentiation, `**` and `Math.pow` alike: `<cmath>`'s pow
+ * except that a NaN exponent, or an infinite one over a base of magnitude
+ * 1, is NaN (`power_js`). A statically finite exponent meets neither case
+ * and spells `std::pow` without the runtime.
+ */
+export function exponentiationCall(
+    base: string,
+    exponent: string,
+    staticExponent: number | undefined,
+): { readonly cpp: string; readonly jsData: boolean } {
+    return staticExponent !== undefined && Number.isFinite(staticExponent)
+        ? {
+              cpp: `${pinnedMathSpelling("pow")}(${base}, ${exponent})`,
+              jsData: false,
+          }
+        : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
+}
 
 /** Numeric call spelling, including the extrema whose spread/fold paths are separate. */
 export function mathCallSpelling(name: string): MathMember["cpp"] | undefined {
@@ -303,6 +324,8 @@ export function mathFunctionValue(
         ? mathExtremeCpp(access.name.text, "argument_0")
         : variadic
           ? member!.rangeCpp!("argument_0")
-          : member!.cpp(parameters);
+          : access.name.text === "pow"
+            ? exponentiationCall(parameters[0]!, parameters[1]!, undefined).cpp
+            : member!.cpp(parameters);
     return nativeFunctionValue(context, access, type, `return ${body};`);
 }

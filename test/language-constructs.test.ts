@@ -572,6 +572,14 @@ check(
     minus **= edge[3]!;
     if (!Number.isNaN(one) || !Number.isNaN(minus) || !Number.isNaN(edge[0]! ** edge[3]!) || edge[2]! ** edge[4]! !== 1)
         throw new Error("JavaScript exponent edges");
+    if (!Number.isNaN(Math.pow(edge[0]!, edge[3]!)) || !Number.isNaN(Math.pow(edge[1]!, -edge[3]!)) ||
+        !Number.isNaN(Math.pow(edge[0]!, edge[2]!)) || Math.pow(edge[2]!, edge[4]!) !== 1 || Math.pow(edge[3]!, -1) !== 0 ||
+        Math.pow(h[0]!, 10) !== 1024 || edge[1]! ** 3 !== -1 || Math.pow(h[0]!, -2) !== 0.25)
+        throw new Error("Math.pow follows the exponent rules");
+    const powers = [edge[0]!, edge[1]!].map((base) => Math.pow(base, edge[3]!));
+    const pairwise = [edge[1]!, h[0]!].map(Math.pow);
+    if (!Number.isNaN(powers[0]!) || !Number.isNaN(powers[1]!) || pairwise[0] !== 1 || pairwise[1] !== 2)
+        throw new Error("Math.pow as a value");
 `,
 );
 

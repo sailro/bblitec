@@ -87,6 +87,7 @@ import {
     jsBitwiseCall,
 } from "../lowering/pinned-operators.js";
 import {
+    exponentiationCall,
     MATH_MEMBERS,
     mathConstantAccess,
     mathMemberCall,
@@ -829,11 +830,15 @@ export class StaticEvaluator {
                 ts.SyntaxKind.AsteriskAsteriskToken
             ) {
                 const [left, right] = this.numericOperands(unwrapped);
-                this.onJsData();
-                const compiled = `bbl::js::power_js(${left}, ${right})`;
+                const power = exponentiationCall(
+                    left,
+                    right,
+                    this.staticNumberValue(unwrapped.right),
+                );
+                if (power.jsData) this.onJsData();
                 return precision === "float"
-                    ? `static_cast<float>(${compiled})`
-                    : compiled;
+                    ? `static_cast<float>(${power.cpp})`
+                    : power.cpp;
             }
             if (JS_BITWISE_FUNCTIONS.has(unwrapped.operatorToken.kind)) {
                 const [left, right] = this.numericOperands(unwrapped);
