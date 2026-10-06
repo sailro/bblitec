@@ -8,6 +8,7 @@ import {
     yieldsFreshObject,
     yieldsFreshRecordElements,
 } from "../fresh-records.js";
+import { argumentOnlyRead } from "../record-observations.js";
 import { resolvedSymbol } from "../symbols.js";
 import { unwrapExpression } from "../syntax.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -242,8 +243,9 @@ function valueVector(
 /**
  * A number array holding a tuple is the tuple itself, and can grow. The
  * tuple's fixed native storage cannot follow that growth, so it is adopted
- * only when nothing else holds the tuple; a tuple binding instead takes
- * growable array storage, and any other tuple refuses.
+ * only when nothing else holds the tuple or the callee it is handed to only
+ * reads it; a tuple binding instead takes growable array storage, and any
+ * other tuple refuses.
  */
 function requireGrowableTuple(
     lowerer: DataSinkHost,
@@ -262,6 +264,9 @@ function requireGrowableTuple(
         ((value.freshData && ts.isCallExpression(expression)) ||
             yieldsFreshObject(lowerer.context.checker, expression))
     )
+        return;
+    // A callee that only reads the array cannot grow or retain it.
+    if (expression && argumentOnlyRead(lowerer.context.checker, expression))
         return;
     const named =
         expression && ts.isIdentifier(expression)

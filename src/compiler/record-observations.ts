@@ -579,6 +579,23 @@ function readsParameterOnly(
             only = false;
             return;
         }
+        // Where narrowing leaves only primitives, the reference is not the object.
+        const narrowed = checker.getTypeAtLocation(node);
+        if (
+            (narrowed.isUnion() ? narrowed.types : [narrowed]).every(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.NumberLike |
+                            ts.TypeFlags.StringLike |
+                            ts.TypeFlags.BooleanLike |
+                            ts.TypeFlags.BigIntLike |
+                            ts.TypeFlags.Null |
+                            ts.TypeFlags.Undefined |
+                            ts.TypeFlags.Void)) !==
+                    0,
+            )
+        )
+            return;
         const use = climb(node);
         const parent = use.parent;
         if (
@@ -596,21 +613,37 @@ function readsParameterOnly(
             return;
         }
         if (ts.isCallExpression(parent) && parent.expression !== use) {
+            const position = parent.arguments.indexOf(use);
             const next = calleeOf(checker, parent);
-            only =
-                next !== undefined &&
-                readsParameterOnly(
-                    checker,
-                    next,
-                    parent.arguments.indexOf(use),
-                    active,
-                );
+            const declaration = next
+                ? undefined
+                : checker.getResolvedSignature(parent)?.declaration;
+            only = next
+                ? readsParameterOnly(checker, next, position, active)
+                : declaration !== undefined &&
+                  declarationOrigin(declaration) === "babylon" &&
+                  engineReadsOnly(declaration, position);
             return;
         }
-        only = false;
+        // Testing its type and iterating its elements read it too.
+        only =
+            ts.isTypeOfExpression(parent) ||
+            (ts.isForOfStatement(parent) && parent.expression === use);
     });
     active.delete(parameter);
     return only;
+}
+
+/**
+ * Whether the callee a value is handed to as `argument` only reads that
+ * parameter: never writes, compares, enumerates, stores, returns or captures
+ * it, so it can neither grow nor outlive the call through the callee.
+ */
+export function argumentOnlyRead(
+    checker: ts.TypeChecker,
+    argument: ts.Node,
+): boolean {
+    return readOnlyArgumentCall(checker, argument) !== undefined;
 }
 
 /**

@@ -6320,6 +6320,15 @@ check(
     const owned: number[] = fresh();
     owned.push(2);
     if (owned.length !== 3) throw new Error("fresh tuple adopted");
+    interface Placed { pos: [number, number] }
+    const placed: Placed = { pos: [3, 4] };
+    function total(values: number | number[]): number {
+        if (typeof values === "number") return values;
+        let sum = 0;
+        for (const value of values) sum += value;
+        return sum;
+    }
+    if (total(placed.pos) !== 7 || total(2) !== 2) throw new Error("a reading callee borrows a field tuple");
 `,
 );
 
