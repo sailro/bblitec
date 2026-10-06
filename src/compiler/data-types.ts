@@ -2668,9 +2668,16 @@ export class DataTypeRegistry {
         }
     }
 
+    /**
+     * The stored signature a call of generic function storage reaches.
+     * `holdsError` says whether an argument names a binding whose value is
+     * a native Error, which instantiates an `unknown` parameter with the
+     * library Error type.
+     */
     public genericFunctionCall(
         name: string,
         call: ts.CallExpression,
+        holdsError: (argument: ts.Identifier) => boolean,
     ): { name: string; type: DataType<"function"> } {
         const generic = this.genericFunctions.get(name)!;
         const declaration = generic.declaration;
@@ -2713,7 +2720,7 @@ export class DataTypeRegistry {
                     return undefined;
                 }
                 return (
-                    this.caughtErrorType(argument) ??
+                    this.caughtErrorType(argument, holdsError) ??
                     this.checker.getTypeAtLocation(argument)
                 );
             });
@@ -2788,27 +2795,22 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A `catch` binding is typed `unknown`, and holds the native Error the
-     * catch received: an argument naming one instantiates a stored
-     * function's parameter with the library Error type.
+     * A binding typed `unknown` whose value is the native Error a `catch`
+     * received (the catch binding, or a `const` it was copied to): an
+     * argument naming one instantiates a stored function's parameter with
+     * the library Error type.
      */
-    private caughtErrorType(argument: ts.Expression): ts.Type | undefined {
+    private caughtErrorType(
+        argument: ts.Expression,
+        holdsError: (argument: ts.Identifier) => boolean,
+    ): ts.Type | undefined {
         const name = unwrapExpression(argument);
         if (
             !ts.isIdentifier(name) ||
             (this.checker.getTypeAtLocation(name).flags &
                 ts.TypeFlags.Unknown) ===
-                0
-        )
-            return undefined;
-        const declaration = resolvedSymbol(
-            this.checker,
-            name,
-        )?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !ts.isCatchClause(declaration.parent)
+                0 ||
+            !holdsError(name)
         )
             return undefined;
         const error = this.checker

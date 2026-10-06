@@ -7089,6 +7089,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const field = this.context.dataTypes.genericFunctionCall(
                 functionType.generic,
                 call,
+                (argument) =>
+                    this.context.bindings.lookupOptional(argument)?.dataType
+                        ?.kind === "error",
             );
             callable = `(${callable}).select(&bblscene::${functionType.generic}Data::${field.name})`;
             functionType = field.type;

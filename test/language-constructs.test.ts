@@ -6435,6 +6435,27 @@ check(
 );
 
 check(
+    "caught-error-aliases-in-stored-unknown-parameters",
+    `
+    interface Options { onUncertain?(command: string, error: unknown): void }
+    function attempt(options: Options, command: string, apply: () => number): number {
+        try { return apply(); }
+        catch (caught) {
+            const error = caught;
+            const again = error;
+            options.onUncertain?.(command, again);
+            return -1;
+        }
+    }
+    const attempts: Array<typeof attempt> = [attempt];
+    let seen = "";
+    const options: Options = { onUncertain: (command, error) => { seen += command + ":" + (error instanceof Error ? error.message : "?") + ";"; } };
+    if (attempts[0]!(options, "a", () => 2) !== 2 || seen !== "") throw new Error("applied command");
+    if (attempts[0]!(options, "b", () => { throw new RangeError("broken"); }) !== -1 || seen !== "b:broken;") throw new Error("caught error alias");
+`,
+);
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }
