@@ -5062,12 +5062,13 @@ class Compiler implements LoweringServices {
         const expression = only.expression;
         const leading = statements.slice(0, -1);
         const earlyReturn = firstReturn(leading);
+        let resultType: DataType | undefined;
         if (earlyReturn) {
             // Early returns are function control flow: the body runs as a
             // native lambda of the getter's represented result type.
             const signature =
                 this.checker.getSignatureFromDeclaration(accessor);
-            const resultType = signature
+            resultType = signature
                 ? this.dataTypes.fromTsType(
                       this.checker.getReturnTypeOfSignature(signature),
                       accessor,
@@ -5078,25 +5079,6 @@ class Compiler implements LoweringServices {
                     earlyReturn,
                     "A getter with early returns requires a represented result flow.",
                 );
-            return this.withRecordScopes(owner, () => {
-                this.bindings.pushScope(this.allocateUserFunctionPrefix());
-                const previousThis = this.activeThis();
-                this.defineThis(receiver ?? owner);
-                try {
-                    return {
-                        ...this.userFunctions.emitValueLambda(
-                            this,
-                            statements,
-                            this.dataTypes.ownReturnedArray(resultType),
-                            false,
-                        ),
-                        impure: true,
-                    };
-                } finally {
-                    this.defineThis(previousThis);
-                    this.bindings.popScope();
-                }
-            });
         }
         return this.withRecordScopes(owner, () => {
             if (leading.length)
@@ -5108,10 +5090,20 @@ class Compiler implements LoweringServices {
             // identity in classInstances is not a reliable dispatch guard.
             this.defineThis(receiver ?? owner);
             try {
-                emitReachableStatements(this, leading);
                 // A getter is an evaluation, even when its return happens
                 // to lower to a field read. Optional chains must consume it
                 // once and keep any nested method calls behind their guard.
+                if (resultType)
+                    return {
+                        ...this.userFunctions.emitValueLambda(
+                            this,
+                            statements,
+                            this.dataTypes.ownReturnedArray(resultType),
+                            false,
+                        ),
+                        impure: true,
+                    };
+                emitReachableStatements(this, leading);
                 return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
