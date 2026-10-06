@@ -128,6 +128,7 @@ interface StatementLoweringContext extends Pick<
     | "activeNativeReturnType"
     | "prefersNativeDataIteration"
     | "activeInlineWrapper"
+    | "activeInlineReturnLabel"
     | "trackResourceLoopEarlyReturn"
     | "isRuntimeResourceConstruction"
     | "emitNativeReturn"
@@ -1008,6 +1009,34 @@ export class StatementLowerer {
                 kind: "control",
                 code: "continue;",
                 transfer: "continue",
+            });
+            return;
+        }
+        const inlineReturn =
+            ts.isReturnStatement(statement) && !statement.expression
+                ? context.activeInlineReturnLabel()
+                : undefined;
+        if (inlineReturn) {
+            // An early bare return of an inlined body jumps past it. A jump
+            // out of an unrolled loop of the same body would skip the
+            // initialization of its flat iterations.
+            const owner = ts.findAncestor(statement, ts.isFunctionLike);
+            if (
+                this.staticIterationCompletions.some(
+                    (frame) =>
+                        ts.findAncestor(frame.iteration, ts.isFunctionLike) ===
+                        owner,
+                )
+            )
+                context.fail(
+                    statement,
+                    "An early return out of a statically unrolled loop is not lowered.",
+                );
+            writable(inlineReturn).used = true;
+            context.emit({
+                kind: "control",
+                code: `goto ${inlineReturn.label};`,
+                transfer: "goto",
             });
             return;
         }

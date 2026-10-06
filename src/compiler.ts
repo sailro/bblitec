@@ -25,6 +25,7 @@ import {
     writable,
 } from "./compiler/emission-transaction.js";
 import type {
+    InlineReturnLabel,
     LoweringServices,
     LoweringStatement,
     NativeFunctionBodyOptions,
@@ -797,7 +798,12 @@ class Compiler implements LoweringServices {
               contextualVoid?: boolean;
               engineScopeDepth: number;
           } & NativeFunctionBodyOptions)
-        | { kind: "inline"; wrapped: boolean; engineScopeDepth: number }
+        | {
+              kind: "inline";
+              wrapped: boolean;
+              returnLabel?: InlineReturnLabel;
+              engineScopeDepth: number;
+          }
     > = emissionArray([]);
     private readonly synchronousCleanupFrames: Array<object | undefined> =
         emissionArray([]);
@@ -6191,10 +6197,14 @@ class Compiler implements LoweringServices {
         if (binding) this.useNativeBinding(binding);
     }
 
-    public beginInlineFrame(wrapped: boolean): void {
+    public beginInlineFrame(
+        wrapped: boolean,
+        returnLabel?: InlineReturnLabel,
+    ): void {
         this.returnFrames.push({
             kind: "inline",
             wrapped,
+            ...(returnLabel ? { returnLabel } : {}),
             engineScopeDepth: this.bindings.variableScopes.length,
         });
     }
@@ -6274,6 +6284,11 @@ class Compiler implements LoweringServices {
     public activeInlineWrapper(): boolean {
         const top = this.returnFrames.at(-1);
         return top?.kind === "inline" && top.wrapped;
+    }
+
+    public activeInlineReturnLabel(): InlineReturnLabel | undefined {
+        const top = this.returnFrames.at(-1);
+        return top?.kind === "inline" ? top.returnLabel : undefined;
     }
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {

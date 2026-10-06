@@ -5285,11 +5285,25 @@ export class UserFunctionLowerer {
                     discardReturn,
                 );
             }
+            // Bare returns inside loops or switches leave a void body by a
+            // jump to the end of its own scope.
+            const returnLabel =
+                ir.needsLocalNative && !ir.returnExpression
+                    ? {
+                          label: context.allocateTemporaryCppName(
+                              "inline_return",
+                          ),
+                          used: false,
+                      }
+                    : undefined;
             if (ir.needsWrapper) {
                 context.emit({ kind: "open", code: "do {", breaks: true });
                 context.increaseIndent();
+            } else if (returnLabel) {
+                context.emit({ kind: "open", code: "{" });
+                context.increaseIndent();
             }
-            context.beginInlineFrame(ir.needsWrapper);
+            context.beginInlineFrame(ir.needsWrapper, returnLabel);
             let terminated = false;
             try {
                 terminated = emitReachableStatements(context, ir.statements);
@@ -5299,12 +5313,16 @@ export class UserFunctionLowerer {
             if (ir.needsWrapper) {
                 context.decreaseIndent();
                 context.emit({ kind: "close", code: "} while (false);" });
+            } else if (returnLabel) {
+                context.decreaseIndent();
+                context.emit({ kind: "close", code: "}" });
+                if (returnLabel.used) context.emit(`${returnLabel.label}:;`);
             }
             if (terminated || !ir.returnExpression)
                 return {
                     kind: "void",
                     cpp: "",
-                    ...(terminated && !ir.needsWrapper
+                    ...(terminated && !ir.needsWrapper && !returnLabel
                         ? { abruptCompletion: true }
                         : {}),
                 };
