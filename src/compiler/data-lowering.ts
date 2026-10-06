@@ -395,13 +395,15 @@ type NumericUpdatePlace =
           kind: "optional";
           target: Value & { dataType: DataType & { kind: "optional" } };
       }
-    /** A Map/Record entry with a number value, absent until set. */
-    | {
-          kind: "entry";
-          owner: Value;
-          dataType: DataType & { kind: "map" };
-          keyCpp: string;
-      };
+    | EntryUpdatePlace;
+
+/** A Map/Record entry with a number value, absent until set. */
+interface EntryUpdatePlace {
+    kind: "entry";
+    owner: Value;
+    dataType: DataType & { kind: "map" };
+    keyCpp: string;
+}
 
 /**
  * The right side of an `=` store. A statement compiles it into the store.
@@ -11173,6 +11175,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!operator) {
             return false;
         }
+        // The number `target op= right` stores, from the old value.
+        const compoundNext = (previous: string): string =>
+            compoundAssignmentValueCpp(
+                operator,
+                previous,
+                this.context.compileNumber(expression.right, "double"),
+            );
         const left = this.context.unwrap(expression.left);
         if (ts.isArrayLiteralExpression(left) && operator === "=") {
             return (
@@ -11286,14 +11295,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             name: previous,
                             initializer: `static_cast<double>(${narrowed.cpp}.size())`,
                         });
-                        const length = compoundAssignmentValueCpp(
-                            operator,
-                            previous,
-                            this.context.compileNumber(
-                                expression.right,
-                                "double",
-                            ),
-                        );
+                        const length = compoundNext(previous);
                         this.invalidateStaticElements(narrowed);
                         this.invalidateAliases(narrowed.cpp);
                         this.context.emit(
@@ -11380,40 +11382,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 return true;
             }
+        }
+        // `entries[key] += n`, `dictionary.name -= n`: a numeric update of
+        // the entry.
+        if (operator !== "=") {
+            const entry = this.entryUpdatePlace(left);
+            if (entry === "not-number")
+                this.context.fail(
+                    expression,
+                    "Compound assignment to an indexed Record entry requires a number value.",
+                );
+            if (entry) {
+                this.emitNumericUpdate(entry, left, compoundNext);
+                return true;
+            }
+        }
+        if (ts.isElementAccessExpression(left)) {
             const narrowed = this.indexedMapOwner(left);
             if (narrowed) {
-                if (operator !== "=") {
-                    if (narrowed.dataType.value.kind !== "number")
-                        this.context.fail(
-                            expression,
-                            "Compound assignment to an indexed Record entry requires a number value.",
-                        );
-                    this.emitNumericUpdate(
-                        {
-                            kind: "entry",
-                            owner: narrowed,
-                            dataType: narrowed.dataType,
-                            keyCpp: this.compileKnownValueForSink(
-                                this.context.compileValue(
-                                    left.argumentExpression,
-                                ),
-                                narrowed.dataType.key,
-                                left.argumentExpression,
-                            ),
-                        },
-                        left,
-                        (previous) =>
-                            compoundAssignmentValueCpp(
-                                operator,
-                                previous,
-                                this.context.compileNumber(
-                                    expression.right,
-                                    "double",
-                                ),
-                            ),
-                    );
-                    return true;
-                }
                 const keyValue = this.context.compileValue(
                     left.argumentExpression,
                 );
@@ -11486,27 +11472,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // `dictionary.name = value`: the named member is an entry.
             const entry = this.dictionaryEntry(left);
             if (entry) {
-                if (operator !== "=") {
-                    if (entry.dataType.value.kind !== "number")
-                        this.context.fail(
-                            expression,
-                            "Compound assignment to a dictionary member requires a number value.",
-                        );
-                    this.emitNumericUpdate(
-                        { kind: "entry", ...entry },
-                        left,
-                        (previous) =>
-                            compoundAssignmentValueCpp(
-                                operator,
-                                previous,
-                                this.context.compileNumber(
-                                    expression.right,
-                                    "double",
-                                ),
-                            ),
+                // A number member updated above.
+                if (operator !== "=")
+                    this.context.fail(
+                        expression,
+                        "Compound assignment to a dictionary member requires a number value.",
                     );
-                    return true;
-                }
                 const value = this.compileKnownValueForSink(
                     this.assignedValue(source),
                     entry.dataType.value,
@@ -11656,15 +11627,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         target: { ...target, dataType: target.dataType },
                     },
                     left,
-                    (previous) =>
-                        compoundAssignmentValueCpp(
-                            operator,
-                            previous,
-                            this.context.compileNumber(
-                                expression.right,
-                                "double",
-                            ),
-                        ),
+                    compoundNext,
                 );
                 return true;
             }
@@ -12531,6 +12494,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * The entry a numeric update or compound assignment of `operand` writes,
+     * resolved in one probe: a Record entry (a Map entry, as the assignment
+     * lowering writes it) or a dictionary member with a number value.
+     * "not-number" for a Record entry of another value type, which is no
+     * numeric place; undefined, with nothing emitted, for any other operand.
+     */
+    private entryUpdatePlace(
+        operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): EntryUpdatePlace | "not-number" | undefined {
+        return this.context.probeEmission(
+            (): EntryUpdatePlace | "not-number" | undefined => {
+                if (ts.isPropertyAccessExpression(operand)) {
+                    const found = this.dictionaryEntry(operand);
+                    return found?.dataType.value.kind === "number"
+                        ? { kind: "entry", ...found }
+                        : undefined;
+                }
+                const owner = this.indexedMapOwner(operand);
+                if (!owner) return undefined;
+                if (owner.dataType.value.kind !== "number") return "not-number";
+                return {
+                    kind: "entry",
+                    owner,
+                    dataType: owner.dataType,
+                    keyCpp: this.compileKnownValueForSink(
+                        this.context.compileValue(operand.argumentExpression),
+                        owner.dataType.key,
+                        operand.argumentExpression,
+                    ),
+                };
+            },
+            (place) => typeof place === "object",
+        );
+    }
+
+    /**
      * The storage a numeric update writes, resolved once: a native number
      * (`x++` applies directly), an optional number slot, or a dictionary
      * entry. Undefined, with nothing emitted, for any other operand.
@@ -12540,51 +12539,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         narrowScalar: boolean,
     ): NumericUpdatePlace | undefined {
         const operand = this.context.unwrap(operandExpression);
-        if (
-            !ts.isPropertyAccessExpression(operand) &&
-            !ts.isElementAccessExpression(operand) &&
-            !ts.isIdentifier(operand)
+        if (ts.isIdentifier(operand)) {
+            // A number local applies `++` in place: nothing to probe.
+            const bound = this.context.bindings.lookupOptional(operand);
+            if (bound?.kind === "number")
+                return { kind: "scalar", cpp: bound.cpp, target: bound };
+        } else if (
+            ts.isPropertyAccessExpression(operand) ||
+            ts.isElementAccessExpression(operand)
         ) {
-            return undefined;
-        }
-        // A Record entry is a Map entry, as the assignment lowering writes
-        // it; an entry of another value type is no numeric place.
-        if (
-            ts.isElementAccessExpression(operand) &&
-            this.context.probeEmission(
-                () => this.indexedMapOwner(operand) !== undefined,
-                () => false,
-            )
-        ) {
-            return this.context.probeEmission(
-                (): NumericUpdatePlace | undefined => {
-                    const owner = this.indexedMapOwner(operand);
-                    if (owner?.dataType.value.kind !== "number")
-                        return undefined;
-                    return {
-                        kind: "entry",
-                        owner,
-                        dataType: owner.dataType,
-                        keyCpp: this.compileKnownValueForSink(
-                            this.context.compileValue(
-                                operand.argumentExpression,
-                            ),
-                            owner.dataType.key,
-                            operand.argumentExpression,
-                        ),
-                    };
-                },
-            );
-        }
-        if (ts.isPropertyAccessExpression(operand)) {
-            const entry = this.context.probeEmission(() => {
-                const found = this.dictionaryEntry(operand);
-                return found?.dataType.value.kind === "number"
-                    ? found
-                    : undefined;
-            });
-            if (entry) return { kind: "entry", ...entry };
-        }
+            const entry = this.entryUpdatePlace(operand);
+            if (entry === "not-number") return undefined;
+            if (entry) return entry;
+        } else return undefined;
         return this.context.probeEmission(
             (): NumericUpdatePlace | undefined => {
                 const rawTarget =
