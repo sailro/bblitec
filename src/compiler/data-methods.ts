@@ -18,8 +18,6 @@ import {
     argumentAt,
     expressionMayRunCode,
     regularExpressionParts,
-    unwrapExpression,
-    wrappedParent,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -60,6 +58,7 @@ import { numberConstantValue } from "./number-intrinsics.js";
 import {
     absenceKind,
     arrayElementType,
+    declaredContextualType,
     isTypeReference,
     nullability,
     slotHoldsOnlyNull,
@@ -2000,30 +1999,6 @@ function arrayResultType(
         result.element.kind === "enum"
         ? { kind: "vector", element: destination.element }
         : result;
-}
-
-/**
- * The type an expression's position declares for it: its contextual type,
- * except as an argument of a generic call or construction, whose parameter
- * type TypeScript inferred from the argument itself.
- */
-function declaredContextualType(
-    checker: ts.TypeChecker,
-    expression: ts.Expression,
-): ts.Type | undefined {
-    const parent = wrappedParent(expression);
-    const callee =
-        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-        parent.arguments?.some(
-            (argument) => unwrapExpression(argument) === expression,
-        )
-            ? checker.getResolvedSignature(parent)?.getDeclaration()
-            : undefined;
-    // A constructor's signature carries its class's type parameters.
-    return callee &&
-        checker.getSignatureFromDeclaration(callee)?.typeParameters?.length
-        ? undefined
-        : checker.getContextualType(expression);
 }
 
 /**

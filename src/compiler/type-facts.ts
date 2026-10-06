@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { declaredSymbol } from "./symbols.js";
+import { unwrapExpression, wrappedParent } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
@@ -217,4 +218,28 @@ export function presentValuesTruthy(
 export function isNullable(type: ts.Type): boolean {
     const absent = nullability(type);
     return absent.null || absent.undefined;
+}
+
+/**
+ * The type an expression's position declares for it: its contextual type,
+ * except as an argument of a generic call or construction, whose parameter
+ * type TypeScript inferred from the argument itself.
+ */
+export function declaredContextualType(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ts.Type | undefined {
+    const parent = wrappedParent(expression);
+    const callee =
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.arguments?.some(
+            (argument) => unwrapExpression(argument) === expression,
+        )
+            ? checker.getResolvedSignature(parent)?.getDeclaration()
+            : undefined;
+    // A constructor's signature carries its class's type parameters.
+    return callee &&
+        checker.getSignatureFromDeclaration(callee)?.typeParameters?.length
+        ? undefined
+        : checker.getContextualType(expression);
 }

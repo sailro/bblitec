@@ -6259,12 +6259,35 @@ test("literal methods reading this refuse reads of their function value", () => 
         "const unused = mover.carryBegin.call(mover, 1);",
         "const { carryBegin } = mover; const unused = carryBegin(1);",
         "const copy: Mover = { ...mover }; const unused = copy.carryBegin(1);",
+        // A wider type the object flows to reads the same function value.
+        "interface View { carryBegin(id: number): boolean } const view: View = mover; const extracted = view.carryBegin; const unused = extracted(1);",
+        "function take(source: { carryBegin(id: number): boolean }) { const { carryBegin } = source; return carryBegin(1); } const unused = take(mover);",
     ])
         assert.throws(
             () => compileSource(`${factory}\n${use}`),
             /Method 'carryBegin' reads `this`, and .*:\d+ reads its function value, which could call it with another receiver/,
         );
 });
+
+check(
+    "literal-methods-reading-this-admit-reads-of-objects-that-cannot-hold-them",
+    `
+    interface Mover { carryBegin(id: number): boolean; prepareBegin(id: number): boolean; total: number }
+    interface Other { carryBegin: (id: number) => boolean; prepareBegin: number }
+    function createMover(): Mover {
+        return { total: 0, carryBegin(id) { this.total += id; return this.prepareBegin(id); }, prepareBegin(id) { return id > 0; } };
+    }
+    const movers: Array<typeof createMover> = [createMover];
+    const mover = movers[0]!();
+    const other: Other = { carryBegin: (id) => id > 1, prepareBegin: 3 };
+    const extracted = other.carryBegin;
+    const { prepareBegin } = other;
+    const copy = { ...other };
+    const values = Object.values(other).length;
+    if (!mover.carryBegin(2) || mover.carryBegin(-1) || mover.total !== 1) throw new Error("home object");
+    if (extracted(1) || prepareBegin !== 3 || !copy.carryBegin(2) || values !== 2) throw new Error("unrelated reads");
+`,
+);
 
 check(
     "optional-class-method-call-values",

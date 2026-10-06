@@ -3,9 +3,14 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
+import type { LibraryGlobal } from "./symbols.js";
 import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
+import { declaredContextualType } from "./type-facts.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
+
+/** An object literal's own method or function-expression property whose body reads `this`. */
+export type HomeObjectMethod = ts.MethodDeclaration | ts.FunctionExpression;
 
 /**
  * An object literal's method that reads `this` is called with its home
@@ -15,10 +20,29 @@ import { functionUsesDynamicThis } from "./user-functions.js";
  * receiver (`const f = o.m`, `o.m.call(x)`, `{...o}`, `Object.values(o)`).
  */
 interface MethodValueReads {
-    /** Property names read as values, with the first node reading each. */
-    readonly named: ReadonlyMap<string, ts.Node>;
+    /** Property names read as values, with every read of each in program order. */
+    readonly named: ReadonlyMap<string, readonly NamedRead[]>;
     /** Objects read wholesale or by a computed key: any property may be read. */
     readonly wholesale: readonly ts.Node[];
+}
+
+/** One read of a property's value. */
+interface NamedRead {
+    readonly node: ts.Node;
+    /**
+     * What holds the object it reads from: the accessed expression or the
+     * destructured binding pattern. A destructuring assignment target names
+     * no source, so its reads reach every object.
+     */
+    readonly object: ts.Node | undefined;
+}
+
+/** The program's reads, and the read found for each method name and home type. */
+interface ProgramReads {
+    readonly reads: MethodValueReads;
+    /** The first wholesale read of each object type, in program order. */
+    wholesaleTypes?: ReadonlyMap<ts.Type, ts.Node>;
+    readonly answers: Map<string, Map<ts.Type | undefined, ts.Node | null>>;
 }
 
 /** Library functions that read every own property of an argument. */
@@ -36,9 +60,8 @@ const wholesaleReaders: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["Reflect", new Set(["get", "getOwnPropertyDescriptor", "apply"])],
 ]);
 
-type LibraryGlobal = (expression: ts.Expression) => string | undefined;
-
-const programReads = new WeakMap<ts.Program, MethodValueReads>();
+/** Reads are a function of the program, so they outlive any emission transaction. */
+const programReads = new WeakMap<ts.Program, ProgramReads>();
 
 /** Whether a member read is a call's callee, a write target or a `typeof`/`delete` operand. */
 function readsOnlyAsMember(access: ts.Expression): boolean {
@@ -86,10 +109,12 @@ function collectReads(
     program: ts.Program,
     libraryGlobal: LibraryGlobal,
 ): MethodValueReads {
-    const named = new Map<string, ts.Node>();
+    const named = new Map<string, NamedRead[]>();
     const wholesale: ts.Node[] = [];
-    const read = (name: string, node: ts.Node): void => {
-        if (!named.has(name)) named.set(name, node);
+    const read = (name: string, node: ts.Node, object?: ts.Node): void => {
+        const reads = named.get(name);
+        if (reads) reads.push({ node, object });
+        else named.set(name, [{ node, object }]);
     };
     for (const file of program.getSourceFiles()) {
         if (file.isDeclarationFile) continue;
@@ -97,14 +122,16 @@ function collectReads(
             file,
             (node) => {
                 if (ts.isPropertyAccessExpression(node)) {
-                    if (!readsOnlyAsMember(node)) read(node.name.text, node);
+                    if (!readsOnlyAsMember(node))
+                        read(node.name.text, node, node.expression);
                 } else if (ts.isElementAccessExpression(node)) {
                     const key = node.argumentExpression;
                     if (
                         ts.isStringLiteralLike(key) ||
                         ts.isNumericLiteral(key)
                     ) {
-                        if (!readsOnlyAsMember(node)) read(key.text, node);
+                        if (!readsOnlyAsMember(node))
+                            read(key.text, node, node.expression);
                     } else wholesale.push(node.expression);
                 } else if (ts.isBindingElement(node)) {
                     if (ts.isObjectBindingPattern(node.parent)) {
@@ -115,7 +142,7 @@ function collectReads(
                               : ts.isIdentifier(node.name)
                                 ? node.name.text
                                 : undefined;
-                        if (name !== undefined) read(name, node);
+                        if (name !== undefined) read(name, node, node.parent);
                         else wholesale.push(node.parent);
                     }
                 } else if (
@@ -149,50 +176,127 @@ function collectReads(
     return { named, wholesale };
 }
 
-/** Whether any member of `type` declares a property called `name`. */
-function mayHaveProperty(
+/**
+ * Whether an object of type `objectType` can be the home object of method
+ * `name`: some member of the type declares the property and accepts the
+ * home object's declared type. Without a declared home type, every object
+ * declaring the property can be it.
+ */
+function mayHoldMethod(
     checker: ts.TypeChecker,
-    type: ts.Type,
+    objectType: ts.Type,
     name: string,
+    home: ts.Type | undefined,
 ): boolean {
-    if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
-    const members = type.isUnionOrIntersection() ? type.types : [type];
-    return members.some(
-        (member) =>
-            (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
-            checker.getPropertyOfType(checker.getApparentType(member), name) !==
-                undefined,
+    return (objectType.isUnion() ? objectType.types : [objectType]).some(
+        (member) => {
+            if (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+                return true;
+            const apparent = checker.getApparentType(member);
+            return (
+                checker.getPropertyOfType(apparent, name) !== undefined &&
+                (home === undefined ||
+                    checker.isTypeAssignableTo(home, apparent))
+            );
+        },
     );
 }
 
 /**
+ * The type every place a literal's object flows to accepts: the one object
+ * type its position declares. A literal typed by inference or only checked
+ * by `satisfies` keeps its own literal type, which a narrower type does not
+ * accept while it is fresh, so it has none.
+ */
+function homeObjectType(
+    checker: ts.TypeChecker,
+    method: HomeObjectMethod,
+): ts.Type | undefined {
+    const literal = ts.isMethodDeclaration(method)
+        ? method.parent
+        : wrappedParent(method).parent;
+    if (!ts.isObjectLiteralExpression(literal)) return undefined;
+    for (
+        let wrapper: ts.Node = literal.parent;
+        ts.isParenthesizedExpression(wrapper) ||
+        ts.isSatisfiesExpression(wrapper);
+        wrapper = wrapper.parent
+    )
+        if (ts.isSatisfiesExpression(wrapper)) return undefined;
+    const declared = declaredContextualType(checker, literal);
+    const type = declared && checker.getNonNullableType(declared);
+    return type &&
+        !type.isUnion() &&
+        (type.flags & ts.TypeFlags.Object) !== 0 &&
+        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) ===
+            0
+        ? type
+        : undefined;
+}
+
+/**
  * The first place the program could read method `name`'s function value
- * rather than call it through its object, or undefined when every read is
- * a member call's callee.
+ * from an object that can hold it rather than call it through that object,
+ * or undefined when there is none. Answers are kept per method name and
+ * home type; wholesale reads are tested once per object type.
  */
 function methodValueRead(
-    program: ts.Program,
-    checker: ts.TypeChecker,
-    libraryGlobal: LibraryGlobal,
+    context: Pick<LoweringServices, "program" | "checker" | "libraryGlobal">,
     name: string,
+    home: ts.Type | undefined,
 ): ts.Node | undefined {
-    let reads = programReads.get(program);
-    if (!reads) {
-        reads = collectReads(program, libraryGlobal);
-        programReads.set(program, reads);
+    const { checker } = context;
+    let state = programReads.get(context.program);
+    if (!state) {
+        state = {
+            reads: collectReads(context.program, (expression) =>
+                context.libraryGlobal(expression),
+            ),
+            answers: new Map(),
+        };
+        programReads.set(context.program, state);
     }
-    return (
-        reads.named.get(name) ??
-        reads.wholesale.find((node) =>
-            mayHaveProperty(checker, checker.getTypeAtLocation(node), name),
-        )
-    );
+    let answers = state.answers.get(name);
+    if (!answers) {
+        answers = new Map<ts.Type | undefined, ts.Node | null>();
+        state.answers.set(name, answers);
+    }
+    let answer = answers.get(home);
+    if (answer === undefined) {
+        const held = new Map<ts.Type, boolean>();
+        const mayHold = (type: ts.Type): boolean => {
+            let holds = held.get(type);
+            if (holds === undefined) {
+                holds = mayHoldMethod(checker, type, name, home);
+                held.set(type, holds);
+            }
+            return holds;
+        };
+        if (!state.wholesaleTypes) {
+            const types = new Map<ts.Type, ts.Node>();
+            for (const node of state.reads.wholesale) {
+                const type = checker.getTypeAtLocation(node);
+                if (!types.has(type)) types.set(type, node);
+            }
+            state.wholesaleTypes = types;
+        }
+        answer =
+            state.reads.named
+                .get(name)
+                ?.find(
+                    ({ object }) =>
+                        object === undefined ||
+                        mayHold(checker.getTypeAtLocation(object)),
+                )?.node ??
+            [...state.wholesaleTypes].find(([type]) => mayHold(type))?.[1] ??
+            null;
+        answers.set(home, answer);
+    }
+    return answer ?? undefined;
 }
 
 /** An object literal's own method or function-expression property whose body reads `this`. */
-export function readsHomeObject(
-    node: ts.Node,
-): node is ts.MethodDeclaration | ts.FunctionExpression {
+export function readsHomeObject(node: ts.Node): node is HomeObjectMethod {
     let owner: ts.Node = node.parent;
     if (ts.isFunctionExpression(node)) {
         owner = wrappedParent(node);
@@ -207,7 +311,8 @@ export function readsHomeObject(
  * receiver, declared before the methods' closures capture it; the caller
  * stores the created object in it. A method whose function value never
  * leaves its object is only called as a member of that object, so `this`
- * is the object the literal creates; any other read of the value refuses.
+ * is the object the literal creates; any read of the value from an object
+ * that can hold it refuses.
  */
 export function homeObjectReceiver(
     context: Pick<
@@ -223,7 +328,10 @@ export function homeObjectReceiver(
         | "registerNativeBinding"
     >,
     dataType: DataType<"struct">,
-    methods: readonly { readonly name: string; readonly method: ts.Node }[],
+    methods: readonly {
+        readonly name: string;
+        readonly method: HomeObjectMethod;
+    }[],
     node: ts.Node,
 ): Value | undefined {
     if (!methods.length) return undefined;
@@ -234,10 +342,9 @@ export function homeObjectReceiver(
         );
     for (const { name, method } of methods) {
         const read = methodValueRead(
-            context.program,
-            context.checker,
-            (expression) => context.libraryGlobal(expression),
+            context,
             name,
+            homeObjectType(context.checker, method),
         );
         if (!read) continue;
         const file = read.getSourceFile();
