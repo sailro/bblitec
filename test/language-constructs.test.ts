@@ -5067,3 +5067,27 @@ checkInRealm(
     })();
 `,
 );
+
+check(
+    "defaulted-parameters-through-stored-method-views",
+    `
+    interface Frame { bind(handle: number, publish: (x: number) => void, localY?: number, datum?: string): number }
+    class HostFrame implements Frame {
+        bind(handle: number, publish: (x: number) => void, localY = 0, datum?: string): number {
+            publish(handle + localY);
+            return datum ? 1 : 0;
+        }
+    }
+    function use(frame: Pick<HostFrame, "bind">): number {
+        let seen = 0;
+        const plain = frame.bind(3, (x) => { seen += x; });
+        const placed = frame.bind(1, (x) => { seen += x * 100; }, 2, "datum");
+        return seen + plain * 1000 + placed * 10000;
+    }
+    function scaled(value: number, factor = 2, offset = factor * 10): number { return value * factor + offset; }
+    const users: Array<typeof use> = [use];
+    const scales: Array<typeof scaled> = [scaled];
+    if (users[0]!(new HostFrame()) !== 10303) throw new Error("defaulted method view");
+    if (scales[0]!(1) !== 22 || scales[0]!(1, 3) !== 33 || scales[0]!(1, 3, 1) !== 4) throw new Error("defaulted stored function");
+`,
+);
