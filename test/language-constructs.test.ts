@@ -4954,3 +4954,91 @@ check(
 `,
 );
 
+check(
+    "immediate-promise-callbacks-destructure-their-value",
+    `
+    interface Pair { wave: number; caustics: number }
+    async function load(n: number): Promise<number> { return n * 2; }
+    async function loadPair(): Promise<Pair> { return { wave: 3, caustics: 4 }; }
+    void Promise.all([load(1), load(2)]).then(([wave, caustics]) => {
+        if (wave !== 2 || caustics !== 4) throw new Error("tuple destructuring");
+    });
+    void loadPair().then(({ wave, caustics: renamed }) => {
+        if (wave !== 3 || renamed !== 4) throw new Error("record destructuring");
+    });
+`,
+);
+
+test("immediate promise callbacks refuse rest parameters", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "async function load(): Promise<number> { return 1; } void load().then((...values) => { const unused = values.length; });",
+            ),
+        /Immediate promise callback accepts zero parameters or one parameter binding/,
+    );
+});
+
+/**
+ * Asynchronous work that needs an owned promise runs in an application
+ * realm; the snippet closes it once its last assertion has run, which both
+ * sides observe.
+ */
+function checkInRealm(name: string, source: string): void {
+    test(name, async (t) => {
+        let closed = false;
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.None,
+                },
+            }).outputText,
+            { close: () => (closed = true) },
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(closed, true);
+        const result = compileSource(source, { fileName: `${name}.ts` });
+        await t.test(
+            "generated C++ executes the same assertions",
+            { skip: !native },
+            () => {
+                runGeneratedProgram(
+                    native!,
+                    `language-constructs/${name}`,
+                    result.cpp,
+                    { defines: ["BBLITE_WORKERS=1"] },
+                );
+            },
+        );
+    });
+}
+
+checkInRealm(
+    "stored-promise-then-finally",
+    `
+    interface Deps { spawn(x: number): Promise<boolean>; despawn(): void }
+    let spawned = 0;
+    let spawning = false;
+    let finished = 0;
+    function createLive(deps: Deps): { start(x: number): void } {
+        return {
+            start(x) {
+                spawning = true;
+                void deps.spawn(x)
+                    .then((ok) => { if (ok) spawned++; else deps.despawn(); })
+                    .finally(() => {
+                        spawning = false;
+                        finished++;
+                        if (spawned !== 1) throw new Error("fulfillment reaction runs before cleanup");
+                        globalThis.close();
+                    });
+            },
+        };
+    }
+    const lives: Array<typeof createLive> = [createLive];
+    lives[0]!({ spawn: async (x) => x > 0, despawn: () => {} }).start(1);
+    if (!spawning || finished !== 0) throw new Error("cleanup waits for settlement");
+`,
+);
+
