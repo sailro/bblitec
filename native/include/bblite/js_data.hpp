@@ -2498,8 +2498,10 @@ struct DayTime {
         return static_cast<double>(civil_from_days(day).day);
     case DateField::weekday:
         return static_cast<double>(((day + 4) % 7 + 7) % 7);
-    case DateField::hours:
-        return static_cast<double>(within_day / 3600000);
+    case DateField::hours: {
+        const std::int64_t hours = within_day / 3600000;
+        return static_cast<double>(hours);
+    }
     case DateField::minutes:
         return static_cast<double>(within_day / 60000 % 60);
     case DateField::seconds:
