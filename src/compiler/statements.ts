@@ -1311,52 +1311,51 @@ export class StatementLowerer {
                 ts.isCaseClause(clause) &&
                 isNullishLiteral(context.checker, clause.expression),
         );
-        // A case label matches before the default wherever it stands;
-        // labels evaluate in order until one matches. A generation-known
-        // absent value matches only the label of its own absence, which its
-        // declared type must name.
-        const staticString = value.staticString;
-        const absentLabelMatches = (
-            clause: ts.CaseOrDefaultClause,
-        ): boolean => {
+        // A null or undefined label matches only the absence the
+        // discriminant's empty value stands for, which its declared type
+        // must hold apart from the other one.
+        const absence = nullishLabel
+            ? absenceKind(context.checker, value, statement.expression)
+            : undefined;
+        const requireAbsenceApart = (holdsAbsence: boolean): void => {
             if (
-                !ts.isCaseClause(clause) ||
-                !isNullishLiteral(context.checker, clause.expression)
+                nullishLabel &&
+                (!holdsAbsence ||
+                    absence === "either" ||
+                    typeof absence === "object")
             )
-                return false;
-            const absence = absenceKind(
-                context.checker,
-                value,
-                statement.expression,
-            );
-            if (absence === "either" || typeof absence === "object")
                 context.fail(
-                    clause,
+                    nullishLabel,
                     "A null or undefined case label requires a discriminant that holds null and undefined apart.",
                 );
-            return (
-                (context.unwrap(clause.expression).kind ===
-                    ts.SyntaxKind.NullKeyword) ===
-                (absence === "null")
-            );
         };
-        const staticSelection =
-            staticString !== undefined
-                ? clauses.findIndex(
-                      (clause) =>
-                          ts.isCaseClause(clause) &&
-                          !isNullishLiteral(
-                              context.checker,
-                              clause.expression,
-                          ) &&
-                          this.compileStaticSwitchString(
-                              context,
-                              clause.expression,
-                          ) === context.cppString(staticString),
-                  )
-                : value.kind === "json-null"
-                  ? clauses.findIndex(absentLabelMatches)
-                  : undefined;
+        const nullishLabelMatches = (clause: ts.CaseClause): boolean =>
+            (context.unwrap(clause.expression).kind ===
+                ts.SyntaxKind.NullKeyword) ===
+            (absence === "null");
+        // A case label matches before the default wherever it stands;
+        // labels evaluate in order until one matches.
+        const staticString = value.staticString;
+        let staticSelection: number | undefined;
+        if (staticString !== undefined)
+            staticSelection = clauses.findIndex(
+                (clause) =>
+                    ts.isCaseClause(clause) &&
+                    !isNullishLiteral(context.checker, clause.expression) &&
+                    this.compileStaticSwitchString(
+                        context,
+                        clause.expression,
+                    ) === context.cppString(staticString),
+            );
+        else if (value.kind === "json-null") {
+            requireAbsenceApart(true);
+            staticSelection = clauses.findIndex(
+                (clause) =>
+                    ts.isCaseClause(clause) &&
+                    isNullishLiteral(context.checker, clause.expression) &&
+                    nullishLabelMatches(clause),
+            );
+        }
         if (staticSelection !== undefined) {
             const selected =
                 staticSelection === -1
@@ -1414,21 +1413,9 @@ export class StatementLowerer {
                 `Switch discriminants must be numbers or strings, received ${value.kind}.`,
             );
         }
-        // Which absence an optional discriminant's empty storage stands for.
-        const absence = optional
-            ? absenceKind(context.checker, value, statement.expression)
-            : undefined;
-        if (
-            nullishLabel &&
-            !document &&
-            (absence === undefined ||
-                absence === "either" ||
-                typeof absence === "object")
-        )
-            context.fail(
-                nullishLabel,
-                "A null or undefined case label requires a discriminant that holds null and undefined apart.",
-            );
+        // An optional discriminant's empty storage is its absence; a
+        // document compares with each nullish label itself.
+        if (!document) requireAbsenceApart(optional !== undefined);
         context.emit({ kind: "open", code: "{" });
         context.increaseIndent();
         const storage = `${discriminant}_storage`;
@@ -1476,9 +1463,7 @@ export class StatementLowerer {
                 isNullishLiteral(context.checker, clause.expression)
             )
                 // Empty storage is one absence; the other label never matches.
-                return (context.unwrap(clause.expression).kind ===
-                    ts.SyntaxKind.NullKeyword) ===
-                    (absence === "null")
+                return nullishLabelMatches(clause)
                     ? `!${optionalPresentCpp(storage)}`
                     : undefined;
             const label = stringSwitch
