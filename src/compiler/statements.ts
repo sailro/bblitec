@@ -4445,11 +4445,6 @@ export class StatementLowerer {
     }
 
     /**
-     * One expression lowered as a statement. Public for a caller holding
-     * an expression rather than an `ExpressionStatement` — a concise
-     * arrow body, whose value the pin's callback contract discards.
-     */
-    /**
      * `condition ? a() : b()` whose value is discarded: each arm is a
      * statement of its own branch, so arms of different value types (one
      * void) never meet in one native expression.
@@ -4491,6 +4486,11 @@ export class StatementLowerer {
         context.emit({ kind: "close", code: "}" });
     }
 
+    /**
+     * One expression lowered as a statement. Public for a caller holding
+     * an expression rather than an `ExpressionStatement` — a concise
+     * arrow body, whose value the pin's callback contract discards.
+     */
     public emitExpression(
         context: StatementLoweringContext,
         expression: ts.Expression,
@@ -5435,10 +5435,6 @@ export class StatementLowerer {
     }
 }
 
-/**
- * True when a branch always leaves the surrounding iteration or
- * function, so code after the branch never observes its effects.
- */
 /** Whether a case clause leaves the switch at its end instead of falling on. */
 function switchClauseCompletes(clause: ts.CaseOrDefaultClause): boolean {
     const last = clause.statements.at(-1);
@@ -5459,6 +5455,10 @@ function switchFallthroughRun(
     return run;
 }
 
+/**
+ * True when a branch always leaves the surrounding iteration or
+ * function, so code after the branch never observes its effects.
+ */
 function terminatesFlow(
     statement: ts.Statement,
     lowered: (node: ts.Statement) => boolean = () => false,

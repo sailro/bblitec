@@ -4300,7 +4300,6 @@ export class UserFunctionLowerer {
         return this.declarationIdentifier(declaration).text;
     }
 
-    /** Invokes a callback over values supplied by a lowering operation. */
     /**
      * The global `Boolean` passed as a callback (`filter(Boolean)`):
      * ToBoolean of its first argument.
@@ -4336,6 +4335,7 @@ export class UserFunctionLowerer {
         };
     }
 
+    /** Invokes a callback over values supplied by a lowering operation. */
     public compileCallbackWithValues(
         context: UserFunctionContext,
         declaration:

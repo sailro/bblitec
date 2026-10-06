@@ -6195,8 +6195,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * Compiles JavaScript Math member calls with runtime arguments.
+     * `target` is the Math member the call reaches, when a `const` alias
+     * names it.
      */
-    /** `target` is the Math member the call reaches, when a `const` alias names it. */
     public compileMathCall(
         call: ts.CallExpression,
         target: ts.Expression = call.expression,
