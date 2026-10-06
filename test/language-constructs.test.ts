@@ -5065,6 +5065,40 @@ check(
 `,
 );
 
+check(
+    "object-literal-key-order-follows-creation",
+    `
+    const values = [1, 2, 3, 4];
+    const name = "n" + values[0], extra = values[1]!, tail = values[2]! > 2;
+    const between = { name, ...{ extra }, tail };
+    if (JSON.stringify(between) !== '{"name":"n1","extra":2,"tail":true}') throw new Error("between " + JSON.stringify(between));
+    if (Object.keys(between).join() !== "name,extra,tail") throw new Error("keys " + Object.keys(between).join());
+    const keys: string[] = [];
+    for (const key in between) keys.push(key);
+    if (keys.join() !== "name,extra,tail") throw new Error("for-in " + keys.join());
+    const before = { ...{ extra, tail }, name };
+    if (JSON.stringify(before) !== '{"extra":2,"tail":true,"name":"n1"}') throw new Error("before " + JSON.stringify(before));
+    const after = { tail, name, ...{ extra } };
+    if (JSON.stringify(after) !== '{"tail":true,"name":"n1","extra":2}') throw new Error("after " + JSON.stringify(after));
+    const base = { a: values[0]!, b: values[1]! };
+    const overwritten = { z: values[3]!, ...base, a: values[2]!, c: 0 };
+    if (JSON.stringify(overwritten) !== '{"z":4,"a":3,"b":2,"c":0}' || Object.keys(overwritten).join() !== "z,a,b,c")
+        throw new Error("overwritten " + JSON.stringify(overwritten));
+    const spreadOver = { a: 0, q: values[0]!, ...base };
+    if (JSON.stringify(spreadOver) !== '{"a":1,"q":1,"b":2}') throw new Error("spread overwrite " + JSON.stringify(spreadOver));
+    const numeric = { b: 1, ...{ 2: "two", a: 0 }, 1: "one" };
+    if (JSON.stringify(numeric) !== '{"1":"one","2":"two","b":1,"a":0}') throw new Error("integer keys " + JSON.stringify(numeric));
+    const rows = [between];
+    rows.push({ ...between, extra: values[3]! });
+    const stored = rows[values[0]!]!;
+    const storedKeys: string[] = [];
+    for (const key in stored) storedKeys.push(key);
+    if (JSON.stringify(rows) !== '[{"name":"n1","extra":2,"tail":true},{"name":"n1","extra":4,"tail":true}]' ||
+        Object.keys(stored).join() !== "name,extra,tail" || storedKeys.join() !== "name,extra,tail")
+        throw new Error("stored records " + JSON.stringify(rows));
+`,
+);
+
 test("dynamic object and built-in boundaries refuse explicitly", () => {
     const refusals: Array<[string, RegExp]> = [
         [

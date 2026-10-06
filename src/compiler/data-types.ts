@@ -3702,9 +3702,63 @@ export class DataTypeRegistry {
         return { kind: "undefined" };
     }
 
+    /**
+     * The own keys an object literal creates, in JavaScript's order: integer
+     * keys ascending, then the others as written, a spread inserting its
+     * source's keys where it stands and a later key keeping the position of
+     * the one it overwrites. TypeScript orders a spread's synthesized type
+     * otherwise. Undefined for a type no object literal declares, or one
+     * with a computed key.
+     */
+    private objectLiteralKeyOrder(type: ts.Type): string[] | undefined {
+        const literal = type.symbol?.declarations?.[0];
+        if (!literal || !ts.isObjectLiteralExpression(literal))
+            return undefined;
+        const keys: string[] = [];
+        for (const property of literal.properties) {
+            const names = ts.isSpreadAssignment(property)
+                ? (() => {
+                      const source = this.checker.getNonNullableType(
+                          this.checker.getTypeAtLocation(property.expression),
+                      );
+                      return (
+                          this.objectLiteralKeyOrder(source) ??
+                          this.checker
+                              .getPropertiesOfType(source)
+                              .map((symbol) => symbol.name)
+                      );
+                  })()
+                : property.name && propertyNameText(property.name);
+            if (names === undefined) return undefined;
+            for (const name of typeof names === "string" ? [names] : names)
+                if (!keys.includes(name)) keys.push(name);
+        }
+        const index = (key: string): number | undefined =>
+            /^(0|[1-9]\d*)$/.test(key) && Number(key) < 2 ** 32 - 1
+                ? Number(key)
+                : undefined;
+        return [
+            ...keys
+                .filter((key) => index(key) !== undefined)
+                .sort((left, right) => index(left)! - index(right)!),
+            ...keys.filter((key) => index(key) === undefined),
+        ];
+    }
+
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
     private structProperties(type: ts.Type): readonly ts.Symbol[] {
-        const properties = this.checker.getPropertiesOfType(type);
+        const declared = this.checker.getPropertiesOfType(type);
+        // A literal's fields follow the order its own keys are created in.
+        const order = this.objectLiteralKeyOrder(type);
+        const properties = order
+            ? [...declared].sort((left, right) => {
+                  const at = (symbol: ts.Symbol): number => {
+                      const position = order.indexOf(symbol.name);
+                      return position < 0 ? order.length : position;
+                  };
+                  return at(left) - at(right);
+              })
+            : declared;
         if (!type.isIntersection()) return properties;
         const byName = new Map(
             properties.map((property) => [property.name, property]),
