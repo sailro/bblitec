@@ -56,10 +56,8 @@ import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import {
-    absenceKind,
     arrayElementType,
     isTypeReference,
-    nullability,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 
@@ -3417,47 +3415,19 @@ function compileStringPositionSearch(
         { kind: "string" },
         searchNode,
     );
+    // An omitted or undefined position is the search's own start; `null`
+    // is ToNumber 0.
     const position = positionNode
-        ? compileSearchPosition(lowerer, positionNode, method, search)
+        ? lowerer.compileDefaultedNumberArgument(
+              positionNode,
+              search.absent === "start" ? 0 : Infinity,
+          )
         : undefined;
+    context.reachJsData();
     return lowerer.leafValue(
         `bbl::js::${search.helper}(${receiver.cpp}, ${searchText}${position === undefined ? "" : `, ${position}`})`,
         { kind: search.result },
     );
-}
-
-/** A passed search position as a double: see `compileStringPositionSearch`. */
-function compileSearchPosition(
-    lowerer: DataLowerer,
-    node: ts.Expression,
-    method: string,
-    search: StringPositionSearch,
-): string {
-    const context = lowerer.context;
-    const admitted = nullability(context.checker.getTypeAtLocation(node));
-    if (!admitted.null && !admitted.undefined)
-        return context.compileNumber(node, "double");
-    const value = context.compileValue(node);
-    const absence = absenceKind(context.checker, value, node);
-    const fallback =
-        search.absent === "start"
-            ? "0.0"
-            : absence === "null"
-              ? "0.0"
-              : typeof absence === "object"
-                ? `(${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::infinity())`
-                : absence === "either"
-                  ? context.fail(
-                        node,
-                        `String.${method} reads a null position as 0 and an undefined one as the end; this position's storage cannot tell them apart.`,
-                    )
-                  : "std::numeric_limits<double>::infinity()";
-    const optional = lowerer.compileKnownValueForSink(
-        value,
-        { kind: "optional", inner: { kind: "number" } },
-        node,
-    );
-    return `bbl::js::number_from_optional(${optional}, ${fallback})`;
 }
 
 function compileStringDataMethod(

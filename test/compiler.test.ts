@@ -8513,6 +8513,26 @@ test("an assignment used as a value constructs once and reads the target", () =>
     assertCameraScalarWrite(result.cpp, "radius", /6\.0/);
 });
 
+test("an engine-property assignment used as a value refuses a target that runs code", () => {
+    // The engine store runs as its statement and its target is read back, so
+    // `index++` in the target would run twice.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const boxes = [createBox(engine), createBox(engine)];
+            let index = 0;
+            const visible = (boxes[index++]!.isVisible = false);
+            boxes[1]!.isVisible = visible;
+        }
+    `),
+        /a target that runs code must be bound to a local first/,
+    );
+});
+
 test("folds a nullish-coalescing browser query default", () => {
     const source = `
         import {

@@ -53,6 +53,11 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }
 
+/** Whether native copies of this kind share storage (`sharesStorage`). */
+export function sharesStorageKind(type: DataType): boolean {
+    return kinds[type.kind].sharesStorage === true;
+}
+
 /** Walk stored members, optionally including the types in a function signature. */
 export function containsDataKind(
     type: DataType,

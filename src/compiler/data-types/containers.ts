@@ -51,6 +51,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => type.elements,
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
     },
     union: {
         cpp: (type, context) =>
@@ -88,6 +89,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
     },
     arguments: {
         cpp: (type, context) =>
@@ -97,6 +99,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: false,
         tracedEdges: "children",
+        sharesStorage: true,
     },
     map: {
         cpp: (type, context) =>
@@ -113,6 +116,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.key, type.value],
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
     },
     set: {
         cpp: (type, context) =>
@@ -122,6 +126,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
     },
     iterator: {
         cpp: (type, context) =>
@@ -135,6 +140,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "always",
+        sharesStorage: true,
     },
     span: {
         cpp: (type, context) =>
@@ -152,6 +158,7 @@ export const containerKinds: DataKindOperations<
         children: () => [],
         byReference: true,
         tracedEdges: "never",
+        sharesStorage: true,
     },
     enummap: {
         cpp: (type, context) => {

@@ -6799,6 +6799,109 @@ check(
 `,
 );
 
+check(
+    "assignment-values-evaluate-their-target-once",
+    `
+    const gate = new Float32Array([0, 1]);
+    const flags: boolean[] = [false, false];
+    let i = 0;
+    let hits = 0;
+    if ((flags[i++] = gate[1]! > 0)) hits++;
+    if (i !== 1 || !flags[0] || flags[1] || hits !== 1) throw new Error("boolean element condition");
+    const names: string[] = ["a", "b", "c"];
+    let j = 0;
+    const stored = (names[j++] = "x");
+    if ((names[j++] = "")) hits++;
+    if (j !== 2 || stored !== "x" || names.join(",") !== "x,,c" || hits !== 1) throw new Error("string elements");
+    interface Row { label: string | null; tags: string[] }
+    const rows: Row[] = [{ label: "r0", tags: [] }, { label: "r1", tags: [] }];
+    let k = 0;
+    const label = (rows[k++]!.label = "set");
+    if (k !== 1 || label !== "set" || rows[0]!.label !== "set" || rows[1]!.label !== "r1") throw new Error("record element field");
+    const tags = (rows[--k]!.tags = ["t"]);
+    tags.push("u");
+    if (k !== 0 || rows[0]!.tags.length !== 2 || rows[1]!.tags.length !== 0) throw new Error("assigned array identity");
+    let n = 0;
+    const counts = [1, 2];
+    const total = (counts[n++] = 5) + (counts[n++] = 6);
+    if (n !== 2 || total !== 11 || counts.join(",") !== "5,6") throw new Error("number elements");
+    const bytes = new Uint8Array(2);
+    let b = 0;
+    const raw = (bytes[b++] = 300);
+    if (b !== 1 || raw !== 300 || bytes[0] !== 44 || bytes[1] !== 0) throw new Error("typed array assignment value");
+    const holder = { f: false };
+    let calls = 0;
+    function owner(): { f: boolean } { calls++; return holder; }
+    const picked = (owner().f = gate[1]! > 0) ? 1 : 2;
+    if (picked !== 1 || calls !== 1 || !holder.f) throw new Error("call target");
+    const cursor = { node: 0 };
+    const next = [2, 0, 1];
+    let visits = 0;
+    while ((cursor.node = next[cursor.node]!) !== 0) visits++;
+    if (visits !== 2) throw new Error("loop condition store");
+`,
+);
+
+check(
+    "assignment-values-through-setters-yield-the-assigned-value",
+    `
+    const gate = new Float32Array([0, 1]);
+    class Gauge {
+        private level = 0;
+        get value(): number { return this.level * 10; }
+        set value(next: number) { this.level = Math.max(0, Math.min(1, next)); }
+    }
+    const gauge = new Gauge();
+    const assigned = (gauge.value = 5);
+    if (assigned !== 5 || gauge.value !== 10) throw new Error("setter value");
+    const negative = (gauge.value = -3 * gate[1]!);
+    if (negative !== -3 || gauge.value !== 0) throw new Error("normalized setter value");
+    if ((gauge.value = 0)) throw new Error("falsy assigned value");
+    const gauges: Gauge[] = [new Gauge(), new Gauge()];
+    let g = 0;
+    const half = (gauges[g++]!.value = 0.5);
+    if (g !== 1 || half !== 0.5 || gauges[0]!.value !== 5 || gauges[1]!.value !== 0) throw new Error("stored instance setter");
+    interface Labelled { label: string }
+    function labelled(): Labelled {
+        let text = "";
+        return { get label() { return "<" + text + ">"; }, set label(next: string) { text = next.trim(); } };
+    }
+    const items: Labelled[] = [labelled(), { label: "plain" }];
+    let c = 0;
+    const shown = (items[c++]!.label = " hi ");
+    if (c !== 1 || shown !== " hi " || items[0]!.label !== "<hi>" || items[1]!.label !== "plain") throw new Error("accessor slot");
+    const plain = (items[c]!.label = " p ");
+    if (plain !== " p " || items[1]!.label !== " p ") throw new Error("data slot");
+`,
+);
+
+check(
+    "chained-assignments-share-the-assigned-value",
+    `
+    const gate = new Float32Array([0, 1]);
+    interface Peer { id: number }
+    interface Slot { n: number; s: string; peer: Peer | null; list: number[]; maybe?: number }
+    const make = (): Slot => ({ n: 0, s: "", peer: null, list: [] });
+    const a = make(), b = make(), c = make();
+    a.n = b.n = c.n = 4 * gate[1]!;
+    a.s = b.s = c.s = "q";
+    const shared: Peer = { id: 1 };
+    a.peer = b.peer = c.peer = shared;
+    shared.id = 2;
+    if (a.peer!.id !== 2 || b.peer !== c.peer || a.peer !== shared) throw new Error("chained record identity");
+    a.list = b.list = c.list = [];
+    a.list.push(1);
+    if (c.list.length !== 1 || b.list !== a.list) throw new Error("chained array identity");
+    let x = 0, y = 0;
+    x = y = a.n = 9;
+    if (x !== 9 || y !== 9 || a.n !== 9 || b.n !== 4) throw new Error("chained locals");
+    const sum = (a.maybe = 3) + 1;
+    if (sum !== 4 || a.maybe !== 3) throw new Error("optional field value");
+    a.s = b.s = a.n > 5 ? "big" : "small";
+    if (a.s !== "big" || b.s !== "big" || c.s !== "q") throw new Error("chained conditional");
+`,
+);
+
 test("conditional record values refuse unrepresented key and absence shapes", () => {
     for (const [source, message] of [
         [
@@ -6812,10 +6915,6 @@ test("conditional record values refuse unrepresented key and absence shapes", ()
         [
             "const g = new Float32Array([1]); const r = { m() { return 1; }, ...(g[0]! > 0 ? { m: 2 } : {}) }; const n = r.m;",
             /conditionally present spread key 'm' cannot replace a method or accessor/,
-        ],
-        [
-            "const g = new Float32Array([1]); const o = { f: false }; function p(): { f: boolean } { return o; } const v = (p().f = g[0]! > 0) ? 1 : 2;",
-            /a target containing a call must be bound to a local first/,
         ],
         [
             "const g = new Float32Array([1]); function f(o: { x: number } | null | undefined): number | null | undefined { return o && o.x; } const v = f(g[0]! > 0 ? { x: 1 } : null);",
@@ -6844,6 +6943,27 @@ check(
     pending = { x: 2 };
     changed = pending !== null && pending !== undefined;
     if (!changed) throw new Error("present pending");
+`,
+);
+
+check(
+    "paired-absence-tests-inside-longer-chains",
+    `
+    const gate = new Float32Array([0, 1]);
+    interface Bounds { x: number }
+    interface Opts { linked?: Bounds | null; current: boolean }
+    const all: Opts[] = [{ linked: { x: 2 }, current: true }, { linked: null, current: true }, { current: false }];
+    const ready = gate[1]! > 0;
+    let present = 0;
+    let missing = 0;
+    for (const opts of all) {
+        if (ready && opts.linked !== null && opts.linked !== undefined) present += opts.linked.x;
+        if (!ready || opts.linked === null || opts.linked === undefined) missing++;
+        if (opts.current && opts.linked !== undefined && opts.linked !== null && ready) present += 10;
+    }
+    if (present !== 12 || missing !== 2) throw new Error("chained pairs " + present + " " + missing);
+    const pick = (opts: Opts): boolean => ready && opts.linked !== null && opts.linked !== undefined;
+    if (!pick(all[0]!) || pick(all[1]!) || pick(all[2]!)) throw new Error("chained pair value");
 `,
 );
 
@@ -6994,6 +7114,43 @@ check(
     if (receiver().lastIndexOf(needle()) !== 1 || log !== "rs") throw new Error("lastIndexOf order " + log);
 `,
 );
+
+check(
+    "defaulted-number-arguments-read-null-as-zero",
+    `
+    const gate = new Float32Array([0, 1]);
+    const text = "abcabc";
+    const none: number | null = gate[1]! > 0 ? null : 2;
+    const omitted: number | undefined = gate[1]! > 0 ? undefined : 2;
+    // @ts-expect-error a null position is ToNumber(null), 0
+    if (text.lastIndexOf("b", none) !== -1 || text.lastIndexOf("a", none) !== 0) throw new Error("lastIndexOf null");
+    // @ts-expect-error a null position is ToNumber(null), 0
+    if (text.indexOf("b", none) !== 1 || text.endsWith("c", none) || !text.startsWith("a", none)) throw new Error("null positions");
+    if (text.lastIndexOf("b", omitted) !== 4 || text.indexOf("b", omitted) !== 1 || !text.endsWith("c", omitted))
+        throw new Error("undefined positions");
+    if (text.lastIndexOf("b", undefined) !== 4) throw new Error("undefined literal position");
+    const loose: number | null | undefined = gate[0]! > 0 ? 3 : undefined;
+    // @ts-expect-error null and undefined both read 0 here
+    if (text.indexOf("c", loose) !== 2) throw new Error("indexOf either absence");
+    const table: Record<string, number | null> = { a: null };
+    const key = gate[1]! > 0 ? "a" : "b";
+    // @ts-expect-error a stored null and a missing entry both read 0 here
+    if (text.indexOf("b", table[key]) !== 1 || text.indexOf("b", table[key + "z"]) !== 1) throw new Error("indexOf lookups");
+    const buffer = new ArrayBuffer(8);
+    // @ts-expect-error a null byte offset is ToIndex(null), 0
+    if (new Uint8Array(buffer, none).length !== 8 || new Uint8Array(buffer, omitted).length !== 8) throw new Error("byte offsets");
+`,
+);
+
+test("a defaulted number argument refuses storage that cannot tell null from undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'const g = new Float32Array([1]); const r: Record<string, number | null> = { a: null }; const key = g[0]! > 0 ? "a" : "b"; // @ts-expect-error\nconst i = "ab".lastIndexOf("b", r[key]);',
+            ),
+        /requires distinguishable null and undefined storage/,
+    );
+});
 
 check(
     "string-from-code-point",

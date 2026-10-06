@@ -53,6 +53,7 @@ import {
 } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
+    doubleCpp,
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
@@ -193,6 +194,36 @@ function isNumericValue(value: Value | undefined): boolean {
         (value?.kind === "data" && value.dataType?.kind === "number") ||
         isJsonValue(value)
     );
+}
+
+/**
+ * ToNumber of an optional number, read at `node`, through
+ * `bbl::js::number_from_optional`: a present value reads itself, an absent
+ * `null` reads 0 and an absent `undefined` reads `undefinedReads` -- NaN in
+ * arithmetic, an omitted argument's default where one is defaulted.
+ * Undefined when the storage cannot say which absence it holds and the two
+ * read differently; the caller refuses. The caller reaches JS data.
+ */
+export function numberFromOptionalCpp(
+    checker: ts.TypeChecker,
+    value: Value,
+    node: ts.Node,
+    undefinedReads = NaN,
+): string | undefined {
+    const absence = absenceKind(checker, value, node);
+    const fallback =
+        absence === "null" ||
+        (absence === "either" && Object.is(undefinedReads, 0))
+            ? "0.0"
+            : absence === "either"
+              ? undefined
+              : typeof absence === "object"
+                ? `(${absence.slotFoundCpp} ? 0.0 : ${doubleCpp(undefinedReads)})`
+                : Number.isNaN(undefinedReads)
+                  ? ""
+                  : doubleCpp(undefinedReads);
+    if (fallback === undefined) return undefined;
+    return `bbl::js::number_from_optional(${value.cpp}${fallback ? `, ${fallback}` : ""})`;
 }
 
 export class StaticEvaluator {
@@ -612,23 +643,16 @@ export class StaticEvaluator {
                 return undefined;
             }
             this.onJsData();
-            const absence = absenceKind(
-                this.checker,
-                value,
-                unwrapExpression(expression),
-            );
-            if (absence === "either")
+            const compiled =
+                numberFromOptionalCpp(
+                    this.checker,
+                    value,
+                    unwrapExpression(expression),
+                ) ??
                 this.fail(
                     expression,
                     "Numeric coercion requires distinguishable null and undefined storage.",
                 );
-            const fallback =
-                absence === "null"
-                    ? ", 0.0"
-                    : typeof absence === "object"
-                      ? `, (${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
-                      : "";
-            const compiled = `bbl::js::number_from_optional(${value.cpp}${fallback})`;
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -763,7 +787,7 @@ export class StaticEvaluator {
         if (ts.isBinaryExpression(unwrapped)) {
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
                 const value = this.resolveValue(unwrapped);
-                if (value.kind === "number") {
+                if (isNumericValue(value)) {
                     return this.castNumber(value, precision);
                 }
                 this.fail(

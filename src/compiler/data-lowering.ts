@@ -70,11 +70,20 @@ import {
     renderClosure,
     type NativeCaptureBinding,
 } from "./closure-captures.js";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import {
+    cppIdentifierPattern,
+    cppMemberPath,
+    cppRootName,
+    doubleCpp,
+    isCppPath,
+} from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { isObjectIdentityFunction } from "./static-evaluator.js";
+import {
+    isObjectIdentityFunction,
+    numberFromOptionalCpp,
+} from "./static-evaluator.js";
 import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
@@ -103,6 +112,7 @@ import {
     isOpaqueReference,
     isHandleKind,
     passesByReference,
+    sharesStorageKind,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
     typedArrayConstructorName,
@@ -151,10 +161,10 @@ import { homeObjectReceiver, readsHomeObject } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 
 /**
- * Storage whose assignment copies a primitive value or the shared identity of
- * the object it names; see `reseatsOnAssignment`.
+ * Storage whose assignment copies a primitive value, or the handle or
+ * document it names; see `reseatsOnAssignment`.
  */
-const REASSIGNED_SHARED_KINDS: ReadonlySet<DataType["kind"]> = new Set([
+const REASSIGNED_VALUE_KINDS: ReadonlySet<DataType["kind"]> = new Set([
     "number",
     "boolean",
     "string",
@@ -162,16 +172,7 @@ const REASSIGNED_SHARED_KINDS: ReadonlySet<DataType["kind"]> = new Set([
     "handle",
     "event-target",
     "json",
-    "vector",
-    "tuple",
-    "product",
-    "iterator",
-    "map",
-    "set",
 ]);
-
-/** A plain member path: an identifier followed by `.` or `->` field names. */
-const memberPathPattern = /^[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*)+$/;
 
 /**
  * Two member paths from one root, neither extending the other, name
@@ -179,10 +180,9 @@ const memberPathPattern = /^[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*)+$/;
  * storage.
  */
 function disjointMemberPaths(left: string, right: string): boolean {
-    if (!memberPathPattern.test(left) || !memberPathPattern.test(right))
-        return false;
-    const leftFields = left.split(/\.|->/);
-    const rightFields = right.split(/\.|->/);
+    const leftFields = cppMemberPath(left);
+    const rightFields = cppMemberPath(right);
+    if (!leftFields || !rightFields) return false;
     const common = Math.min(leftFields.length, rightFields.length);
     return leftFields
         .slice(0, common)
@@ -205,11 +205,6 @@ function namesStableOwner(owner: Value): boolean {
         owner.stableOwnerCpp !== undefined ||
         cppIdentifierPattern.test(owner.cpp)
     );
-}
-
-/** A native variable or member path, which evaluates without effects. */
-function isPathCpp(cpp: string): boolean {
-    return /^[\w:]+(?:(?:->|\.)\w+)*$/.test(cpp);
 }
 
 /**
@@ -343,6 +338,8 @@ interface DataLoweringContext extends Pick<
     | "resolveThisField"
     | "resolveRecordMember"
     | "resolveRecordValue"
+    | "compileClassParameterValue"
+    | "browserErasure"
     | "knownValueWithoutEvaluation"
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
@@ -391,13 +388,34 @@ type NumericUpdatePlace =
           kind: "optional";
           target: Value & { dataType: DataType & { kind: "optional" } };
       }
-    /** A Map/Record entry with a number value, absent until set. */
-    | {
-          kind: "entry";
-          owner: Value;
-          dataType: DataType & { kind: "map" };
-          keyCpp: string;
-      };
+    | EntryUpdatePlace;
+
+/** Two strict absence tests of one plain read, standing for a loose one. */
+interface PairedAbsence {
+    readonly reference: ts.Expression;
+    /** `x != null` rather than `x == null`. */
+    readonly present: boolean;
+}
+
+/** A Map/Record entry with a number value, absent until set. */
+interface EntryUpdatePlace {
+    kind: "entry";
+    owner: Value;
+    dataType: DataType & { kind: "map" };
+    keyCpp: string;
+}
+
+/**
+ * The right side of an `=` store. A statement compiles it into the store.
+ * An assignment used as a value binds it to a temporary where the store
+ * consumes it, converted for that store, and yields the temporary.
+ */
+interface AssignedRight {
+    readonly expression: ts.Expression;
+    readonly bound: boolean;
+    /** The binding, once the store consumed the right side. */
+    value?: Value;
+}
 
 /** The new value of `++`/`--` from the old one, already ToNumeric. */
 function updateStepCpp(
@@ -467,6 +485,17 @@ export class DataLowerer {
 
     public constructor(public readonly context: DataLoweringContext) {}
 
+    /**
+     * `if (a[i++] = v)`, `x = (o.p = v)`, `a.x = b.x = v`: an assignment
+     * used as a value evaluates its target and its right side once and
+     * yields the right side as stored, never the target read back, which a
+     * setter may normalize. A plain number or boolean slot stores in place
+     * and yields the stored scalar; a data store or class setter binds the
+     * converted right side where it consumes it and yields that binding; a
+     * local or an engine property stores through its statement and is read
+     * back. Undefined for a compound operator, and for a browser-only
+     * assignment the browser lowering owns.
+     */
     public compileAssignmentValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -477,43 +506,181 @@ export class DataLowerer {
             return undefined;
         }
         const left = this.context.unwrap(expression.left);
-        if (
+        const member =
             ts.isPropertyAccessExpression(left) ||
             ts.isElementAccessExpression(left)
-        ) {
-            const target = this.compileDataPath(left, "write");
-            // The store withdraws generation snapshots of the field's owner,
-            // as a statement store does.
-            const stored = (value: Value): Value => {
-                const root = rootIdentifier(left, (node) =>
-                    this.context.unwrap(node),
+                ? left
+                : undefined;
+        const inPlace = member
+            ? this.scalarMemberAssignmentValue(expression, member)
+            : ts.isIdentifier(left)
+              ? this.localAssignmentValue(expression, left)
+              : undefined;
+        if (inPlace) return inPlace;
+        if (this.context.browserErasure.isBrowserOnlyExpression(expression))
+            return undefined;
+        if (member) {
+            const bound = this.boundMemberAssignmentValue(expression, member);
+            if (bound) return bound;
+            if (
+                someAnalysisNode(
+                    member,
+                    (node) =>
+                        ts.isCallExpression(node) ||
+                        ts.isNewExpression(node) ||
+                        ts.isAwaitExpression(node) ||
+                        isUpdateExpression(node) ||
+                        isAssignmentExpression(node),
+                )
+            )
+                this.context.fail(
+                    member,
+                    "An assignment to this target used as a value reads the target back; a target that runs code must be bound to a local first.",
                 );
-                const owner =
-                    root && this.context.bindings.lookupOptional(root);
-                if (owner)
-                    this.context.bindings.invalidateRecordProperties(owner);
-                return value;
-            };
-            if (target?.kind === "number" && !target.dataStore) {
-                return stored({
-                    kind: "number",
-                    cpp: `(${target.cpp} = ${this.context.compileNumber(expression.right, "double")})`,
-                    dataType: { kind: "number" },
-                });
-            }
-            if (target?.kind === "boolean" && !target.dataStore) {
-                return stored({
-                    kind: "boolean",
-                    cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
-                    dataType: { kind: "boolean" },
-                    impure: true,
-                });
-            }
-            return undefined;
         }
-        if (!ts.isIdentifier(left)) {
+        this.context.emitExpressionAsStatement(expression);
+        return this.context.compileValue(expression.left);
+    }
+
+    /** A plain number or boolean slot (no setter, no typed-array store). */
+    private scalarMemberAssignmentValue(
+        expression: ts.BinaryExpression,
+        left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): Value | undefined {
+        const ownerType = this.context.checker.getTypeAtLocation(
+            left.expression,
+        );
+        const property = ts.isPropertyAccessExpression(left)
+            ? declaredSymbol(this.context.checker, left.name)
+            : undefined;
+        const accessor =
+            resolvedSymbol(this.context.checker, left)?.declarations?.some(
+                (declaration) =>
+                    ts.isGetAccessorDeclaration(declaration) ||
+                    ts.isSetAccessorDeclaration(declaration),
+            ) ||
+            (property
+                ? this.context.dataTypes.isAccessorProperty(property, ownerType)
+                : ts.isElementAccessExpression(left) &&
+                  this.context.dataTypes.isAccessorRecordType(ownerType));
+        if (accessor) return undefined;
+        const scalar = (path: Value | undefined): boolean =>
+            (path?.kind === "number" || path?.kind === "boolean") &&
+            !path.dataStore;
+        const target = this.context.probeEmission(
+            () => this.compileDataPath(left, "write"),
+            scalar,
+        );
+        if (!target || !scalar(target)) return undefined;
+        // The store withdraws generation snapshots of the field's owner, as
+        // a statement store does.
+        const root = rootIdentifier(left, (node) => this.context.unwrap(node));
+        const owner = root && this.context.bindings.lookupOptional(root);
+        if (owner) this.context.bindings.invalidateRecordProperties(owner);
+        return target.kind === "number"
+            ? {
+                  kind: "number",
+                  cpp: `(${target.cpp} = ${this.context.compileNumber(expression.right, "double")})`,
+                  dataType: { kind: "number" },
+              }
+            : {
+                  kind: "boolean",
+                  cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
+                  dataType: { kind: "boolean" },
+                  impure: true,
+              };
+    }
+
+    /**
+     * A member store that binds the right side: a record's class setter
+     * first, as the statement's own dispatch orders it, then a data store,
+     * then a stored instance's setter.
+     */
+    private boundMemberAssignmentValue(
+        expression: ts.BinaryExpression,
+        left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): Value | undefined {
+        const rightType = this.context.checker.getTypeAtLocation(
+            expression.right,
+        );
+        const present =
+            this.context.checker.getNonNullableType(rightType) === rightType;
+        const name = ts.isPropertyAccessExpression(left)
+            ? left.name.text
+            : undefined;
+        const record =
+            name === undefined
+                ? undefined
+                : this.context.resolveRecordValue(left.expression);
+        const recordSetter = name && record?.recordSetters?.[name];
+        if (record && recordSetter)
+            return this.narrowOptional(
+                this.setterAssignmentValue(record, recordSetter, expression),
+                expression,
+                present,
+            );
+        const source: AssignedRight = {
+            expression: expression.right,
+            bound: true,
+        };
+        const stored = this.context.probeEmission(() =>
+            this.emitAssignment(expression, source) ? source.value : undefined,
+        );
+        if (stored) return this.narrowOptional(stored, expression, present);
+        if (!ts.isPropertyAccessExpression(left) || name === undefined)
             return undefined;
-        }
+        const instance = this.context.classLowerer.storedSetterOwner(left);
+        const instanceSetter = instance?.recordSetters?.[name];
+        return instance && instanceSetter
+            ? this.narrowOptional(
+                  this.setterAssignmentValue(
+                      instance,
+                      instanceSetter,
+                      expression,
+                  ),
+                  expression,
+                  present,
+              )
+            : undefined;
+    }
+
+    /** `owner.name = value` through a class setter, its argument bound once. */
+    private setterAssignmentValue(
+        owner: Value,
+        setter: ts.SetAccessorDeclaration,
+        expression: ts.BinaryExpression,
+    ): Value {
+        const parameter = setter.parameters[0];
+        if (!parameter || !ts.isIdentifier(parameter.name))
+            this.context.fail(
+                setter,
+                "A setter assigned in value position requires one named parameter.",
+            );
+        const argument = pinOperand(
+            this.context,
+            this.context.compileClassParameterValue(
+                parameter.name,
+                expression.right,
+            ),
+            expression.right,
+            "assigned",
+        );
+        this.context.withRecordScopes(owner, () =>
+            this.context.classLowerer.compileSetter(
+                owner,
+                setter,
+                expression.right,
+                argument,
+            ),
+        );
+        return argument;
+    }
+
+    /** `x = (y = v)` for a number, boolean, function or optional local. */
+    private localAssignmentValue(
+        expression: ts.BinaryExpression,
+        left: ts.Identifier,
+    ): Value | undefined {
         const scalar = this.context.bindings.lookupOptional(left);
         if (scalar?.kind === "number") {
             return {
@@ -1008,8 +1175,15 @@ export class DataLowerer {
         });
     }
 
-    /** Container path each live alias refers into, for invalidation. */
-    private readonly aliasContainers = new EmissionMap<string, string>();
+    /**
+     * Container path each alias refers into, and its root, for invalidation.
+     * A poisoned alias keeps its entry: a terminating branch's restore
+     * (`withPreservedAliasState`) can make it an alias again.
+     */
+    private readonly aliasContainers = new EmissionMap<
+        string,
+        { readonly root: string; readonly container: string }
+    >();
 
     /** Container locals whose length generation knows; see below. */
     private readonly fixedLengths = new EmissionMap<string, number>();
@@ -1041,7 +1215,10 @@ export class DataLowerer {
      */
     public registerAlias(cppName: string, containerCpp: string): void {
         this.ownership.set(cppName, "alias");
-        this.aliasContainers.set(cppName, containerCpp);
+        this.aliasContainers.set(cppName, {
+            root: cppRootName(containerCpp),
+            container: containerCpp,
+        });
     }
 
     /**
@@ -1052,12 +1229,12 @@ export class DataLowerer {
      * object name disjoint fields, so resizing one leaves the others.
      */
     public invalidateAliases(containerCpp: string): void {
-        const root = this.rootName(containerCpp);
-        for (const [name, aliasContainer] of this.aliasContainers) {
+        const root = cppRootName(containerCpp);
+        for (const [name, alias] of this.aliasContainers) {
             if (
-                this.rootName(aliasContainer) === root &&
-                !disjointMemberPaths(aliasContainer, containerCpp) &&
-                this.ownership.get(name) === "alias"
+                this.ownership.get(name) === "alias" &&
+                alias.root === root &&
+                !disjointMemberPaths(alias.container, containerCpp)
             ) {
                 this.ownership.set(name, "poisoned");
             }
@@ -1069,17 +1246,12 @@ export class DataLowerer {
         this.ownership.withRestoredChanges(work);
     }
 
-    private rootName(cpp: string): string {
-        const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(cpp);
-        return match ? match[0] : cpp;
-    }
-
     public markEscaped(value: Value): void {
         this.invalidateRecordArrayFacts(value);
         if (value.kind !== "data" || this.sharesObjectStorage(value.dataType)) {
             return;
         }
-        const root = this.rootName(value.cpp);
+        const root = cppRootName(value.cpp);
         if (this.ownership.get(root) === "owned") {
             this.ownership.set(root, "escaped");
         }
@@ -1090,10 +1262,7 @@ export class DataLowerer {
         if (type.kind === "optional")
             return this.sharesObjectStorage(type.inner);
         return (
-            ["vector", "map", "set", "tuple", "product", "arguments"].includes(
-                type.kind,
-            ) ||
-            isTypedArrayType(type) ||
+            sharesStorageKind(type) ||
             (type.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(type.name))
         );
@@ -1234,7 +1403,7 @@ export class DataLowerer {
                 }
                 return undefined;
             }
-            const state = this.ownership.get(this.rootName(bound.cpp));
+            const state = this.ownership.get(cppRootName(bound.cpp));
             // A poisoned alias is unusable in either direction: its
             // container was structurally mutated after the binding, so
             // the reference no longer denotes the same element.
@@ -1523,7 +1692,7 @@ export class DataLowerer {
     /** `record.property = value` through an accessor-backed field's setter. */
     private emitAccessorAssignment(
         left: ts.PropertyAccessExpression,
-        right: ts.Expression,
+        source: AssignedRight,
     ): boolean {
         const property = declaredSymbol(this.context.checker, left.name);
         if (
@@ -1552,7 +1721,7 @@ export class DataLowerer {
         const target = reference
             ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
             : `${owner.cpp}.`;
-        const value = this.compileForSink(right, field.type);
+        const value = this.assignedForSink(source, field.type);
         this.context.emit({
             kind: "expression",
             code: `${target}${field.name}.set(${value});`,
@@ -1569,7 +1738,7 @@ export class DataLowerer {
      */
     private emitAccessorElementAssignment(
         left: ts.ElementAccessExpression,
-        right: ts.Expression,
+        source: AssignedRight,
     ): boolean {
         if (
             !this.context.dataTypes.isAccessorRecordType(
@@ -1619,7 +1788,7 @@ export class DataLowerer {
             );
             this.context.emit({
                 kind: "expression",
-                code: write(field, this.compileForSink(right, field.type)),
+                code: write(field, this.assignedForSink(source, field.type)),
             });
             return true;
         }
@@ -1654,14 +1823,26 @@ export class DataLowerer {
         );
         if (slot) {
             // The selection is evaluated before the value: C++ sequences a
-            // call's postfix expression before its arguments.
-            const keyCpp = this.compileEnumIndex(
+            // call's postfix expression before its arguments, and a bound
+            // value is declared ahead of the store, so the selection is too.
+            let keyCpp = this.compileEnumIndex(
                 left.argumentExpression,
                 keyData.name,
             );
+            if (source.bound) {
+                const key =
+                    this.context.allocateTemporaryCppName("property_key");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: key,
+                    initializer: keyCpp,
+                });
+                keyCpp = key;
+            }
             this.context.emit({
                 kind: "expression",
-                code: `${target}${slot}(${keyCpp}).set(${this.compileForSink(right, commonType)});`,
+                code: `${target}${slot}(${keyCpp}).set(${this.assignedForSink(source, commonType)});`,
             });
             return true;
         }
@@ -1680,7 +1861,7 @@ export class DataLowerer {
             kind: "declaration",
             type: "const auto",
             name: value,
-            initializer: this.compileForSink(right, commonType),
+            initializer: this.assignedForSink(source, commonType),
         });
         members.forEach((member, index) =>
             this.context.emit(
@@ -3419,7 +3600,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
         )
             return undefined;
-        if (owner.impure || !isPathCpp(owner.cpp)) return undefined;
+        if (owner.impure || !isCppPath(owner.cpp)) return undefined;
         if (
             !this.context.dataTypes.absentRecordProperty(
                 dataType.name,
@@ -3610,7 +3791,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner.staticElementsOwner?.collectionCardinality;
             const fixed = cardinality?.untrackedAliases
                 ? undefined
-                : this.fixedLengths.get(this.rootName(owner.cpp));
+                : this.fixedLengths.get(cppRootName(owner.cpp));
             return {
                 kind: "number",
                 cpp: `bbl::js::array_length(${owner.cpp})`,
@@ -6670,6 +6851,54 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return name;
     }
 
+    /**
+     * A number argument whose absent `undefined` selects `undefinedReads`
+     * (an omitted search position or byte offset): ToNumber of anything
+     * else, an absent `null` reading 0.
+     */
+    public compileDefaultedNumberArgument(
+        argument: ts.Expression,
+        undefinedReads: number,
+    ): string {
+        const absent = nullability(
+            this.context.checker.getTypeAtLocation(argument),
+        );
+        if (!absent.null && !absent.undefined)
+            return this.context.compileNumber(argument, "double");
+        const value = this.context.compileValue(argument);
+        const ambiguous = (): never =>
+            this.context.fail(
+                argument,
+                "A number argument that may be null or undefined requires distinguishable null and undefined storage.",
+            );
+        if (value.kind === "json-null" || isUndefinedDataType(value.dataType)) {
+            this.context.emitDiscardedValue(value);
+            if (absent.null && absent.undefined && undefinedReads !== 0)
+                ambiguous();
+            return doubleCpp(absent.null ? 0 : undefinedReads);
+        }
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "optional" ||
+            value.dataType.inner.kind !== "number" ||
+            presenceFlagCpp(value) !== undefined
+        )
+            return this.compileKnownValueForSink(
+                value,
+                { kind: "number" },
+                argument,
+            );
+        this.context.reachJsData();
+        return (
+            numberFromOptionalCpp(
+                this.context.checker,
+                value,
+                argument,
+                undefinedReads,
+            ) ?? ambiguous()
+        );
+    }
+
     /** Promise-producing callbacks need retained invocation even inside a synchronous iterator. */
     public promiseCallbackType(
         callback: ts.Expression,
@@ -7802,43 +8031,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
             // ToIndex reads an absent byte offset (undefined, or null as
             // ToNumber 0) as zero.
-            const offsetArgument = (argument: ts.Expression): string => {
-                const absent = nullability(
-                    this.context.checker.getTypeAtLocation(argument),
-                );
-                if (!absent.null && !absent.undefined)
-                    return numericArgument(argument);
-                const value = this.context.compileValue(argument);
-                if (
-                    value.kind === "json-null" ||
-                    isUndefinedDataType(value.dataType)
-                ) {
-                    this.context.emitDiscardedValue(value);
-                    return numericArgument(argument, "0.0");
-                }
-                if (
-                    value.kind !== "data" ||
-                    value.dataType?.kind !== "optional" ||
-                    value.dataType.inner.kind !== "number" ||
-                    presenceFlagCpp(value) !== undefined
-                )
-                    return numericArgument(
-                        argument,
-                        this.compileKnownValueForSink(
-                            value,
-                            { kind: "number" },
-                            argument,
-                        ),
-                    );
-                const offset = this.context.bindings.pinValueToTemporary(
-                    value,
-                    "view_offset",
-                ).cpp;
-                return numericArgument(
+            const offsetArgument = (argument: ts.Expression): string =>
+                numericArgument(
                     argument,
-                    `(${optionalPresentCpp(offset)} ? ${optionalValueCpp(offset)} : 0.0)`,
+                    this.compileDefaultedNumberArgument(argument, 0),
                 );
-            };
             const offset = arguments_[1]
                 ? `, ${offsetArgument(arguments_[1])}`
                 : "";
@@ -8266,29 +8463,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
-        // `a.x = b.x = null`: the inner assignment runs as its statement and
-        // its stored value is read back from its target. Number and boolean
-        // sinks store a scalar in place.
+        // `a.x = b.x = null`: the inner assignment's value
+        // (compileAssignmentValue), converted for this sink.
         if (
             ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            dataType.kind !== "number" &&
-            dataType.kind !== "boolean"
-        ) {
-            if (
-                someAnalysisNode(
-                    unwrapped.left,
-                    (node) =>
-                        ts.isCallExpression(node) || ts.isNewExpression(node),
-                )
-            )
-                this.context.fail(
-                    unwrapped.left,
-                    "An assignment used as a value reads its target back; a target containing a call must be bound to a local first.",
-                );
-            this.context.emitExpressionAsStatement(unwrapped);
-            return this.compileForSink(unwrapped.left, dataType);
-        }
+            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+            return this.compileKnownValueForSink(
+                this.context.compileValue(unwrapped),
+                dataType,
+                unwrapped,
+            );
         if (ts.isBinaryExpression(unwrapped)) {
             const logical = this.compileRecordLogicalValue(unwrapped, dataType);
             if (logical)
@@ -9788,7 +9973,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return (
                     isOpaqueReference(type) ||
                     isBinaryDataType(type) ||
-                    REASSIGNED_SHARED_KINDS.has(type.kind)
+                    sharesStorageKind(type) ||
+                    REASSIGNED_VALUE_KINDS.has(type.kind)
                 );
         }
     }
@@ -10027,7 +10213,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner?.kind === "data" &&
                 owner.dataType?.kind === "struct" &&
                 !owner.impure &&
-                isPathCpp(owner.cpp) &&
+                isCppPath(owner.cpp) &&
                 this.context.dataTypes.lacksRecordProperty(
                     owner.dataType.name,
                     target.name.text,
@@ -10654,17 +10840,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const type = this.dataTypeAt(expression);
         if (type?.kind !== "optional" || type.inner.kind !== "boolean")
             return undefined;
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical boolean selection requires a truth-testable left operand.",
-            );
         // An object contributes only its absent state to `object && bool`;
         // its present value belongs to the unselected arm, not the bool sink.
         const absentObject =
@@ -10674,29 +10849,66 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ).flags &
                 ts.TypeFlags.Object) !==
                 0;
-        const result = this.context.allocateTemporaryCppName("logical_boolean");
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
+                type,
+                "logical_boolean",
+                (left) =>
+                    absentObject
+                        ? this.context.dataTypes.absentValue(type)
+                        : this.compileKnownValueForSink(
+                              left,
+                              type,
+                              expression.left,
+                          ),
+            ),
+            type,
+        );
+    }
+
+    /**
+     * `left && right` / `left || right` as a value of represented storage:
+     * the left operand, pinned and truth-tested once, is the value unless
+     * its truthiness selects the right one, which is evaluated only then.
+     * `unselected` spells the value when the right one is not selected.
+     */
+    private compileLogicalSelection(
+        expression: ts.BinaryExpression,
+        type: DataType,
+        label: string,
+        unselected: (left: Value, condition: string) => string,
+    ): string {
+        const left = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(expression.left),
+            "logical_left",
+            expression.left,
+        );
+        const condition =
+            this.truthinessCondition(left) ??
+            this.context.fail(
+                expression.left,
+                "Logical value selection requires a truth-testable left operand.",
+            );
+        const result = this.context.allocateTemporaryCppName(label);
         this.context.emit({
             kind: "declaration",
             type: this.context.dataTypes.cppType(type),
             name: result,
-            initializer: absentObject
-                ? this.context.dataTypes.absentValue(type)
-                : this.compileKnownValueForSink(left, type, expression.left),
+            initializer: unselected(left, condition),
         });
         this.context.registerNativeBinding(result);
-        this.emitGuardedStore(
-            operator === ts.SyntaxKind.AmpersandAmpersandToken
-                ? condition
-                : `!(${condition})`,
-            () => {
-                const right = this.compileForSink(expression.right, type);
-                this.context.emit({
-                    kind: "expression",
-                    code: `${result} = ${right};`,
-                });
-            },
-        );
-        return this.leafValue(result, type);
+        const isAnd =
+            expression.operatorToken.kind ===
+            ts.SyntaxKind.AmpersandAmpersandToken;
+        this.emitGuardedStore(isAnd ? condition : `!(${condition})`, () => {
+            const right = this.compileForSink(expression.right, type);
+            this.context.emit({
+                kind: "expression",
+                code: `${result} = ${right};`,
+            });
+        });
+        return result;
     }
 
     /**
@@ -10716,95 +10928,63 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         const type = this.dataTypeAt(expression);
         if (!type) return undefined;
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical value selection requires a truth-testable left operand.",
-            );
         const leftType = this.context.checker.getTypeAtLocation(
             expression.left,
         );
-        let falsy: Value = left;
-        if (
-            !isJsonValue(left) &&
-            presentValuesTruthy(this.context.checker, leftType)
-        ) {
-            const absent = nullability(leftType);
-            if (absent.null && absent.undefined && type.kind === "json")
-                this.context.fail(
-                    expression.left,
-                    "A short circuit whose left operand may be null or undefined selects a value only where its storage tells them apart.",
-                );
-            falsy = {
-                kind: "json-null",
-                cpp: absent.null && !absent.undefined ? "" : "std::nullopt",
-            };
-        }
-        const result = this.context.allocateTemporaryCppName("logical_value");
-        this.context.emit({
-            kind: "declaration",
-            type: this.context.dataTypes.cppType(type),
-            name: result,
-            initializer: this.compileKnownValueForSink(
-                falsy,
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
                 type,
-                expression.left,
+                "logical_value",
+                (left) => {
+                    let falsy: Value = left;
+                    if (
+                        !isJsonValue(left) &&
+                        presentValuesTruthy(this.context.checker, leftType)
+                    ) {
+                        const absent = nullability(leftType);
+                        if (
+                            absent.null &&
+                            absent.undefined &&
+                            type.kind === "json"
+                        )
+                            this.context.fail(
+                                expression.left,
+                                "A short circuit whose left operand may be null or undefined selects a value only where its storage tells them apart.",
+                            );
+                        falsy = {
+                            kind: "json-null",
+                            cpp:
+                                absent.null && !absent.undefined
+                                    ? ""
+                                    : "std::nullopt",
+                        };
+                    }
+                    return this.compileKnownValueForSink(
+                        falsy,
+                        type,
+                        expression.left,
+                    );
+                },
             ),
-        });
-        this.context.registerNativeBinding(result);
-        this.emitGuardedStore(condition, () => {
-            const right = this.compileForSink(expression.right, type);
-            this.context.emit({
-                kind: "expression",
-                code: `${result} = ${right};`,
-            });
-        });
-        return this.leafValue(result, type);
+            type,
+        );
     }
 
     /** String-valued logical operators keep the selected value and a lazy RHS. */
     public compileStringLogicalValue(expression: ts.BinaryExpression): Value {
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical string selection requires a truth-testable left operand.",
-            );
-        const isAnd =
-            expression.operatorToken.kind ===
-            ts.SyntaxKind.AmpersandAmpersandToken;
-        const result = this.context.allocateTemporaryCppName("logical_string");
-        const selected = this.compileKnownValueForSink(
-            this.narrowOptional(left, expression.left, true),
+        // A falsy string left is "", the one value a falsy string has.
+        const result = this.compileLogicalSelection(
+            expression,
             { kind: "string" },
-            expression.left,
+            "logical_string",
+            (left, condition) =>
+                `${condition} ? ${this.compileKnownValueForSink(
+                    this.narrowOptional(left, expression.left, true),
+                    { kind: "string" },
+                    expression.left,
+                )} : std::string{}`,
         );
-        this.context.emit({
-            kind: "declaration",
-            type: "std::string",
-            name: result,
-            initializer: `${condition} ? ${selected} : std::string{}`,
-        });
-        this.emitGuardedStore(isAnd ? condition : `!(${condition})`, () => {
-            const right = this.compileForSink(expression.right, {
-                kind: "string",
-            });
-            this.context.emit({
-                kind: "expression",
-                code: `${result} = ${right};`,
-            });
-        });
         return { kind: "string", cpp: result };
     }
 
@@ -11069,7 +11249,103 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
     }
 
-    public emitAssignment(expression: ts.BinaryExpression): boolean {
+    /** The right side for a data sink: compiled into the store, or bound once. */
+    private assignedForSink(source: AssignedRight, dataType: DataType): string {
+        if (!source.bound)
+            return this.compileForSink(source.expression, dataType);
+        if (source.value)
+            return this.compileKnownValueForSink(
+                source.value,
+                dataType,
+                source.expression,
+            );
+        return this.bindAssigned(
+            source,
+            this.compileForSink(source.expression, dataType),
+            dataType,
+        );
+    }
+
+    private assignedNumber(source: AssignedRight): string {
+        if (!source.bound)
+            return this.context.compileNumber(source.expression, "double");
+        if (source.value)
+            return this.context.castNumber(source.value, "double");
+        return this.bindAssigned(
+            source,
+            this.context.compileNumber(source.expression, "double"),
+            { kind: "number" },
+        );
+    }
+
+    private assignedCondition(source: AssignedRight): string {
+        if (!source.bound)
+            return this.context.conditions.compileCondition(source.expression);
+        if (source.value)
+            return (
+                this.truthinessCondition(source.value) ??
+                this.context.fail(
+                    source.expression,
+                    "Assigned value has no represented truthiness.",
+                )
+            );
+        return this.bindAssigned(
+            source,
+            this.context.conditions.compileCondition(source.expression),
+            { kind: "boolean" },
+        );
+    }
+
+    private assignedValue(source: AssignedRight): Value {
+        if (!source.bound) return this.context.compileValue(source.expression);
+        source.value ??= pinOperand(
+            this.context,
+            this.context.compileValue(source.expression),
+            source.expression,
+            "assigned",
+        );
+        return source.value;
+    }
+
+    private bindAssigned(
+        source: AssignedRight,
+        initializer: string,
+        dataType: DataType,
+    ): string {
+        const name = this.context.allocateTemporaryCppName("assigned");
+        const scalar = ["number", "boolean", "string", "enum"].includes(
+            dataType.kind,
+        );
+        this.context.emit({
+            kind: "declaration",
+            type: scalar
+                ? `const ${this.context.dataTypes.cppType(dataType)}`
+                : "auto",
+            name,
+            initializer,
+            attributes: "[[maybe_unused]] ",
+        });
+        source.value = {
+            ...this.leafValue(name, dataType),
+            nativeBinding: true,
+            nativeCaptures: [
+                scalar
+                    ? this.context.registerNativeConstBinding(name)
+                    : this.context.registerNativeBinding(name),
+            ],
+        };
+        return name;
+    }
+
+    /**
+     * `target = value` / `target op= value` into data storage. A statement
+     * compiles the right side into the store; `source` binds it for an
+     * assignment used as a value (`compileAssignmentValue`).
+     */
+    public emitAssignment(
+        expression: ts.BinaryExpression,
+        source: AssignedRight = { expression: expression.right, bound: false },
+    ): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) {
@@ -11082,6 +11358,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!operator) {
             return false;
         }
+        // The number `target op= right` stores, from the old value.
+        const compoundNext = (previous: string): string =>
+            compoundAssignmentValueCpp(
+                operator,
+                previous,
+                this.context.compileNumber(expression.right, "double"),
+            );
         const left = this.context.unwrap(expression.left);
         if (ts.isArrayLiteralExpression(left) && operator === "=") {
             return (
@@ -11105,9 +11388,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     expression,
                     "Dynamic object properties currently support plain assignment only.",
                 );
-            const value = this.compileForSink(expression.right, {
-                kind: "json",
-            });
+            const value = this.assignedForSink(source, { kind: "json" });
             this.context.emit({
                 kind: "expression",
                 code: `${json.owner}.set(${json.key}, ${value});`,
@@ -11197,15 +11478,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             name: previous,
                             initializer: `static_cast<double>(${narrowed.cpp}.size())`,
                         });
-                        const right = this.context.compileNumber(
-                            expression.right,
-                            "double",
-                        );
-                        const helper =
-                            COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-                        const length = helper
-                            ? `bbl::js::${helper}(${previous}, ${right})`
-                            : `(${previous} ${operator.slice(0, -1)} ${right})`;
+                        const length = compoundNext(previous);
                         this.invalidateStaticElements(narrowed);
                         this.invalidateAliases(narrowed.cpp);
                         this.context.emit(
@@ -11220,7 +11493,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.invalidateStaticElements(narrowed);
                     this.context.emit(
                         (this.invalidateAliases(narrowed.cpp),
-                        `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`),
+                        `bbl::js::array_truncate(${narrowed.cpp}, ${this.assignedNumber(source)});`),
                     );
                     return true;
                 }
@@ -11275,7 +11548,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "static-value-required",
                     );
                 }
-                const assigned = this.context.compileValue(expression.right);
+                const assigned = this.assignedValue(source);
                 if (recordOwner.moduleNamespace)
                     this.context.fail(
                         expression,
@@ -11292,46 +11565,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 return true;
             }
+        }
+        // `entries[key] += n`, `dictionary.name -= n`: a numeric update of
+        // the entry.
+        if (operator !== "=") {
+            const entry = this.entryUpdatePlace(left);
+            if (entry === "not-number")
+                this.context.fail(
+                    expression,
+                    "Compound assignment to an indexed Record entry requires a number value.",
+                );
+            if (entry) {
+                this.emitNumericUpdate(entry, left, compoundNext);
+                return true;
+            }
+        }
+        if (ts.isElementAccessExpression(left)) {
             const narrowed = this.indexedMapOwner(left);
             if (narrowed) {
-                if (operator !== "=") {
-                    if (narrowed.dataType.value.kind !== "number")
-                        this.context.fail(
-                            expression,
-                            "Compound assignment to an indexed Record entry requires a number value.",
-                        );
-                    this.emitNumericUpdate(
-                        {
-                            kind: "entry",
-                            owner: narrowed,
-                            dataType: narrowed.dataType,
-                            keyCpp: this.compileKnownValueForSink(
-                                this.context.compileValue(
-                                    left.argumentExpression,
-                                ),
-                                narrowed.dataType.key,
-                                left.argumentExpression,
-                            ),
-                        },
-                        left,
-                        (previous) =>
-                            compoundAssignmentValueCpp(
-                                operator,
-                                previous,
-                                this.context.compileNumber(
-                                    expression.right,
-                                    "double",
-                                ),
-                            ),
-                    );
-                    return true;
-                }
                 const keyValue = this.context.compileValue(
                     left.argumentExpression,
                 );
-                const assignedValue = this.context.compileValue(
-                    expression.right,
-                );
+                const assignedValue = this.assignedValue(source);
                 if (
                     this.context.dataTypes.carriesBorrowedPlatformEvent(
                         narrowed.dataType.key,
@@ -11400,30 +11655,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // `dictionary.name = value`: the named member is an entry.
             const entry = this.dictionaryEntry(left);
             if (entry) {
-                if (operator !== "=") {
-                    if (entry.dataType.value.kind !== "number")
-                        this.context.fail(
-                            expression,
-                            "Compound assignment to a dictionary member requires a number value.",
-                        );
-                    this.emitNumericUpdate(
-                        { kind: "entry", ...entry },
-                        left,
-                        (previous) =>
-                            compoundAssignmentValueCpp(
-                                operator,
-                                previous,
-                                this.context.compileNumber(
-                                    expression.right,
-                                    "double",
-                                ),
-                            ),
+                // A number member updated above.
+                if (operator !== "=")
+                    this.context.fail(
+                        expression,
+                        "Compound assignment to a dictionary member requires a number value.",
                     );
-                    return true;
-                }
-                const assigned = this.context.compileValue(expression.right);
                 const value = this.compileKnownValueForSink(
-                    assigned,
+                    this.assignedValue(source),
                     entry.dataType.value,
                     expression.right,
                 );
@@ -11439,8 +11678,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             operator === "=" &&
             (ts.isPropertyAccessExpression(left)
-                ? this.emitAccessorAssignment(left, expression.right)
-                : this.emitAccessorElementAssignment(left, expression.right))
+                ? this.emitAccessorAssignment(left, source)
+                : this.emitAccessorElementAssignment(left, source))
         )
             return true;
         const target = this.context.probeEmission(() => {
@@ -11473,9 +11712,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             target.dataType &&
             this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
         ) {
-            const value = this.context.compileValue(expression.right);
             this.context.refuseBorrowedPlatformEventEscape(
-                value,
+                this.assignedValue(source),
                 expression.right,
                 ts.isElementAccessExpression(left)
                     ? "container element assignment"
@@ -11513,35 +11751,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     });
                 }
             }
-            const right = this.context.compileNumber(
-                expression.right,
-                "double",
-            );
-            const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-            const assigned = helper
-                ? `bbl::js::${helper}(${previous}, ${right})`
-                : undefined;
-            if (helper) {
-                this.context.reachJsData();
-            }
+            const right = this.assignedNumber(source);
+            const helper = COMPOUND_ASSIGNMENT_HELPERS.has(operator);
+            if (helper) this.context.reachJsData();
             if (target.dataStore) {
-                const arithmetic = new EmissionMap([
-                    ["+=", "+"],
-                    ["-=", "-"],
-                    ["*=", "*"],
-                    ["/=", "/"],
-                ]).get(operator);
-                if (operator !== "=" && !assigned && !arithmetic) {
-                    this.context.fail(
-                        expression,
-                        "This typed-array compound assignment is not supported.",
-                    );
-                }
                 const stored =
-                    assigned ??
-                    (arithmetic
-                        ? `(${previous} ${arithmetic} ${right})`
-                        : right);
+                    operator === "="
+                        ? right
+                        : compoundAssignmentValueCpp(operator, previous, right);
                 this.context.emit({
                     kind: "expression",
                     code: `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, stored)};`,
@@ -11551,8 +11768,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             this.context.emit({
                 kind: "expression",
-                code: assigned
-                    ? `${target.cpp} = ${assigned};`
+                code: helper
+                    ? `${target.cpp} = ${compoundAssignmentValueCpp(operator, previous, right)};`
                     : `${target.cpp} ${operator} ${right};`,
             });
             invalidateRootRecordSnapshot();
@@ -11567,7 +11784,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             this.context.emit({
                 kind: "expression",
-                code: `${target.cpp} = ${this.context.conditions.compileCondition(expression.right)};`,
+                code: `${target.cpp} = ${this.assignedCondition(source)};`,
             });
             invalidateRootRecordSnapshot();
             return true;
@@ -11593,15 +11810,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         target: { ...target, dataType: target.dataType },
                     },
                     left,
-                    (previous) =>
-                        compoundAssignmentValueCpp(
-                            operator,
-                            previous,
-                            this.context.compileNumber(
-                                expression.right,
-                                "double",
-                            ),
-                        ),
+                    compoundNext,
                 );
                 return true;
             }
@@ -11655,10 +11864,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 invalidateRootRecordSnapshot();
                 return true;
             }
-            const value = this.compileForSink(
-                expression.right,
-                target.dataType,
-            );
+            const value = this.assignedForSink(source, target.dataType);
             this.context.emit({
                 kind: "expression",
                 code: `${target.cpp} = ${value};`,
@@ -12471,6 +12677,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * The entry a numeric update or compound assignment of `operand` writes,
+     * resolved in one probe: a Record entry (a Map entry, as the assignment
+     * lowering writes it) or a dictionary member with a number value.
+     * "not-number" for a Record entry of another value type, which is no
+     * numeric place; undefined, with nothing emitted, for any other operand.
+     */
+    private entryUpdatePlace(
+        operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): EntryUpdatePlace | "not-number" | undefined {
+        return this.context.probeEmission(
+            (): EntryUpdatePlace | "not-number" | undefined => {
+                if (ts.isPropertyAccessExpression(operand)) {
+                    const found = this.dictionaryEntry(operand);
+                    return found?.dataType.value.kind === "number"
+                        ? { kind: "entry", ...found }
+                        : undefined;
+                }
+                const owner = this.indexedMapOwner(operand);
+                if (!owner) return undefined;
+                if (owner.dataType.value.kind !== "number") return "not-number";
+                return {
+                    kind: "entry",
+                    owner,
+                    dataType: owner.dataType,
+                    keyCpp: this.compileKnownValueForSink(
+                        this.context.compileValue(operand.argumentExpression),
+                        owner.dataType.key,
+                        operand.argumentExpression,
+                    ),
+                };
+            },
+            (place) => typeof place === "object",
+        );
+    }
+
+    /**
      * The storage a numeric update writes, resolved once: a native number
      * (`x++` applies directly), an optional number slot, or a dictionary
      * entry. Undefined, with nothing emitted, for any other operand.
@@ -12480,51 +12722,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         narrowScalar: boolean,
     ): NumericUpdatePlace | undefined {
         const operand = this.context.unwrap(operandExpression);
-        if (
-            !ts.isPropertyAccessExpression(operand) &&
-            !ts.isElementAccessExpression(operand) &&
-            !ts.isIdentifier(operand)
+        if (ts.isIdentifier(operand)) {
+            // A number local applies `++` in place: nothing to probe.
+            const bound = this.context.bindings.lookupOptional(operand);
+            if (bound?.kind === "number")
+                return { kind: "scalar", cpp: bound.cpp, target: bound };
+        } else if (
+            ts.isPropertyAccessExpression(operand) ||
+            ts.isElementAccessExpression(operand)
         ) {
-            return undefined;
-        }
-        // A Record entry is a Map entry, as the assignment lowering writes
-        // it; an entry of another value type is no numeric place.
-        if (
-            ts.isElementAccessExpression(operand) &&
-            this.context.probeEmission(
-                () => this.indexedMapOwner(operand) !== undefined,
-                () => false,
-            )
-        ) {
-            return this.context.probeEmission(
-                (): NumericUpdatePlace | undefined => {
-                    const owner = this.indexedMapOwner(operand);
-                    if (owner?.dataType.value.kind !== "number")
-                        return undefined;
-                    return {
-                        kind: "entry",
-                        owner,
-                        dataType: owner.dataType,
-                        keyCpp: this.compileKnownValueForSink(
-                            this.context.compileValue(
-                                operand.argumentExpression,
-                            ),
-                            owner.dataType.key,
-                            operand.argumentExpression,
-                        ),
-                    };
-                },
-            );
-        }
-        if (ts.isPropertyAccessExpression(operand)) {
-            const entry = this.context.probeEmission(() => {
-                const found = this.dictionaryEntry(operand);
-                return found?.dataType.value.kind === "number"
-                    ? found
-                    : undefined;
-            });
-            if (entry) return { kind: "entry", ...entry };
-        }
+            const entry = this.entryUpdatePlace(operand);
+            if (entry === "not-number") return undefined;
+            if (entry) return entry;
+        } else return undefined;
         return this.context.probeEmission(
             (): NumericUpdatePlace | undefined => {
                 const rawTarget =
@@ -12567,8 +12777,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const previous =
             this.context.allocateTemporaryCppName("update_previous");
         const stored = this.context.allocateTemporaryCppName("update_next");
+        let read: string;
+        let store: (value: string) => string;
         if (place.kind === "entry") {
-            this.context.reachJsData();
             const owner = this.context.allocateTemporaryCppName("update_owner");
             const key = this.context.allocateTemporaryCppName("update_key");
             this.context.emit({
@@ -12583,54 +12794,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 name: key,
                 initializer: place.keyCpp,
             });
+            read = `bbl::js::number_from_optional(${owner}.get(${key}))`;
+            store = (value) => `${owner}.set(${key}, ${value});`;
+        } else {
+            const slot = this.context.allocateTemporaryCppName("update_slot");
             this.context.emit({
                 kind: "declaration",
-                type: "const double",
-                name: previous,
-                initializer: `bbl::js::number_from_optional(${owner}.get(${key}))`,
+                type: "auto&&",
+                name: slot,
+                initializer: place.target.cpp,
             });
-            this.context.emit({
-                kind: "declaration",
-                type: "const double",
-                name: stored,
-                initializer: next(previous),
-            });
-            this.context.emit({
-                kind: "expression",
-                code: `${owner}.set(${key}, ${stored});`,
-            });
-            this.context.bindings.invalidateRecordProperties(place.owner);
-            return { previous, next: stored };
+            read =
+                numberFromOptionalCpp(
+                    this.context.checker,
+                    { ...place.target, cpp: slot },
+                    this.context.unwrap(operand),
+                ) ??
+                this.context.fail(
+                    operand,
+                    "A numeric update requires distinguishable null and undefined storage.",
+                );
+            store = (value) =>
+                `${slot} = ${this.compileKnownValueForSink(
+                    this.leafValue(value, { kind: "number" }),
+                    place.target.dataType,
+                    operand,
+                )};`;
         }
-        const absence = absenceKind(
-            this.context.checker,
-            place.target,
-            this.context.unwrap(operand),
-        );
-        if (absence === "either")
-            this.context.fail(
-                operand,
-                "A numeric update requires distinguishable null and undefined storage.",
-            );
         this.context.reachJsData();
-        const slot = this.context.allocateTemporaryCppName("update_slot");
-        this.context.emit({
-            kind: "declaration",
-            type: "auto&&",
-            name: slot,
-            initializer: place.target.cpp,
-        });
-        const fallback =
-            absence === "null"
-                ? ", 0.0"
-                : typeof absence === "object"
-                  ? `, (${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
-                  : "";
         this.context.emit({
             kind: "declaration",
             type: "const double",
             name: previous,
-            initializer: `bbl::js::number_from_optional(${slot}${fallback})`,
+            initializer: read,
         });
         this.context.emit({
             kind: "declaration",
@@ -12638,15 +12834,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: stored,
             initializer: next(previous),
         });
-        this.context.emit({
-            kind: "expression",
-            code: `${slot} = ${this.compileKnownValueForSink(
-                this.leafValue(stored, { kind: "number" }),
-                place.target.dataType,
-                operand,
-            )};`,
-        });
-        this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
+        this.context.emit({ kind: "expression", code: store(stored) });
+        if (place.kind === "entry")
+            this.context.bindings.invalidateRecordProperties(place.owner);
+        else this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
         return { previous, next: stored };
     }
 
@@ -12991,8 +13182,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public pairedAbsence(
         expression: ts.BinaryExpression,
-    ): { reference: ts.Expression; present: boolean } | undefined {
-        const operator = expression.operatorToken.kind;
+    ): PairedAbsence | undefined {
+        return this.pairedAbsenceOf(
+            expression.left,
+            expression.right,
+            expression.operatorToken.kind,
+        );
+    }
+
+    /**
+     * {@link pairedAbsence} of two operands joined by `operator`, wherever a
+     * chain nests them (`ready && x !== null && x !== undefined`).
+     */
+    public pairedAbsenceOf(
+        leftOperand: ts.Expression,
+        rightOperand: ts.Expression,
+        operator: ts.SyntaxKind,
+    ): PairedAbsence | undefined {
         const isAnd = operator === ts.SyntaxKind.AmpersandAmpersandToken;
         if (!isAnd && operator !== ts.SyntaxKind.BarBarToken) return undefined;
         const comparison = isAnd
@@ -13023,8 +13229,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     }
                   : undefined;
         };
-        const first = tested(expression.left);
-        const second = tested(expression.right);
+        const first = tested(leftOperand);
+        const second = tested(rightOperand);
         // Each operand reads the same storage: a name or a chain of data
         // fields, none of them an accessor.
         const plainRead = (node: ts.Expression): boolean =>
@@ -13040,7 +13246,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             second &&
             first.literal !== second.literal &&
             plainRead(first.reference) &&
-            first.reference.getText() === second.reference.getText()
+            this.sameSimplePath(first.reference, second.reference)
             ? { reference: first.reference, present: isAnd }
             : undefined;
     }
@@ -13050,7 +13256,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
     ): string | undefined {
         const paired = this.pairedAbsence(expression);
-        if (!paired) return undefined;
+        return paired && this.pairedAbsenceCondition(paired);
+    }
+
+    /** The loose absence test a {@link PairedAbsence} stands for. */
+    public pairedAbsenceCondition(paired: PairedAbsence): string | undefined {
         const value =
             this.compileDataPath(paired.reference, "read") ??
             this.context.compileValue(paired.reference);
@@ -14333,7 +14543,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
                 define(binding.name, value);
                 if (value.kind === "data") {
-                    this.registerLocal(this.rootName(value.cpp), "copy");
+                    this.registerLocal(cppRootName(value.cpp), "copy");
                 }
             });
             return;
@@ -14456,7 +14666,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 define(binding.name, value);
                 if (value.kind === "data") {
-                    this.registerLocal(this.rootName(value.cpp), "copy");
+                    this.registerLocal(cppRootName(value.cpp), "copy");
                 }
             }
             return;
