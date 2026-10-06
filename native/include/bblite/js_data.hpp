@@ -2463,13 +2463,14 @@ struct CivilDate {
 
 /** ToIntegerOrInfinity over a finite number. */
 [[nodiscard]] inline double integer(double value) { return std::trunc(value) + 0.0; }
-} // namespace date_detail
 
-/** One field of an integral time value read as UTC: NaN for an invalid date. */
-[[nodiscard]] inline double date_time_field(double time, DateField field) {
-    using namespace date_detail;
-    if (std::isnan(time))
-        return time;
+/** A clipped time value as whole days since 1970-01-01 and milliseconds into that day. */
+struct DayTime {
+    std::int64_t day;
+    std::int64_t within_day;
+};
+
+[[nodiscard]] inline DayTime day_time(double time) {
     // A clipped time value is an integer within 8.64e15, exact in 64 bits.
     constexpr std::int64_t day_length = 86400000;
     const auto milliseconds = static_cast<std::int64_t>(time);
@@ -2478,6 +2479,16 @@ struct CivilDate {
         within_day += day_length;
         --day;
     }
+    return {day, within_day};
+}
+} // namespace date_detail
+
+/** One field of an integral time value read as UTC: NaN for an invalid date. */
+[[nodiscard]] inline double date_time_field(double time, DateField field) {
+    using namespace date_detail;
+    if (std::isnan(time))
+        return time;
+    const auto [day, within_day] = day_time(time);
     switch (field) {
     case DateField::year:
         return static_cast<double>(civil_from_days(day).year);
@@ -2537,32 +2548,22 @@ struct CivilDate {
 [[nodiscard]] inline std::string date_iso_string(const Date& date) {
     if (!std::isfinite(*date))
         throw std::runtime_error("Invalid time value");
-    using namespace std::chrono;
-    const auto time = sys_time<milliseconds>{milliseconds{static_cast<std::int64_t>(*date)}};
-    const auto day = floor<days>(time);
-    // Gregorian calendars repeat every 400 years. Reduce into 2000..2399
-    // before using chrono::year, whose range is smaller than JavaScript's.
-    constexpr auto base = sys_days{year{2000} / January / 1};
-    const auto offset = (day - base).count();
-    constexpr std::int64_t cycle_days = 146097;
-    const auto cycles = offset >= 0 ? offset / cycle_days : (offset - cycle_days + 1) / cycle_days;
-    const year_month_day calendar{base + days{offset - cycles * cycle_days}};
-    const auto full_year = static_cast<int>(calendar.year()) + cycles * 400;
-    const hh_mm_ss clock{time - day};
+    using namespace date_detail;
+    const auto [day, within_day] = day_time(*date);
+    const auto civil = civil_from_days(day);
     const auto digits = [](std::int64_t value, std::size_t width) {
         auto text = std::to_string(value);
         if (text.size() < width)
             text.insert(0, width - text.size(), '0');
         return text;
     };
-    const auto year_text = full_year >= 0 && full_year <= 9999
-                               ? digits(full_year, 4)
-                               : std::string(full_year < 0 ? "-" : "+") +
-                                     digits(full_year < 0 ? -full_year : full_year, 6);
-    return year_text + "-" + digits(static_cast<unsigned>(calendar.month()), 2) + "-" +
-           digits(static_cast<unsigned>(calendar.day()), 2) + "T" +
-           digits(clock.hours().count(), 2) + ":" + digits(clock.minutes().count(), 2) + ":" +
-           digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
+    const auto year_text = civil.year >= 0 && civil.year <= 9999
+                               ? digits(civil.year, 4)
+                               : std::string(civil.year < 0 ? "-" : "+") +
+                                     digits(civil.year < 0 ? -civil.year : civil.year, 6);
+    return year_text + "-" + digits(civil.month, 2) + "-" + digits(civil.day, 2) + "T" +
+           digits(within_day / 3600000, 2) + ":" + digits(within_day / 60000 % 60, 2) + ":" +
+           digits(within_day / 1000 % 60, 2) + "." + digits(within_day % 1000, 3) + "Z";
 }
 
 /** A property read of null or undefined, typed as the read's result. */
