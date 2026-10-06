@@ -7095,6 +7095,45 @@ check(
 `,
 );
 
+check(
+    "assignment-values-yield-the-right-side-for-every-target",
+    `
+    const gate = new Float32Array([0, 1]);
+    let text = "a";
+    let other = "b";
+    const chained = (text = other = "z" + gate[1]!);
+    if (chained !== "z1" || text !== "z1" || other !== "z1") throw new Error("string locals");
+    interface Labelled { label: string }
+    function labelled(): Labelled {
+        let held = "";
+        return { get label() { return "<" + held + ">"; }, set label(next: string) { held = next.trim(); } };
+    }
+    const target = labelled();
+    const shown = (target.label = " hi ");
+    if (shown !== " hi " || target.label !== "<hi>") throw new Error("accessor record");
+    class Gauge {
+        private level = 0;
+        get value(): number { return this.level; }
+        set value(next: number) { this.level = Math.max(0, Math.min(1, next)); }
+    }
+    const gauges = [new Gauge(), new Gauge()];
+    let g = 1;
+    const level = (gauges[g--]!.value = 7 * gate[1]!);
+    if (level !== 7 || g !== 0 || gauges[1]!.value !== 1 || gauges[0]!.value !== 0) throw new Error("class setter through an element");
+    interface Bag { items: number[]; count: number }
+    const bags: Bag[] = [{ items: [], count: 0 }, { items: [], count: 0 }];
+    let r = 0;
+    const items = (bags[r++]!.items = [1, 2]);
+    items.push(3);
+    const count = (bags[r++]!.count = 5);
+    if (r !== 2 || bags[0]!.items.length !== 3 || bags[0]!.items !== items || count !== 5 || bags[1]!.count !== 5) throw new Error("record fields through elements");
+    let picked: Bag | null = null;
+    const assigned = (picked = bags[1]!);
+    assigned.count = 6;
+    if (picked!.count !== 6 || assigned !== bags[1]) throw new Error("record local keeps identity");
+`,
+);
+
 test("conditional record values refuse unrepresented key and absence shapes", () => {
     for (const [source, message] of [
         [

@@ -88,6 +88,11 @@ export class ConditionLowerer {
      * where generation settles it.
      */
     public compileCondition(expression: ts.Expression): string {
+        const assigned = this.context.dataLowerer.assignedCondition(
+            expression,
+            () => this.compileCondition(expression),
+        );
+        if (assigned !== undefined) return assigned;
         traceSourceNode(expression);
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)

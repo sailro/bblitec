@@ -94,7 +94,7 @@ Defaults, short-circuit operands and conditional branches evaluate once and lazi
 supports nested `&&` guards and keeps the selected record's identity; `a && b` selects represented
 values, a left whose present values are all truthy contributing only its absence; branches of different
 types select as the conditional's type. A conditional spread (`...(c ? { a } : {})`) adds its keys only
-where its arm is taken. An assignment is the value it assigns, its target evaluated once; an engine property target is read back and must not run code. Operands of concatenation, arithmetic,
+where its arm is taken. An assignment is the value it assigns, engine property targets included, its target evaluated once. Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
 call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
