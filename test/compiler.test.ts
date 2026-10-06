@@ -3994,7 +3994,7 @@ test("keeps an early return inside the invoked setter", () => {
     );
 });
 
-test("record getters admit local statements before their final return", () => {
+test("record getters admit local statements and early returns", () => {
     assert.doesNotThrow(() =>
         compileSource(`
                 const api = {
@@ -4006,12 +4006,10 @@ test("record getters admit local statements before their final return", () => {
                 const read = api.total;
             `),
     );
-    assert.throws(
-        () =>
-            compileSource(
-                `const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`,
-            ),
-        /early returns requires a represented result flow/,
+    assert.doesNotThrow(() =>
+        compileSource(
+            `const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`,
+        ),
     );
 });
 
@@ -5127,11 +5125,11 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
 
     assert.match(
         result.cpp,
-        /v_source\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(v_source\.size\(\)\)\)\)/,
+        /bbl::js::typed_array_slice\(v_source, 0\.0, static_cast<double>\(v_source\.size\(\)\)\)/,
     );
     assert.match(
         result.cpp,
-        /v_source\.subarray\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(v_source\.size\(\)\)\)\)/,
+        /bbl::js::typed_array_subarray\(v_source, 0\.0, static_cast<double>\(v_source\.size\(\)\)\)/,
     );
     assert.match(
         result.cpp,
@@ -5144,7 +5142,7 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
     );
     assert.match(
         result.cpp,
-        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array v_middle = \3\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(\3\.size\(\)\)\)\);/,
+        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array v_middle = bbl::js::typed_array_slice\(\3, 0\.0, static_cast<double>\(\3\.size\(\)\)\);/,
     );
 });
 
@@ -5175,7 +5173,7 @@ test("rebinds optional typed arrays from fresh constructors", () => {
 
     assert.match(
         result.cpp,
-        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::u8_array_sized\(4\.0\);\s+v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{\1\.slice/,
+        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::u8_array_sized\(4\.0\);\s+v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{bbl::js::typed_array_slice\(\1, /,
     );
     assert.match(
         result.cpp,
