@@ -8495,3 +8495,45 @@ checkInRealm(
     }, 0);
 `,
 );
+
+check(
+    "array-length-follows-every-alias-that-can-resize",
+    `
+    const local = [1, 2];
+    const alias = local;
+    alias.push(3);
+    if (local.length !== 3) throw new Error("local alias " + local.length);
+    const sorted = [2, 1];
+    const view = sorted.sort();
+    view.pop();
+    if (sorted.length !== 1) throw new Error("returned receiver alias " + sorted.length);
+    const fielded: number[] = [1, 2];
+    const holder = { items: fielded };
+    holder.items.push(4);
+    if (fielded.length !== 3) throw new Error("field alias " + fielded.length);
+    const captured: number[] = [1, 2];
+    let later: number[] = [];
+    const grow = (): void => { later.push(5); };
+    later = captured;
+    grow();
+    if (captured.length !== 3) throw new Error("captured alias " + captured.length);
+    function append(list: number[]): void { list.push(6); }
+    const passed: number[] = [1, 2];
+    const forwarded = passed;
+    append(forwarded);
+    if (passed.length !== 3) throw new Error("callee alias " + passed.length);
+    class Bag { constructor(public items: number[]) {} grow(): void { this.items.push(7); } }
+    const owned: number[] = [1, 2];
+    new Bag(owned).grow();
+    if (owned.length !== 3) throw new Error("constructed alias " + owned.length);
+    const grown = [1, 2];
+    grown[2] = 3;
+    if (grown.length !== 3) throw new Error("element growth " + grown.length);
+    const kept = [1, 2];
+    kept[1] = 5;
+    const reader = kept;
+    let sum = 0;
+    for (let index = 0; index < kept.length; index++) sum += reader[index]!;
+    if (kept.length !== 2 || sum !== 6) throw new Error("in-range writes keep the length");
+`,
+);
