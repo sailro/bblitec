@@ -4837,3 +4837,83 @@ test("absent property reads refuse properties a converted record may carry", () 
         /has no field 'b'/,
     );
 });
+
+check(
+    "union-tags-admitting-several-literals",
+    `
+    type Job = "farmer" | "potter" | "priest";
+    type Requirement =
+        | { id: string; kind: "default" | "field" | "pond"; satisfied: boolean }
+        | { id: string; kind: "staffedAnyOf"; jobs: readonly Job[]; satisfied: boolean }
+        | { id: string; kind: "mana"; satisfied: boolean; current: number; goal: number };
+    function label(requirement: Requirement): string {
+        if (requirement.kind === "staffedAnyOf") return "jobs:" + requirement.jobs.join("|");
+        if (requirement.kind === "mana") return "mana:" + requirement.current + "/" + requirement.goal;
+        return requirement.kind + (requirement.satisfied ? "+" : "-");
+    }
+    const requirements: Requirement[] = [
+        { id: "a", kind: "field", satisfied: true },
+        { id: "b", kind: "staffedAnyOf", jobs: ["farmer", "potter"], satisfied: false },
+        { id: "c", kind: "mana", satisfied: false, current: 3, goal: 40 },
+        { id: "d", kind: "pond", satisfied: false },
+    ];
+    const labels: Array<typeof label> = [label];
+    const text = requirements.map(labels[0]!).join(",");
+    if (text !== "field+,jobs:farmer|potter,mana:3/40,pond-") throw new Error(text);
+    const pond = requirements[3]!;
+    if (pond.kind === "staffedAnyOf" || pond.kind === "mana" || pond.kind !== "pond") throw new Error("tag set member");
+    const alias = requirements[1]!;
+    if (alias.kind === "staffedAnyOf") alias.satisfied = true;
+    if (!requirements[1]!.satisfied) throw new Error("arm identity");
+    function plain(kind: "default" | "field" | "pond", id: string): Requirement {
+        return { id, kind, satisfied: kind !== "pond" };
+    }
+    const kinds: Array<"default" | "field" | "pond"> = ["pond", "default"];
+    const made = kinds.map((kind, index) => plain(kind, "r" + index));
+    made.push({ id: "m", kind: "mana", current: 2, goal: 4, satisfied: true });
+    if (made.map(labels[0]!).join(",") !== "pond-,default+,mana:2/4") throw new Error("run-time tags");
+`,
+);
+
+test("union arms whose tag literals overlap keep their common fields", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'type Overlap = { kind: "a" | "b"; x: number } | { kind: "b" | "c"; y: string }; const items: Overlap[] = [{ kind: "a", x: 1 }];',
+            ),
+        /Struct literal has unknown field 'x'/,
+    );
+});
+
+check(
+    "union-arm-own-keys-follow-tags",
+    `
+    type Requirement =
+        | { id: string; kind: "field" | "pond"; satisfied: boolean }
+        | { id: string; kind: "staffedAnyOf"; satisfied: boolean; jobs: readonly string[] }
+        | { id: string; kind: "mana"; satisfied: boolean; current: number; extra?: number };
+    const requirements: Requirement[] = [
+        { id: "a", kind: "field", satisfied: true },
+        { id: "b", kind: "staffedAnyOf", satisfied: false, jobs: ["farmer"] },
+        { id: "c", kind: "mana", satisfied: false, current: 3 },
+        { id: "d", kind: "mana", satisfied: false, current: 3, extra: 1 },
+    ];
+    const has = requirements.map((r) => ("jobs" in r ? "j" : "-") + ("current" in r ? "c" : "-") + ("extra" in r ? "e" : "-")).join(",");
+    if (has !== "---,j--,-c-,-ce") throw new Error(has);
+    const keys = requirements.map((r) => Object.keys(r).join("+")).join(",");
+    if (keys !== "id+kind+satisfied,id+kind+satisfied+jobs,id+kind+satisfied+current,id+kind+satisfied+current+extra") throw new Error(keys);
+    const json = requirements.map((r) => JSON.stringify(r)).join("");
+    if (json !== '{"id":"a","kind":"field","satisfied":true}{"id":"b","kind":"staffedAnyOf","satisfied":false,"jobs":["farmer"]}{"id":"c","kind":"mana","satisfied":false,"current":3}{"id":"d","kind":"mana","satisfied":false,"current":3,"extra":1}') throw new Error(json);
+    interface Circle { kind: "circle"; x: number; radius: number; grow?: number }
+    interface Rect { kind: "rect"; cx: number; halfW: number; grow?: number }
+    type Boundary = Circle | Rect;
+    const reach = (boundary: Boundary): number => (boundary.grow ?? 0) + (boundary.kind === "circle" ? boundary.radius + boundary.x : boundary.halfW + boundary.cx);
+    const pair = (a: { boundary: Boundary }, b: { boundary: Boundary }): number => reach({ ...a.boundary, grow: 0 }) + reach({ ...b.boundary, grow: 1 });
+    const pairs: Array<typeof pair> = [pair];
+    const hosts: Array<{ boundary: Boundary }> = [
+        { boundary: { kind: "circle", x: 1, radius: 2, grow: 5 } },
+        { boundary: { kind: "rect", cx: 1, halfW: 3 } },
+    ];
+    if (pairs[0]!(hosts[0]!, hosts[1]!) !== 8 || hosts[0]!.boundary.grow !== 5) throw new Error("spread arm override");
+`,
+);

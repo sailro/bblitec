@@ -9349,23 +9349,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ? "->"
             : ".";
         const slot = `${ownerCpp}${access}${field.name}`;
-        // A union arm's field is narrowed by its tag, not its storage.
+        // A union arm's field is own when the record's tags select an arm
+        // declaring it.
         if (field.presentForTags && field.type.kind === "undefined")
             this.context.fail(
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        if (
-            field.presentForTags &&
-            !(
-                field.optionalProperty &&
-                field.type.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(field.type.name)
-            )
-        )
-            return field.type.kind === "optional"
-                ? optionalPresentCpp(slot)
-                : "true";
         const present = this.context.dataTypes.ownPropertyPresentCpp(
             structName,
             field,
