@@ -2229,17 +2229,21 @@ export class ExpressionLowerer {
             )
                 return member;
             members.push(member);
-            const read = move(member.cpp);
             const kind = member.kind;
+            // A string is stored as one, so every read references it.
+            const read = move(
+                kind === "string" ? `std::string(${member.cpp})` : member.cpp,
+            );
             const result: Value =
                 kind === "data" && member.dataType
                     ? this.context.dataLowerer.leafValue(read, member.dataType)
-                    : kind === "string"
-                      ? { kind, cpp: `std::string(${read})` }
-                      : {
-                            kind: kind === "number" ? "number" : "boolean",
-                            cpp: read,
-                        };
+                    : {
+                          kind:
+                              kind === "number" || kind === "string"
+                                  ? kind
+                                  : "boolean",
+                          cpp: read,
+                      };
             // A found flag, stated truthiness or identity is read beside
             // the value.
             return {

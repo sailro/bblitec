@@ -5805,6 +5805,9 @@ check(
     if (sum(doc.nodes[0]!) !== 7 || sum(doc.nodes[1]!) !== 2.5) throw new Error("document lanes");
     const [first, second] = JSON.parse('"ab"') as unknown as string[];
     if (first !== "a" || second !== "b") throw new Error("document string");
+    const sources = ['"\\ud83d\\ude00\\u00e9xyz"'];
+    const [emoji, accent, , fourth] = JSON.parse(sources[0]!) as unknown as string[];
+    if (emoji !== "\\ud83d\\ude00" || accent !== "\\u00e9" || fourth !== "y") throw new Error("document code points");
     const [one, missing] = JSON.parse("[1]") as number[];
     if (one !== 1 || missing !== undefined) throw new Error("document lane past the end");
     let name = "";
@@ -6656,6 +6659,10 @@ check(
     const store: State[] = [{ mix: 1 }, { mix: 2 }];
     const find = (id: number) => (Number.isSafeInteger(id) && id > 0 ? store.find((state) => state.mix === id) : undefined);
     if (find(gate[1]!) !== store[0] || find(gate[0]!) !== undefined || find(3) !== undefined) throw new Error("prepared search");
+    interface Badge { level: number; label?: string }
+    function badge(on: boolean): Badge { return { level: 1, ...(on ? { label: rng() > 0 ? "on" : "off" } : {}) }; }
+    const shown = badge(gate[1]! > 0);
+    if (shown.label !== "on" || shown.label.length !== 2 || badge(gate[0]! > 0).label !== undefined) throw new Error("prepared string member");
 `,
 );
 
