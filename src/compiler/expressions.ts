@@ -1151,12 +1151,14 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (isUpdateExpression(unwrapped)) {
-            return (
-                this.context.dataLowerer.compileUpdateValue(unwrapped) ??
-                this.context.fail(
-                    unwrapped,
-                    "An increment or decrement requires a number, optional number or dictionary entry.",
-                )
+            const updated =
+                this.context.dataLowerer.compileUpdateValue(unwrapped);
+            if (updated) return updated;
+            // An operand that does not lower names its own cause first.
+            this.context.compileValue(unwrapped.operand);
+            this.context.fail(
+                unwrapped,
+                "An increment or decrement requires a number, optional number or dictionary entry.",
             );
         }
         if (ts.isTemplateExpression(unwrapped)) {
