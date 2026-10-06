@@ -466,6 +466,40 @@ check(
 );
 
 check(
+    "never-typed-returns",
+    `
+    interface Box { kind: string; size: number; tags: Map<string, number> }
+    function fail(message: string): never { throw new Error("box: " + message); }
+    function decode(text: string): Box {
+        if (text.length === 0) fail("empty");
+        let size: number;
+        try {
+            size = Number.parseInt(text, 10);
+            if (Number.isNaN(size)) throw new Error("nan");
+        } catch {
+            return fail("malformed");
+        }
+        const tags = new Map<string, number>();
+        tags.set("size", size);
+        return { kind: "box", size, tags };
+    }
+    function message(text: string, decoder: (text: string) => Box): string {
+        try { return "" + decoder(text).size; } catch (error) { return (error as Error).message; }
+    }
+    const decoders: Array<typeof decode> = [decode];
+    if (decode("12").tags.get("size") !== 12 || message("x", decode) !== "box: malformed" || message("", decode) !== "box: empty")
+        throw new Error("inline never returns");
+    if (message("7", decoders[0]!) !== "7" || message("y", decoders[0]!) !== "box: malformed") throw new Error("stored never returns");
+    const failures: Array<(message: string) => never> = [fail];
+    function pick(index: number): number { if (index < 0) return failures[0]!("negative"); return index * 2; }
+    const picks: Array<typeof pick> = [pick];
+    let caught = "";
+    try { picks[0]!(-1); } catch (error) { caught = (error as Error).message; }
+    if (picks[0]!(3) !== 6 || caught !== "box: negative") throw new Error("stored never-returning callee " + caught);
+`,
+);
+
+check(
     "exponent-compound-assignment",
     `
     const h = [2, 10];

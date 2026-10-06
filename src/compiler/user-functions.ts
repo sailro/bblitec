@@ -81,6 +81,7 @@ import {
 import {
     firstReturn,
     forEachReturn,
+    returnsNever,
     emitReachableStatements,
 } from "./loop-control.js";
 import {
@@ -5875,8 +5876,14 @@ export class UserFunctionLowerer {
         return { statements: [], returnExpression: shape.returned };
     }
 
+    /** A value return; one of a never-typed expression only throws. */
     private containsValueReturn(statements: readonly ts.Statement[]): boolean {
-        return firstReturn(statements, { valued: true }) !== undefined;
+        let found = false;
+        forEachReturn(statements, (node) => {
+            if (node.expression && !returnsNever(this.checker, node))
+                found = true;
+        });
+        return found;
     }
 
     private valueLambdaReturnType(
@@ -5970,6 +5977,8 @@ export class UserFunctionLowerer {
         let found = false;
         let needsNative = false;
         forEachReturn(statements, (node, insideBreakable) => {
+            // It throws where it stands, as the statement lowering emits it.
+            if (returnsNever(this.checker, node)) return;
             if (node.expression) {
                 fail(
                     node,

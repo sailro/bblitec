@@ -76,6 +76,8 @@ import {
     emitReachableStatements,
     enclosingLoopControl,
     firstReturn,
+    callsNever,
+    returnsNever,
 } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -87,7 +89,10 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
-import { renderNativeEmission } from "./native-statements.js";
+import {
+    nativeStatementCode,
+    renderNativeEmission,
+} from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -429,6 +434,8 @@ export class StatementLowerer {
         return false;
     }
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
+    /** Expression statements of a never-typed expression: they throw. */
+    private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
     private readonly labels: Array<{
         readonly source: string;
         readonly target: string;
@@ -884,6 +891,11 @@ export class StatementLowerer {
             ) {
                 this.loweredTerminators.add(statement);
             }
+            // A call typed never throws: nothing after it runs.
+            if (callsNever(context.checker, statement.expression)) {
+                this.loweredTerminators.add(statement);
+                this.neverTerminators.add(statement);
+            }
             return;
         }
         if (ts.isIfStatement(statement)) {
@@ -1011,6 +1023,35 @@ export class StatementLowerer {
                 code: "break;",
                 transfer: "break",
             });
+            return;
+        }
+        if (
+            ts.isReturnStatement(statement) &&
+            returnsNever(context.checker, statement)
+        ) {
+            // The returned expression throws; no value reaches the caller. A
+            // native function still needs a path that leaves it, unless the
+            // lowered expression already ends in one.
+            const lowered = context.captureEmittedStatements(() =>
+                this.emitExpression(context, statement.expression!),
+            );
+            context.emitCapturedStatements(lowered);
+            const last = lowered.at(-1);
+            if (
+                context.activeNativeReturnType() !== undefined &&
+                !(
+                    last &&
+                    (last.statement.kind === "control" ||
+                        /^(?:throw |std::rethrow_exception\()/.test(
+                            nativeStatementCode(last.statement),
+                        ))
+                )
+            )
+                context.emit({
+                    kind: "control",
+                    code: 'throw std::runtime_error("A never-returning call returned.");',
+                    transfer: "throw",
+                });
             return;
         }
         if (
@@ -1675,7 +1716,12 @@ export class StatementLowerer {
             } else if (statement.elseStatement) {
                 this.emitScopedBody(context, statement.elseStatement, true);
             }
-            if (selected && terminatesFlow(selected)) {
+            if (
+                selected &&
+                terminatesFlow(selected, (node) =>
+                    this.neverTerminators.has(node),
+                )
+            ) {
                 this.loweredTerminators.add(statement);
             }
             return;
