@@ -6890,6 +6890,27 @@ check(
 );
 
 check(
+    "paired-absence-tests-inside-longer-chains",
+    `
+    const gate = new Float32Array([0, 1]);
+    interface Bounds { x: number }
+    interface Opts { linked?: Bounds | null; current: boolean }
+    const all: Opts[] = [{ linked: { x: 2 }, current: true }, { linked: null, current: true }, { current: false }];
+    const ready = gate[1]! > 0;
+    let present = 0;
+    let missing = 0;
+    for (const opts of all) {
+        if (ready && opts.linked !== null && opts.linked !== undefined) present += opts.linked.x;
+        if (!ready || opts.linked === null || opts.linked === undefined) missing++;
+        if (opts.current && opts.linked !== undefined && opts.linked !== null && ready) present += 10;
+    }
+    if (present !== 12 || missing !== 2) throw new Error("chained pairs " + present + " " + missing);
+    const pick = (opts: Opts): boolean => ready && opts.linked !== null && opts.linked !== undefined;
+    if (!pick(all[0]!) || pick(all[1]!) || pick(all[2]!)) throw new Error("chained pair value");
+`,
+);
+
+check(
     "typed-conditional-spread-optional-fields",
     `
     const gate = new Float32Array([0, 1]);

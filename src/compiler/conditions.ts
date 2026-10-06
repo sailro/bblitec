@@ -122,16 +122,42 @@ export class ConditionLowerer {
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
         ) {
+            const operator = unwrapped.operatorToken.kind;
+            const isAnd = operator === ts.SyntaxKind.AmpersandAmpersandToken;
             const absence =
                 this.context.dataLowerer.pairedAbsenceComparison(unwrapped);
             if (absence !== undefined) return absence;
-            const left = this.compileCondition(unwrapped.left);
+            // `ready && x !== null && x !== undefined` parses as
+            // `(ready && x !== null) && x !== undefined`: the chain's last
+            // operand pairs with this right one, which then stands for both.
+            const chain = this.context.unwrap(unwrapped.left);
+            const pairedChain =
+                ts.isBinaryExpression(chain) &&
+                chain.operatorToken.kind === operator
+                    ? chain
+                    : undefined;
+            const paired =
+                pairedChain &&
+                this.context.dataLowerer.pairedAbsenceOf(
+                    pairedChain.right,
+                    unwrapped.right,
+                    operator,
+                );
+            const compileRight = (): string => {
+                if (!paired || !pairedChain)
+                    return this.compileCondition(unwrapped.right);
+                // A browser read keeps its two strict tests of one reference.
+                return (
+                    this.context.dataLowerer.pairedAbsenceCondition(paired) ??
+                    `(${this.compileCondition(pairedChain.right)} ${isAnd ? "&&" : "||"} ${this.compileCondition(unwrapped.right)})`
+                );
+            };
+            const left = this.compileCondition(
+                paired && pairedChain ? pairedChain.left : unwrapped.left,
+            );
             // Fold browser-derived constants before lowering the remaining
             // runtime condition. Scene 12 deliberately combines its pinned
             // query pose with a frame counter in one conjunction.
-            const isAnd =
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken;
             const identity = isAnd ? "true" : "false";
             const absorbing = isAnd ? "false" : "true";
             // Preserve JavaScript short circuiting: an unreachable right
@@ -142,12 +168,12 @@ export class ConditionLowerer {
             let right = "";
             let rightLines: string[] = [];
             if (left === identity) {
-                right = this.compileCondition(unwrapped.right);
+                right = compileRight();
             } else {
                 this.context.enterRuntimeControlFlow();
                 try {
                     rightLines = this.context.captureEmittedLines(() => {
-                        right = this.compileCondition(unwrapped.right);
+                        right = compileRight();
                     });
                 } finally {
                     this.context.leaveRuntimeControlFlow();

@@ -397,6 +397,13 @@ type NumericUpdatePlace =
       }
     | EntryUpdatePlace;
 
+/** Two strict absence tests of one plain read, standing for a loose one. */
+interface PairedAbsence {
+    readonly reference: ts.Expression;
+    /** `x != null` rather than `x == null`. */
+    readonly present: boolean;
+}
+
 /** A Map/Record entry with a number value, absent until set. */
 interface EntryUpdatePlace {
     kind: "entry";
@@ -12993,8 +13000,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public pairedAbsence(
         expression: ts.BinaryExpression,
-    ): { reference: ts.Expression; present: boolean } | undefined {
-        const operator = expression.operatorToken.kind;
+    ): PairedAbsence | undefined {
+        return this.pairedAbsenceOf(
+            expression.left,
+            expression.right,
+            expression.operatorToken.kind,
+        );
+    }
+
+    /**
+     * {@link pairedAbsence} of two operands joined by `operator`, wherever a
+     * chain nests them (`ready && x !== null && x !== undefined`).
+     */
+    public pairedAbsenceOf(
+        leftOperand: ts.Expression,
+        rightOperand: ts.Expression,
+        operator: ts.SyntaxKind,
+    ): PairedAbsence | undefined {
         const isAnd = operator === ts.SyntaxKind.AmpersandAmpersandToken;
         if (!isAnd && operator !== ts.SyntaxKind.BarBarToken) return undefined;
         const comparison = isAnd
@@ -13025,8 +13047,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     }
                   : undefined;
         };
-        const first = tested(expression.left);
-        const second = tested(expression.right);
+        const first = tested(leftOperand);
+        const second = tested(rightOperand);
         // Each operand reads the same storage: a name or a chain of data
         // fields, none of them an accessor.
         const plainRead = (node: ts.Expression): boolean =>
@@ -13042,7 +13064,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             second &&
             first.literal !== second.literal &&
             plainRead(first.reference) &&
-            first.reference.getText() === second.reference.getText()
+            this.sameSimplePath(first.reference, second.reference)
             ? { reference: first.reference, present: isAnd }
             : undefined;
     }
@@ -13052,7 +13074,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
     ): string | undefined {
         const paired = this.pairedAbsence(expression);
-        if (!paired) return undefined;
+        return paired && this.pairedAbsenceCondition(paired);
+    }
+
+    /** The loose absence test a {@link PairedAbsence} stands for. */
+    public pairedAbsenceCondition(paired: PairedAbsence): string | undefined {
         const value =
             this.compileDataPath(paired.reference, "read") ??
             this.context.compileValue(paired.reference);
