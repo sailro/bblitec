@@ -162,11 +162,10 @@ test("a record whose native initializer refused refuses where it is stored", () 
         `
         type Failure = "a" | "b" | "c";
         type Candidate = "a" | "b";
-        const isCandidate = (f: Failure): f is Candidate => f !== "c";
         interface Facts { id: number; failures: Candidate[] }
         const store = new Map<number, Facts>();
         export function record(id: number, failures: Failure[]): void {
-            const facts: Facts = { id, failures: failures.filter(isCandidate) };
+            const facts: Facts = { id, failures: failures.slice() as Candidate[] };
             store.set(id, facts);
         }
         const roots: Array<typeof record> = [record];
@@ -179,7 +178,7 @@ test("a record whose native initializer refused refuses where it is stored", () 
     assert.ok(
         report.refusals.some(
             (refusal) =>
-                refusal.site.line === 9 &&
+                refusal.site.line === 8 &&
                 refusal.message ===
                     "Record 'facts' has no native object: its initializer could not be stored natively.",
         ),

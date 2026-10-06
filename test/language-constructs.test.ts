@@ -4940,3 +4940,23 @@ check(
     if (arches[0]!(3, 5) !== "3:5:6:0") throw new Error("present optional fields");
 `,
 );
+
+check(
+    "type-guard-filters-narrow-string-tags",
+    `
+    type Failure = "a" | "b" | "c";
+    type Candidate = "a" | "b";
+    const isCandidate = (f: Failure): f is Candidate => f !== "c";
+    interface Facts { id: number; failures: Candidate[] }
+    function facts(id: number, failures: Failure[]): Facts {
+        return { id, failures: failures.filter(isCandidate) };
+    }
+    const roots: Array<typeof facts> = [facts];
+    const made = roots[0]!(1, ["a", "c", "b"]);
+    if (made.failures.join(",") !== "a,b") throw new Error("filtered tags");
+    const source: Failure[] = ["c", "a"];
+    const kept: Candidate[] = source.filter((f): f is Candidate => f === "a");
+    source[1] = "b";
+    if (kept.length !== 1 || kept[0] !== "a") throw new Error("a fresh array");
+`,
+);

@@ -1908,13 +1908,41 @@ function arrayResultType(
         : result;
 }
 
+/**
+ * A type predicate narrowing string tags (`(f: Failure) => f is Candidate`)
+ * makes the filtered array one of the narrower tags: each element it keeps
+ * converts to that tag, which refuses at run time if the predicate lied.
+ */
+function narrowedTagFilter(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    element: DataType,
+): DataType<"vector"> | undefined {
+    const result = lowerer.dataTypeAt(call);
+    if (
+        element.kind !== "enum" ||
+        result?.kind !== "vector" ||
+        result.element.kind !== "enum" ||
+        result.element.name === element.name
+    )
+        return undefined;
+    const members = lowerer.context.dataTypes.enumMembers(element.name);
+    return lowerer.context.dataTypes
+        .enumMembers(result.element.name)
+        .every((member) => members.includes(member))
+        ? result
+        : undefined;
+}
+
 function compileArrayFilter(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const filteredType = arrayResultType(lowerer, call, {
-        kind: "vector" as const,
-        element: dataType.element,
-    })!;
+    const filteredType =
+        narrowedTagFilter(lowerer, call, dataType.element) ??
+        arrayResultType(lowerer, call, {
+            kind: "vector" as const,
+            element: dataType.element,
+        })!;
     const output = lowerer.context.allocateTemporaryCppName("filter_result");
     lowerer.emitArrayCallbackLoop(
         call,
