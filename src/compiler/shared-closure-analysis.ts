@@ -11,6 +11,7 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { rootIdentifier } from "./syntax.js";
+import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
 
@@ -354,12 +355,10 @@ export class SharedClosureAnalysis {
             node.kind === ts.SyntaxKind.SuperKeyword
         )
             return true;
-        const type = this.context.checker.getTypeAtLocation(node);
-        return (type.isUnion() ? type.types : [type]).every(
+        return presentMembers(
+            this.context.checker.getTypeAtLocation(node),
+        ).every(
             (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                    0 ||
                 ((member.getSymbol()?.flags ?? 0) & ts.SymbolFlags.Class) !== 0,
         );
     }

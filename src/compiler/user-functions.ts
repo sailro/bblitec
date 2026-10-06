@@ -282,22 +282,30 @@ export function requiresDefaultParameterBinding(
 }
 
 type Fail = (node: ts.Node, message: string) => never;
+
+/** A syntactic fact of each declaration, so it outlives any emission transaction. */
+const dynamicThisUses = new WeakMap<SupportedFunction, boolean>();
+
 /** Dynamic `this` belongs to the nearest non-arrow function. */
 export function functionUsesDynamicThis(
     declaration: SupportedFunction,
 ): boolean {
-    return (
-        !ts.isArrowFunction(declaration) &&
-        !!declaration.body &&
-        someAnalysisNode(
-            declaration.body,
-            (node) => node.kind === ts.SyntaxKind.ThisKeyword,
-            {
-                skip: (node) =>
-                    ts.isFunctionLike(node) && !ts.isArrowFunction(node),
-            },
-        )
-    );
+    let uses = dynamicThisUses.get(declaration);
+    if (uses === undefined) {
+        uses =
+            !ts.isArrowFunction(declaration) &&
+            !!declaration.body &&
+            someAnalysisNode(
+                declaration.body,
+                (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+                {
+                    skip: (node) =>
+                        ts.isFunctionLike(node) && !ts.isArrowFunction(node),
+                },
+            );
+        dynamicThisUses.set(declaration, uses);
+    }
+    return uses;
 }
 
 export type SupportedFunction =

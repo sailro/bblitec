@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { isTypeReference } from "./type-facts.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -112,10 +113,7 @@ export function mentionsTypeParameter(
 
 /** The generic declaration a type reference instantiates (`Promise` of `Promise<T>`). */
 function referenceTarget(type: ts.Type): ts.Type | undefined {
-    return (type.flags & ts.TypeFlags.Object) !== 0 &&
-        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0
-        ? (type as ts.TypeReference).target
-        : undefined;
+    return isTypeReference(type) ? type.target : undefined;
 }
 
 /** Structural matching of a declared (parameterized) type against an instantiated one. */

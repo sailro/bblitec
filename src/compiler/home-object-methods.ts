@@ -3,7 +3,7 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { propertyNameText } from "./syntax.js";
+import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 
@@ -42,23 +42,14 @@ const programReads = new WeakMap<ts.Program, MethodValueReads>();
 
 /** Whether a member read is a call's callee, a write target or a `typeof`/`delete` operand. */
 function readsOnlyAsMember(access: ts.Expression): boolean {
-    let current: ts.Node = access;
-    while (
-        ts.isParenthesizedExpression(current.parent) ||
-        ts.isNonNullExpression(current.parent) ||
-        ts.isAsExpression(current.parent) ||
-        ts.isTypeAssertionExpression(current.parent) ||
-        ts.isSatisfiesExpression(current.parent)
-    )
-        current = current.parent;
-    const parent = current.parent;
+    const parent = wrappedParent(access);
     return (
-        ((ts.isCallExpression(parent) ||
-            ts.isTaggedTemplateExpression(parent)) &&
-            (ts.isCallExpression(parent) ? parent.expression : parent.tag) ===
-                current) ||
+        (ts.isCallExpression(parent) &&
+            unwrapExpression(parent.expression) === access) ||
+        (ts.isTaggedTemplateExpression(parent) &&
+            unwrapExpression(parent.tag) === access) ||
         (ts.isBinaryExpression(parent) &&
-            parent.left === current &&
+            unwrapExpression(parent.left) === access &&
             parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
         ts.isDeleteExpression(parent) ||
         ts.isTypeOfExpression(parent)
@@ -70,9 +61,7 @@ function assignmentPatternNames(
     pattern: ts.Expression,
     names: (name: string, node: ts.Node) => void,
 ): void {
-    const target = ts.isParenthesizedExpression(pattern)
-        ? pattern.expression
-        : pattern;
+    const target = unwrapExpression(pattern);
     if (ts.isArrayLiteralExpression(target)) {
         for (const element of target.elements)
             assignmentPatternNames(
@@ -206,7 +195,7 @@ export function readsHomeObject(
 ): node is ts.MethodDeclaration | ts.FunctionExpression {
     let owner: ts.Node = node.parent;
     if (ts.isFunctionExpression(node)) {
-        while (ts.isParenthesizedExpression(owner)) owner = owner.parent;
+        owner = wrappedParent(node);
         if (!ts.isPropertyAssignment(owner)) return false;
         owner = owner.parent;
     } else if (!ts.isMethodDeclaration(node)) return false;
