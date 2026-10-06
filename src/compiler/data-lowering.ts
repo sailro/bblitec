@@ -587,7 +587,6 @@ export class DataLowerer {
         bind: (compiled: T) => Value,
         fromValue: (value: Value) => T,
     ): T | undefined {
-        if (this.assignedRights.size === 0) return undefined;
         const key = this.context.unwrap(expression);
         let state = this.assignedRights.get(key);
         if (state === undefined || state === "evaluating") return undefined;
@@ -608,6 +607,7 @@ export class DataLowerer {
 
     /** `compileValue` of an assigned right side (`assigned`), held once. */
     public assignedValue(expression: ts.Expression): Value | undefined {
+        if (this.assignedRights.size === 0) return undefined;
         return this.assigned(
             expression,
             () => this.context.compileValue(expression),
@@ -626,6 +626,7 @@ export class DataLowerer {
         expression: ts.Expression,
         precision: "float" | "double",
     ): string | undefined {
+        if (this.assignedRights.size === 0) return undefined;
         return this.assigned(
             expression,
             () => this.context.compileNumber(expression, "double"),
@@ -639,6 +640,7 @@ export class DataLowerer {
         expression: ts.Expression,
         compile: () => string,
     ): string | undefined {
+        if (this.assignedRights.size === 0) return undefined;
         return this.assigned(
             expression,
             compile,
@@ -8404,13 +8406,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.Expression,
         dataType: DataType,
     ): string {
-        const assigned = this.assigned(
-            expression,
-            () => this.compileForSink(expression, dataType),
-            (cpp) => this.bindAssigned(cpp, dataType),
-            (value) =>
-                this.compileKnownValueForSink(value, dataType, expression),
-        );
+        const assigned =
+            this.assignedRights.size === 0
+                ? undefined
+                : this.assigned(
+                      expression,
+                      () => this.compileForSink(expression, dataType),
+                      (cpp) => this.bindAssigned(cpp, dataType),
+                      (value) =>
+                          this.compileKnownValueForSink(
+                              value,
+                              dataType,
+                              expression,
+                          ),
+                  );
         if (assigned !== undefined) return assigned;
         if (
             this.context.options.workers &&
