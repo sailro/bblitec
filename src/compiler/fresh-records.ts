@@ -50,6 +50,46 @@ export function yieldsFreshRecordElements(
     return false;
 }
 
+/**
+ * The one expression every element of an array expression evaluates: the
+ * single returned expression of an array `map` callback, evaluated once per
+ * element. Undefined for any other array.
+ */
+export function mappedElement(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+): ts.Expression | undefined {
+    const call = unwrapExpression(node);
+    if (
+        !ts.isCallExpression(call) ||
+        !ts.isPropertyAccessExpression(call.expression) ||
+        call.expression.name.text !== "map" ||
+        !checker.isArrayLikeType(
+            checker.getTypeAtLocation(call.expression.expression),
+        )
+    )
+        return undefined;
+    const callback = call.arguments[0] && unwrapExpression(call.arguments[0]);
+    if (
+        !callback ||
+        !(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    )
+        return undefined;
+    if (!ts.isBlock(callback.body)) return callback.body;
+    const returned: ts.Expression[] = [];
+    let bare = false;
+    forEachAnalysisNode(
+        callback.body,
+        (node) => {
+            if (!ts.isReturnStatement(node)) return;
+            if (node.expression) returned.push(node.expression);
+            else bare = true;
+        },
+        { functions: "skip", types: "skip" },
+    );
+    return returned.length === 1 && !bare ? returned[0] : undefined;
+}
+
 function fresh(
     checker: ts.TypeChecker,
     node: ts.Node,

@@ -8142,6 +8142,76 @@ check(
 `,
 );
 
+check(
+    "arrays-held-in-nested-members-stay-one-object",
+    `
+    interface Emit { x: number; y: number; z: number }
+    interface Narrow { x: number }
+    interface Holder { points: Narrow[] }
+    interface Outer { inner: Holder; lists: Narrow[][] }
+    const points: Emit[] = [{ x: 1, y: 2, z: 3 }];
+    const holder: Holder = { points };
+    const nested: Outer = { inner: { points }, lists: [points] };
+    const flag = points.length > 0;
+    const chosen: Holder = { points: flag ? points : [] };
+    const base = { points };
+    const spread: Holder = { ...base };
+    function make(): { points: Emit[] } { return { points }; }
+    const made: Holder = make();
+    points.push({ x: 4, y: 5, z: 6 });
+    if (holder.points !== points || nested.inner.points !== points || nested.lists[0] !== points) throw new Error("literal members");
+    if (chosen.points !== points || spread.points !== points || made.points !== points) throw new Error("selected, spread and returned members");
+    if (holder.points.length !== 2 || made.points.length !== 2) throw new Error("shared growth");
+    holder.points[1]!.x = 9;
+    if (points[1]!.x !== 9) throw new Error("shared element");
+`,
+);
+
+check(
+    "fresh-nested-members-are-copied",
+    `
+    interface Emit { x: number; y: number; z: number }
+    interface Wheel { x: number; z: number; label?: string }
+    interface Holder { points: Wheel[]; first: { at: Wheel } }
+    const source: Emit[] = [{ x: 1, y: 2, z: 3 }];
+    const holder: Holder = {
+        points: source.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+        first: { at: { x: 5, y: 6, z: 7 } as Emit },
+    };
+    const rows = source.map((p) => ({ cell: { x: p.x, y: 0, z: p.z } as Emit }));
+    const cells: { cell: Wheel }[] = rows.map((row) => ({ cell: row.cell }));
+    if (holder.points[0]!.x !== 1 || holder.first.at.z !== 7 || cells[0]!.cell.z !== 3) throw new Error("fresh members");
+`,
+);
+
+test("a shared array in a nested member refuses a copy no shared layout holds", () => {
+    const shapes = `interface Emit { x: number; y: number; z: number }
+        interface Wheel { x: number; z: number; label?: string }
+        interface Holder { points: Wheel[] }
+        const points: Emit[] = [{ x: 1, y: 2, z: 3 }];`;
+    const copied =
+        /'Emit' record stored as 'Wheel' would be a copy of the one object JavaScript keeps, and the array holding them is one shared array/;
+    for (const use of [
+        // a literal field, at any depth
+        `const holder: Holder = { points };`,
+        `const outer: { inner: Holder } = { inner: { points } };`,
+        // a conditional arm, a spread member, an array element
+        `const flag = points.length > 0; const holder: Holder = { points: flag ? points : [] };`,
+        `const base = { points }; const holder: Holder = { ...base };`,
+        `const lists: Wheel[][] = [points];`,
+        // a member of a fresh record is not fresh
+        `function make(): { points: Emit[] } { return { points }; } const holder: Holder = make();`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${shapes}\n${use}\npoints.push({ x: 4, y: 5, z: 6 });`,
+                ),
+            copied,
+            use,
+        );
+});
+
 test("tuples stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>

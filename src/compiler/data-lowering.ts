@@ -146,6 +146,7 @@ import {
 } from "./data-methods.js";
 import { resizingArrayMethods } from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
+import { mappedElement } from "./fresh-records.js";
 import {
     isAssignmentExpression,
     expressionMayRunCode,
@@ -156,6 +157,7 @@ import {
     rootIdentifier,
     argumentAt,
     identifierText,
+    literalMember,
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
@@ -8510,6 +8512,75 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
         }
         return compileDataExpressionSink(dataType, this, expression, unwrapped);
+    }
+
+    /**
+     * The member a sink is storing, read out of the value its node
+     * evaluates to: the node it converts at, the member's own expression
+     * where known, and the array expression an element was read out of.
+     */
+    private memberConversion:
+        | {
+              readonly node: ts.Node;
+              readonly expression: ts.Expression | undefined;
+              readonly elementOf: ts.Expression | undefined;
+          }
+        | undefined;
+
+    /**
+     * Stores `member` as `dataType`: a member read out of the value a sink
+     * at `node` converts -- the field `key`, the element at index `key`, or
+     * without a key an element of a stored array. Its freshness is its own,
+     * never its container's: where the container's syntax names the
+     * member's expression (`literalMember`, `mappedElement`) it converts at
+     * that expression, and otherwise at no known expression
+     * (`convertedExpression`).
+     */
+    public compileMemberForSink(
+        member: Value,
+        dataType: DataType,
+        node: ts.Node,
+        key?: string | number,
+    ): string {
+        const container = this.convertedExpression(node);
+        // An element of a stored array is the expression a `map` callback
+        // builds every element with, where there is one.
+        const expression =
+            container === undefined
+                ? undefined
+                : key === undefined
+                  ? mappedElement(this.context.checker, container)
+                  : literalMember(container, key);
+        const at = expression ?? node;
+        const previous = this.memberConversion;
+        this.memberConversion = {
+            node: at,
+            expression,
+            elementOf: typeof key === "string" ? undefined : container,
+        };
+        try {
+            return this.compileKnownValueForSink(member, dataType, at);
+        } finally {
+            this.memberConversion = previous;
+        }
+    }
+
+    /**
+     * The expression whose value a sink at `node` converts: `node` itself,
+     * unless the sink stores a member read out of node's value, whose own
+     * expression it is where known (`compileMemberForSink`). Freshness and
+     * argument positions are decided for this expression alone.
+     */
+    public convertedExpression(node: ts.Node): ts.Expression | undefined {
+        const member = this.memberConversion;
+        if (member?.node === node) return member.expression;
+        return ts.isExpression(node) ? node : undefined;
+    }
+
+    /** The array expression the element a sink at `node` stores was read out of. */
+    public convertedElementOf(node: ts.Node): ts.Expression | undefined {
+        const member = this.memberConversion;
+        return member?.node === node ? member.elementOf : undefined;
     }
 
     public compileKnownValueForSink(
