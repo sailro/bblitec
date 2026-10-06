@@ -1077,6 +1077,30 @@ check(
 );
 
 check(
+    "push-spreads-what-an-array-literal-spreads",
+    `
+    const gate = new Float32Array([1]);
+    const letters: string[] = ["<"];
+    letters.push(..."ab", ...new Set(["c", "c", "d"]));
+    const tags = new Map<string, number>([["x", 1], ["y", 2]]);
+    letters.push(...tags.keys());
+    if (letters.join("") !== "<abcdxy") throw new Error("string, Set and iterator spreads");
+    const numbers: number[] = [0];
+    numbers.push(...new Float32Array([0.5, 1.5]), ...new Set([2, 2, 3]), ...tags.values());
+    if (numbers.join(",") !== "0,0.5,1.5,2,3,1,2") throw new Error("typed array, Set and iterator spreads");
+    const pairs: [string, number][] = [];
+    pairs.push(...tags);
+    if (pairs.length !== 2 || pairs[1]![0] !== "y" || pairs[1]![1] !== 2) throw new Error("Map entry spread");
+    numbers.length = 1;
+    numbers.push(...numbers.map((v) => v + gate[0]!), ...numbers);
+    if (numbers.join(",") !== "0,1,0") throw new Error("receiver read before the push");
+    const points: string[] = [];
+    points.push(..."a\u{1F600}");
+    if (points.length !== 2 || points[1] !== "\u{1F600}") throw new Error("code points");
+`,
+);
+
+check(
     "mixed-tuple-destructuring-assignments",
     `
     const row:[string,number,boolean] = ['head',2,true];

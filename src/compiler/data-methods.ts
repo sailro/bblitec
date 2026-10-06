@@ -2753,74 +2753,24 @@ function compileArrayPush(state: ArrayMethodState): Value {
     }
     const pushes = call.arguments.map((argument, index) => {
         if (ts.isSpreadElement(argument)) {
-            const spread = lowerer.context.compileValue(argument.expression);
-            if (
-                lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                    dataType.element,
-                )
-            ) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(
-                    spread,
-                    argument,
-                    "Array.push spread",
-                );
-            }
-            if (spread.kind === "tuple" && spread.tupleElements) {
-                const values = spread.tupleElements.map((value) =>
-                    lowerer.compileKnownValueForSink(
-                        value,
-                        dataType.element,
-                        argument,
-                    ),
-                );
-                const source =
-                    lowerer.context.allocateTemporaryCppName("push_spread");
-                lowerer.context.emit({
-                    kind: "declaration",
-                    type: lowerer.context.dataTypes.cppType(dataType),
-                    name: source,
-                    initializer: values.join(", "),
-                    initialization: "direct",
-                });
-                return `${receiver}.insert(${receiver}.end(), ${source}.begin(), ${source}.end())`;
-            }
-            let source: string;
-            if (isJsonValue(spread) && dataType.element.kind === "json") {
-                source = `${spread.cpp}.elements()`;
-            } else if (
-                spread.kind === "handle-collection" &&
-                spread.handleCollection &&
-                dataType.element.kind === "handle" &&
-                spread.handleCollection.elementKind === dataType.element.handle
-            ) {
-                source = spread.handleCollection.containerCpp;
-            } else if (
-                spread.kind === "data" &&
-                (((spread.dataType?.kind === "vector" ||
-                    spread.dataType?.kind === "span") &&
-                    dataTypesEqual(
-                        spread.dataType.element,
-                        dataType.element,
-                    )) ||
-                    (spread.dataType?.kind === "tuple" &&
-                        dataType.element.kind === "number"))
-            ) {
-                source = spread.cpp;
-            } else {
-                lowerer.context.fail(
-                    argument,
-                    `Array.push spread must contain values of the destination element type ${JSON.stringify(dataType.element)}; received ${spread.kind} ${spread.dataType ? JSON.stringify(spread.dataType) : "without a data type"}.`,
-                );
-            }
+            // What `[...x]` appends, copied before any element is pushed:
+            // JavaScript reads every argument first, the receiver's own
+            // elements included.
+            const source = lowerer.spreadSource(argument, {
+                kind: "vector",
+                element: dataType.element,
+            });
             const copy =
                 lowerer.context.allocateTemporaryCppName("push_spread");
             lowerer.context.emit({
                 kind: "declaration",
                 type: "auto",
                 name: copy,
-                initializer: `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source})`,
+                initializer: source.freshSpread
+                    ? source.cpp
+                    : `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`,
             });
-            return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
+            return `bbl::js::array_append(${receiver}, ${copy})`;
         }
         if (
             pushedValues &&

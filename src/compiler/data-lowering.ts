@@ -14892,13 +14892,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * What a spread element appends to an array of `dataType`, read as
-     * `iteratedElements` iterates it: a fresh array where the spread builds
-     * one (a compile-time tuple, a projection at the element type, Map/Set
-     * entries, a string's code points, elements of another spelling),
-     * otherwise the iterated range itself.
+     * What a spread element appends to an array of `dataType` (an array
+     * literal's, `push`'s), read as `iteratedElements` iterates it: a fresh
+     * array where the spread builds one (a compile-time tuple, a projection
+     * at the element type, Map/Set entries, a string's code points, elements
+     * of another spelling), otherwise the iterated range itself; a parsed
+     * document's elements for an array of documents.
      */
-    private spreadSource(
+    public spreadSource(
         spread: ts.SpreadElement,
         dataType: DataType<"vector">,
     ): Value & { freshSpread?: true } {
@@ -14920,15 +14921,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       ? this.compileArrayFrom(expression, dataType)
                       : undefined
                 : undefined;
-        const mapRange = projected
+        // Only a Map or Set source iterates entries; an array, tuple or
+        // string is lowered once, below.
+        const sourceKind = projected
             ? undefined
-            : this.context.probeEmission(() => {
-                  const range = this.iterationTarget(spread.expression);
-                  return range?.element.kind === "map-entry" ||
-                      range?.element.kind === "set-entry"
-                      ? range
-                      : undefined;
-              });
+            : this.dataTypeAt(spread.expression)?.kind;
+        const mapRange =
+            projected ||
+            sourceKind === "vector" ||
+            sourceKind === "span" ||
+            sourceKind === "tuple" ||
+            sourceKind === "string"
+                ? undefined
+                : this.context.probeEmission(() => {
+                      const range = this.iterationTarget(spread.expression);
+                      return range?.element.kind === "map-entry" ||
+                          range?.element.kind === "set-entry"
+                          ? range
+                          : undefined;
+                  });
         if (mapRange) {
             return {
                 kind: "data",
@@ -14974,6 +14985,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 borrowedData: true,
             };
         }
+        if (isJsonValue(iterable) && dataType.element.kind === "json")
+            return {
+                kind: "data",
+                cpp: `${iterable.cpp}.elements()`,
+                dataType: { kind: "span", element: dataType.element },
+            };
         const iterated = this.iteratedElements(iterable);
         if (iterated && "lanes" in iterated) {
             return {
