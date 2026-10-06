@@ -73,6 +73,7 @@ import {
     isLogicalAssignmentOperator,
     isAssignmentExpression,
     isUpdateExpression,
+    expressionHasEffects,
     expressionMayRunCode,
     regularExpressionParts,
     unwrapExpression,
@@ -509,6 +510,10 @@ export class ExpressionLowerer {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
+        // An operand already evaluated once (an assigned right side, a held
+        // store key) reads back wherever the lowering reaches it.
+        const held = this.context.dataLowerer.assignedValue(expression);
+        if (held) return held;
         if (
             this.context.options.workers &&
             ts.isAwaitExpression(unwrapExpression(expression))
@@ -4703,17 +4708,30 @@ export class ExpressionLowerer {
             );
         }
         const index = this.compileValue(unwrapped.argumentExpression);
-        const staticIndex =
-            index.kind === "number"
-                ? (index.staticNumber ??
-                  staticNumberValue(this.context, unwrapped.argumentExpression))
-                : undefined;
         if (index.kind !== "number") {
             this.context.fail(
                 unwrapped.argumentExpression,
                 "Static tuple access requires a numeric index.",
             );
         }
+        // The index runs once, where JavaScript reads it, whichever lane it
+        // selects and however many lanes compare it: none for a single
+        // element or a lane generation knows, several for three or more.
+        const selector =
+            expressionHasEffects(unwrapped.argumentExpression) &&
+            !this.context.dataLowerer.isHeldStoreKey(
+                unwrapped.argumentExpression,
+            )
+                ? pinOperand(
+                      this.context,
+                      index,
+                      unwrapped.argumentExpression,
+                      "element_index",
+                  )
+                : index;
+        const staticIndex =
+            index.staticNumber ??
+            staticNumberValue(this.context, unwrapped.argumentExpression);
         if (staticIndex === undefined) {
             const elements = owner.tupleElements ?? [];
             if (elements.length === 0) {
@@ -4726,8 +4744,8 @@ export class ExpressionLowerer {
             for (let lane = 1; lane < elements.length; lane += 1) {
                 selected = this.selectValue(
                     this.context.captureNativeExpression(() => {
-                        this.context.useNativeValue(index);
-                        return `(${index.cpp}) == ${lane}`;
+                        this.context.useNativeValue(selector);
+                        return `(${selector.cpp}) == ${lane}`;
                     }),
                     elements[lane]!,
                     selected,

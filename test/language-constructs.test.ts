@@ -6654,9 +6654,11 @@ function checkInRealm(name: string, source: string): void {
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { close: () => (closed = true) },
+            { close: () => (closed = true), setTimeout },
         );
-        await new Promise((resolve) => setImmediate(resolve));
+        // A realm may close from a timer callback as well as a reaction.
+        for (let turn = 0; turn < 20 && !closed; turn++)
+            await new Promise((resolve) => setTimeout(resolve, 0));
         assert.equal(closed, true);
         const result = compileSource(source, { fileName: `${name}.ts` });
         await t.test(
@@ -8471,5 +8473,124 @@ check(
     function narrowed(): Narrow[] { return tags.filter(isNarrow) as Narrow[]; }
     if (asserted.join() !== "a,b" || checked.join() !== "a,b" || record.values.join() !== "a,b" || narrowed().join() !== "a,b")
         throw new Error("narrowed tag filters through assertions");
+`,
+);
+
+checkInRealm(
+    "settled-records-enumerate-the-keys-their-tags-select",
+    `
+    setTimeout(() => {
+        void (async () => {
+            const failure = new RangeError("first");
+            const settled = await Promise.allSettled([Promise.resolve(3), Promise.reject(failure)]);
+            const rejected = settled[1]!;
+            if (rejected.status !== "rejected" || rejected.reason !== failure) throw new Error("rejection");
+            if (Object.keys(rejected).join() !== "status,reason") throw new Error("rejected keys " + Object.keys(rejected).join());
+            const keys: string[] = [];
+            for (const entry of settled) keys.push(Object.keys(entry).join("+"));
+            if (keys.join() !== "status+value,status+reason") throw new Error("keys per element " + keys.join());
+            if (!("value" in settled[0]!) || "reason" in settled[0]!) throw new Error("membership");
+            globalThis.close();
+        })();
+    }, 0);
+`,
+);
+
+check(
+    "array-length-follows-every-alias-that-can-resize",
+    `
+    const local = [1, 2];
+    const alias = local;
+    alias.push(3);
+    if (local.length !== 3) throw new Error("local alias " + local.length);
+    const sorted = [2, 1];
+    const view = sorted.sort();
+    view.pop();
+    if (sorted.length !== 1) throw new Error("returned receiver alias " + sorted.length);
+    const fielded: number[] = [1, 2];
+    const holder = { items: fielded };
+    holder.items.push(4);
+    if (fielded.length !== 3) throw new Error("field alias " + fielded.length);
+    const captured: number[] = [1, 2];
+    let later: number[] = [];
+    const grow = (): void => { later.push(5); };
+    later = captured;
+    grow();
+    if (captured.length !== 3) throw new Error("captured alias " + captured.length);
+    function append(list: number[]): void { list.push(6); }
+    const passed: number[] = [1, 2];
+    const forwarded = passed;
+    append(forwarded);
+    if (passed.length !== 3) throw new Error("callee alias " + passed.length);
+    class Bag { constructor(public items: number[]) {} grow(): void { this.items.push(7); } }
+    const owned: number[] = [1, 2];
+    new Bag(owned).grow();
+    if (owned.length !== 3) throw new Error("constructed alias " + owned.length);
+    const grown = [1, 2];
+    grown[2] = 3;
+    if (grown.length !== 3) throw new Error("element growth " + grown.length);
+    const kept = [1, 2];
+    kept[1] = 5;
+    const reader = kept;
+    let sum = 0;
+    for (let index = 0; index < kept.length; index++) sum += reader[index]!;
+    if (kept.length !== 2 || sum !== 6) throw new Error("in-range writes keep the length");
+`,
+);
+
+check(
+    "element-store-keys-evaluate-before-the-right-side",
+    `
+    const order: string[] = [];
+    function key(name: string, value: number): number { order.push(name); return value; }
+    function right(name: string, value: number): number { order.push(name); return value; }
+    const names: string[] = ["a", "b", "c"];
+    let j = 0;
+    names[j++] = String(j);
+    if (names.join() !== "1,b,c" || j !== 1) throw new Error("array " + names.join());
+    const yielded = (names[j++] = String(j));
+    if (yielded !== "2" || names.join() !== "1,2,c") throw new Error("array value " + names.join());
+    const numbers = [10, 20, 30];
+    numbers[key("k", 1)] = right("r", 5);
+    if (order.join() !== "k,r" || numbers.join() !== "10,5,30") throw new Error("call order " + order.join());
+    const floats = new Float32Array(3);
+    let k = 0;
+    floats[k++] = k + 10;
+    if (floats[0] !== 11 || floats[1] !== 0) throw new Error("typed " + Array.from(floats).join());
+    const table: Record<string, number> = {};
+    let m = 0;
+    table["k" + m++] = m;
+    if (table["k0"] !== 1 || table["k1"] !== undefined) throw new Error("record " + JSON.stringify(table));
+    const slots: Record<"left" | "right", number> = { left: 0, right: 0 };
+    let side: "left" | "right" = "left";
+    function flip(): number { side = "right"; return 4; }
+    slots[side] = flip();
+    if (slots.left !== 4 || slots.right !== 0) throw new Error("keyed fields " + slots.left + "," + slots.right);
+    const tuple: [number, number] = [0, 0];
+    let n = 0;
+    tuple[n++] = n;
+    if (tuple[0] !== 1 || tuple[1] !== 0) throw new Error("tuple " + tuple.join());
+    const counts = [1, 2, 3];
+    let p = 0;
+    function bump(): number { p += 5; return 100; }
+    counts[p++] += bump();
+    if (counts.join() !== "101,2,3" || p !== 6) throw new Error("compound " + counts.join() + " " + p);
+    const powers = [2, 3];
+    let q = 0;
+    powers[q++] **= 2;
+    if (powers.join() !== "4,3" || q !== 1) throw new Error("helper compound " + powers.join() + " " + q);
+    const totals = [1, 1];
+    function reset(): number { totals[0] = 50; return 1; }
+    totals[0] += reset();
+    if (totals[0] !== 2) throw new Error("compound reads before the right side " + totals.join());
+    const grid = [[0, 0], [0, 0]];
+    let c = 0;
+    grid[1]![c++] = c;
+    if (grid[1]!.join() !== "1,0") throw new Error("nested " + grid[1]!.join());
+    interface Row { x: number }
+    const rows: Row[] = [{ x: 0 }, { x: 0 }];
+    let r = 0;
+    rows[r++]!.x = r;
+    if (rows[0]!.x !== 1 || rows[1]!.x !== 0) throw new Error("row field " + rows[0]!.x);
 `,
 );

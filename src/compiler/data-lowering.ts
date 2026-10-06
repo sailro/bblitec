@@ -143,11 +143,15 @@ import {
     removedIndexGuard,
     type ReceiverWalkMethod,
 } from "./data-methods.js";
-import { resizingArrayMethods } from "./receiver-methods.js";
+import {
+    lengthPreservingArrayMethods,
+    resizingArrayMethods,
+} from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
 import { mappedElement } from "./fresh-records.js";
 import {
     isAssignmentExpression,
+    isAssignmentOperator,
     expressionHasEffects,
     expressionMayRunCode,
     hasNonNullAssertion,
@@ -184,10 +188,10 @@ function disjointMemberPaths(left: string, right: string): boolean {
         .some((field, index) => field !== rightFields[index]);
 }
 
-/** Container length mutations, isolated by checker and source file. */
-const resizedSymbolsByChecker = new EmissionWeakMap<
+/** Container length extents, isolated by checker and source file. */
+const lengthExtentsByChecker = new EmissionWeakMap<
     ts.TypeChecker,
-    WeakMap<ts.SourceFile, ReadonlySet<ts.Symbol>>
+    WeakMap<ts.SourceFile, ReadonlyMap<ts.Symbol, number>>
 >();
 
 /**
@@ -203,77 +207,238 @@ function namesStableOwner(owner: Value): boolean {
 }
 
 /**
- * Resizing methods, rebinding, length writes, call arguments and a callback
- * method whose callback takes the receiver invalidate a binding's fixed
- * length. Element writes preserve length. Symbols keep unrelated same-named
- * bindings independent.
+ * Whether `node` is written: an assignment, update or loop target, also
+ * as a leaf of a destructuring pattern.
  */
-function resizedSymbols(
+function isWriteTarget(node: ts.Expression): boolean {
+    let target: ts.Node = node;
+    while (
+        ts.isParenthesizedExpression(target.parent) ||
+        ts.isNonNullExpression(target.parent) ||
+        ts.isAsExpression(target.parent) ||
+        ts.isSatisfiesExpression(target.parent) ||
+        ts.isTypeAssertionExpression(target.parent) ||
+        ts.isSpreadElement(target.parent) ||
+        ts.isSpreadAssignment(target.parent) ||
+        ts.isArrayLiteralExpression(target.parent) ||
+        ts.isObjectLiteralExpression(target.parent) ||
+        (ts.isPropertyAssignment(target.parent) &&
+            target.parent.initializer === target)
+    )
+        target = target.parent;
+    const parent = target.parent;
+    return (
+        (isAssignmentExpression(parent) && parent.left === target) ||
+        (isUpdateExpression(parent) && parent.operand === target) ||
+        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
+            parent.initializer === target)
+    );
+}
+
+/**
+ * How one reference to an array binding can change its length: not at all
+ * (`0`), only up to an element count (an element write at a known index),
+ * without bound (`Infinity`: a resizing method, a length write, rebinding,
+ * a call argument, or reaching an owner the scan does not follow -- a
+ * field, an element, a return, an export), or as `alias`, the local whose
+ * declaration or assignment it initializes and whose extent it shares.
+ */
+function referenceLengthExtent(
+    checker: ts.TypeChecker,
+    reference: ts.Identifier,
+): number | { readonly alias: ts.Identifier } {
+    if (isWriteTarget(reference)) return Infinity;
+    // The value flows through wrappers, selections and the methods that
+    // return their receiver to the node that consumes it.
+    let value: ts.Expression = reference;
+    for (;;) {
+        const parent: ts.Node = value.parent;
+        if (
+            ts.isParenthesizedExpression(parent) ||
+            ts.isNonNullExpression(parent) ||
+            ts.isAsExpression(parent) ||
+            ts.isSatisfiesExpression(parent) ||
+            ts.isTypeAssertionExpression(parent) ||
+            (ts.isConditionalExpression(parent) &&
+                parent.condition !== value) ||
+            (ts.isBinaryExpression(parent) &&
+                (parent.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken ||
+                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                    parent.operatorToken.kind ===
+                        ts.SyntaxKind.AmpersandAmpersandToken ||
+                    (parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+                        parent.right === value)))
+        ) {
+            value = parent;
+            continue;
+        }
+        if (
+            ts.isPropertyAccessExpression(parent) &&
+            ts.isCallExpression(parent.parent) &&
+            parent.parent.expression === parent &&
+            lengthPreservingArrayMethods.has(parent.name.text)
+        ) {
+            value = parent.parent;
+            continue;
+        }
+        break;
+    }
+    const parent = value.parent;
+    if (ts.isVariableDeclaration(parent) && parent.initializer === value)
+        return ts.isIdentifier(parent.name) ? { alias: parent.name } : 0;
+    if (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.right === value
+    ) {
+        const target = unwrapExpression(parent.left);
+        if (ts.isIdentifier(target)) return { alias: target };
+        return ts.isArrayLiteralExpression(target) ||
+            ts.isObjectLiteralExpression(target)
+            ? 0
+            : Infinity;
+    }
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === value) {
+        const method = parent.name.text;
+        if (method === "length") return isWriteTarget(parent) ? Infinity : 0;
+        const call = parent.parent;
+        if (!ts.isCallExpression(call) || call.expression !== parent) return 0;
+        return resizingArrayMethods.has(method) ||
+            (readOnlyDataMethods.has(method) &&
+                callbackTakesReceiver(checker, method, call.arguments[0]))
+            ? Infinity
+            : 0;
+    }
+    if (ts.isElementAccessExpression(parent) && parent.expression === value) {
+        if (!isWriteTarget(parent)) return 0;
+        const index = checker.getTypeAtLocation(parent.argumentExpression);
+        return index.isNumberLiteral() &&
+            Number.isInteger(index.value) &&
+            index.value >= 0
+            ? index.value + 1
+            : Infinity;
+    }
+    if (
+        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
+            parent.expression === value) ||
+        ts.isSpreadElement(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isExpressionStatement(parent) ||
+        (ts.isTemplateSpan(parent) &&
+            !ts.isTaggedTemplateExpression(parent.parent.parent)) ||
+        ts.isTypeOfExpression(parent) ||
+        ts.isVoidExpression(parent) ||
+        (ts.isPrefixUnaryExpression(parent) && !isUpdateExpression(parent)) ||
+        ts.isConditionalExpression(parent) ||
+        ts.isIfStatement(parent) ||
+        ts.isWhileStatement(parent) ||
+        ts.isDoStatement(parent) ||
+        ts.isSwitchStatement(parent) ||
+        ts.isCaseClause(parent) ||
+        (ts.isBinaryExpression(parent) &&
+            !isAssignmentOperator(parent.operatorToken.kind))
+    )
+        return 0;
+    return Infinity;
+}
+
+/**
+ * The least length every statement of the entry source keeps each array
+ * binding within (`Infinity` once one can resize it without bound),
+ * following local aliases: a binding shares the extent of every alias it
+ * initializes. Symbols keep unrelated same-named bindings independent.
+ */
+function lengthExtents(
     checker: ts.TypeChecker,
     file: ts.SourceFile,
-): ReadonlySet<ts.Symbol> {
-    let byFile = resizedSymbolsByChecker.get(checker);
+): ReadonlyMap<ts.Symbol, number> {
+    let byFile = lengthExtentsByChecker.get(checker);
     const cached = byFile?.get(file);
     if (cached) return cached;
     const symbols = new CompilerSymbols(checker);
-    const resized = new EmissionSet<ts.Symbol>();
-    const addIdentifier = (node: ts.Node): void => {
+    const extents = new EmissionMap<ts.Symbol, number>();
+    const aliasSources = new EmissionMap<ts.Symbol, EmissionSet<ts.Symbol>>();
+    const extend = (symbol: ts.Symbol, extent: number): boolean => {
+        if ((extents.get(symbol) ?? 0) >= extent) return false;
+        extents.set(symbol, extent);
+        return true;
+    };
+    const unbounded = (node: ts.Node): void => {
         if (!ts.isIdentifier(node)) return;
         const symbol = symbols.valueSymbol(node);
-        if (symbol) resized.add(symbol);
+        if (symbol) extend(symbol, Infinity);
     };
-    forEachAnalysisNode(file, (node) => {
-        if (ts.isCallExpression(node)) {
+    forEachAnalysisNode(
+        file,
+        (node) => {
+            if (ts.isCallExpression(node) || ts.isNewExpression(node))
+                for (const argument of node.arguments ?? [])
+                    forEachAnalysisNode(argument, unbounded);
             if (
-                ts.isPropertyAccessExpression(node.expression) &&
-                ts.isIdentifier(node.expression.expression) &&
-                (resizingArrayMethods.has(node.expression.name.text) ||
-                    (readOnlyDataMethods.has(node.expression.name.text) &&
-                        callbackTakesReceiver(
-                            checker,
-                            node.expression.name.text,
-                            node.arguments[0],
-                        )))
-            ) {
-                addIdentifier(node.expression.expression);
+                !ts.isIdentifier(node) ||
+                (ts.isVariableDeclaration(node.parent) &&
+                    node.parent.name === node) ||
+                ((ts.isParameter(node.parent) ||
+                    ts.isBindingElement(node.parent) ||
+                    ts.isFunctionDeclaration(node.parent) ||
+                    ts.isFunctionExpression(node.parent) ||
+                    ts.isClassDeclaration(node.parent) ||
+                    ts.isClassExpression(node.parent)) &&
+                    node.parent.name === node)
+            )
+                return;
+            const symbol = symbols.valueSymbol(node);
+            if (!symbol) return;
+            const extent = referenceLengthExtent(checker, node);
+            if (typeof extent === "number") {
+                extend(symbol, extent);
+                return;
             }
-            for (const argument of node.arguments) {
-                forEachAnalysisNode(argument, addIdentifier);
+            const alias = symbols.valueSymbol(extent.alias);
+            if (!alias) {
+                extend(symbol, Infinity);
+                return;
             }
+            let sources = aliasSources.get(alias);
+            if (!sources)
+                aliasSources.set(alias, (sources = new EmissionSet()));
+            sources.add(symbol);
+        },
+        { types: "skip", memberNames: "skip" },
+    );
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const [alias, sources] of aliasSources) {
+            const extent = extents.get(alias);
+            if (extent === undefined) continue;
+            for (const source of sources)
+                if (extend(source, extent)) changed = true;
         }
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-            const left = node.left;
-            if (ts.isIdentifier(left)) {
-                addIdentifier(left);
-            } else if (ts.isArrayLiteralExpression(left)) {
-                forEachAnalysisNode(left, addIdentifier);
-            } else if (
-                ts.isPropertyAccessExpression(left) &&
-                ts.isIdentifier(left.expression) &&
-                left.name.text === "length"
-            ) {
-                addIdentifier(left.expression);
-            }
-        }
-    });
+    }
     byFile ??= new EmissionWeakMap();
-    byFile.set(file, resized);
-    resizedSymbolsByChecker.set(checker, byFile);
-    return resized;
+    byFile.set(file, extents);
+    lengthExtentsByChecker.set(checker, byFile);
+    return extents;
 }
 
-/** Whether nothing in the entry source can change `name`'s length. */
+/**
+ * Whether nothing in the entry source can change the length of `name`,
+ * which a literal declares with `length` elements: no exported binding,
+ * and no reference to it or to a local alias of it that can resize it.
+ */
 export function isNeverResized(
     checker: ts.TypeChecker,
     name: ts.Identifier,
+    length: number,
 ): boolean {
     const symbol = declaredSymbol(checker, name);
     return (
         symbol !== undefined &&
-        !resizedSymbols(checker, name.getSourceFile()).has(symbol)
+        new CompilerSymbols(checker).moduleExportReference(name) ===
+            undefined &&
+        (lengthExtents(checker, name.getSourceFile()).get(symbol) ?? 0) <=
+            length
     );
 }
 
@@ -512,6 +677,95 @@ export class DataLowerer {
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             return undefined;
         }
+        return this.withStoreKeysHeld(expression, () =>
+            this.compileStoredAssignmentValue(expression),
+        );
+    }
+
+    /**
+     * Lowers the member store `expression` with the keys of its target read
+     * first, as JavaScript reads them: each computed key of the target's
+     * access chain (`a[i++] = i`, `rows[k].x = f()`) that the right side
+     * could change or observe -- or that changes what the right side reads
+     * -- is held in a temporary every compile entry point reads back
+     * (`assigned`). A native store evaluates its right operand first and the
+     * right side's statements run before the store, so either would
+     * otherwise overtake the key. A key an enclosing store already holds
+     * stays held.
+     */
+    public withStoreKeysHeld<T>(
+        expression: ts.BinaryExpression,
+        lower: () => T,
+    ): T {
+        const keys: ts.Expression[] = [];
+        for (
+            let target = this.context.unwrap(expression.left);
+            ts.isPropertyAccessExpression(target) ||
+            ts.isElementAccessExpression(target);
+            target = this.context.unwrap(target.expression)
+        )
+            if (ts.isElementAccessExpression(target))
+                keys.unshift(target.argumentExpression);
+        if (
+            keys.length === 0 ||
+            this.context.browserErasure.isBrowserOnlyExpression(expression.left)
+        )
+            return lower();
+        const pins = this.context.evaluationOrder.operandsToPin([
+            ...keys,
+            expression.right,
+        ]);
+        // A compound store reads its target before writing it, so a key
+        // with effects runs once for both.
+        const compound =
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken;
+        const held: ts.Expression[] = [];
+        try {
+            keys.forEach((key, index) => {
+                const node = this.context.unwrap(key);
+                if (
+                    !(pins[index] || (compound && expressionHasEffects(key))) ||
+                    this.assignedRights.has(node)
+                )
+                    return;
+                this.assignedRights.set(
+                    node,
+                    pinOperand(
+                        this.context,
+                        this.context.compileValue(key),
+                        key,
+                        "store_key",
+                    ),
+                );
+                held.push(node);
+            });
+            return lower();
+        } finally {
+            for (const node of held) this.assignedRights.delete(node);
+        }
+    }
+
+    /** Whether evaluating a store's target runs code beyond its held keys. */
+    private storeTargetRunsCode(target: ts.Expression): boolean {
+        return someAnalysisNode(
+            target,
+            (node) =>
+                ts.isCallExpression(node) ||
+                ts.isNewExpression(node) ||
+                ts.isAwaitExpression(node) ||
+                isUpdateExpression(node) ||
+                isAssignmentExpression(node),
+            {
+                skip: (node) =>
+                    ts.isExpression(node) && this.assignedRights.has(node),
+            },
+        );
+    }
+
+    /** `compileAssignmentValue` once its target's keys are read. */
+    private compileStoredAssignmentValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
         const left = this.context.unwrap(expression.left);
         const inPlace =
             ts.isPropertyAccessExpression(left) ||
@@ -553,9 +807,10 @@ export class DataLowerer {
 
     /**
      * The right side of each assignment used as a value whose store is
-     * lowering, by its unwrapped expression. The compile entry points
-     * (`compileValue`, `compileNumber`, `compileBoolean`, `compileCondition`,
-     * `compileForSink`) answer it through `assigned`.
+     * lowering, and each store key held ahead of its right side
+     * (`withStoreKeysHeld`), by its unwrapped expression. The compile entry
+     * points (`compileValue`, `compileNumber`, `compileBoolean`,
+     * `compileCondition`, `compileForSink`) answer it through `assigned`.
      */
     private readonly assignedRights = new EmissionMap<
         ts.Expression,
@@ -671,6 +926,11 @@ export class DataLowerer {
     /** Whether `expression` is the right side of an assignment used as a value. */
     private isAssignedRight(expression: ts.Expression): boolean {
         return this.assignedRights.has(this.context.unwrap(expression));
+    }
+
+    /** Whether `expression` reads back a store key held ahead of its right side. */
+    public isHeldStoreKey(expression: ts.Expression): boolean {
+        return this.isAssignedRight(expression);
     }
 
     /** A plain number or boolean slot (no setter, no typed-array store). */
@@ -4712,7 +4972,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : owner.cpp;
         this.context.reachJsData();
         // Only proven arms use it: a proven counter is a non-negative integer.
-        const counter = this.integerCounterIndex(access.argumentExpression);
+        // A held store key is the counter's value before the right side,
+        // which the live counter no longer is.
+        const counter = this.isHeldStoreKey(access.argumentExpression)
+            ? undefined
+            : this.integerCounterIndex(access.argumentExpression);
         const nativeIndex = counter
             ? `static_cast<std::size_t>(${counter})`
             : `bbl::js::array_index(${index})`;
@@ -11665,6 +11929,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         initializer: `static_cast<double>(${targetCpp})`,
                     });
                 }
+            } else if (
+                operator !== "=" &&
+                !this.storeTargetRunsCode(left) &&
+                this.context.evaluationOrder.operandsToPin([
+                    left,
+                    expression.right,
+                ])[0]
+            ) {
+                // `a[i] += f()` reads the old value before the right side,
+                // which may write it.
+                previous =
+                    this.context.allocateTemporaryCppName("compound_previous");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: previous,
+                    initializer: target.cpp,
+                });
             }
             const right = this.context.compileNumber(
                 expression.right,
@@ -11691,7 +11973,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.emit({
                 kind: "expression",
                 code:
-                    compound && !compound.native
+                    compound && (!compound.native || previous !== target.cpp)
                         ? `${target.cpp} = ${compound.cpp};`
                         : `${target.cpp} ${operator} ${right};`,
             });

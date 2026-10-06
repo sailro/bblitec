@@ -6,7 +6,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
-import { handleCppType } from "./data-types.js";
+import { handleCppType, isHandleKind } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
     resolveFunctionDeclaration,
@@ -19,6 +19,7 @@ import {
 } from "./symbols.js";
 import {
     argumentAt,
+    expressionHasEffects,
     identifierText,
     unwrapExpression as unwrapWalkExpression,
 } from "./syntax.js";
@@ -1651,7 +1652,19 @@ export class HandleCollections {
                     `${pushed.kind} would leave two shapes in one list.`,
             );
         }
-        writable(tuple.tupleElements).push(pushed);
+        // The list holds the pushed handle, not its expression: a factory
+        // call or any other effect runs once, at the push.
+        writable(tuple.tupleElements).push(
+            isHandleKind(pushed.kind) &&
+                expressionHasEffects(argumentAt(call, 0)) &&
+                !pushed.nativeBinding
+                ? this.context.bindings.pinValueToTemporary(
+                      pushed,
+                      "pushed_element",
+                      argumentAt(call, 0),
+                  )
+                : pushed,
+        );
         return { kind: "void", cpp: "" };
     }
 

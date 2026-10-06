@@ -8547,6 +8547,52 @@ test("an engine-property assignment used as a value evaluates its target once an
     );
 });
 
+test("an engine-handle list index with effects runs once, before the right side, on every camera store", () => {
+    // A list of handles selects its element by comparing the index with
+    // each lane: a single lane compares nothing, three lanes compare twice,
+    // and a store's right side may read what the index writes.
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            type ArcRotateCamera,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const one: ArcRotateCamera[] = [];
+            one.push(createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 }));
+            const three: ArcRotateCamera[] = [];
+            three.push(createArcRotateCamera(1, 1, 6, { x: 0, y: 0, z: 0 }));
+            three.push(createArcRotateCamera(1, 1, 7, { x: 0, y: 0, z: 0 }));
+            three.push(createArcRotateCamera(1, 1, 8, { x: 0, y: 0, z: 0 }));
+            scene.camera = one[0]!;
+            let i = 0;
+            one[i++]!.radius = 9;
+            let j = 0;
+            one[j++]!.fov = j;
+            let k = 0;
+            three[k++ % 3]!.alpha += 1;
+            let m = 0;
+            const picked = one[m++]!;
+            picked.beta = i + j + k + m;
+        }
+    `);
+    assert.equal(result.cpp.match(/create_arc_rotate_camera\(/g)?.length, 4);
+    for (const name of ["v_i", "v_j", "v_k", "v_m"])
+        assert.equal(
+            result.cpp.split(`${name}++`).length - 1,
+            1,
+            `${name} is incremented once`,
+        );
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_store_key_\d+) = \(v_j\+\+\);[^]*?\.fov = v_j;/,
+    );
+});
+
 test("folds a nullish-coalescing browser query default", () => {
     const source = `
         import {
