@@ -18,6 +18,8 @@ import {
     argumentAt,
     expressionMayRunCode,
     regularExpressionParts,
+    unwrapExpression,
+    wrappedParent,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -2001,6 +2003,30 @@ function arrayResultType(
 }
 
 /**
+ * The type an expression's position declares for it: its contextual type,
+ * except as an argument of a generic call or construction, whose parameter
+ * type TypeScript inferred from the argument itself.
+ */
+function declaredContextualType(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ts.Type | undefined {
+    const parent = wrappedParent(expression);
+    const callee =
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.arguments?.some(
+            (argument) => unwrapExpression(argument) === expression,
+        )
+            ? checker.getResolvedSignature(parent)?.getDeclaration()
+            : undefined;
+    // A constructor's signature carries its class's type parameters.
+    return callee &&
+        checker.getSignatureFromDeclaration(callee)?.typeParameters?.length
+        ? undefined
+        : checker.getContextualType(expression);
+}
+
+/**
  * A type predicate narrowing string tags (`(f: Failure) => f is Candidate`)
  * makes the filtered array one of the narrower tags: each element it keeps
  * converts to that tag, which refuses at run time if the predicate lied.
@@ -2018,20 +2044,11 @@ function narrowedTagFilter(
         result.element.name === element.name
     )
         return undefined;
-    // Only a declared destination expecting the narrower tags takes them: a
-    // typed variable, a record field or a return. A generic call's parameter
-    // takes its type from this argument, so it names no destination.
-    let position: ts.Node = call;
-    while (ts.isParenthesizedExpression(position.parent))
-        position = position.parent;
-    const parent = position.parent;
-    if (
-        !(ts.isPropertyAssignment(parent) && parent.initializer === position) &&
-        !(ts.isVariableDeclaration(parent) && parent.type) &&
-        !ts.isReturnStatement(parent)
-    )
-        return undefined;
-    const contextual = lowerer.context.checker.getContextualType(call);
+    // Only a destination expecting the narrower tags takes them: the
+    // contextual type, unless a generic call inferred it from this very
+    // argument (`Object.freeze(tags.filter(isCandidate))`), which then names
+    // no destination.
+    const contextual = declaredContextualType(lowerer.context.checker, call);
     const destination =
         contextual && lowerer.context.dataTypes.fromTsType(contextual, call);
     if (

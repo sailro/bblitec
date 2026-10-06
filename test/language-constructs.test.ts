@@ -6143,6 +6143,25 @@ check(
 );
 
 check(
+    "type-guard-filters-narrow-into-contextual-destinations",
+    `
+    type Failure = "a" | "b" | "c";
+    type Candidate = "a" | "b";
+    const isCandidate = (f: Failure): f is Candidate => f !== "c";
+    function count(candidates: Candidate[]): number { return candidates.filter((c) => c === "a").length; }
+    const source: Failure[] = ["c", "a", "b"];
+    let kept: Candidate[] = [];
+    kept = source.filter(isCandidate);
+    const pick = (): Candidate[] => source.filter(isCandidate);
+    const nested: Candidate[][] = [source.filter(isCandidate)];
+    const frozen: readonly Failure[] = Object.freeze(source.filter(isCandidate));
+    source[0] = "a";
+    if (kept.join() !== "a,b" || count(source.filter(isCandidate)) !== 2 || pick().join() !== "a,a,b") throw new Error("declared destinations");
+    if (nested[0]!.join() !== "a,b" || frozen.join() !== "a,b") throw new Error("element and inferred destinations");
+`,
+);
+
+check(
     "record-spreads-copy-methods-into-struct-literals",
     `
     interface Live { update(dt: number): void; active(): boolean; count: number }
