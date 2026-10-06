@@ -139,8 +139,10 @@ import {
     isJsonRootedExpression,
 } from "./json-bridge.js";
 import {
+    callbackMayWriteReceiver,
+    callbackTakesReceiver,
     compileDataMethodCall,
-    arrayCallbackReceiverPolicy,
+    readOnlyDataMethods,
 } from "./data-methods.js";
 import { resizingArrayMethods } from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
@@ -213,9 +215,10 @@ function namesStableOwner(owner: Value): boolean {
 }
 
 /**
- * Resizing methods, rebinding, length writes and call arguments invalidate a
- * binding's fixed length. Element writes preserve length. Symbols keep
- * unrelated same-named bindings independent.
+ * Resizing methods, rebinding, length writes, call arguments and a callback
+ * method whose callback takes the receiver invalidate a binding's fixed
+ * length. Element writes preserve length. Symbols keep unrelated same-named
+ * bindings independent.
  */
 function resizedSymbols(
     checker: ts.TypeChecker,
@@ -237,8 +240,12 @@ function resizedSymbols(
                 ts.isPropertyAccessExpression(node.expression) &&
                 ts.isIdentifier(node.expression.expression) &&
                 (resizingArrayMethods.has(node.expression.name.text) ||
-                    arrayCallbackReceiverPolicy(node.expression.name.text)
-                        .invalidatesFacts)
+                    (readOnlyDataMethods.has(node.expression.name.text) &&
+                        callbackTakesReceiver(
+                            checker,
+                            node.expression.name.text,
+                            node.arguments[0],
+                        )))
             ) {
                 addIdentifier(node.expression.expression);
             }
@@ -383,6 +390,17 @@ interface DataLoweringContext extends Pick<
  *   later use would read through a dangling reference.
  */
 type LocalOwnership = "owned" | "copy" | "escaped" | "alias" | "poisoned";
+
+/** What iterating a value yields (`DataLowerer.iteratedElements`). */
+type IteratedElements =
+    /** A compile-time tuple's own elements. */
+    | { readonly lanes: readonly Value[] }
+    /** A native range read in order; a numeric tuple's has its lane count. */
+    | {
+          readonly range: Value;
+          readonly element: DataType;
+          readonly arity?: number;
+      };
 
 /** Where a numeric read-modify-write stores its result. */
 type NumericUpdatePlace =
@@ -1072,30 +1090,9 @@ export class DataLowerer {
                 });
                 for (const argument of arguments_.slice(sourceIndex)) {
                     if (ts.isSpreadElement(argument)) {
-                        const source =
-                            this.context.allocateTemporaryCppName(
-                                "rest_source",
-                            );
-                        // A typed array spreads the numbers its elements hold.
-                        const spreadType = this.dataTypeAt(argument.expression);
-                        this.context.emit({
-                            kind: "declaration",
-                            type: "const auto",
-                            name: source,
-                            initializer:
-                                isTypedArrayType(spreadType) &&
-                                parameter.element.kind === "number"
-                                    ? `bbl::js::typed_array_numbers(${this.compileForSink(argument.expression, spreadType)})`
-                                    : this.compileForSink(
-                                          argument.expression,
-                                          parameter,
-                                      ),
-                        });
-                        const item =
-                            this.context.allocateTemporaryCppName("rest_item");
                         this.context.emit({
                             kind: "expression",
-                            code: `for (const auto& ${item} : ${source}) ${packed}.push_back(${item});`,
+                            code: `bbl::js::array_append(${packed}, ${this.spreadSource(argument, parameter).cpp});`,
                         });
                     } else {
                         this.context.emit({
@@ -1142,42 +1139,29 @@ export class DataLowerer {
 
     /**
      * Call arguments with spreads, evaluated in source order and read
-     * once each: a numeric tuple spread supplies one argument per lane.
+     * once each: a numeric tuple spread supplies one argument per lane, a
+     * compile-time tuple's read here before the later arguments.
      */
     private spreadArgumentValues(
         arguments_: readonly ts.Expression[],
         label: string,
     ): { value: Value; node: ts.Expression }[] {
-        return arguments_.flatMap((argument) => {
-            if (!ts.isSpreadElement(argument))
-                return [
-                    {
-                        value: this.context.bindings.pinValueToTemporary(
-                            this.context.compileValue(argument),
-                            "call_argument",
-                            argument,
-                        ),
-                        node: argument,
-                    },
-                ];
-            const lanes =
-                this.spreadTupleLanes(
-                    this.context.compileValue(argument.expression),
-                    argument,
-                ) ??
-                this.context.fail(
-                    argument,
-                    `${label} spread arguments expand a numeric tuple.`,
-                );
-            return lanes.map((lane) => ({
-                value: this.context.bindings.pinValueToTemporary(
-                    lane,
-                    "spread_lane",
+        return this.spreadLaneValues(
+            arguments_,
+            (argument) =>
+                this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(argument),
+                    "call_argument",
                     argument,
                 ),
-                node: argument,
-            }));
-        });
+            `${label} spread arguments expand a numeric tuple.`,
+            (lane, spread) =>
+                this.context.bindings.pinValueToTemporary(
+                    lane,
+                    "spread_lane",
+                    spread,
+                ),
+        );
     }
 
     /**
@@ -6295,28 +6279,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             const source = this.context.compileValue(argumentAt(call, 0));
             this.invalidateRecordArrayFacts(source);
-            const copied = this.arrayFromSequence(call, source);
-            if (copied) return copied;
-            if (
-                source.kind !== "data" ||
-                (source.dataType?.kind !== "vector" &&
-                    source.dataType?.kind !== "span" &&
-                    source.dataType?.kind !== "set" &&
-                    source.dataType?.kind !== "iterator")
-            ) {
-                this.context.fail(
-                    argumentAt(call, 0),
-                    "Array.from with one argument requires a native array, Set or stored iterator value.",
-                );
+            // A fresh array of what iterating the source yields: a
+            // compile-time tuple's lanes at the call's element type, a
+            // string's code points as built, any other range copied.
+            const iterated = this.iteratedElements(source);
+            const type =
+                iterated && "lanes" in iterated
+                    ? this.dataTypeAt(call)
+                    : undefined;
+            if (type?.kind === "vector") {
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: this.compileKnownValueForSink(source, type, call),
+                    dataType: type,
+                    freshData: true,
+                };
             }
-            // The enclosing value path materializes the returned vector, so
-            // this expression receives Array.from's shallow-copy identity
-            // while preserving the source element order.
-            return {
-                kind: "data",
-                cpp: `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(source.dataType.element)}>(${source.cpp})`,
-                dataType: { kind: "vector", element: source.dataType.element },
-            };
+            if (!iterated || "lanes" in iterated)
+                return this.context.fail(
+                    argumentAt(call, 0),
+                    "Array.from with one argument requires a native array, Set, stored iterator, numeric tuple, typed array or string value.",
+                );
+            this.context.reachJsData();
+            return iterated.range.freshData
+                ? iterated.range
+                : {
+                      kind: "data",
+                      cpp: `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(iterated.element)}>(${iterated.range.cpp})`,
+                      dataType: { kind: "vector", element: iterated.element },
+                      freshData: true,
+                  };
         }
         if (call.arguments.length !== 2) {
             this.context.fail(
@@ -6338,52 +6331,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Array.from mapper results must belong to the native data model.",
             );
         return this.compileArrayFromMapped(call, type);
-    }
-
-    /**
-     * `Array.from(source)` over a sequence that is not itself an array: a
-     * numeric tuple's lanes, a typed array's numbers, a string's code
-     * points. Each is a fresh array.
-     */
-    private arrayFromSequence(
-        call: ts.CallExpression,
-        source: Value,
-    ): Value | undefined {
-        const fresh = (cpp: string, element: DataType): Value => {
-            this.context.reachJsData();
-            return {
-                kind: "data",
-                cpp,
-                dataType: { kind: "vector", element },
-                freshData: true,
-            };
-        };
-        if (source.kind === "tuple") {
-            const type = this.dataTypeAt(call);
-            return type?.kind === "vector"
-                ? fresh(
-                      this.compileKnownValueForSink(source, type, call),
-                      type.element,
-                  )
-                : undefined;
-        }
-        if (isStringValue(source))
-            return fresh(`bbl::js::string_characters(${source.cpp})`, {
-                kind: "string",
-            });
-        if (source.kind !== "data") return undefined;
-        if (source.dataType?.kind === "tuple")
-            return fresh(
-                `bbl::js::array_from_iterable<double>(${source.cpp})`,
-                {
-                    kind: "number",
-                },
-            );
-        if (isTypedArrayType(source.dataType))
-            return fresh(`bbl::js::typed_array_number_list(${source.cpp})`, {
-                kind: "number",
-            });
-        return undefined;
     }
 
     /**
@@ -6552,9 +6499,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const only =
                 call.arguments.length === 1 ? argumentAt(call, 0) : undefined;
             if (only && ts.isSpreadElement(only)) {
-                let spread = this.context.compileValue(only.expression);
-                if (spread.kind === "tuple") {
-                    const parts = (spread.tupleElements ?? []).map(
+                const spread = this.context.compileValue(only.expression);
+                const iterated = this.iteratedElements(spread);
+                let range: string | undefined;
+                if (iterated && "lanes" in iterated) {
+                    const parts = iterated.lanes.map(
                         (element) => element.staticNumber,
                     );
                     if (
@@ -6565,37 +6514,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         this.context.emitDiscardedValue(spread);
                         return numberConstantValue(Math[method](...parts));
                     }
-                    const type = {
-                        kind: "vector",
-                        element: { kind: "number" },
-                    } as const;
-                    spread = this.leafValue(
-                        this.compileKnownValueForSink(
-                            spread,
-                            type,
-                            only.expression,
-                        ),
-                        type,
+                    range = this.compileKnownValueForSink(
+                        spread,
+                        { kind: "vector", element: { kind: "number" } },
+                        only.expression,
                     );
-                }
-                // A typed array spreads the numbers its elements hold.
-                if (spread.kind === "data" && isTypedArrayType(spread.dataType))
-                    spread = {
-                        kind: "data",
-                        cpp: `bbl::js::typed_array_numbers(${spread.cpp})`,
-                        dataType: { kind: "span", element: { kind: "number" } },
-                    };
-                if (
-                    spread.kind !== "data" ||
-                    (spread.dataType?.kind !== "vector" &&
-                        spread.dataType?.kind !== "span") ||
-                    spread.dataType.element.kind !== "number"
-                ) {
-                    this.context.fail(
+                } else if (iterated?.element.kind === "number")
+                    range = iterated.range.cpp;
+                if (range === undefined)
+                    return this.context.fail(
                         argumentAt(call, 0),
                         `Math.${method} spread requires an array of numbers.`,
                     );
-                }
                 const source = this.context.allocateTemporaryCppName(
                     `math_${method}_source`,
                 );
@@ -6603,7 +6533,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     kind: "declaration",
                     type: "auto&&",
                     name: source,
-                    initializer: spread.cpp,
+                    initializer: range,
                 });
                 this.context.reachJsData();
                 const result = this.context.allocateTemporaryCppName(
@@ -6984,10 +6914,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType & { kind: "vector" | "span" },
         snapshotLength: boolean,
         initialize: (source: string) => void,
+        /** `element` is the visited element as a method keeps it. */
         emitBody: (
             result: Value,
             callback: ts.Expression,
-            source: string,
+            element: string,
             index: string,
         ) => void,
     ): void {
@@ -7008,14 +6939,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? callback
                 : undefined;
         const label = method === "forEach" ? "for_each" : method;
-        const receiverPolicy = arrayCallbackReceiverPolicy(method);
-        if (receiverPolicy.invalidatesFacts)
-            this.invalidateStaticElements(narrowed);
+        // A callback that may change the receiver walks the receiver and
+        // the length read at the call, checking each index against the
+        // live length (`callbackMayWriteReceiver`).
+        const writable = callbackMayWriteReceiver(this, call, callback);
+        if (writable) this.invalidateStaticElements(narrowed);
+        const holdsReceiver = writable && !narrowed.nativeVectorData;
         const source = this.context.allocateTemporaryCppName(`${label}_source`);
         const index = this.context.allocateTemporaryCppName(`${label}_index`);
         this.context.emit({
             kind: "declaration",
-            type: receiverPolicy.snapshotIdentity ? "auto" : "auto&&",
+            type: holdsReceiver ? "auto" : "auto&&",
             name: source,
             initializer: narrowed.cpp,
         });
@@ -7029,7 +6963,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             false,
             false,
             sourceType &&
-                `${!receiverPolicy.snapshotIdentity && narrowed.readOnly ? "const " : ""}${sourceType}`,
+                `${!holdsReceiver && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
         const storedCallback = identity
             ? undefined
@@ -7044,7 +6978,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // from its last index down.
         const reverse = method === "findLast" || method === "findLastIndex";
         let bound = `${source}.size()`;
-        if (snapshotLength || reverse) {
+        if (snapshotLength || reverse || writable) {
             const count = this.context.allocateTemporaryCppName(
                 `${label}_count`,
             );
@@ -7075,21 +7009,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
-                if (receiverPolicy.skipRemoved)
+                // An index the callback removed is skipped as JavaScript
+                // skips an absent element; `find*` would read it as
+                // undefined and `map` would leave a hole, which the
+                // element type and a dense result cannot hold.
+                if (writable)
                     this.context.emit(
-                        `if (${index} >= ${source}.size()) continue;`,
-                    );
-                // JavaScript would pass undefined for an index the callback
-                // removed before the walk reached it.
-                if (reverse)
-                    this.context.emit(
-                        `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
+                        [
+                            "forEach",
+                            "some",
+                            "every",
+                            "filter",
+                            "flatMap",
+                        ].includes(method)
+                            ? `if (${index} >= ${source}.size()) continue;`
+                            : `if (${index} >= ${source}.size()) throw std::runtime_error(${this.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`,
                     );
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
-                const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
+                // A method that keeps the element keeps the value the
+                // callback was given, read before the callback could
+                // replace or remove it.
+                const kept =
+                    writable &&
+                    (method === "find" ||
+                        method === "findLast" ||
+                        method === "filter")
+                        ? this.context.allocateTemporaryCppName(
+                              `${label}_element`,
+                          )
+                        : undefined;
+                if (kept)
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "auto",
+                        name: kept,
+                        initializer: `bbl::js::snapshot_value(${source}[${index}])`,
+                    });
+                const snapshotCpp =
+                    kept ?? `bbl::js::snapshot_value(${source}[${index}])`;
                 const callbackValue = this.leafValue(
                     snapshotCpp,
                     dataType.element,
@@ -7097,10 +7057,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const callbackArguments: Value[] = [
                     {
                         ...callbackValue,
-                        ...(callbackValue.cpp === snapshotCpp
+                        ...(!kept && callbackValue.cpp === snapshotCpp
                             ? { nativeOwnedRvalue: true as const }
                             : {}),
-                        nativeCaptures: elementValue.nativeCaptures,
+                        nativeCaptures: kept
+                            ? [this.context.registerNativeBinding(kept)]
+                            : elementValue.nativeCaptures,
                     },
                     {
                         kind: "number",
@@ -7158,7 +7120,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             ),
                         dataType: { kind: "boolean" },
                     };
-                emitBody(result, callback, source, index);
+                emitBody(
+                    result,
+                    callback,
+                    kept ?? `${source}[${index}]`,
+                    index,
+                );
             } finally {
                 this.context.leaveRuntimeIteration();
                 this.context.leaveRuntimeControlFlow();
@@ -8141,10 +8108,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (isNumericSequenceType(sourceType)) {
             return `bbl::js::${prefix}_array_from(${staticSource.cpp})`;
         }
-        // A Set iterates its numbers in insertion order, as both the
-        // constructor and `from` read any iterable.
-        if (sourceType.kind === "set" && sourceType.element.kind === "number")
-            return `bbl::js::${prefix}_array_from(bbl::js::array_from_iterable<double>(${staticSource.cpp}))`;
+        // Any other range of numbers (a Set in insertion order, a stored
+        // iterator) is read as both the constructor and `from` read an
+        // iterable (`iteratedElements`).
+        const iterated = this.iteratedElements(staticSource);
+        if (
+            iterated &&
+            "range" in iterated &&
+            iterated.element.kind === "number"
+        )
+            return `bbl::js::${prefix}_array_from(bbl::js::array_from_iterable<double>(${iterated.range.cpp}))`;
         // A union of sequences converts the member it holds at run time.
         if (
             sourceType.kind === "union" &&
@@ -8708,18 +8681,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * The lanes a numeric tuple spreads into an array literal: a
+     * The lanes a numeric tuple spreads (`iteratedElements`): a
      * compile-time tuple's own elements, or a native tuple's elements as
-     * they are when the literal is built, each read once.
+     * they are where the spread is read, each read once into a temporary.
+     * Undefined for any other value, whose element count is not known.
      */
     public spreadTupleLanes(
         spread: Value,
         node: ts.Expression,
     ): readonly Value[] | undefined {
-        if (spread.kind === "tuple") return spread.tupleElements ?? [];
-        if (spread.kind !== "data" || spread.dataType?.kind !== "tuple")
-            return undefined;
-        const arity = spread.dataType.arity;
+        const iterated = this.iteratedElements(spread);
+        if (!iterated) return undefined;
+        if ("lanes" in iterated) return iterated.lanes;
+        const arity = iterated.arity;
+        if (arity === undefined) return undefined;
         const tuple = this.context.bindings.bindDataTuple(
             spread,
             arity,
@@ -8734,6 +8709,35 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * The values an argument list or array literal supplies one at a time,
+     * in source order: a numeric tuple spread supplies its lanes
+     * (`spreadTupleLanes`, a native tuple's already read), any other
+     * element the value `read` gives it, and a compile-time tuple's lane
+     * the value `readLane` gives it. Any other spread refuses with
+     * `refusal`.
+     */
+    public spreadLaneValues(
+        elements: readonly ts.Expression[],
+        read: (element: ts.Expression) => Value,
+        refusal: string,
+        readLane: (lane: Value, spread: ts.SpreadElement) => Value = (lane) =>
+            lane,
+    ): { value: Value; node: ts.Expression }[] {
+        return elements.flatMap((element) => {
+            if (!ts.isSpreadElement(element))
+                return [{ value: read(element), node: element }];
+            const spread = this.context.compileValue(element.expression);
+            const lanes =
+                this.spreadTupleLanes(spread, element) ??
+                this.context.fail(element, refusal);
+            return lanes.map((lane) => ({
+                value: spread.kind === "tuple" ? readLane(lane, element) : lane,
+                node: element,
+            }));
+        });
+    }
+
     public spanLikeForSink(
         expression: ts.Expression,
         dataType: DataType,
@@ -8745,34 +8749,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             expression.elements.length > 1 &&
             expression.elements.some(ts.isSpreadElement)
         ) {
-            const lanes: string[] = [];
-            for (const element of expression.elements) {
-                const values = ts.isSpreadElement(element)
-                    ? (this.spreadTupleLanes(
-                          this.context.compileValue(element.expression),
-                          element,
-                      ) ??
-                      this.context.fail(
-                          element,
-                          "Tuple spread requires a numeric tuple.",
-                      ))
-                    : [this.context.compileValue(element)];
-                for (const value of values)
-                    lanes.push(
-                        this.context.bindings.pinValueToTemporary(
-                            this.leafValue(
-                                this.compileKnownValueForSink(
-                                    value,
-                                    { kind: "number" },
-                                    element,
-                                ),
+            const lanes = this.spreadLaneValues(
+                expression.elements,
+                (element) => this.context.compileValue(element),
+                "Tuple spread requires a numeric tuple.",
+            ).map(
+                ({ value, node }) =>
+                    this.context.bindings.pinValueToTemporary(
+                        this.leafValue(
+                            this.compileKnownValueForSink(
+                                value,
                                 { kind: "number" },
+                                node,
                             ),
-                            "tuple_lane",
-                            element,
-                        ).cpp,
-                    );
-            }
+                            { kind: "number" },
+                        ),
+                        "tuple_lane",
+                        node,
+                    ).cpp,
+            );
             if (lanes.length !== dataType.arity)
                 this.context.fail(
                     expression,
@@ -13908,8 +13903,73 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A typed array's elements as the numbers they hold
+     * (`bbl::js::TypedArrayNumbers`), each read when it is visited, through
+     * a view's bytes as through owned storage: the range array methods,
+     * spreads and copies read off a typed array.
+     */
+    public typedArrayNumbersValue(
+        cpp: string,
+        dataType: DataType<TypedArrayKind>,
+    ): Value {
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::js::typed_array_numbers(${cpp})`,
+            dataType: { kind: "span", element: { kind: "number" } },
+            nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${this.context.dataTypes.cppType(dataType)}>`,
+        };
+    }
+
+    /**
+     * What iterating a value yields to a spread, `Array.from` or a typed
+     * array's construction, by the iteration protocol `for...of` reads
+     * (`iterationTarget`): a compile-time tuple's own elements; otherwise a
+     * native range and the element each step yields -- a string's code
+     * points, a typed array's numbers, a numeric tuple's lanes, the
+     * elements of an array, Set or stored iterator. Undefined for a value
+     * that is none of these.
+     */
+    public iteratedElements(value: Value): IteratedElements | undefined {
+        if (value.kind === "tuple") return { lanes: value.tupleElements ?? [] };
+        if (isStringValue(value)) {
+            this.context.reachJsData();
+            return {
+                range: {
+                    kind: "data",
+                    cpp: `bbl::js::string_characters(${value.cpp})`,
+                    dataType: { kind: "vector", element: { kind: "string" } },
+                    freshData: true,
+                },
+                element: { kind: "string" },
+            };
+        }
+        const dataType = value.kind === "data" ? value.dataType : undefined;
+        if (isTypedArrayType(dataType))
+            return {
+                range: this.typedArrayNumbersValue(value.cpp, dataType),
+                element: { kind: "number" },
+            };
+        if (dataType?.kind === "tuple")
+            return {
+                range: value,
+                element: { kind: "number" },
+                arity: dataType.arity,
+            };
+        return dataType?.kind === "vector" ||
+            dataType?.kind === "span" ||
+            dataType?.kind === "iterator" ||
+            dataType?.kind === "set"
+            ? { range: value, element: dataType.element }
+            : undefined;
+    }
+
+    /**
      * Resolves a runtime for-of iteration target: vectors, spans, and table
-     * rows. Returns the container value plus its element data type.
+     * rows. Returns the container value plus its element data type. A
+     * string, array, Set or iterator iterates as `iteratedElements` reads
+     * it; a typed array is ranged over in place, each element read as a
+     * number where the loop binds it.
      */
     public iterationTarget(
         expression: ts.Expression,
@@ -13921,11 +13981,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
               template?: Value;
           }
         | undefined {
-        const iterated = knownTuple
+        const iteratorRange = knownTuple
             ? undefined
             : this.iteratorMethodTarget(expression);
-        if (iterated) {
-            return iterated;
+        if (iteratorRange) {
+            return iteratorRange;
         }
         const rawValue =
             knownTuple && !ts.isIdentifier(this.context.unwrap(expression))
@@ -13949,19 +14009,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? this.narrowOptional(rawValue, expression)
                 : rawValue;
         if (value && isStringValue(value)) {
-            const dataType: DataType = {
-                kind: "vector",
-                element: { kind: "string" },
-            };
-            this.context.reachJsData();
-            return {
-                container: {
-                    kind: "data",
-                    cpp: `bbl::js::string_characters(${value.cpp})`,
-                    dataType,
-                },
-                element: dataType.element,
-            };
+            const characters = this.iteratedElements(value);
+            return characters && "range" in characters
+                ? { container: characters.range, element: characters.element }
+                : undefined;
         }
         if (value?.kind !== "data" || !value.dataType) {
             return undefined;
@@ -13981,12 +14032,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 element: { kind: "json" },
             };
         }
-        if (
-            dataType.kind === "vector" ||
-            dataType.kind === "span" ||
-            dataType.kind === "iterator" ||
-            dataType.kind === "set"
-        ) {
+        if (isTypedArrayType(dataType)) {
+            // A typed array iterates its lanes as numbers; the native view
+            // is a range over its element storage.
+            return { container: value, element: { kind: "number" } };
+        }
+        // An array, Set or iterator ranges over its own elements; a numeric
+        // tuple is not ranged over here.
+        const iterated = this.iteratedElements(value);
+        if (iterated && "range" in iterated && iterated.arity === undefined) {
+            const element = iterated.element;
             this.invalidateRecordArrayFacts(value);
             const elements =
                 value.staticElementsOwner?.staticElements ??
@@ -13994,10 +14049,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const template =
                 value.staticElementsOwner?.runtimeElementTemplate ??
                 value.runtimeElementTemplate ??
-                (dataType.element.kind === "handle" && elements?.length
+                (element.kind === "handle" && elements?.length
                     ? commonResourceValue(
                           withNativeMetadata(
-                              this.leafValue("", dataType.element),
+                              this.leafValue("", element),
                               elements[0],
                           ),
                           elements,
@@ -14005,14 +14060,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined);
             return {
                 container: value,
-                element: dataType.element,
+                element,
                 ...(template ? { template } : {}),
             };
-        }
-        if (isTypedArrayType(dataType)) {
-            // A typed array iterates its lanes as numbers; the native view
-            // is a range over its element storage.
-            return { container: value, element: { kind: "number" } };
         }
         if (dataType.kind === "map") {
             return {
@@ -14824,6 +14874,153 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return result;
     }
 
+    /**
+     * What a spread element appends to an array of `dataType`, read as
+     * `iteratedElements` iterates it: a fresh array where the spread builds
+     * one (a compile-time tuple, a projection at the element type, Map/Set
+     * entries, a string's code points, elements of another spelling),
+     * otherwise the iterated range itself.
+     */
+    private spreadSource(
+        spread: ts.SpreadElement,
+        dataType: DataType<"vector">,
+    ): Value & { freshSpread?: true } {
+        const expression = this.context.unwrap(spread.expression);
+        if (ts.isConditionalExpression(expression)) {
+            // Fresh branches inherit the destination element type before
+            // their tuples choose narrower native storage independently.
+            return this.leafValue(
+                this.compileForSink(expression, dataType),
+                dataType,
+            );
+        }
+        const projected =
+            ts.isCallExpression(expression) &&
+            ts.isPropertyAccessExpression(expression.expression)
+                ? ["map", "flatMap"].includes(expression.expression.name.text)
+                    ? this.compileDataMethodCall(expression, dataType)
+                    : expression.arguments.length === 2
+                      ? this.compileArrayFrom(expression, dataType)
+                      : undefined
+                : undefined;
+        const mapRange = projected
+            ? undefined
+            : this.context.probeEmission(() => {
+                  const range = this.iterationTarget(spread.expression);
+                  return range?.element.kind === "map-entry" ||
+                      range?.element.kind === "set-entry"
+                      ? range
+                      : undefined;
+              });
+        if (mapRange) {
+            return {
+                kind: "data",
+                cpp: this.materializeEntryRange(mapRange, dataType, spread),
+                dataType,
+                freshSpread: true,
+            };
+        }
+        const rawIterable =
+            projected ??
+            (ts.isIdentifier(expression)
+                ? this.materializeConstantArray(expression)
+                : undefined) ??
+            this.compileDataPath(spread.expression, "read") ??
+            this.context.compileValue(spread.expression);
+        const iterable = this.narrowOptional(
+            rawIterable,
+            spread.expression,
+            true,
+        );
+        this.invalidateRecordArrayFacts(iterable);
+        if (
+            this.context.dataTypes.carriesBorrowedPlatformEvent(
+                dataType.element,
+            )
+        ) {
+            this.context.refuseBorrowedPlatformEventEscape(
+                iterable,
+                spread,
+                "Array spread",
+            );
+        }
+        if (
+            iterable.kind === "handle-collection" &&
+            iterable.handleCollection &&
+            dataType.element.kind === "handle" &&
+            iterable.handleCollection.elementKind === dataType.element.handle
+        ) {
+            return {
+                kind: "data",
+                cpp: iterable.handleCollection.containerCpp,
+                dataType: { kind: "span", element: dataType.element },
+                borrowedData: true,
+            };
+        }
+        const iterated = this.iteratedElements(iterable);
+        if (iterated && "lanes" in iterated) {
+            return {
+                kind: "data",
+                freshSpread: true,
+                cpp: `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${iterated.lanes
+                    .map((element) =>
+                        this.compileKnownValueForSink(
+                            element,
+                            dataType.element,
+                            spread,
+                        ),
+                    )
+                    .join(", ")}}`,
+                dataType: { kind: "vector", element: dataType.element },
+            };
+        }
+        const sourceElement = iterated?.element;
+        // Lanes of another scalar spelling, or records seen through the
+        // target's record type (projected as a readonly view's elements
+        // are), convert one by one.
+        if (
+            iterated &&
+            sourceElement &&
+            !dataTypesEqual(sourceElement, dataType.element) &&
+            ((["string", "enum"].includes(sourceElement.kind) &&
+                ["string", "enum"].includes(dataType.element.kind)) ||
+                (sourceElement.kind === "struct" &&
+                    dataType.element.kind === "struct"))
+        ) {
+            const item = this.context.allocateTemporaryCppName("spread_item");
+            let converted = "";
+            const prepared = this.context.captureEmittedLines(() => {
+                converted = this.compileKnownValueForSink(
+                    this.leafValue(item, sourceElement),
+                    dataType.element,
+                    spread,
+                );
+            });
+            if (prepared.length > 0)
+                this.context.fail(
+                    spread,
+                    "Array spread converts each element in place; this element conversion needs statements.",
+                );
+            return {
+                ...this.leafValue(
+                    `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
+                        `${iterated.range.cpp}, [](const auto& ${item}) { return ${converted}; })`,
+                    dataType,
+                ),
+                freshSpread: true,
+            };
+        }
+        if (!iterated || !dataTypesEqual(iterated.element, dataType.element)) {
+            return this.context.fail(
+                spread,
+                `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify((iterated?.range ?? iterable).dataType)}, element=${JSON.stringify(dataType.element)}).`,
+            );
+        }
+        return projected?.freshData || iterated.range.freshData
+            ? { ...iterated.range, freshSpread: true }
+            : iterated.range;
+    }
+
     public compileVectorSink(
         unwrapped: ts.Expression,
         dataType: DataType & {
@@ -14834,211 +15031,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.reachJsData();
             const spreads = unwrapped.elements.filter(ts.isSpreadElement);
             if (spreads.length > 0) {
-                const spreadValue = (
-                    spread: ts.SpreadElement,
-                ): Value & { freshSpread?: true } => {
-                    const expression = this.context.unwrap(spread.expression);
-                    if (ts.isConditionalExpression(expression)) {
-                        // Fresh branches inherit the destination element type before
-                        // their tuples choose narrower native storage independently.
-                        return this.leafValue(
-                            this.compileForSink(expression, dataType),
-                            dataType,
-                        );
-                    }
-                    const projected =
-                        ts.isCallExpression(expression) &&
-                        ts.isPropertyAccessExpression(expression.expression)
-                            ? ["map", "flatMap"].includes(
-                                  expression.expression.name.text,
-                              )
-                                ? this.compileDataMethodCall(
-                                      expression,
-                                      dataType,
-                                  )
-                                : expression.arguments.length === 2
-                                  ? this.compileArrayFrom(expression, dataType)
-                                  : undefined
-                            : undefined;
-                    const mapRange = projected
-                        ? undefined
-                        : this.context.probeEmission(() => {
-                              const range = this.iterationTarget(
-                                  spread.expression,
-                              );
-                              return range?.element.kind === "map-entry" ||
-                                  range?.element.kind === "set-entry"
-                                  ? range
-                                  : undefined;
-                          });
-                    if (mapRange) {
-                        return {
-                            kind: "data",
-                            cpp: this.materializeEntryRange(
-                                mapRange,
-                                dataType,
-                                spread,
-                            ),
-                            dataType,
-                            freshSpread: true,
-                        };
-                    }
-                    const rawIterable =
-                        projected ??
-                        (ts.isIdentifier(expression)
-                            ? this.materializeConstantArray(expression)
-                            : undefined) ??
-                        this.compileDataPath(spread.expression, "read") ??
-                        this.context.compileValue(spread.expression);
-                    const narrowedIterable = this.narrowOptional(
-                        rawIterable,
-                        spread.expression,
-                        true,
-                    );
-                    // A typed array spreads the numbers its elements hold.
-                    const iterable: Value =
-                        narrowedIterable.kind === "data" &&
-                        isTypedArrayType(narrowedIterable.dataType)
-                            ? {
-                                  kind: "data",
-                                  cpp: `bbl::js::typed_array_numbers(${narrowedIterable.cpp})`,
-                                  dataType: {
-                                      kind: "span",
-                                      element: { kind: "number" },
-                                  },
-                              }
-                            : narrowedIterable;
-                    this.invalidateRecordArrayFacts(iterable);
-                    if (
-                        this.context.dataTypes.carriesBorrowedPlatformEvent(
-                            dataType.element,
-                        )
-                    ) {
-                        this.context.refuseBorrowedPlatformEventEscape(
-                            iterable,
-                            spread,
-                            "Array spread",
-                        );
-                    }
-                    if (iterable.kind === "tuple") {
-                        return {
-                            kind: "data",
-                            freshSpread: true,
-                            cpp: `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${(
-                                iterable.tupleElements ?? []
-                            )
-                                .map((element) =>
-                                    this.compileKnownValueForSink(
-                                        element,
-                                        dataType.element,
-                                        spread,
-                                    ),
-                                )
-                                .join(", ")}}`,
-                            dataType: {
-                                kind: "vector",
-                                element: dataType.element,
-                            },
-                        };
-                    }
-                    if (
-                        iterable.kind === "handle-collection" &&
-                        iterable.handleCollection &&
-                        dataType.element.kind === "handle" &&
-                        iterable.handleCollection.elementKind ===
-                            dataType.element.handle
-                    ) {
-                        return {
-                            kind: "data",
-                            cpp: iterable.handleCollection.containerCpp,
-                            dataType: {
-                                kind: "span",
-                                element: dataType.element,
-                            },
-                            borrowedData: true,
-                        };
-                    }
-                    // A string spreads its code points.
-                    if (
-                        isStringValue(iterable) &&
-                        dataType.element.kind === "string"
-                    ) {
-                        this.context.reachJsData();
-                        return {
-                            ...this.leafValue(
-                                `bbl::js::string_characters(${iterable.cpp})`,
-                                dataType,
-                            ),
-                            freshSpread: true,
-                        };
-                    }
-                    const sourceElement: DataType | undefined =
-                        iterable.dataType?.kind === "tuple"
-                            ? { kind: "number" }
-                            : iterable.dataType?.kind === "set" ||
-                                iterable.dataType?.kind === "iterator" ||
-                                iterable.dataType?.kind === "vector" ||
-                                iterable.dataType?.kind === "span"
-                              ? iterable.dataType.element
-                              : undefined;
-                    // Lanes of another scalar spelling, or records seen
-                    // through the target's record type (projected as a
-                    // readonly view's elements are), convert one by one.
-                    if (
-                        iterable.kind === "data" &&
-                        sourceElement &&
-                        !dataTypesEqual(sourceElement, dataType.element) &&
-                        ((["string", "enum"].includes(sourceElement.kind) &&
-                            ["string", "enum"].includes(
-                                dataType.element.kind,
-                            )) ||
-                            (sourceElement.kind === "struct" &&
-                                dataType.element.kind === "struct"))
-                    ) {
-                        const item =
-                            this.context.allocateTemporaryCppName(
-                                "spread_item",
-                            );
-                        let converted = "";
-                        const prepared = this.context.captureEmittedLines(
-                            () => {
-                                converted = this.compileKnownValueForSink(
-                                    this.leafValue(item, sourceElement),
-                                    dataType.element,
-                                    spread,
-                                );
-                            },
-                        );
-                        if (prepared.length > 0)
-                            this.context.fail(
-                                spread,
-                                "Array spread converts each element in place; this element conversion needs statements.",
-                            );
-                        return {
-                            ...this.leafValue(
-                                `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
-                                    `${iterable.cpp}, [](const auto& ${item}) { return ${converted}; })`,
-                                dataType,
-                            ),
-                            freshSpread: true,
-                        };
-                    }
-                    if (
-                        iterable.kind !== "data" ||
-                        !sourceElement ||
-                        !dataTypesEqual(sourceElement, dataType.element)
-                    ) {
-                        this.context.fail(
-                            spread,
-                            `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify(iterable.dataType)}, element=${JSON.stringify(dataType.element)}).`,
-                        );
-                    }
-                    return projected?.freshData
-                        ? { ...iterable, freshSpread: true }
-                        : iterable;
-                };
                 if (spreads.length === 1 && unwrapped.elements.length === 1) {
-                    const iterable = spreadValue(spreads[0]!);
+                    const iterable = this.spreadSource(spreads[0]!, dataType);
                     if (iterable.freshSpread) return iterable.cpp;
                     return `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${iterable.cpp})`;
                 }
@@ -15057,7 +15051,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 for (const element of unwrapped.elements) {
                     let statement: string;
                     if (ts.isSpreadElement(element)) {
-                        const iterable = spreadValue(element);
+                        const iterable = this.spreadSource(element, dataType);
                         statement = `bbl::js::array_append(${result}, ${iterable.cpp});`;
                     } else {
                         statement = `${result}.push_back(${this.compileForRetainedSink(element, dataType.element, "Array literal")});`;

@@ -5805,22 +5805,42 @@ check(
 `,
 );
 
-test("numeric tuples refuse writable array parameters that resize or outgrow them", () => {
-    for (const body of [
-        "function grow(out: number[]): void { out.push(1); }",
-        "function grow(out: number[]): void { out[3] = 1; }",
-        "function grow(out: number[]): void { out.length = 1; }",
-        "function grow(out: number[]): void { out[0] = 1; resize(out); } function resize(values: number[]): void { values.pop(); }",
+check(
+    "numeric-tuple-bindings-grown-through-array-parameters-take-array-storage",
+    `
+    function push(out: number[]): void { out.push(1); }
+    function beyond(out: number[]): void { (out[3]) = 1; }
+    function truncate(out: number[]): void { out.length = 1; }
+    function pop(values: number[]): void { values.pop(); }
+    function nested(out: number[]): void { out[0] = 1; pop(out); }
+    function viaPush(): number { const t: [number, number, number] = [0, 0, 0]; push(t); return t.length * 10 + t[0]; }
+    function viaBeyond(): number { const t: [number, number, number] = [0, 0, 0]; beyond(t); return t.length * 10 + t[0]; }
+    function viaTruncate(): number { const t: [number, number, number] = [0, 0, 0]; truncate(t); return t.length * 10 + t[0]; }
+    function viaNested(): number { const t: [number, number, number] = [0, 0, 0]; nested(t); return t.length * 10 + t[0]; }
+    const frames: Array<() => number> = [viaPush, viaBeyond, viaTruncate, viaNested];
+    const lengths = frames.map((frame) => frame());
+    if (lengths.join() !== "40,40,10,21") throw new Error(lengths.join());
+`,
+);
+
+test("numeric tuples outside a binding refuse array parameters that may grow them", () => {
+    for (const source of [
+        `interface Holder { lanes: [number, number, number] }
+        function make(): Holder { return { lanes: [0, 0, 0] }; }
+        const holder = make();
+        push(holder.lanes);`,
+        `function frame(t: [number, number, number]): void { push(t); }
+        const frames: Array<typeof frame> = [frame];
+        const lanes: [number, number, number] = [0, 0, 0];
+        frames[0]!(lanes);`,
     ])
         assert.throws(
             () =>
                 compileSource(
-                    `${body}
-                    function frame(): number { const t: [number, number, number] = [0, 0, 0]; grow(t); return t[0]; }
-                    const roots: Array<typeof frame> = [frame];
-                    if (roots[0]!() !== 0) throw new Error("frame");`,
+                    `function push(out: number[]): void { out.push(1); }
+                    ${source}`,
                 ),
-            /By-reference data arguments require a matching addressable local or path/,
+            /fixed-length tuple stored as a number array could grow through that array/,
         );
 });
 
@@ -7979,3 +7999,111 @@ test("tuples stored as growable number arrays need growable storage", () => {
         /fixed-length tuple stored as a number array could grow through that array/,
     );
 });
+
+check(
+    "array-callbacks-walk-the-receiver-and-length-read-at-the-call",
+    `
+    const seen: number[] = [];
+    const popped: number[] = [1, 2, 3, 4];
+    popped.forEach((value, index, array) => { seen.push(value); if (index === 0) array.pop(); });
+    if (seen.join() !== "1,2,3" || popped.length !== 3) throw new Error("forEach skips a popped index");
+    const grown: number[] = [1, 2];
+    let visits = 0;
+    grown.forEach((value, _index, array) => { visits++; array.push(value * 10); });
+    if (visits !== 2 || grown.join() !== "1,2,10,20") throw new Error("forEach visits the length read at the call");
+    const truncated: number[] = [1, 2, 3, 4];
+    const probed: number[] = [];
+    const any = truncated.some((value) => { probed.push(value); truncated.length = 2; return false; });
+    if (any || probed.join() !== "1,2") throw new Error("some skips truncated indices");
+    const spliced: number[] = [5, 6, 7];
+    const tested: number[] = [];
+    const all = spliced.every((value, index, array) => { tested.push(value); array.splice(index, 1); return value > 0; });
+    if (!all || tested.join() !== "5,7" || spliced.join() !== "6") throw new Error("every skips spliced indices");
+    const replaced: number[] = [1, 2, 3, 4];
+    const kept = replaced.filter((value, index, array) => { array[index] = -value; if (index === 1) array.pop(); return value > 1; });
+    if (kept.join() !== "2,3" || replaced.join() !== "-1,-2,-3") throw new Error("filter keeps the value it read");
+    const scanned: number[] = [1, 2, 3];
+    const found = scanned.find((value, index, array) => { array[index] = 0; return value === 2; });
+    if (found !== 2 || scanned.join() !== "0,0,3") throw new Error("find keeps the value it read");
+    const summed: number[] = [1, 2, 3, 4];
+    const total = summed.reduce((sum, value, index, array) => { if (index === 0) array.splice(2); return sum + value; }, 0);
+    if (total !== 3) throw new Error("seeded reduce skips removed indices");
+    const unseeded: number[] = [1, 2, 3, 4];
+    const partial = unseeded.reduce((sum, value, _index, array) => { array.pop(); return sum + value; });
+    if (partial !== 6) throw new Error("unseeded reduce skips removed indices");
+    const shifted: number[] = [1, 2, 3, 4];
+    const fromRight = shifted.reduceRight((sum, value, _index, array) => { array.shift(); return sum + value; }, 0);
+    if (fromRight !== 16 || shifted.length !== 0) throw new Error("reduceRight reads each index still present");
+    const flattened: number[] = [1, 2, 3];
+    const pairs = flattened.flatMap((value, _index, array) => { array.length = 1; return [value, value]; });
+    if (pairs.join() !== "1,1") throw new Error("flatMap skips truncated indices");
+    let rebound: number[] = [1, 2, 3];
+    const original = rebound;
+    const order: number[] = [];
+    rebound.forEach((value) => { order.push(value); rebound = []; });
+    if (order.join() !== "1,2,3" || rebound.length !== 0 || original.length !== 3) throw new Error("the walk keeps the receiver it started with");
+    const listed: number[] = [1, 2, 3, 4];
+    function drop(): void { listed.pop(); }
+    const survivors = listed.filter(() => { drop(); return true; });
+    if (survivors.join() !== "1,2" || listed.length !== 2) throw new Error("a called function shrinks the receiver");
+    const ordered: number[] = [3, 1, 2];
+    const sorted = ordered.sort((a, b) => { if (ordered.length > 2) ordered.pop(); return a - b; });
+    if (sorted !== ordered || ordered.join() !== "1,2,3") throw new Error("sort writes back the values it collected");
+`,
+);
+
+check(
+    "spreads-and-sequence-copies-read-one-iteration-protocol",
+    `
+    type Vec3 = [number, number, number];
+    const lanes: Vec3 = [4, 9, 2];
+    if (Math.max(...lanes) !== 9 || Math.min(...lanes) !== 2) throw new Error("Math over a numeric tuple");
+    const set = new Set<number>([5, -1, 3]);
+    if (Math.max(...set) !== 5 || Math.min(...set.values()) !== -1) throw new Error("Math over a Set and its iterator");
+    interface Holder { pos: [number, number] }
+    function holderAt(x: number): Holder { return { pos: [x, x + 1] }; }
+    const holder = holderAt(3);
+    holder.pos[1] = 4;
+    if (Math.hypot(...holder.pos) !== 5) throw new Error("tuple field spread into a rest pack");
+    function total(...items: number[]): number {
+        let sum = 0;
+        for (const item of items) sum += item;
+        return sum;
+    }
+    const totals: Array<(...items: number[]) => number> = [total];
+    const typed = new Uint8Array([1, 2]);
+    if (totals[0]!(...set, ...typed, ...holder.pos, 10) !== 27) throw new Error("rest pack over a Set, a typed array and a tuple field");
+    function letters(...items: string[]): string { return items.join("-"); }
+    const named: Array<(...items: string[]) => string> = [letters];
+    if (named[0]!(..."ab", "c") !== "a-b-c") throw new Error("rest pack over a string");
+    const fromValues = new Float32Array(set.values());
+    const fromIterator = Float64Array.from(set.values());
+    if (fromValues.join() !== "5,-1,3" || fromIterator.join() !== "5,-1,3") throw new Error("typed arrays from an iterator");
+    if (Array.from(typed).join() !== "1,2" || Array.from(lanes).length !== 3) throw new Error("Array.from over sequences");
+`,
+);
+
+check(
+    "asserted-wrappers-keep-never-calls-and-narrowed-tag-filters",
+    `
+    function fail(message: string): never { throw new Error(message); }
+    function pick(flag: boolean): number { if (flag) return 1; return fail("no pick") as number; }
+    function label(flag: boolean): string { if (flag) return "yes"; return fail("no label") satisfies never; }
+    function guard(flag: boolean): void { if (!flag) fail("bad") as void; }
+    let caught = "";
+    try { pick(false); } catch (error) { caught += (error as Error).message; }
+    try { label(false); } catch (error) { caught += "," + (error as Error).message; }
+    try { guard(false); } catch (error) { caught += "," + (error as Error).message; }
+    if (pick(true) !== 1 || label(true) !== "yes" || caught !== "no pick,no label,bad") throw new Error(caught);
+    type Tag = "a" | "b" | "c";
+    type Narrow = "a" | "b";
+    function isNarrow(tag: Tag): tag is Narrow { return tag !== "c"; }
+    const tags: Tag[] = ["a", "c", "b"];
+    const asserted: Narrow[] = tags.filter(isNarrow) as Narrow[];
+    const checked: Narrow[] = tags.filter(isNarrow) satisfies Narrow[];
+    const record: { values: Narrow[] } = { values: tags.filter(isNarrow) as Narrow[] };
+    function narrowed(): Narrow[] { return tags.filter(isNarrow) as Narrow[]; }
+    if (asserted.join() !== "a,b" || checked.join() !== "a,b" || record.values.join() !== "a,b" || narrowed().join() !== "a,b")
+        throw new Error("narrowed tag filters through assertions");
+`,
+);

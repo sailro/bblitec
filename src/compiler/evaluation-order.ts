@@ -227,6 +227,34 @@ export class EvaluationOrder {
     }
 
     /**
+     * Whether calling the function `callback` denotes can write object state
+     * or `variable`: a function literal or a named function answers from its
+     * body and everything it reaches, a function of the language's library
+     * writes neither, and any other function value may write anything.
+     */
+    public callbackMayWrite(
+        callback: ts.Expression,
+        variable: ts.Symbol | undefined,
+    ): boolean {
+        const expression = unwrapExpression(callback);
+        const unit =
+            ts.isArrowFunction(expression) ||
+            ts.isFunctionExpression(expression)
+                ? expression
+                : this.namedFunction(expression);
+        if (!unit)
+            return !declaredInDefaultLibrary(
+                resolvedSymbol(this.checker, expression),
+            );
+        const writes = this.summary(unit).writes;
+        return (
+            writes.any ||
+            writes.heap ||
+            (variable !== undefined && writes.variables.has(variable))
+        );
+    }
+
+    /**
      * Whether running `unit` touches no storage outside its own frame, with
      * everything it calls, and asks nothing of the host: its result is a
      * function of its arguments alone.

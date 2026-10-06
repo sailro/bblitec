@@ -999,30 +999,22 @@ export function compileShaderUniformComponents(
         ts.isArrayLiteralExpression(resolved) &&
         resolved.elements.some(ts.isSpreadElement)
     ) {
-        const lanes = resolved.elements.flatMap((element) =>
-            ts.isSpreadElement(element)
-                ? (context.dataLowerer.spreadTupleLanes(
-                      context.compileValue(element.expression),
-                      element,
-                  ) ??
-                  context.fail(
-                      element,
-                      "A shader uniform value spreads a numeric tuple.",
-                  ))
-                : [
-                      context.bindings.pinValueToTemporary(
-                          context.compileValue(element),
-                          "uniform_lane",
-                          element,
-                      ),
-                  ],
+        const lanes = context.dataLowerer.spreadLaneValues(
+            resolved.elements,
+            (element) =>
+                context.bindings.pinValueToTemporary(
+                    context.compileValue(element),
+                    "uniform_lane",
+                    element,
+                ),
+            "A shader uniform value spreads a numeric tuple.",
         );
         if (lanes.length !== count)
             context.fail(
                 expression,
                 `Expected a ${count}-component array value.`,
             );
-        return lanes.map((lane) => context.castNumber(lane, "float"));
+        return lanes.map(({ value }) => context.castNumber(value, "float"));
     }
     // A tuple's lanes are double values -- a `?? [0.7, 0.82, 0.92]` default
     // lowers each literal as one -- while the setter takes floats, and the

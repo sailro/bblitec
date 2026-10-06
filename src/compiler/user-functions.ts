@@ -51,10 +51,12 @@ import {
     type CapturedClosure,
 } from "./closure-captures.js";
 import {
+    callbackTakesReceiver,
     readOnlyDataMethods,
     storingDataMethods,
     isStoringDataCall,
 } from "./data-methods.js";
+import { lengthPreservingArrayMethods } from "./receiver-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
@@ -77,6 +79,7 @@ import {
     rootIdentifier,
     sourceFunctionName,
     unwrapExpression,
+    wrappedParent,
     argumentAt,
 } from "./syntax.js";
 import {
@@ -770,23 +773,30 @@ export function parameterIsReadOnly(
     return readOnly;
 }
 
-const fixedLengthCache = new EmissionWeakMap<
+/** @unjournaled A pure function of the checked source, kept across replays. */
+const fixedLengthCache = new WeakMap<
     ts.TypeChecker,
     WeakMap<ts.Symbol, number | null>
 >();
 
-/** Array methods that keep the receiver's length and return a new value. */
-function keepsLengthReading(method: string): boolean {
-    return readOnlyDataMethods.has(method);
-}
+/** @unjournaled A pure function of the checked source, kept across replays. */
+const bodyWriteTargets = new WeakMap<ts.Node, ReadonlySet<ts.Node>>();
 
-/** In-place array methods that keep the receiver's length. */
-const lengthPreservingWriters: ReadonlySet<string> = new EmissionSet([
-    "copyWithin",
-    "fill",
-    "reverse",
-    "sort",
-]);
+/** The expressions a body assigns or updates, past their wrappers. */
+function writeTargetsOf(body: ts.Node): ReadonlySet<ts.Node> {
+    let targets = bodyWriteTargets.get(body);
+    if (targets) return targets;
+    const found = new Set<ts.Node>();
+    forEachAnalysisNode(body, (node) => {
+        if (isAssignmentExpression(node))
+            for (const target of assignmentTargets(node.left))
+                found.add(unwrapExpression(target));
+        else if (isUpdateExpression(node))
+            found.add(unwrapExpression(node.operand));
+    });
+    bodyWriteTargets.set(body, (targets = found));
+    return targets;
+}
 
 /**
  * Whether a function body keeps an array parameter's length and identity
@@ -812,48 +822,17 @@ export function fixedLengthParameterWrites(
     if (active.has(symbol)) return 0;
     active.add(symbol);
     const aliases = new EmissionSet<ts.Symbol>([symbol]);
-    const writeTargets = new EmissionSet<ts.Node>();
-    forEachAnalysisNode(body, (node) => {
-        if (isAssignmentExpression(node))
-            for (const target of assignmentTargets(node.left))
-                writeTargets.add(unwrapExpression(target));
-        else if (isUpdateExpression(node))
-            writeTargets.add(unwrapExpression(node.operand));
-    });
+    const writeTargets = writeTargetsOf(body);
     let written = 0;
     let proven = true;
-    const climb = (node: ts.Expression): ts.Expression => {
-        let current = node;
-        while (
-            ts.isParenthesizedExpression(current.parent) ||
-            ts.isAsExpression(current.parent) ||
-            ts.isNonNullExpression(current.parent) ||
-            ts.isTypeAssertionExpression(current.parent) ||
-            ts.isSatisfiesExpression(current.parent)
-        )
-            current = current.parent;
-        return current;
-    };
-    const callbackNamesArray = (
-        call: ts.CallExpression,
-        method: string,
-    ): boolean => {
-        const arrayParameter =
-            method === "reduce" || method === "reduceRight" ? 3 : 2;
-        return call.arguments.some((argument) =>
-            checker
-                .getTypeAtLocation(argument)
-                .getCallSignatures()
-                .some(
-                    (signature) => signature.parameters.length > arrayParameter,
-                ),
-        );
-    };
     const passedArgument = (
         call: ts.CallExpression | ts.NewExpression,
         use: ts.Expression,
     ): boolean => {
-        const index = call.arguments?.indexOf(use) ?? -1;
+        const index =
+            call.arguments?.findIndex(
+                (argument) => unwrapExpression(argument) === use,
+            ) ?? -1;
         if (index < 0) return false;
         const called = checker.getResolvedSignature(call)?.declaration;
         if (called && declarationInDefaultLibrary(called)) {
@@ -885,10 +864,14 @@ export function fixedLengthParameterWrites(
             ) !== declaration
         )
             return false;
-        const use = climb(identifier);
-        const parent = use.parent;
-        if (ts.isElementAccessExpression(parent) && parent.expression === use) {
-            if (!writeTargets.has(climb(parent))) return true;
+        // The node reading the parameter, past the wrappers around it; a
+        // write target is recorded past its wrappers the same way.
+        const parent = wrappedParent(identifier);
+        const reads = (expression: ts.Expression | undefined): boolean =>
+            expression !== undefined &&
+            unwrapExpression(expression) === identifier;
+        if (ts.isElementAccessExpression(parent) && reads(parent.expression)) {
+            if (!writeTargets.has(parent)) return true;
             const index = unwrapExpression(parent.argumentExpression);
             if (!ts.isNumericLiteral(index)) return false;
             const value = Number(index.text);
@@ -896,44 +879,45 @@ export function fixedLengthParameterWrites(
             written = Math.max(written, value + 1);
             return true;
         }
-        if (
-            ts.isPropertyAccessExpression(parent) &&
-            parent.expression === use
-        ) {
+        if (ts.isPropertyAccessExpression(parent) && reads(parent.expression)) {
             const member = parent.name.text;
-            const call = climb(parent).parent;
+            const call = wrappedParent(parent);
             if (
                 ts.isCallExpression(call) &&
-                call.expression === climb(parent)
+                unwrapExpression(call.expression) === parent
             ) {
-                if (keepsLengthReading(member))
-                    return !callbackNamesArray(call, member);
+                if (readOnlyDataMethods.has(member))
+                    return !callbackTakesReceiver(
+                        checker,
+                        member,
+                        call.arguments[0],
+                    );
                 return (
-                    lengthPreservingWriters.has(member) &&
+                    lengthPreservingArrayMethods.has(member) &&
                     ts.isExpressionStatement(call.parent)
                 );
             }
-            return member === "length" && !writeTargets.has(climb(parent));
+            return member === "length" && !writeTargets.has(parent);
         }
         if (
             (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-            parent.expression !== use
+            !reads(parent.expression)
         )
-            return passedArgument(parent, use);
+            return passedArgument(parent, identifier);
         if (
             ts.isSpreadElement(parent) ||
-            (ts.isForOfStatement(parent) && parent.expression === use)
+            (ts.isForOfStatement(parent) && reads(parent.expression))
         )
             return true;
         if (
             ts.isVariableDeclaration(parent) &&
-            parent.initializer === use &&
+            reads(parent.initializer) &&
             ts.isArrayBindingPattern(parent.name)
         )
             return true;
         if (
             ts.isVariableDeclaration(parent) &&
-            parent.initializer === use &&
+            reads(parent.initializer) &&
             ts.isIdentifier(parent.name) &&
             (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
         ) {
@@ -965,7 +949,7 @@ export function fixedLengthParameterWrites(
     active.delete(symbol);
     const result = proven ? written : undefined;
     if (active.size === 0) {
-        byChecker ??= new EmissionWeakMap<ts.Symbol, number | null>();
+        byChecker ??= new WeakMap<ts.Symbol, number | null>();
         byChecker.set(symbol, result ?? null);
         fixedLengthCache.set(checker, byChecker);
     }

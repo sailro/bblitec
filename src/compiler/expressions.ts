@@ -1131,45 +1131,22 @@ export class ExpressionLowerer {
                               element: destination.element,
                           }
                         : this.context.dataLowerer.dataTypeAt(unwrapped);
-                if (dataType?.kind !== "vector" && dataType?.kind !== "tuple") {
-                    const elements: Value[] = [];
-                    let staticTuple = true;
-                    for (const element of unwrapped.elements) {
-                        if (ts.isSpreadElement(element)) {
-                            const spread = this.compileValue(
-                                element.expression,
-                            );
-                            const lanes =
-                                this.context.dataLowerer.spreadTupleLanes(
-                                    spread,
-                                    element,
-                                );
-                            if (!lanes) {
-                                staticTuple = false;
-                                break;
-                            }
-                            elements.push(...lanes);
-                        } else {
-                            elements.push(
-                                this.builtLane(
-                                    this.laneValue(element),
-                                    element,
-                                ),
-                            );
-                        }
-                    }
-                    if (staticTuple) {
-                        return {
-                            kind: "tuple",
-                            cpp: "",
-                            tupleElements: elements,
-                        };
-                    }
-                    this.context.fail(
-                        unwrapped,
-                        "Array spread requires a concrete native array element type.",
-                    );
-                }
+                if (dataType?.kind !== "vector" && dataType?.kind !== "tuple")
+                    return {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: this.context.dataLowerer
+                            .spreadLaneValues(
+                                unwrapped.elements,
+                                (element) =>
+                                    this.builtLane(
+                                        this.laneValue(element),
+                                        element,
+                                    ),
+                                "Array spread requires a concrete native array element type.",
+                            )
+                            .map(({ value }) => value),
+                    };
                 return {
                     kind: "data",
                     cpp: this.context.dataLowerer.compileForSink(

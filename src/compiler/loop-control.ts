@@ -22,6 +22,7 @@ import {
     findAnalysisNode,
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
+import { unwrapExpression } from "./syntax.js";
 
 /** Emit one body until its lowered control flow proves the remainder unreachable. */
 export function emitReachableStatements(
@@ -127,13 +128,7 @@ export function callsNever(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
-    let call = expression;
-    while (
-        ts.isParenthesizedExpression(call) ||
-        ts.isAwaitExpression(call) ||
-        ts.isNonNullExpression(call)
-    )
-        call = call.expression;
+    const call = unwrapExpression(expression, { await: true });
     return (
         ts.isCallExpression(call) &&
         (checker.getTypeAtLocation(call).flags & ts.TypeFlags.Never) !== 0

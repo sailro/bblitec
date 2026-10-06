@@ -18,6 +18,7 @@ import {
     argumentAt,
     expressionMayRunCode,
     regularExpressionParts,
+    rootIdentifier,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -51,7 +52,11 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    libraryGlobal,
+    resolvedSymbol,
+} from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
@@ -210,30 +215,51 @@ const tupleReadingMethods: ReadonlySet<string> = new EmissionSet(
     ),
 );
 
-interface ArrayCallbackReceiverPolicy {
-    readonly snapshotIdentity: boolean;
-    readonly skipRemoved: boolean;
-    readonly invalidatesFacts: boolean;
+/**
+ * Whether an array method's callback takes the receiver itself: the third
+ * parameter of `(value, index, array)`, `reduce`'s fourth. A callback that
+ * does reaches the receiver under a name of its own.
+ */
+export function callbackTakesReceiver(
+    checker: ts.TypeChecker,
+    method: string,
+    callback: ts.Expression | undefined,
+): callback is ts.Expression {
+    const receiverParameter =
+        method === "reduce" || method === "reduceRight" ? 3 : 2;
+    return (
+        callback !== undefined &&
+        checker
+            .getTypeAtLocation(callback)
+            .getCallSignatures()
+            .some(
+                (signature) => signature.parameters.length > receiverParameter,
+            )
+    );
 }
 
-const existingCallbackReceiver: ArrayCallbackReceiverPolicy = {
-    snapshotIdentity: false,
-    skipRemoved: false,
-    invalidatesFacts: false,
-};
-const mutableCallbackReceiver: ArrayCallbackReceiverPolicy = {
-    snapshotIdentity: true,
-    skipRemoved: true,
-    invalidatesFacts: true,
-};
-
-/** Receiver rules shared by callback emission and source-level fact analysis. */
-export function arrayCallbackReceiverPolicy(
-    method: string,
-): ArrayCallbackReceiverPolicy {
-    return method === "flatMap"
-        ? mutableCallbackReceiver
-        : existingCallbackReceiver;
+/**
+ * Whether an array method's callback may change the receiver while the
+ * method walks it: write its elements or length, or rebind the variable the
+ * receiver was read from (`EvaluationOrder.callbackMayWrite`). JavaScript
+ * fixes the receiver and its length when the walk starts and visits only
+ * the indices still present, so such a walk holds the receiver, counts the
+ * length read at the call and checks each index against the live length.
+ * A callback that cannot change the receiver needs none of that.
+ */
+export function callbackMayWriteReceiver(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callback: ts.Expression,
+): boolean {
+    const callee = lowerer.context.unwrap(call.expression);
+    const root = ts.isPropertyAccessExpression(callee)
+        ? rootIdentifier(callee.expression)
+        : undefined;
+    return lowerer.context.evaluationOrder.callbackMayWrite(
+        callback,
+        root && resolvedSymbol(lowerer.context.checker, root),
+    );
 }
 
 /** Methods that retain argument identity without mutating the argument itself. */
@@ -1291,18 +1317,19 @@ function compileKnownDataMethod(
             };
         }
         if (!typedArrayReadMethods.has(method)) return undefined;
+        const numbers = typedArrayReader(
+            lowerer,
+            call,
+            method,
+            narrowed,
+            dataType,
+        );
         return compileArrayMethodTail(
             {
                 lowerer,
                 call,
-                narrowed: typedArrayReader(
-                    lowerer,
-                    call,
-                    method,
-                    narrowed,
-                    dataType,
-                ),
-                dataType: typedArrayNumbers,
+                narrowed: numbers,
+                dataType: { kind: "span", element: { kind: "number" } },
                 dynamicOwner,
                 expectedResult: undefined,
                 typedResult: dataType,
@@ -1424,11 +1451,6 @@ function collectedArray(
     return { kind: "data", cpp: typed, dataType: state.typedResult };
 }
 
-const typedArrayNumbers: DataType<"span"> = {
-    kind: "span",
-    element: { kind: "number" },
-};
-
 /** The array methods a typed array shares, read through `TypedArrayNumbers`. */
 const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
     "at",
@@ -1451,10 +1473,9 @@ const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
 
 /**
  * A typed array as the array-method tail reads it: its elements as numbers
- * (`bbl::js::TypedArrayNumbers`), each read the element at that moment,
- * through a view's bytes as through owned storage. `map` and `filter` fill
- * the receiver's own kind (`typedResult`), converting each number as a
- * store does.
+ * (`DataLowerer.typedArrayNumbersValue`). `map` and `filter` fill the
+ * receiver's own kind (`typedResult`), converting each number as a store
+ * does.
  */
 function typedArrayReader(
     lowerer: DataLowerer,
@@ -1464,27 +1485,12 @@ function typedArrayReader(
     dataType: DataType<TypedArrayKind>,
 ): Value {
     const callback = call.arguments[0];
-    const arrayParameter =
-        method === "reduce" || method === "reduceRight" ? 3 : 2;
-    if (
-        callback &&
-        lowerer.context.checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()
-            .some((signature) => signature.parameters.length > arrayParameter)
-    )
+    if (callbackTakesReceiver(lowerer.context.checker, method, callback))
         lowerer.context.fail(
             callback,
             `A typed array's ${method} callback takes no array parameter here.`,
         );
-    lowerer.context.reachJsData();
-    const cppType = lowerer.context.dataTypes.cppType(dataType);
-    return {
-        kind: "data",
-        cpp: `bbl::js::typed_array_numbers(${narrowed.cpp})`,
-        dataType: typedArrayNumbers,
-        nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${cppType}>`,
-    };
+    return lowerer.typedArrayNumbersValue(narrowed.cpp, dataType);
 }
 
 function compileTypedArraySort(
@@ -1699,22 +1705,32 @@ function compileArraySort(
         );
     }
     const copy = method === "toSorted";
-    const resultType: DataType<"vector"> | typeof dataType = copy
-        ? { kind: "vector", element: dataType.element }
-        : dataType;
+    const argument = call.arguments[0]
+        ? lowerer.context.unwrap(call.arguments[0])
+        : undefined;
+    // JavaScript sorts the values it collects before comparing and writes
+    // them back, so a comparator that may change the receiver
+    // (`callbackMayWriteReceiver`) sorts a copy of them.
+    const collected =
+        !copy &&
+        dataType.kind === "vector" &&
+        argument !== undefined &&
+        callbackMayWriteReceiver(lowerer, call, argument);
+    const resultType: DataType<"vector"> | typeof dataType =
+        copy || collected
+            ? { kind: "vector", element: dataType.element }
+            : dataType;
     const result = lowerer.context.allocateTemporaryCppName("sort_result");
-    const receiver = copy
-        ? lowerer.context.allocateTemporaryCppName("sort_receiver")
-        : result;
+    const receiver =
+        copy || collected
+            ? lowerer.context.allocateTemporaryCppName("sort_receiver")
+            : result;
     lowerer.context.emit({
         kind: "declaration",
         type: copy ? "auto&&" : "auto",
         name: receiver,
         initializer: narrowed.cpp,
     });
-    const argument = call.arguments[0]
-        ? lowerer.context.unwrap(call.arguments[0])
-        : undefined;
     // Another comparator expression (a class field, a property, a call
     // result) is evaluated once, before the sort: a compile-time callback
     // keeps its owner's scopes, a function value is held in a temporary.
@@ -1744,7 +1760,7 @@ function compileArraySort(
                   "sort_comparator",
               )
             : undefined;
-    if (copy)
+    if (copy || collected)
         lowerer.context.emit({
             kind: "declaration",
             type: lowerer.context.dataTypes.cppType(resultType),
@@ -1844,9 +1860,25 @@ function compileArraySort(
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("});");
+    if (collected) {
+        // Every sorted value lands back at its index, regrowing a receiver
+        // the comparator shrank; elements it appended stay after them.
+        lowerer.context.emit(
+            `if (${receiver}.size() < ${result}.size()) ${receiver}.resize(${result}.size());`,
+        );
+        lowerer.context.emit({
+            kind: "expression",
+            code: `std::copy(${result}.begin(), ${result}.end(), ${receiver}.begin());`,
+        });
+    }
     if (!copy) lowerer.invalidateStaticElements(narrowed, true);
-    lowerer.registerLocal(result, "owned");
-    return { kind: "data", cpp: result, dataType: resultType };
+    const sorted = collected ? receiver : result;
+    lowerer.registerLocal(sorted, "owned");
+    return {
+        kind: "data",
+        cpp: sorted,
+        dataType: collected ? dataType : resultType,
+    };
 }
 
 function compileArrayFind(
@@ -1877,7 +1909,7 @@ function compileArrayFind(
                 initializer: "",
                 initialization: "default",
             }),
-        (matched, callback, source, index) => {
+        (matched, callback, element) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
                     callback,
@@ -1889,10 +1921,7 @@ function compileArrayFind(
                 code: `if (${matched.cpp}) {`,
             });
             lowerer.context.increaseIndent();
-            const selected = lowerer.leafValue(
-                `${source}[${index}]`,
-                dataType.element,
-            );
+            const selected = lowerer.leafValue(element, dataType.element);
             const stored = lowerer.compileKnownValueForSink(
                 selected,
                 resultType,
@@ -1937,7 +1966,7 @@ function compileArrayFindIndex(
                 name: result,
                 initializer: "-1.0",
             }),
-        (matched, callback, _source, index) => {
+        (matched, callback, _element, index) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
                     callback,
@@ -2062,7 +2091,7 @@ function compileArrayFilter(state: ArrayMethodState): Value {
                 code: `${output}.reserve(${source}.size());`,
             });
         },
-        (matched, callback, source, index) => {
+        (matched, callback, element) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
                     callback,
@@ -2074,12 +2103,11 @@ function compileArrayFilter(state: ArrayMethodState): Value {
                 code: `if (${matched.cpp}) {`,
             });
             lowerer.context.increaseIndent();
-            const cpp = `${source}[${index}]`;
             const selected =
                 dataType.element.kind === "optional" &&
                 filteredType.element.kind !== "optional"
-                    ? lowerer.leafValue(`(*${cpp})`, dataType.element.inner)
-                    : lowerer.leafValue(cpp, dataType.element);
+                    ? lowerer.leafValue(`(*${element})`, dataType.element.inner)
+                    : lowerer.leafValue(element, dataType.element);
             lowerer.context.emit({
                 kind: "expression",
                 code: `${output}.push_back(${lowerer.compileKnownValueForSink(selected, filteredType.element, call)});`,
@@ -2134,9 +2162,13 @@ function compileArrayReduce(
     const index = lowerer.context.allocateTemporaryCppName("reduce_index");
     const accumulator =
         lowerer.context.allocateTemporaryCppName("reduce_result");
+    // A callback that may change the receiver walks it as
+    // `emitArrayCallbackLoop` does (`callbackMayWriteReceiver`).
+    const writable = callbackMayWriteReceiver(lowerer, call, callback);
+    if (writable) lowerer.invalidateStaticElements(narrowed);
     lowerer.context.emit({
         kind: "declaration",
-        type: "auto&&",
+        type: writable && !narrowed.nativeVectorData ? "auto" : "auto&&",
         name: source,
         initializer: narrowed.cpp,
     });
@@ -2175,7 +2207,7 @@ function compileArrayReduce(
         iteration: true,
     });
     lowerer.context.increaseIndent();
-    if (right || !initial)
+    if (writable)
         lowerer.context.emit(`if (${index} >= ${source}.size()) continue;`);
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
@@ -2189,8 +2221,12 @@ function compileArrayReduce(
                     ],
                 },
                 {
+                    // The callback may replace or remove the element it
+                    // is given: it receives the value read before it ran.
                     ...lowerer.leafValue(
-                        `${source}[${index}]`,
+                        writable
+                            ? `bbl::js::snapshot_value(${source}[${index}])`
+                            : `${source}[${index}]`,
                         dataType.element,
                     ),
                     nativeCaptures: [
