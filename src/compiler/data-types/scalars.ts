@@ -16,14 +16,27 @@ function leaf(cpp: string, key: string, byReference = false, traced = false) {
     };
 }
 
+/** A leaf whose assignment copies its value or the identity it names. */
+function reseatingLeaf(
+    cpp: string,
+    key: string,
+    byReference = false,
+    traced = false,
+) {
+    return { ...leaf(cpp, key, byReference, traced), reseats: true as const };
+}
+
 /** A reference-backed leaf: copies retain identity and the payload is traced. */
 function opaqueLeaf(cpp: string, key: string) {
-    return { ...leaf(cpp, key, true, true), opaqueReference: true as const };
+    return {
+        ...reseatingLeaf(cpp, key, true, true),
+        opaqueReference: true as const,
+    };
 }
 
 function typedArray(kind: TypedArrayKind) {
     return {
-        ...leaf(typedArrayCppType(kind), typedArrayStem(kind), true),
+        ...reseatingLeaf(typedArrayCppType(kind), typedArrayStem(kind), true),
         sharesStorage: true as const,
     };
 }
@@ -69,15 +82,18 @@ export const scalarKinds: DataKindOperations<
     "weak-key": leaf("bbl::js::WeakIdentity", "weak-key"),
     error: leaf("bbl::js::Error", "error", false, true),
     file: {
-        ...leaf("bbl::BrowserFileHandle", "file", true),
+        ...reseatingLeaf("bbl::BrowserFileHandle", "file", true),
         opaqueReference: true,
     },
-    blob: { ...leaf("bbl::js::Blob", "blob", true), opaqueReference: true },
+    blob: {
+        ...reseatingLeaf("bbl::js::Blob", "blob", true),
+        opaqueReference: true,
+    },
     "file-list": {
-        ...leaf("bbl::js::FileList", "file-list", true),
+        ...reseatingLeaf("bbl::js::FileList", "file-list", true),
         opaqueReference: true,
     },
-    "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
+    "event-target": reseatingLeaf("bbl::DomEventTargetValue", "event-target"),
     "deferred-platform-object": {
         cpp: (type) => `std::shared_ptr<bbl::Deferred${type.name}>`,
         key: (type) => `deferred-platform(${type.name})`,
@@ -86,6 +102,7 @@ export const scalarKinds: DataKindOperations<
         byReference: true,
         tracedEdges: "never",
         opaqueReference: true,
+        reseats: true,
     },
     "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),
     "gpu-adapter": opaqueLeaf("bbl::pal::GpuAdapterHandle", "gpu-adapter"),
@@ -100,14 +117,14 @@ export const scalarKinds: DataKindOperations<
     "text-decoder": opaqueLeaf("bbl::js::TextDecoder", "textdecoder"),
     "text-encoder": opaqueLeaf("bbl::js::TextEncoder", "textencoder"),
     collator: opaqueLeaf("bbl::pal::Collator", "collator"),
-    number: leaf(CPP_SCALAR.number, "n"),
-    boolean: leaf(CPP_SCALAR.boolean, "b"),
-    string: leaf(CPP_SCALAR.string, "str"),
-    arraybuffer: leaf("bbl::js::ArrayBuffer", "ab", true),
-    dataview: leaf("bbl::js::DataView", "dv", true),
-    bufferview: leaf("bbl::js::ArrayBufferView", "bv", true),
+    number: reseatingLeaf(CPP_SCALAR.number, "n"),
+    boolean: reseatingLeaf(CPP_SCALAR.boolean, "b"),
+    string: reseatingLeaf(CPP_SCALAR.string, "str"),
+    arraybuffer: reseatingLeaf("bbl::js::ArrayBuffer", "ab", true),
+    dataview: reseatingLeaf("bbl::js::DataView", "dv", true),
+    bufferview: reseatingLeaf("bbl::js::ArrayBufferView", "bv", true),
     numberindex: leaf("bbl::js::NumericArrayView", "ni", false),
-    json: leaf("bbl::js::JsonValue", "json", false, true),
+    json: reseatingLeaf("bbl::js::JsonValue", "json", false, true),
     "borrowed-platform-event": {
         cpp: (type) =>
             type.event === "event"
@@ -129,6 +146,7 @@ export const scalarKinds: DataKindOperations<
         byReference: false,
         tracedEdges: (type) =>
             `bbl::js::gc_traceable<${handleCppType(type.handle)}>`,
+        reseats: true,
     },
     u8array: typedArray("u8array"),
     i8array: typedArray("i8array"),

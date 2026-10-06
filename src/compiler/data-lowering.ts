@@ -106,12 +106,12 @@ import {
     dataTypesEqual,
     isUndefinedDataType,
     doubleLiteral,
-    isBinaryDataType,
     isNumericSequenceType,
     isTypedArrayType,
     isOpaqueReference,
     isHandleKind,
     passesByReference,
+    reseatsOnAssignment,
     sharesStorageKind,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
@@ -166,20 +166,6 @@ import {
     literalSelf,
 } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
-
-/**
- * Storage whose assignment copies a primitive value, or the handle or
- * document it names; see `reseatsOnAssignment`.
- */
-const REASSIGNED_VALUE_KINDS: ReadonlySet<DataType["kind"]> = new Set([
-    "number",
-    "boolean",
-    "string",
-    "enum",
-    "handle",
-    "event-target",
-    "json",
-]);
 
 /**
  * Two member paths from one root, neither extending the other, name
@@ -9886,34 +9872,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Whether assigning to storage of this type reseats the binding as
-     * JavaScript does: a primitive copies its value, and a shared wrapper (an
-     * array, collection, binary buffer or view, reference record, document or
-     * opaque object) copies the identity of the object it names. Optional and
-     * union storage reseat when every member does. A borrowed view and a
-     * value-backed record would copy instead.
-     */
-    private reseatsOnAssignment(type: DataType): boolean {
-        switch (type.kind) {
-            case "optional":
-                return this.reseatsOnAssignment(type.inner);
-            case "union":
-                return type.members.every((member) =>
-                    this.reseatsOnAssignment(member),
-                );
-            case "struct":
-                return this.context.dataTypes.isReferenceStruct(type.name);
-            default:
-                return (
-                    isOpaqueReference(type) ||
-                    isBinaryDataType(type) ||
-                    sharesStorageKind(type) ||
-                    REASSIGNED_VALUE_KINDS.has(type.kind)
-                );
-        }
-    }
-
-    /**
      * Assigns to a data-typed local by name (`currentMode = mode`).
      *
      * Scalars are native values. A vector is `js::Array`, whose copy
@@ -9963,7 +9921,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 identifierText(right) === "undefined");
         if (
             kind !== "function" &&
-            !this.reseatsOnAssignment(target.dataType) &&
+            !reseatsOnAssignment(target.dataType, (name) =>
+                this.context.dataTypes.isReferenceStruct(name),
+            ) &&
             !freshOptional
         ) {
             this.context.fail(

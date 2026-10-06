@@ -41,6 +41,7 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
     isUndefinedDataType,
+    reseatsOnAssignment,
     sharesStorageKind,
 } from "./data-types/operations.js";
 import {
