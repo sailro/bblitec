@@ -7736,3 +7736,28 @@ check(
     if (Array.from(typed).join() !== "1,2" || Array.from(lanes).length !== 3) throw new Error("Array.from over sequences");
 `,
 );
+
+check(
+    "asserted-wrappers-keep-never-calls-and-narrowed-tag-filters",
+    `
+    function fail(message: string): never { throw new Error(message); }
+    function pick(flag: boolean): number { if (flag) return 1; return fail("no pick") as number; }
+    function label(flag: boolean): string { if (flag) return "yes"; return fail("no label") satisfies never; }
+    function guard(flag: boolean): void { if (!flag) fail("bad") as void; }
+    let caught = "";
+    try { pick(false); } catch (error) { caught += (error as Error).message; }
+    try { label(false); } catch (error) { caught += "," + (error as Error).message; }
+    try { guard(false); } catch (error) { caught += "," + (error as Error).message; }
+    if (pick(true) !== 1 || label(true) !== "yes" || caught !== "no pick,no label,bad") throw new Error(caught);
+    type Tag = "a" | "b" | "c";
+    type Narrow = "a" | "b";
+    function isNarrow(tag: Tag): tag is Narrow { return tag !== "c"; }
+    const tags: Tag[] = ["a", "c", "b"];
+    const asserted: Narrow[] = tags.filter(isNarrow) as Narrow[];
+    const checked: Narrow[] = tags.filter(isNarrow) satisfies Narrow[];
+    const record: { values: Narrow[] } = { values: tags.filter(isNarrow) as Narrow[] };
+    function narrowed(): Narrow[] { return tags.filter(isNarrow) as Narrow[]; }
+    if (asserted.join() !== "a,b" || checked.join() !== "a,b" || record.values.join() !== "a,b" || narrowed().join() !== "a,b")
+        throw new Error("narrowed tag filters through assertions");
+`,
+);

@@ -19,6 +19,8 @@ import {
     expressionMayRunCode,
     regularExpressionParts,
     rootIdentifier,
+    unwrapExpression,
+    wrappedParent,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -2050,12 +2052,12 @@ function narrowedTagFilter(
     // Only a declared destination expecting the narrower tags takes them: a
     // typed variable, a record field or a return. A generic call's parameter
     // takes its type from this argument, so it names no destination.
-    let position: ts.Node = call;
-    while (ts.isParenthesizedExpression(position.parent))
-        position = position.parent;
-    const parent = position.parent;
+    const parent = wrappedParent(call);
     if (
-        !(ts.isPropertyAssignment(parent) && parent.initializer === position) &&
+        !(
+            ts.isPropertyAssignment(parent) &&
+            unwrapExpression(parent.initializer) === call
+        ) &&
         !(ts.isVariableDeclaration(parent) && parent.type) &&
         !ts.isReturnStatement(parent)
     )
