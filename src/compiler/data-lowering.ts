@@ -2942,8 +2942,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (
                 left.kind === "data" &&
-                left.dataType?.kind === "struct" &&
-                fallback.kind === "record"
+                ((left.dataType?.kind === "struct" &&
+                    fallback.kind === "record") ||
+                    ((left.dataType?.kind === "tuple" ||
+                        left.dataType?.kind === "vector") &&
+                        fallback.kind === "tuple"))
             ) {
                 const type = left.dataType;
                 return {
@@ -5737,6 +5740,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             const source = this.context.compileValue(argumentAt(call, 0));
             this.invalidateRecordArrayFacts(source);
+            const copied = this.arrayFromSequence(call, source);
+            if (copied) return copied;
             if (
                 source.kind !== "data" ||
                 (source.dataType?.kind !== "vector" &&
@@ -5778,6 +5783,52 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Array.from mapper results must belong to the native data model.",
             );
         return this.compileArrayFromMapped(call, type);
+    }
+
+    /**
+     * `Array.from(source)` over a sequence that is not itself an array: a
+     * numeric tuple's lanes, a typed array's numbers, a string's code
+     * points. Each is a fresh array.
+     */
+    private arrayFromSequence(
+        call: ts.CallExpression,
+        source: Value,
+    ): Value | undefined {
+        const fresh = (cpp: string, element: DataType): Value => {
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp,
+                dataType: { kind: "vector", element },
+                freshData: true,
+            };
+        };
+        if (source.kind === "tuple") {
+            const type = this.dataTypeAt(call);
+            return type?.kind === "vector"
+                ? fresh(
+                      this.compileKnownValueForSink(source, type, call),
+                      type.element,
+                  )
+                : undefined;
+        }
+        if (isStringValue(source))
+            return fresh(`bbl::js::string_characters(${source.cpp})`, {
+                kind: "string",
+            });
+        if (source.kind !== "data") return undefined;
+        if (source.dataType?.kind === "tuple")
+            return fresh(
+                `bbl::js::array_from_iterable<double>(${source.cpp})`,
+                {
+                    kind: "number",
+                },
+            );
+        if (isTypedArrayType(source.dataType))
+            return fresh(`bbl::js::typed_array_number_list(${source.cpp})`, {
+                kind: "number",
+            });
+        return undefined;
     }
 
     /**
@@ -6477,10 +6528,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                       cpp: `!(${elementValue.cpp}).empty()`,
                                       dataType: { kind: "boolean" as const },
                                   }
-                                : this.context.fail(
-                                      callback,
-                                      `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
-                                  )
+                                : {
+                                      kind: "boolean" as const,
+                                      cpp:
+                                          this.truthinessCondition(
+                                              elementValue,
+                                          ) ??
+                                          this.context.fail(
+                                              callback,
+                                              `Boolean array callbacks require elements with a JavaScript truthiness, not ${dataType.element.kind}.`,
+                                          ),
+                                      dataType: { kind: "boolean" as const },
+                                  }
                         : predicate
                           ? this.context.compilePredicateWithValues(
                                 local!,
@@ -10168,13 +10227,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (owner?.kind === "data") {
                 const narrowed = this.narrowOptional(owner, left.expression);
                 if (narrowed.dataType?.kind === "vector") {
-                    if (operator !== "=") {
-                        this.context.fail(
-                            expression,
-                            "Array length supports plain assignment only.",
-                        );
-                    }
                     this.context.reachJsData();
+                    if (operator !== "=") {
+                        // `xs.length -= n` reads the length before the
+                        // right side runs, then stores the combined length.
+                        const previous =
+                            this.context.allocateTemporaryCppName(
+                                "length_previous",
+                            );
+                        this.context.emit({
+                            kind: "declaration",
+                            type: "const double",
+                            name: previous,
+                            initializer: `static_cast<double>(${narrowed.cpp}.size())`,
+                        });
+                        const right = this.context.compileNumber(
+                            expression.right,
+                            "double",
+                        );
+                        const helper =
+                            COMPOUND_ASSIGNMENT_HELPERS.get(operator);
+                        const length = helper
+                            ? `bbl::js::${helper}(${previous}, ${right})`
+                            : `(${previous} ${operator.slice(0, -1)} ${right})`;
+                        this.invalidateStaticElements(narrowed);
+                        this.invalidateAliases(narrowed.cpp);
+                        this.context.emit(
+                            `bbl::js::array_truncate(${narrowed.cpp}, ${length});`,
+                        );
+                        return true;
+                    }
                     // Truncation shrinks the array, so the exact
                     // element snapshot no longer describes it — and the
                     // static in-bounds proof over the snapshot's length

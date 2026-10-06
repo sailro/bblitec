@@ -4853,6 +4853,36 @@ check(
 `,
 );
 
+check(
+    "array-sequences-length-updates-and-boolean-callbacks",
+    `
+    const lanes: [number, number, number] = [7, 8, 9];
+    const copied = Array.from(lanes);
+    copied.push(1);
+    if (copied.length !== 4 || lanes.length !== 3 || Array.from([1, 2]).length !== 2) throw new Error("Array.from tuple");
+    const matrices = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const row = Array.from(matrices.subarray(3, 6));
+    if (row.join() !== "4,5,6" || new Set(Array.from(new Int32Array([4, 5, 4]))).size !== 2) throw new Error("Array.from typed array");
+    const text = ["a😀b"][0]!;
+    if ([...text].length !== 3 || Array.from(text)[1] !== "😀" || [...text, "c"].join("") !== "a😀bc") throw new Error("string code points");
+    const tones: Array<[number, number, number]> = [[1, 2, 3]];
+    function tone(index: number): [number, number, number] { return tones[index] ?? ([0.5, 0.5, 0.5] as [number, number, number]); }
+    if (tone(0)[0] !== 1 || tone(4)[2] !== 0.5) throw new Error("missed search tuple fallback");
+    const run = [1, 2, 3, 4, 5];
+    run.length -= 2;
+    if (run.join() !== "1,2,3") throw new Error("length subtraction");
+    let reads = 0;
+    function shrink(): number { reads++; run.pop(); return 1; }
+    run.length -= shrink();
+    if (run.length !== 2 || reads !== 1) throw new Error("length read before the right side");
+    const worlds = new Map<string, number>([["b", 2]]);
+    const found = ["a", "b"].map((key) => worlds.get(key)).find(Boolean);
+    if (found !== 2) throw new Error("find(Boolean) over optional elements");
+    function anyMasked(mask: Array<boolean | undefined> | undefined): boolean { return mask?.some(Boolean) === true; }
+    if (!anyMasked([undefined, true]) || anyMasked([undefined, false]) || anyMasked(undefined)) throw new Error("some(Boolean)");
+`,
+);
+
 test("numeric tuples refuse writable array parameters that resize or outgrow them", () => {
     for (const body of [
         "function grow(out: number[]): void { out.push(1); }",
@@ -4871,6 +4901,36 @@ test("numeric tuples refuse writable array parameters that resize or outgrow the
             /By-reference data arguments require a matching addressable local or path/,
         );
 });
+
+check(
+    "parsed-document-array-destructuring",
+    `
+    interface RawNode { translation?: number[]; rotation?: number[] }
+    function sum(node: RawNode): number {
+        const [tx, ty, tz] = node.translation ?? [0, 0, 0];
+        const [qx, , , qw] = node.rotation ?? [0, 0, 0, 1];
+        return tx! + ty! + tz! + qx! + qw!;
+    }
+    const doc = JSON.parse('{"nodes":[{"translation":[1,2,3]},{"rotation":[0.5,0,0,2]}]}') as { nodes: RawNode[] };
+    if (sum(doc.nodes[0]!) !== 7 || sum(doc.nodes[1]!) !== 2.5) throw new Error("document lanes");
+    const [first, second] = JSON.parse('"ab"') as unknown as string[];
+    if (first !== "a" || second !== "b") throw new Error("document string");
+    const [one, missing] = JSON.parse("[1]") as number[];
+    if (one !== 1 || missing !== undefined) throw new Error("document lane past the end");
+    let name = "";
+    try { const [lane] = JSON.parse("{}") as number[]; if (lane === 0) name = "zero"; } catch (error) { name = (error as Error).name; }
+    if (name !== "TypeError") throw new Error("document not iterable");
+    function parse(value: unknown): [number, number, number] | null {
+        if (!Array.isArray(value) || value.length !== 3) return null;
+        const ok = (v: unknown): v is number => typeof v === "number" && v >= 0;
+        const [r, g, b] = value as unknown[];
+        if (!ok(r) || !ok(g) || !ok(b)) return null;
+        return [r, g, b];
+    }
+    const parsed = parse(JSON.parse("[1,2,3]"));
+    if (!parsed || parsed[2] !== 3 || parse(JSON.parse('[1,"2",3]')) !== null) throw new Error("unknown lanes");
+`,
+);
 
 check(
     "numeric-tuples-in-array-sinks",

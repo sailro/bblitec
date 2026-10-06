@@ -3786,6 +3786,37 @@ export class DeclarationLowerer {
             });
             return;
         }
+        // A parsed document destructures through iteration: its array
+        // elements (or string code points), each another document, with
+        // undefined past the end.
+        if (isJsonValue(value)) {
+            this.context.reachJsData();
+            const temporary = this.context.allocateTemporaryCppName(
+                "destructure_document",
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: temporary,
+                initializer: `bbl::js::json_iterated(${value.cpp})`,
+            });
+            bindings.forEach((element, index) => {
+                if (ts.isOmittedExpression(element)) return;
+                if (element.dotDotDotToken || element.initializer)
+                    this.context.fail(
+                        element,
+                        "Destructuring a parsed document binds plain elements, without rest or defaults.",
+                    );
+                bindElement(
+                    element,
+                    this.context.dataLowerer.leafValue(
+                        `${temporary}.at(${index}.0)`,
+                        { kind: "json" },
+                    ),
+                );
+            });
+            return;
+        }
         this.context.fail(
             source,
             "Array destructuring requires a tuple-producing initializer.",
