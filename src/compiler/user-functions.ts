@@ -2409,8 +2409,14 @@ export class UserFunctionLowerer {
                 (node) => {
                     if (ts.isCallExpression(node)) {
                         // Callback arguments can call back into this function,
-                        // including through an anonymous scheduler body.
-                        for (const argument of node.arguments) {
+                        // including through an anonymous scheduler body or a
+                        // function literal in a record or array the callee
+                        // keeps. A named function in such a literal is a
+                        // value it passes, not a call.
+                        const visitArgument = (
+                            argument: ts.Expression,
+                            nested: boolean,
+                        ): void => {
                             const value = unwrapExpression(argument);
                             if (
                                 ts.isArrowFunction(value) ||
@@ -2419,14 +2425,38 @@ export class UserFunctionLowerer {
                                 for (const called of this.directCalls(value))
                                     callees.add(called);
                             }
-                            const callback = ts.isIdentifier(value)
-                                ? tryResolveFunctionDeclaration(
-                                      this.checker,
-                                      value,
-                                  )
-                                : undefined;
+                            const callback =
+                                !nested && ts.isIdentifier(value)
+                                    ? tryResolveFunctionDeclaration(
+                                          this.checker,
+                                          value,
+                                      )
+                                    : undefined;
                             if (callback) callees.add(callback);
-                        }
+                            if (ts.isArrayLiteralExpression(value))
+                                for (const element of value.elements)
+                                    visitArgument(
+                                        ts.isSpreadElement(element)
+                                            ? element.expression
+                                            : element,
+                                        true,
+                                    );
+                            if (ts.isObjectLiteralExpression(value))
+                                for (const property of value.properties) {
+                                    if (ts.isPropertyAssignment(property))
+                                        visitArgument(
+                                            property.initializer,
+                                            true,
+                                        );
+                                    else if (ts.isMethodDeclaration(property))
+                                        for (const called of this.directCalls(
+                                            property,
+                                        ))
+                                            callees.add(called);
+                                }
+                        };
+                        for (const argument of node.arguments)
+                            visitArgument(argument, false);
                     }
                     if (
                         ts.isCallExpression(node) &&

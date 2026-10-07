@@ -9084,3 +9084,61 @@ test("an imported typed array answers its methods where it is read", async (t) =
         result.cpp,
     );
 });
+
+checkInRealm(
+    "closures-calling-each-other-through-record-callbacks",
+    `
+    type Decision = "quit" | "cancel";
+    interface Deps {
+        decide: (decision: Decision) => void;
+        showConfirm: (opts: { onSave: () => void; onCancel: () => void }) => void;
+        save: () => Promise<boolean> | boolean;
+    }
+    interface Attempt { phase: "confirm" | "saving"; }
+    function createGate(deps: Deps): () => void {
+        let active: Attempt | null = null;
+        const showConfirm = (attempt: Attempt): void => {
+            if (active !== attempt) return;
+            attempt.phase = "confirm";
+            deps.showConfirm({
+                onSave: () => { if (active === attempt && attempt.phase === "confirm") save(attempt); },
+                onCancel: () => { if (active === attempt) { active = null; deps.decide("cancel"); } },
+            });
+        };
+        const save = (attempt: Attempt): void => {
+            attempt.phase = "saving";
+            void Promise.resolve()
+                .then(() => deps.save())
+                .then(
+                    (saved) => {
+                        if (active !== attempt) return;
+                        if (saved === true) { active = null; deps.decide("quit"); }
+                        else showConfirm(attempt);
+                    },
+                    () => showConfirm(attempt),
+                );
+        };
+        return () => {
+            if (active !== null) return;
+            const attempt: Attempt = { phase: "confirm" };
+            active = attempt;
+            showConfirm(attempt);
+        };
+    }
+    const gates: Array<typeof createGate> = [createGate];
+    const decisions: string[] = [];
+    let shown = 0;
+    let saves = 0;
+    const gate = gates[0]!({
+        decide: (decision) => {
+            decisions.push(decision);
+            if (shown !== 2 || saves !== 2 || decisions.join(",") !== "quit") throw new Error("gate " + shown + saves + decisions.join(","));
+            globalThis.close();
+        },
+        showConfirm: (opts) => { shown++; opts.onSave(); },
+        save: () => ++saves > 1,
+    });
+    gate();
+    if (shown !== 1 || saves !== 0) throw new Error("save waits for its promise");
+`,
+);
