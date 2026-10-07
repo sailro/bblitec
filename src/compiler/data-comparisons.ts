@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { requireAbsenceTag } from "./absence-tag-storage.js";
+import { refuseEitherAbsence } from "./absence-tag-storage.js";
+import { numericSlotKind } from "./numeric-slot-storage.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 import {
@@ -61,18 +62,13 @@ function absentIsNull(
     operand: AbsentOperand,
     state: Exclude<Absence, "unconstrained">,
 ): string {
-    if (state === "either") {
-        requireAbsenceTag(
-            lowerer.context.checker,
-            lowerer.context.absenceTags,
+    if (state === "either")
+        refuseEitherAbsence(
+            lowerer.context,
             operand.node,
             operand.value,
-        );
-        lowerer.context.fail(
-            operand.node,
             "A value that may be null or undefined is compared strictly with another value that may be absent only once one of them is ruled out (narrow the type).",
         );
-    }
     return typeof state === "object"
         ? state.slotFoundCpp
         : String(state === "null");
@@ -144,6 +140,106 @@ export function absentAwareIdentity(
             ? `(${leftPresent} && ${identical("==")})`
             : `(${identical("==")} && (${leftPresent} || ${same}))`;
     return negated ? `!${equal}` : equal;
+}
+
+/** A borrowed view (a span, a table) reads another array's storage. */
+function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
+    if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
+    if (type?.kind === "union")
+        return type.members.some(hasBorrowedArrayIdentity);
+    return type?.kind === "span" || type?.kind === "table";
+}
+
+/** A record keyed by a closed union is stored by value, one copy per location. */
+function isRecordTable(type: DataType | undefined): boolean {
+    return type?.kind === "optional"
+        ? isRecordTable(type.inner)
+        : type?.kind === "enummap";
+}
+
+/**
+ * Strict equality (`!==` when `negated`) of two compiled, narrowed operands
+ * of `expression` where their kinds decide it: a BigInt equals only a
+ * BigInt, a numeric view is the array it views, and a shared record or a
+ * function is identical to the other one, two absent ones being the same
+ * absent value ({@link sameAbsenceCpp}). A borrowed array view and a record
+ * table, stored by value, refuse: neither keeps JavaScript's identity.
+ * Undefined when the operands compare as their native values.
+ */
+export function strictEqualsCpp(
+    lowerer: DataLowerer,
+    expression: ts.BinaryExpression,
+    left: Value,
+    right: Value,
+    negated: boolean,
+): string | undefined {
+    const { context } = lowerer;
+    const operator = negated ? "!=" : "==";
+    if (
+        (left.dataType?.kind === "bigint") !==
+        (right.dataType?.kind === "bigint")
+    ) {
+        context.emitDiscardedValue(left);
+        context.emitDiscardedValue(right);
+        return negated ? "true" : "false";
+    }
+    if (
+        hasBorrowedArrayIdentity(left.dataType) ||
+        hasBorrowedArrayIdentity(right.dataType)
+    )
+        context.fail(
+            expression,
+            "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
+        );
+    if (isRecordTable(left.dataType) && isRecordTable(right.dataType))
+        context.fail(
+            expression,
+            "A record keyed by a closed union is stored by value and cannot preserve JavaScript object identity in a comparison.",
+        );
+    // A numeric view is the array it views: it is another numeric array
+    // when the two name one array (two views compare as such).
+    if (
+        (left.dataType?.kind === "numberindex") !==
+        (right.dataType?.kind === "numberindex")
+    ) {
+        const present = (value: Value): boolean =>
+            value.dataType?.kind !== "optional" &&
+            numericSlotKind(value.dataType) !== undefined;
+        if (!present(left) || !present(right))
+            context.fail(
+                expression,
+                "A numeric view compares by identity only with a present numeric array.",
+            );
+        return `(${left.cpp}).identity() ${operator} (${right.cpp}).identity()`;
+    }
+    // A shared record or a function is absent as one native null; two
+    // absent ones must also be the same absent value.
+    const nullable = (value: Value): boolean =>
+        value.kind === "data" &&
+        (value.dataType?.kind === "function" ||
+            value.dataType?.kind === "struct") &&
+        context.dataTypes.slotPresentCpp(value.dataType, value.cpp) !==
+            undefined;
+    if (!nullable(left) || !nullable(right)) return undefined;
+    const same = sameAbsenceCpp(
+        lowerer,
+        { node: expression.left, value: left },
+        { node: expression.right, value: right },
+    );
+    if (same === "true") return undefined;
+    const stable = cppIdentifierPattern.test(left.cpp)
+        ? left
+        : context.bindings.pinValueToTemporary(
+              left,
+              "comparison_left",
+              expression.left,
+          );
+    return absentAwareIdentity(
+        same,
+        `static_cast<bool>(${stable.cpp})`,
+        (identity) => `${stable.cpp} ${identity} ${right.cpp}`,
+        negated,
+    );
 }
 
 interface Operand {

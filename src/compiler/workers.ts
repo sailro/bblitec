@@ -9,7 +9,7 @@ import {
 import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
-import { nullability } from "./type-facts.js";
+import { isNullable } from "./type-facts.js";
 
 export interface WorkerLoweringContext
     extends
@@ -392,8 +392,7 @@ export function timerCancellation(
     argument: ts.Expression,
     cancel: (identifier: string) => string,
 ): string {
-    const absent = nullability(context.checker.getTypeAtLocation(argument));
-    if (!absent.undefined && !absent.null)
+    if (!isNullable(context.checker.getTypeAtLocation(argument)))
         return cancel(context.compileNumber(argument, "double"));
     const value = context.compileValue(argument);
     if (

@@ -469,22 +469,15 @@ export class DeclarationLowerer {
         cppName: string,
         sharedClosureStorage: boolean,
     ): boolean {
-        if (
-            !this.context.absenceTags.has(declaration) ||
-            !ts.isIdentifier(declaration.name)
-        )
-            return false;
-        const typeSite = declaration.type ?? declaration.name;
-        const stored = this.context.dataTypes.fromStoredTsType(
+        if (!ts.isIdentifier(declaration.name)) return false;
+        const type = this.context.dataTypes.taggedDeclarationStorage(
+            declaration,
             declaration.type
                 ? this.context.checker.getTypeFromTypeNode(declaration.type)
                 : this.context.checker.getTypeAtLocation(declaration.name),
-            typeSite,
+            declaration.type ?? declaration.name,
         );
-        const type =
-            stored &&
-            this.context.dataTypes.absenceTaggedStorage(declaration, stored);
-        if (type?.kind !== "tagged") return false;
+        if (!type) return false;
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(type);
         const initializer = declaration.initializer

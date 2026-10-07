@@ -32,7 +32,7 @@ import {
     storedAsReadonlyArray,
 } from "../type-facts.js";
 import {
-    requireAbsenceTag,
+    refuseEitherAbsence,
     requireTupleArraySlot,
 } from "../absence-tag-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -133,13 +133,13 @@ function valueTagged(
     )
         return value.absenceTagStorageCpp;
     const absence = absenceKind(context.checker, value, node);
-    if (absence === "either") {
-        requireAbsenceTag(context.checker, context.absenceTags, node, value);
-        return context.fail(
+    if (absence === "either")
+        refuseEitherAbsence(
+            context,
             node,
+            value,
             "A value that may be null or undefined is stored where they are told apart only once one of them is ruled out (narrow the type).",
         );
-    }
     const pinned =
         typeof absence === "object" && ts.isExpression(node)
             ? context.bindings.pinValueToTemporary(value, "tagged_source", node)

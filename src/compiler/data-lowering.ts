@@ -65,7 +65,7 @@ import {
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
-import { requireAbsenceTag } from "./absence-tag-storage.js";
+import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import {
     NumericSlotStorageRequired,
     numericSlotDeclaration,
@@ -127,6 +127,7 @@ import {
     reseatsOnAssignment,
     sharesStorageKind,
     pinnedHandleKind,
+    primitiveTraits,
     TYPED_ARRAY_KINDS,
     typedArrayBytesPerElement,
     typedArrayConstructorName,
@@ -2036,8 +2037,7 @@ export class DataLowerer {
                 // of one is rebinding that copy.
                 const shared =
                     this.sharesObjectStorage(stored) ||
-                    stored?.kind === "bigint" ||
-                    stored?.kind === "symbol";
+                    primitiveTraits(stored) !== undefined;
                 if (state === "copy" && !shared) {
                     this.context.fail(
                         unwrapped,
@@ -8418,10 +8418,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const member = resolvedSymbol(this.context.checker, owner);
         if (!member || (member.flags & ts.SymbolFlags.Optional) !== 0)
             return false;
-        const absent = nullability(
-            this.context.checker.getTypeOfSymbol(member),
-        );
-        return !absent.null && !absent.undefined;
+        return !isNullable(this.context.checker.getTypeOfSymbol(member));
     }
 
     public compileOptionalStoredCall(
@@ -14714,11 +14711,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
-        // Every symbol is truthy; a BigInt is unless it is zero.
-        if (value.kind === "data" && value.dataType?.kind === "symbol")
-            return `(static_cast<void>(${value.cpp}), true)`;
-        if (value.kind === "data" && value.dataType?.kind === "bigint")
-            return `!(${value.cpp}).is_zero()`;
+        const primitive =
+            value.kind === "data" ? primitiveTraits(value.dataType) : undefined;
+        if (primitive) return primitive.truthyCpp(value.cpp);
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return (
                 objectTruthinessCpp(value) ?? `static_cast<bool>(${value.cpp})`
@@ -15060,18 +15055,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (loose || literal === undefined)
                 return negated ? present : absent;
             const state = absenceKind(this.context.checker, value, node);
-            if (state === "either") {
-                requireAbsenceTag(
-                    this.context.checker,
-                    this.context.absenceTags,
+            if (state === "either")
+                refuseEitherAbsence(
+                    this.context,
                     node,
                     value,
-                );
-                this.context.fail(
-                    node,
                     `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
                 );
-            }
             // A read that knows whether its slot existed tells a missing
             // one (`undefined`) from a stored `null` exactly.
             if (typeof state === "object") {
@@ -15456,22 +15446,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // An operand that reads undefined (a property no prototype of a
         // primitive defines) is strictly equal only to an operand that can
-        // be undefined.
-        if (!loose && !isNullish(left) && !isNullish(right)) {
+        // be undefined. Only a property or element read, or an operand whose
+        // type admits undefined, can read it, and only against an operand
+        // whose type excludes it does that decide: other comparisons skip
+        // compiling both operands here.
+        const excludesUndefined = (operand: ts.Expression): boolean => {
+            const type = this.context.checker.getTypeAtLocation(operand);
+            return (
+                (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
+                    0 && !nullability(type).undefined
+            );
+        };
+        const mayReadUndefined = (operand: ts.Expression): boolean =>
+            ts.isPropertyAccessExpression(operand) ||
+            ts.isElementAccessExpression(operand) ||
+            !excludesUndefined(operand);
+        if (
+            !loose &&
+            !isNullish(left) &&
+            !isNullish(right) &&
+            ((mayReadUndefined(left) && excludesUndefined(right)) ||
+                (mayReadUndefined(right) && excludesUndefined(left)))
+        ) {
             const known = this.context.probeEmission(() => {
                 const a = this.context.compileValue(left);
                 const b = this.context.compileValue(right);
                 const absent = (value: Value): boolean =>
                     value.kind === "json-null" && value.cpp === "std::nullopt";
-                if (absent(a) === absent(b)) return undefined;
-                const other = this.context.checker.getTypeAtLocation(
-                    absent(a) ? right : left,
-                );
                 if (
-                    (other.flags &
-                        (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                        0 ||
-                    nullability(other).undefined
+                    absent(a) === absent(b) ||
+                    !excludesUndefined(absent(a) ? right : left)
                 )
                     return undefined;
                 this.context.emitDiscardedValue(absent(a) ? b : a);

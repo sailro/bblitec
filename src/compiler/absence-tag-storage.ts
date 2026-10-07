@@ -98,6 +98,27 @@ export function requireAbsenceTag(
 }
 
 /**
+ * Refuses an observation of which absent value `expression` holds when it
+ * may be either: demands tagged storage for the storage it reads first
+ * ({@link requireAbsenceTag}), so only an untaggable one refuses with
+ * `message`.
+ */
+export function refuseEitherAbsence(
+    context: {
+        readonly checker: ts.TypeChecker;
+        readonly absenceTags: ReadonlySet<ts.Declaration>;
+        fail(node: ts.Node, message: string): never;
+    },
+    expression: ts.Node,
+    value:
+        { readonly slotDeclarations?: readonly ts.Declaration[] } | undefined,
+    message: string,
+): never {
+    requireAbsenceTag(context.checker, context.absenceTags, expression, value);
+    return context.fail(expression, message);
+}
+
+/**
  * The parameter, at `index`, of the one signature a function stored at
  * `site` (an expression in a typed slot, a shorthand property included) is
  * called through: the storage its argument arrives in.

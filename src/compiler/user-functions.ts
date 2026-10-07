@@ -4993,23 +4993,14 @@ export class UserFunctionLowerer {
         value: Value,
         source: ts.Expression | undefined,
     ): Value {
-        if (
-            !context.absenceTags.has(parameter.declaration) ||
-            value.slotFoundCpp !== undefined ||
-            value.kind === "json-null"
-        )
+        if (value.slotFoundCpp !== undefined || value.kind === "json-null")
             return value;
-        const stored = context.dataTypes.fromStoredTsType(
+        const type = context.dataTypes.taggedDeclarationStorage(
+            parameter.declaration,
             parameter.type,
             parameter.declaration,
         );
-        const type =
-            stored &&
-            context.dataTypes.absenceTaggedStorage(
-                parameter.declaration,
-                stored,
-            );
-        if (type?.kind !== "tagged") return value;
+        if (!type) return value;
         const name = context.allocateTemporaryCppName("tagged_argument");
         context.emit({
             kind: "declaration",
