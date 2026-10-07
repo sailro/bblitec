@@ -8965,3 +8965,46 @@ check(
     if (count !== 2 || log.join(",") !== "1:6:0:none,2:15:0.5:7") throw new Error("tuple lanes " + log.join(","));
 `,
 );
+
+check(
+    "function-valued-union-fields-and-parameters",
+    `
+    interface CellFillDeps { cell: number | (() => number); radius(): number; }
+    function makeStamp(deps: CellFillDeps): { stamp(cx: number): number } {
+        return {
+            stamp(cx) {
+                const cell = typeof deps.cell === "function" ? deps.cell() : deps.cell;
+                return cx * cell + deps.radius();
+            },
+        };
+    }
+    const stamps: Array<typeof makeStamp> = [makeStamp];
+    let spacing = 2;
+    const live = stamps[0]!({ cell: () => spacing, radius: () => 1 });
+    if (live.stamp(3) !== 7) throw new Error("function arm");
+    spacing = 5;
+    if (live.stamp(3) !== 16) throw new Error("function arm reads live state");
+    if (stamps[0]!({ cell: 4, radius: () => 1 }).stamp(3) !== 13) throw new Error("number arm");
+    function row(enabled: boolean | (() => boolean) = true): string {
+        const isEnabled = typeof enabled === "function" ? enabled() : enabled;
+        return String(!isEnabled);
+    }
+    const rows: Array<typeof row> = [row];
+    let gate = true;
+    if (rows[0]!() !== "false" || rows[0]!(false) !== "true" || rows[0]!(() => gate) !== "false")
+        throw new Error("boolean or getter parameter");
+    gate = false;
+    if (rows[0]!(() => gate) !== "true") throw new Error("getter parameter reads live state");
+`,
+);
+
+test("a union with several function arms refuses a function value", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Slot { pick: number | (() => number) | ((value: number) => number) }
+            const slots: Slot[] = [{ pick: () => 1 }];
+            if (slots.length !== 1) throw new Error("x");`),
+        /does not match the expected data union/,
+    );
+});

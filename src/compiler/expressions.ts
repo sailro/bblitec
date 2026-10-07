@@ -3467,6 +3467,17 @@ export class ExpressionLowerer {
                 bound.dataType,
             );
         }
+        const unionMember =
+            bound?.kind === "data"
+                ? this.context.dataLowerer.unionFunctionMember(bound, callee)
+                : undefined;
+        if (unionMember) {
+            return this.context.dataLowerer.compileStoredCall(
+                call,
+                unionMember.cpp,
+                unionMember.dataType,
+            );
+        }
         if (!bound) {
             const aliased = this.compileConstAliasCall(call, callee);
             if (aliased) return aliased;

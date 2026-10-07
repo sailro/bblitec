@@ -3237,6 +3237,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * The function a call reads from a union slot TypeScript narrowed to
+     * its one function arm (`typeof f === "function" ? f() : f`). The call
+     * checks the arm it reads: any other is not callable (a TypeError).
+     */
+    public unionFunctionMember(
+        value: Value,
+        callee: ts.Expression,
+    ): (Value & { dataType: DataType<"function"> }) | undefined {
+        const type = value.dataType;
+        if (type?.kind !== "union") return undefined;
+        const arms = type.members.flatMap((member, index) =>
+            member.kind === "function" ? [{ member, index }] : [],
+        );
+        const arm = arms[0];
+        if (
+            !arm ||
+            arms.length > 1 ||
+            this.context.checker.getTypeAtLocation(callee).getCallSignatures()
+                .length === 0
+        )
+            return undefined;
+        this.context.reachJsData();
+        return {
+            ...this.projectedNativeValue(
+                value,
+                `bbl::js::function_member<${arm.index}>(${value.cpp})`,
+                arm.member,
+            ),
+            dataType: arm.member,
+        };
+    }
+
     /** A narrowed payload owns a snapshot of that payload, not its carrier. */
     private projectedNativeValue(
         value: Value,

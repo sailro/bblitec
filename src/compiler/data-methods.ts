@@ -998,6 +998,38 @@ function compileKnownDataMethod(
             .structFields(recordType.name, callee.name, "accessors")
             .find((candidate) => candidate.sourceName === method);
         const functionType = field?.type;
+        if (
+            field &&
+            functionType?.kind === "union" &&
+            dataType?.kind !== "optional" &&
+            !field.accessor
+        ) {
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(recordType.name);
+            const receiver =
+                lowerer.context.allocateTemporaryCppName("callback_receiver");
+            const member = lowerer.unionFunctionMember(
+                lowerer.leafValue(
+                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    functionType,
+                ),
+                callee,
+            );
+            if (member) {
+                lowerer.context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name: receiver,
+                    initializer: narrowed.cpp,
+                });
+                return lowerer.compileStoredCall(
+                    call,
+                    member.cpp,
+                    member.dataType,
+                    referenceReceiver ? receiver : undefined,
+                );
+            }
+        }
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
