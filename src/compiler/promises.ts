@@ -379,9 +379,7 @@ export function isCustomThenable(
     const property = value.recordProperties?.then;
     const field =
         value.dataType?.kind === "struct"
-            ? dataTypes
-                  .structFields(value.dataType.name, node, "accessors")
-                  .find((candidate) => candidate.sourceName === "then")
+            ? dataTypes.findStructField(value.dataType.name, "then", node)
             : undefined;
     return Boolean(
         value.recordMethods?.then ||

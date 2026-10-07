@@ -2540,9 +2540,11 @@ export class DataLowerer {
                 ? owner.dataType.inner
                 : owner.dataType;
         if (type?.kind !== "struct") return undefined;
-        const field = this.context.dataTypes
-            .structFields(type.name, node, "accessors")
-            .find((candidate) => candidate.sourceName === property);
+        const field = this.context.dataTypes.findStructField(
+            type.name,
+            property,
+            node,
+        );
         return field?.accessor ? field : undefined;
     }
 
@@ -12161,9 +12163,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
                 return tests.length ? `(${tests.join(" || ")})` : "false";
             }
-            const field = this.context.dataTypes
-                .structFields(dataType.name, ownerNode, "accessors")
-                .find((candidate) => candidate.sourceName === key.staticString);
+            const field = this.context.dataTypes.findStructField(
+                dataType.name,
+                key.staticString,
+                ownerNode,
+            );
             if (!field) {
                 return String(
                     operator === "in" &&
