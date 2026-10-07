@@ -9221,3 +9221,31 @@ check(
     if (!modes[0]!("off")) throw new Error("a union without an empty member is always truthy");
 `,
 );
+
+check(
+    "type-parameters-only-in-a-constraint-take-the-constraint",
+    `
+    interface Desired { key: string }
+    interface Slot<D extends Desired> { active: boolean; target: number; pending: D | null }
+    function fadeOut<D extends Desired, S extends Slot<D>>(states: readonly S[], xOf: (state: S) => number): number {
+        let faded = 0;
+        for (const state of states) if (state.active && xOf(state) > 0) { state.target = 0; state.pending = null; faded++; }
+        return faded;
+    }
+    interface Lily extends Slot<Desired> { x: number }
+    const lilies: Lily[] = [{ active: true, target: 1, pending: { key: "a" }, x: 2 }, { active: true, target: 1, pending: null, x: -1 }];
+    if (fadeOut(lilies, (lily) => lily.x) !== 1 || lilies[0]!.target !== 0 || lilies[1]!.target !== 1)
+        throw new Error("type parameter only in a constraint");
+`,
+);
+
+test("a type parameter no argument determines and no constraint fixes still refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            function first<D, S extends { value: D }>(items: readonly S[]): number { return items.length; }
+            const counted = first([{ value: 1 }]);
+            if (counted !== 1) throw new Error("x");`),
+        /Type parameter 'D' is not determined by this call's arguments/,
+    );
+});
