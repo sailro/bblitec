@@ -9645,3 +9645,29 @@ test("a class expression outside a const initializer refuses", () => {
             /A class expression is lowered as the initializer of a const it names/,
         );
 });
+
+check(
+    "symbol-keyed-struct-literals",
+    `
+    const brand: unique symbol = Symbol("occluder");
+    interface Occluders {
+        readonly [brand]: true;
+        readonly clips: readonly number[];
+        readonly key: string;
+    }
+    const byKey = new Map<number, Occluders>();
+    function make(clips: readonly number[]): Occluders {
+        const snapshot = clips.map((clip) => Object.freeze([clip, clip + 1]));
+        return Object.freeze({
+            [brand]: true as const,
+            clips: Object.freeze(snapshot.map((pair) => pair[0]!)),
+            key: \`C\${clips.join(",")}\`,
+        });
+    }
+    byKey.set(1, make([1, 2]));
+    const direct: Occluders = { [brand]: true, clips: [3], key: "direct" };
+    byKey.set(2, direct);
+    if (byKey.get(1)!.key !== "C1,2" || byKey.get(2)![brand] !== true) throw new Error("brand records");
+    if (Object.keys(direct).join(",") !== "clips,key") throw new Error("string keys");
+`,
+);

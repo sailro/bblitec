@@ -1618,6 +1618,15 @@ export class DataLowerer {
         );
     }
 
+    /** A literal property's key: a unique symbol's property key, else its source text. */
+    private symbolKeyOrText(name: ts.PropertyName): string {
+        return (
+            (ts.isComputedPropertyName(name)
+                ? symbolPropertyKey(this.context.checker, name.expression)
+                : undefined) ?? name.getText()
+        );
+    }
+
     public dataTypeAt(node: ts.Node): DataType | undefined {
         // The checker types a private name only through its symbol; the
         // name node itself answers `any`.
@@ -9807,12 +9816,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             if (ts.isPropertyAssignment(property)) {
-                const name = property.name.getText();
                 provided.set(
                     ts.isStringLiteral(property.name) ||
                         ts.isNumericLiteral(property.name)
                         ? property.name.text
-                        : name,
+                        : this.symbolKeyOrText(property.name),
                     property.initializer,
                 );
                 continue;
@@ -10346,7 +10354,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 declareDefault();
                 const field = this.context.dataTypes.structField(
                     dataType.name,
-                    property.name.getText(),
+                    this.symbolKeyOrText(property.name),
                     property,
                 );
                 this.context.emit({
