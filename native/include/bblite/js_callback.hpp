@@ -217,34 +217,34 @@ template <typename R, typename... Args>
     return callback.snapshot();
 }
 
-/** Native stored functions already own their lexical receiver. A bound function
- * has fresh identity and retains the supplied thisArg as a JavaScript bound function does. */
+/** Native stored functions already own their lexical receiver. A bound function has fresh
+ * identity; the caller evaluates thisArg at the bind site, and the target never reads it, so
+ * it is not kept (no collection is observable: WeakRef targets are retained strongly). */
 template <typename R, typename... Args, typename Receiver>
-[[nodiscard]] Callback<R(Args...)> bind_callback(Callback<R(Args...)> target, Receiver receiver) {
-    return make_closure(std::tuple{std::move(target), std::move(receiver)},
-                        [](auto& captures, Args... args) -> R {
-                            return std::get<0>(captures)(std::forward<Args>(args)...);
-                        });
+[[nodiscard]] Callback<R(Args...)> bind_callback(Callback<R(Args...)> target, const Receiver&) {
+    return make_closure(std::tuple{std::move(target)}, [](auto& captures, Args... args) -> R {
+        return std::get<0>(captures)(std::forward<Args>(args)...);
+    });
 }
 template <typename R, typename... Args, typename Receiver>
 [[nodiscard]] Callback<R(Args...)> bind_callback(std::function<R(Args...)> target,
-                                                 Receiver receiver) {
-    return bind_callback(Callback<R(Args...)>(std::move(target)), std::move(receiver));
+                                                 const Receiver& receiver) {
+    return bind_callback(Callback<R(Args...)>(std::move(target)), receiver);
 }
 
-/** A bound function with leading arguments: fresh identity, the target, thisArg and
- * the bound arguments as they were when `bind` ran, then the call's own arguments. */
+/** A bound function with leading arguments: fresh identity, the target and the bound
+ * arguments as they were when `bind` ran, then the call's own arguments; thisArg as above. */
 template <typename Target, typename Function, typename Receiver, typename... Bound>
-[[nodiscard]] Target bind_callback_arguments(Function target, Receiver receiver, Bound... bound) {
-    return make_closure(std::tuple{std::move(target), std::move(receiver), std::move(bound)...},
-                        [](auto& captures, auto&&... arguments) {
-                            return std::apply(
-                                [&](auto& function, auto&, auto&... leading) {
-                                    return function(leading...,
-                                                    std::forward<decltype(arguments)>(arguments)...);
-                                },
-                                captures);
-                        });
+[[nodiscard]] Target bind_callback_arguments(Function target, const Receiver&, Bound... bound) {
+    return make_closure(
+        std::tuple{std::move(target), std::move(bound)...},
+        [](auto& captures, auto&&... arguments) {
+            return std::apply(
+                [&](auto& function, auto&... leading) {
+                    return function(leading..., std::forward<decltype(arguments)>(arguments)...);
+                },
+                captures);
+        });
 }
 
 /** The function arm a call reads from a union slot; any other arm is not callable. */

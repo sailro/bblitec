@@ -6463,7 +6463,7 @@ export class ExpressionLowerer {
             if (receiver.kind !== "json-null" && !receiverType)
                 return this.context.fail(
                     call,
-                    "Function.bind requires a retained native thisArg.",
+                    "Function.bind requires a represented native thisArg.",
                 );
             const receiverCpp =
                 receiver.kind === "json-null"
