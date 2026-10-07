@@ -7760,6 +7760,42 @@ check(
 );
 
 check(
+    "tuple-spreads-into-class-method-parameters",
+    `
+    type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number, pivotZ?: number];
+    type Shift = [number, number, number, number, number, number];
+    class Placement {
+        dx = 0; dy = 0; dz = 0; yaw = 0; pivotX = 0; pivotZ = 0;
+        set(dx: number, dy: number, dz: number, yaw = 0, pivotX = 0, pivotZ = 0): boolean {
+            if (dx === this.dx && dy === this.dy && dz === this.dz && yaw === this.yaw && pivotX === this.pivotX && pivotZ === this.pivotZ) return false;
+            this.dx = dx; this.dy = dy; this.dz = dz; this.yaw = yaw; this.pivotX = pivotX; this.pivotZ = pivotZ;
+            return true;
+        }
+    }
+    const gate = new Float32Array([1, 0]);
+    const current = new Placement();
+    const base = new Placement();
+    const shift: Shift = [1, 2, 3, 4, 5, 6];
+    const zero: Shift = [0, 0, 0, 0, 0, 0];
+    const bases = new Map<number, Shift>();
+    if (!current.set(...shift) || current.set(...shift)) throw new Error("fixed lanes");
+    base.set(...(bases.get(1) ?? zero));
+    bases.set(1, [9, 8, 7, 6, 5, 4]);
+    base.set(...(bases.get(1) ?? zero));
+    const offset = (wide: boolean): Pose => (wide ? shift : [7, 8, 9]);
+    const render = new Placement();
+    render.set(...offset(gate[1]! > 0));
+    if (current.yaw !== 4 || base.pivotZ !== 4 || render.dz !== 9 || render.yaw !== 0 || render.pivotZ !== 0) throw new Error("spread lanes");
+    render.set(...offset(gate[0]! > 0));
+    if (render.pivotZ !== 6 || render.yaw !== 4) throw new Error("present optional lanes");
+    let extra = 0;
+    const lanes = (): Shift => { extra++; return shift; };
+    render.set(1, ...lanes());
+    if (extra !== 1 || render.dx !== 1 || render.dy !== 1 || render.pivotZ !== 5) throw new Error("leading argument then lanes");
+`,
+);
+
+check(
     "record-tuple-fields-entering-number-arrays-take-array-storage",
     `
     type Vec4 = [number, number, number, number];

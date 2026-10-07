@@ -6067,12 +6067,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.context.reachJsData();
         if (vector.dataType.element.kind === "optional") {
+            // A lane past the array's end is `undefined`; one within it
+            // holds the element, whose absence is a stored `null` where its
+            // type admits no `undefined`.
             return {
                 ...this.leafValue(
                     `bbl::js::array_relative_at<${this.context.dataTypes.cppType(vector.dataType.element)}>(${vector.cpp}, ${index}.0)`,
                     vector.dataType.element,
                 ),
                 preserveUncheckedLookup: true,
+                ...(slotHoldsOnlyNull(
+                    this.context.checker.getTypeAtLocation(node),
+                )
+                    ? {
+                          slotFoundCpp: `bbl::js::array_has_index(${vector.cpp}, ${index}.0)`,
+                      }
+                    : {}),
             };
         }
         return this.leafValue(
@@ -14931,9 +14941,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return { container: value, element: { kind: "number" } };
         }
         // An array, Set or iterator ranges over its own elements; a numeric
-        // tuple is not ranged over here.
+        // tuple only when nothing states its lanes at generation (a runtime
+        // tuple a parameter or field holds).
         const iterated = this.iteratedElements(value);
-        if (iterated && "range" in iterated && iterated.arity === undefined) {
+        if (
+            iterated &&
+            "range" in iterated &&
+            (iterated.arity === undefined ||
+                (value.staticElements === undefined &&
+                    value.staticElementsOwner === undefined &&
+                    value.tupleElements === undefined))
+        ) {
             const element = iterated.element;
             this.invalidateRecordArrayFacts(value);
             const elements =
