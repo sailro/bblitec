@@ -38,11 +38,13 @@ import {
     symbolPropertyKey,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
     absenceKind,
     admitsUndefined,
     arrayElementType,
     isNullable,
+    isTypeReference,
     nullability,
     presentValuesTruthy,
     slotHoldsOnlyNull,
@@ -634,6 +636,17 @@ function updateStepCpp(
  * documented value-copy contract: locals bound from data paths are copies and
  * reject writes; owned locals reject writes after escaping by copy.
  */
+/** Whether an expression, past parentheses and `!`, is a type assertion. */
+function assertsType(expression: ts.Expression): boolean {
+    let current = expression;
+    while (
+        ts.isParenthesizedExpression(current) ||
+        ts.isNonNullExpression(current)
+    )
+        current = current.expression;
+    return ts.isAsExpression(current) || ts.isTypeAssertionExpression(current);
+}
+
 export class DataLowerer {
     private readonly indexedStrings = new EmissionMap<
         string,
@@ -2621,14 +2634,18 @@ export class DataLowerer {
             const memberType =
                 member && (member.flags & ts.SymbolFlags.Optional) === 0
                     ? this.context.checker.getTypeOfSymbol(member)
-                    : ts.isElementAccessExpression(access)
-                      ? arrayElementType(
-                            this.context.checker,
-                            this.context.checker.getTypeAtLocation(
-                                access.expression,
-                            ),
-                        )
-                      : undefined;
+                    : ts.isCallExpression(access)
+                      ? this.context.checker
+                            .getResolvedSignature(access)
+                            ?.getReturnType()
+                      : ts.isElementAccessExpression(access)
+                        ? arrayElementType(
+                              this.context.checker,
+                              this.context.checker.getTypeAtLocation(
+                                  access.expression,
+                              ),
+                          )
+                        : undefined;
             if (!memberType || !slotHoldsOnlyNull(memberType)) return undefined;
             const name = this.context.allocateTemporaryCppName("chain_found");
             this.context.emit({
@@ -3453,7 +3470,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             inner,
                             narrowed,
                             expression,
-                        ) >= 0)))
+                        ) >= 0) ||
+                    // Array.isArray widens a readonly array to any[]: the
+                    // optional array it guarded is present.
+                    (expectedType === undefined &&
+                        ["vector", "span", "tuple"].includes(inner.kind) &&
+                        this.context.checker.isArrayType(
+                            this.context.checker.getTypeAtLocation(expression),
+                        ))))
         ) {
             return this.narrowOptional(
                 this.presentOptionalValue(value, inner),
@@ -3478,6 +3502,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
         if (exact >= 0) return exact;
+        // `(value as { name: string })` asserts a record view of a union
+        // holding one record type: the read is that member's, and a value
+        // holding another member throws where it is selected.
+        if (
+            expression &&
+            narrowed?.kind === "struct" &&
+            assertsType(expression)
+        ) {
+            const records = type.members.flatMap((member, index) =>
+                member.kind === "struct" ? [index] : [],
+            );
+            if (records.length === 1) return records[0]!;
+        }
         // Array.isArray widens readonly arrays to any[] in lib.d.ts. The
         // represented union still supplies the element type when exactly one
         // member is an array; several array alternatives require more evidence.
@@ -4601,6 +4638,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return {
                 kind: "number",
                 cpp: `static_cast<double>(${owner.cpp}.byte_length())`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (dataType.kind === "numberindex" && property === "length") {
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp: `static_cast<double>(${owner.cpp}.size())`,
                 dataType: { kind: "number" },
             };
         }
@@ -6812,17 +6857,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * Whether nested array literals with numeric leaves form a static table:
+     * every row at a depth has one length. A jagged one (rows of different
+     * lengths) is ordinary array storage instead.
+     */
     public isNumericTable(literal: ts.ArrayLiteralExpression): boolean {
-        if (literal.elements.length === 0) {
-            return false;
-        }
-        return literal.elements.every((element) => {
+        return this.tableShape(literal) !== undefined;
+    }
+
+    /** A uniform numeric table's dimensions, or undefined. */
+    private tableShape(
+        literal: ts.ArrayLiteralExpression,
+    ): number[] | undefined {
+        const shapes = literal.elements.map((element) => {
             const unwrapped = this.context.unwrap(element);
-            if (ts.isArrayLiteralExpression(unwrapped)) {
-                return this.isNumericTable(unwrapped);
-            }
-            return this.isStaticLeafNumber(unwrapped);
+            if (ts.isArrayLiteralExpression(unwrapped))
+                return this.tableShape(unwrapped);
+            return this.isStaticLeafNumber(unwrapped) ? [] : undefined;
         });
+        const first = shapes[0];
+        if (
+            !first ||
+            shapes.some((shape) => !shape || shape.join() !== first.join())
+        )
+            return undefined;
+        return [literal.elements.length, ...first];
     }
 
     private isStaticLeafNumber(expression: ts.Expression): boolean {
@@ -7124,13 +7184,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const directType = expectedResult ?? this.dataTypeAt(call);
-        const contextualTsType = this.context.checker.getContextualType(call);
+        // `Object.freeze(Array.from(...))` returns its argument: the freeze
+        // call's own context types the array.
+        let contextualNode: ts.Expression = call;
+        while (
+            ts.isCallExpression(contextualNode.parent) &&
+            contextualNode.parent.arguments[0] === contextualNode &&
+            ts.isPropertyAccessExpression(contextualNode.parent.expression) &&
+            this.context.libraryGlobal(
+                contextualNode.parent.expression.expression,
+            ) === "Object" &&
+            ["freeze", "seal", "preventExtensions"].includes(
+                contextualNode.parent.expression.name.text,
+            )
+        )
+            contextualNode = contextualNode.parent;
+        const contextualTsType =
+            this.context.checker.getContextualType(contextualNode);
+        const contextual = contextualTsType
+            ? this.context.dataTypes.fromTsType(contextualTsType, call)
+            : undefined;
+        // A readonly context is read through the new array Array.from builds.
         const type =
             directType?.kind === "vector"
                 ? directType
-                : contextualTsType
-                  ? this.context.dataTypes.fromTsType(contextualTsType, call)
-                  : undefined;
+                : contextual?.kind === "span"
+                  ? { kind: "vector" as const, element: contextual.element }
+                  : contextual;
         if (type?.kind !== "vector")
             this.context.fail(
                 call,
@@ -7502,6 +7582,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
+        // Optional and union lanes of plain values compare by value too.
+        const plain = (type: DataType): boolean =>
+            ["number", "boolean", "string", "enum"].includes(type.kind) ||
+            (type.kind === "optional" && plain(type.inner)) ||
+            (type.kind === "union" && type.members.every(plain));
+        const plainLanes =
+            (element.kind === "optional" || element.kind === "union") &&
+            plain(element);
         if (
             element.kind !== "number" &&
             element.kind !== "boolean" &&
@@ -7511,6 +7599,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             element.kind !== "function" &&
             element.kind !== "symbol" &&
             element.kind !== "bigint" &&
+            !plainLanes &&
             !(
                 element.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(element.name)
@@ -7570,7 +7659,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return {
             kind: "boolean",
             cpp:
-                element.kind === "number"
+                element.kind === "number" || plainLanes
                     ? `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`
                     : `${index} >= 0.0`,
             dataType: { kind: "boolean" },
@@ -8110,7 +8199,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             call.questionDotToken ||
             (ts.isPropertyAccessExpression(call.expression) &&
-                call.expression.questionDotToken)
+                call.expression.questionDotToken) ||
+            (receiver !== undefined && this.chainShortCircuitsCall(call))
         ) {
             return this.compileOptionalStoredCall(
                 call,
@@ -8146,6 +8236,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /** Snapshot a retained callback before evaluating its lazy arguments. */
+    /**
+     * Whether a method call inside an optional chain (`entry?.build.run()`)
+     * finds its receiver absent only where an earlier `?.` short-circuited
+     * the chain: the receiver is a member whose declared type admits
+     * neither `null` nor `undefined`, so the call is skipped, not refused.
+     */
+    private chainShortCircuitsCall(call: ts.CallExpression): boolean {
+        if (
+            !ts.isOptionalChain(call) ||
+            !ts.isPropertyAccessExpression(call.expression)
+        )
+            return false;
+        const owner = unwrapExpression(call.expression.expression);
+        if (!ts.isPropertyAccessExpression(owner)) return false;
+        const member = resolvedSymbol(this.context.checker, owner);
+        if (!member || (member.flags & ts.SymbolFlags.Optional) !== 0)
+            return false;
+        const absent = nullability(
+            this.context.checker.getTypeOfSymbol(member),
+        );
+        return !absent.null && !absent.undefined;
+    }
+
     public compileOptionalStoredCall(
         call: ts.CallExpression,
         callable: string,
@@ -8165,6 +8278,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const missing = resultType ? "return {};" : "return;";
         const callback =
             this.context.allocateTemporaryCppName("optional_callback");
+        // A result that may itself be absent (`number | null`) is undefined
+        // only where the call did not run (`Value.slotFoundCpp`).
+        const called =
+            returned?.kind === "optional"
+                ? this.context.allocateTemporaryCppName("optional_called")
+                : undefined;
+        if (called)
+            this.context.emit({
+                kind: "declaration",
+                type: "bool",
+                name: called,
+                initializer: "false",
+                attributes: "[[maybe_unused]] ",
+            });
         const lines = this.context.captureEmittedLines(() => {
             if (receiver) this.context.emit(`if (!(${receiver})) ${missing}`);
             this.context.emit({
@@ -8180,6 +8307,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     call.expression.questionDotToken)
             )
                 this.context.emit(`if (!${callback}) ${missing}`);
+            if (called) this.context.emit(`${called} = true;`);
             this.context.enterRuntimeControlFlow();
             try {
                 const args = this.compileFunctionArguments(
@@ -8203,6 +8331,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ? {
                   ...this.leafValue(cpp, resultType),
                   preserveUncheckedLookup: true,
+                  ...(called ? { slotFoundCpp: called } : {}),
               }
             : { kind: "void", cpp };
     }
@@ -8510,6 +8639,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // Weak collections share the Map/Set operation family; key storage selects ownership.
         const constructedKind = constructor.endsWith("Map") ? "map" : "set";
+        const weakSet =
+            constructor === "WeakSet" ? { weak: true as const } : {};
         const direct = this.dataTypeAt(expression);
         const contextualType =
             this.context.checker.getContextualType(expression);
@@ -8517,6 +8648,43 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ? this.context.dataTypes.fromTsType(contextualType, expression)
             : undefined;
         const arguments_ = expression.arguments ?? [];
+        // Type arguments naming `unknown` (`Map<number, Record<string,
+        // unknown>>`) hold parsed documents in dynamic storage.
+        const documents = (): DataType | undefined => {
+            const type = this.context.checker.getTypeAtLocation(expression);
+            if (!isTypeReference(type)) return undefined;
+            const types = this.context.dataTypes;
+            const [first, second] = this.context.checker
+                .getTypeArguments(type)
+                .map((argument) =>
+                    types.withDynamicJsonTypes(
+                        true,
+                        () =>
+                            types.dynamicJsonType(argument) ??
+                            // `new Map()` without type arguments holds
+                            // whatever is stored, as documents.
+                            ((argument.flags & ts.TypeFlags.Any) !== 0
+                                ? { kind: "json" as const }
+                                : types.fromTsType(argument, expression)),
+                    ),
+                );
+            if (
+                !first ||
+                (constructedKind === "map") !== (second !== undefined)
+            )
+                return undefined;
+            return second
+                ? {
+                      kind: "map",
+                      key: types.markStoredObjectReferences(first),
+                      value: types.markStoredObjectReferences(second),
+                  }
+                : {
+                      kind: "set",
+                      ...weakSet,
+                      element: types.markStoredObjectReferences(first),
+                  };
+        };
         const declared =
             expectedType?.kind === "map" || expectedType?.kind === "set"
                 ? expectedType
@@ -8524,7 +8692,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? contextual
                   : direct?.kind === "map" || direct?.kind === "set"
                     ? direct
-                    : undefined;
+                    : [documents()].find(
+                          (type): type is DataType<"map" | "set"> =>
+                              type?.kind === "map" || type?.kind === "set",
+                      );
         // A Set copying a native collection whose element type the checker
         // widened (an `Array.isArray` guard leaves `any[]`) takes the
         // element type of the collection it copies.
@@ -8547,8 +8718,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (copiedType?.kind === "vector" ||
             copiedType?.kind === "span" ||
             copiedType?.kind === "set"
-                ? { kind: "set", element: copiedType.element }
-                : undefined);
+                ? { kind: "set", ...weakSet, element: copiedType.element }
+                : // A parsed array the checker widened to `any[]` keeps its
+                  // elements as documents.
+                  copiedType?.kind === "json"
+                  ? { kind: "set", ...weakSet, element: copiedType }
+                  : undefined);
         if (!dataType) {
             this.context.fail(
                 expression,
@@ -8603,20 +8778,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const source = copied ?? this.context.compileValue(iterable);
         // The constructor copies the elements into a new collection, even
         // when the source is a Set. A borrowed view is read, never retained.
+        // The constructor reads each element once and keeps none of the
+        // source, so an element conversion copies nothing JavaScript shares.
         const values =
             source.kind === "data" &&
             (source.dataType?.kind === "span" ||
                 source.dataType?.kind === "set") &&
             dataTypesEqual(source.dataType.element, dataType.element)
                 ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`
-                : this.compileKnownValueForSink(
-                      source,
-                      {
-                          kind: "vector",
-                          element: dataType.element,
-                      },
-                      iterable,
-                  );
+                : isJsonValue(source) && dataType.element.kind !== "json"
+                  ? this.documentElementsCopy(
+                        source,
+                        dataType.element,
+                        iterable,
+                    )
+                  : this.compileKnownValueForSink(
+                        { ...source, unaliased: source.unaliased ?? "object" },
+                        {
+                            kind: "vector",
+                            element: dataType.element,
+                        },
+                        iterable,
+                    );
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
@@ -9245,10 +9428,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (
             dataType.kind === "optional" &&
-            dataType.inner.kind === "boolean" &&
+            ["boolean", "number", "string", "enum"].includes(
+                dataType.inner.kind,
+            ) &&
             ts.isBinaryExpression(unwrapped)
         ) {
-            const logical = this.compileOptionalBooleanLogicalValue(unwrapped);
+            const logical = this.compileOptionalScalarLogicalValue(unwrapped);
             if (logical)
                 return this.compileKnownValueForSink(
                     logical,
@@ -9374,13 +9559,44 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : key === undefined
                   ? mappedElement(this.context.checker, container)
                   : literalMember(container, key);
-        const at = expression ?? node;
-        const previous = this.memberConversion;
-        this.memberConversion = {
-            node: at,
+        return this.compileConvertedMember(
+            member,
+            dataType,
+            expression ?? node,
             expression,
-            elementOf: typeof key === "string" ? undefined : container,
-        };
+            typeof key === "string" ? undefined : container,
+        );
+    }
+
+    /**
+     * Stores `lane` as `dataType`: one lane of a native value a sink at
+     * `node` reads (a key or value of a collection entry pair), which no
+     * expression of the source names, so neither its freshness nor its
+     * narrowing is the node's.
+     */
+    public compileLaneForSink(
+        lane: Value,
+        dataType: DataType,
+        node: ts.Node,
+    ): string {
+        return this.compileConvertedMember(
+            lane,
+            dataType,
+            node,
+            undefined,
+            undefined,
+        );
+    }
+
+    private compileConvertedMember(
+        member: Value,
+        dataType: DataType,
+        at: ts.Node,
+        expression: ts.Expression | undefined,
+        elementOf: ts.Expression | undefined,
+    ): string {
+        const previous = this.memberConversion;
+        this.memberConversion = { node: at, expression, elementOf };
         try {
             return this.compileKnownValueForSink(member, dataType, at);
         } finally {
@@ -9478,12 +9694,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // binding graph, generation cannot retain a snapshot of its contents.
         if (value.dataType?.kind === "tuple")
             this.invalidateStaticElements(value);
+        // A member read out of the node's value narrows by its own
+        // expression; one no expression names keeps its stored type.
+        const narrowing = this.convertedExpression(node);
         if (
             dataType.kind !== "optional" &&
             dataType.kind !== "json" &&
-            ts.isExpression(node)
+            narrowing !== undefined
         ) {
-            value = this.narrowOptional(value, node);
+            value = this.narrowOptional(value, narrowing);
         }
         if (
             value.ownedCpp !== undefined &&
@@ -9566,6 +9785,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const compiled = compileDataValueSink(dataType, this, value, node);
         if (compiled !== undefined) return compiled;
+        if (isJsonValue(value)) this.requireDocumentRecord(dataType);
+        if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
+            this.requireRecordBinding(node);
         this.context.fail(
             node,
             `Compile-time ${value.kind} value does not match the expected data ${dataType.kind} ` +
@@ -9837,6 +10059,57 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * The data value `expression` produces for a `dataType` sink. `source`
      * is the expression as written, whose `!` asserts the value present.
      */
+    /**
+     * A parsed document read as a plain-data record type keeps its own
+     * fields and identity only as a document: the program is lowered again
+     * with every record of that type stored as one.
+     */
+    private requireDocumentRecord(dataType: DataType): void {
+        const record = dataType.kind === "optional" ? dataType.inner : dataType;
+        if (record.kind !== "struct") return;
+        const demand = this.context.dataTypes.documentRecordDemand(record.name);
+        if (demand) throw new NativeRecordStorageRequired(demand);
+    }
+
+    /**
+     * A record initializing a local declared as a closed `Record<Union, V>`
+     * of the same keys (`const lines: Record<"a" | "b", V> = board`) is that
+     * record: the local is stored as the record's own type.
+     */
+    private requireRecordBinding(node: ts.Node): void {
+        let initializer: ts.Node = node;
+        while (
+            ts.isParenthesizedExpression(initializer.parent) ||
+            ts.isConditionalExpression(initializer.parent) ||
+            ts.isAsExpression(initializer.parent) ||
+            ts.isNonNullExpression(initializer.parent) ||
+            (ts.isBinaryExpression(initializer.parent) &&
+                initializer.parent.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken)
+        )
+            initializer = initializer.parent;
+        const declaration = initializer.parent;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            declaration.initializer !== initializer ||
+            !ts.isIdentifier(declaration.name) ||
+            this.context.dynamicBindings.has(declaration)
+        )
+            return;
+        const nativeType = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(initializer),
+        );
+        if (
+            this.context.dataTypes.fromStoredTsType(nativeType, initializer)
+                ?.kind !== "struct"
+        )
+            return;
+        throw new DynamicBindingStorageRequired(declaration, {
+            nativeType,
+            node: initializer as ts.Expression,
+        });
+    }
+
     public requireDataValue(
         expression: ts.Expression,
         dataType: DataType,
@@ -9861,6 +10134,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return value;
         }
+        // An array of another element type converts its elements as it is
+        // stored (`valueVector`), which decides whether that copy is exact.
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "vector" &&
+            dataType.kind === "vector"
+        )
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+                freshData: true,
+            };
+        if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
@@ -9947,6 +10234,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             compiled.set(name, slot);
         }
         this.evaluatedLiteralKeys.set(literal, written);
+        this.context.dataTypes.observeEnumMapKeys(dataType, written, literal);
         const slots = members.map((member) => {
             const slot = compiled.get(member);
             if (slot === undefined) {
@@ -10597,8 +10885,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             assigned.add(field.name);
         };
-        for (const property of literal.properties) {
+        // A spread copies a field a later property of the literal writes
+        // again only to be replaced: the later value is the one kept.
+        const writtenAfter = (index: number): Set<string> =>
+            new Set(
+                literal.properties
+                    .slice(index + 1)
+                    .flatMap((later) =>
+                        ts.isPropertyAssignment(later) ||
+                        ts.isShorthandPropertyAssignment(later)
+                            ? [this.context.propertyName(later.name)].filter(
+                                  (name): name is string => name !== undefined,
+                              )
+                            : [],
+                    ),
+            );
+        for (const [index, property] of literal.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
+                const replaced = writtenAfter(index);
                 const source =
                     this.compileDataPath(property.expression, "read") ??
                     this.context.compileValue(property.expression);
@@ -10622,6 +10926,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     for (const [name, value] of Object.entries(
                         spread.recordProperties ?? {},
                     )) {
+                        if (replaced.has(name)) continue;
                         // A key a conditional spread decides is stored only
                         // while it is own, keeping an earlier value
                         // otherwise; an unwritten `?` field is already
@@ -10723,13 +11028,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
+                    // A getter still runs where the spread reads it.
+                    const excludedKeys = new Set(
+                        this.context.dataTypes
+                            .structFields(
+                                spread.dataType.name,
+                                property,
+                                "accessors",
+                            )
+                            .filter(
+                                (field) =>
+                                    !field.accessor &&
+                                    replaced.has(field.sourceName),
+                            )
+                            .map((field) => field.sourceName),
+                    );
                     for (const name of this.copyStructOwnProperties(
                         { cpp: cppName, type: dataType },
                         spread,
                         spread.dataType,
                         property.expression,
                         "spread",
-                        { fresh: (field) => !assigned.has(field) },
+                        {
+                            excludedKeys,
+                            fresh: (field) => !assigned.has(field),
+                        },
                     ))
                         assigned.add(name);
                     continue;
@@ -11655,8 +11978,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return this.leafValue(result, type);
     }
 
-    /** Nullable boolean selection keeps absence distinct from false. */
-    public compileOptionalBooleanLogicalValue(
+    /**
+     * Nullable scalar selection (`flag && other`, `id || undefined`) keeps
+     * absence distinct from false, 0, NaN and the empty string.
+     */
+    public compileOptionalScalarLogicalValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
         const operator = expression.operatorToken.kind;
@@ -11666,7 +11992,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         const type = this.dataTypeAt(expression);
-        if (type?.kind !== "optional" || type.inner.kind !== "boolean")
+        if (
+            type?.kind !== "optional" ||
+            !["boolean", "number", "string", "enum"].includes(type.inner.kind)
+        )
             return undefined;
         // An object contributes only its absent state to `object && bool`;
         // its present value belongs to the unselected arm, not the bool sink.
@@ -11681,7 +12010,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.compileLogicalSelection(
                 expression,
                 type,
-                "logical_boolean",
+                "logical_value",
                 (left) =>
                     absentObject
                         ? this.context.dataTypes.absentValue(type)
@@ -14307,6 +14636,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             if (undefinedResult !== undefined) return undefinedResult;
         }
+        // An operand that reads undefined (a property no prototype of a
+        // primitive defines) is strictly equal only to an operand that can
+        // be undefined.
+        if (!loose && !isNullish(left) && !isNullish(right)) {
+            const known = this.context.probeEmission(() => {
+                const a = this.context.compileValue(left);
+                const b = this.context.compileValue(right);
+                const absent = (value: Value): boolean =>
+                    value.kind === "json-null" && value.cpp === "std::nullopt";
+                if (absent(a) === absent(b)) return undefined;
+                const other = this.context.checker.getTypeAtLocation(
+                    absent(a) ? right : left,
+                );
+                if (
+                    (other.flags &
+                        (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+                        0 ||
+                    nullability(other).undefined
+                )
+                    return undefined;
+                this.context.emitDiscardedValue(absent(a) ? b : a);
+                return negated ? "true" : "false";
+            });
+            if (known !== undefined) return known;
+        }
         if (loose && !isNullish(left) && !isNullish(right)) return undefined;
         if (
             !loose &&
@@ -15715,6 +16069,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType & {
             kind: "string";
         },
+        assertedNonNull = false,
     ): string {
         const resolved = this.context.resolveStaticExpression(unwrapped);
         if (resolved !== unwrapped) {
@@ -15740,7 +16095,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return bound.cpp;
             }
             if (bound?.kind === "data") {
-                const narrowed = this.narrowOptional(bound, unwrapped);
+                const narrowed = this.narrowOptional(
+                    bound,
+                    unwrapped,
+                    assertedNonNull,
+                );
                 if (narrowed.dataType?.kind === "string") {
                     return narrowed.cpp;
                 }
@@ -15771,8 +16130,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : undefined);
         const value =
             rawValue?.kind === "data"
-                ? this.narrowOptional(rawValue, unwrapped)
+                ? this.narrowOptional(rawValue, unwrapped, assertedNonNull)
                 : rawValue;
+        // A module binding read by name, a string generation computed.
+        if (value && isStringValue(value)) return value.cpp;
         if (value?.kind === "data" && value.dataType?.kind === "enum") {
             return this.context.dataTypes.enumToStringCpp(
                 value.dataType,
@@ -16007,6 +16368,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: `${iterable.cpp}.elements()`,
                 dataType: { kind: "span", element: dataType.element },
             };
+        // A parsed array spreads into a new array of scalar lanes, each
+        // element stored as the scalar sinks store a parsed value.
+        if (
+            isJsonValue(iterable) &&
+            ["number", "string", "boolean", "enum"].includes(
+                dataType.element.kind,
+            )
+        )
+            return {
+                ...this.leafValue(
+                    this.documentElementsCopy(
+                        iterable,
+                        dataType.element,
+                        spread,
+                    ),
+                    dataType,
+                ),
+                freshSpread: true,
+            };
         const iterated = this.iteratedElements(iterable);
         if (iterated && "lanes" in iterated) {
             return {
@@ -16069,6 +16449,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return projected?.freshData || iterated.range.freshData
             ? { ...iterated.range, freshSpread: true }
             : iterated.range;
+    }
+
+    /**
+     * A new array of a parsed array's elements, each stored as `element`
+     * the way a scalar sink stores a parsed value. A value that is not an
+     * array has no elements.
+     */
+    private documentElementsCopy(
+        document: Value,
+        element: DataType,
+        node: ts.Node,
+    ): string {
+        const item = this.context.allocateTemporaryCppName("document_item");
+        let converted = "";
+        const prepared = this.context.captureEmittedLines(() => {
+            converted = this.compileKnownValueForSink(
+                this.leafValue(item, { kind: "json" }),
+                element,
+                node,
+            );
+        });
+        if (prepared.length > 0)
+            this.context.fail(
+                node,
+                "A parsed array's elements convert in place; this element conversion needs statements.",
+            );
+        this.context.reachJsData();
+        return (
+            `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(element)}>(` +
+            `${document.cpp}.elements(), [](const auto& ${item}) { return ${converted}; })`
+        );
     }
 
     public compileVectorSink(

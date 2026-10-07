@@ -725,6 +725,7 @@ function valueEnummap(
                 ),
             ]),
         );
+        lowerer.context.dataTypes.observeEnumMapKeys(dataType, written, node);
         const reordered = members.some(
             (member, index) => written[index] !== member,
         );

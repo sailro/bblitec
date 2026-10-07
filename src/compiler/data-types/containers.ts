@@ -140,8 +140,10 @@ export const containerKinds: DataKindOperations<
     set: {
         cpp: (type, context) =>
             `bbl::js::Set<${context.cppType(type.element)}>`,
-        key: (type, key) => `set(${key(type.element)})`,
-        equal: (left, right, equal) => equal(left.element, right.element),
+        key: (type, key) =>
+            `${type.weak ? "weak-set" : "set"}(${key(type.element)})`,
+        equal: (left, right, equal) =>
+            left.weak === right.weak && equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "children",

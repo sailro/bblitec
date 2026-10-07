@@ -14,6 +14,12 @@ export interface NativeRecordStorageDemand {
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
     /**
+     * Records of this type are parsed documents the program reads as it:
+     * every value of the type is stored as a document, which keeps the
+     * object's own fields and identity.
+     */
+    document?: true;
+    /**
      * Record types a record was stored as where a copy could be told apart:
      * each joins its source's record component (`record-components.ts`), so
      * one object keeps one identity under both. A join names its own

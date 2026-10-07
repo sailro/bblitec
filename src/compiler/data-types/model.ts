@@ -252,6 +252,8 @@ interface DataKinds {
     };
     set: {
         kind: "set";
+        /** A WeakSet: the same strong set storage, told apart by `instanceof`. */
+        weak?: true;
         element: DataType;
     };
     iterator: {

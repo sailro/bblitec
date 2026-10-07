@@ -1944,7 +1944,10 @@ function compileArrayFind(
     const { call, narrowed, dataType } = state;
     // The checked program's ES2022 library does not declare `findLast`:
     // its result is the receiver's element or undefined.
+    // A parsed array's element is found as itself, whatever record type
+    // the source reads it as; its absence is the document's undefined.
     const resultType =
+        (dataType.element.kind === "json" ? dataType.element : undefined) ??
         (method === "find" ? lowerer.dataTypeAt(call) : undefined) ??
         (method === "findLast"
             ? lowerer.context.dataTypes.nullableType(dataType.element, true)
@@ -2542,8 +2545,10 @@ function compileArrayMap(
                             callback,
                             "Array.flatMap result",
                         );
+                    // flatMap reads the returned array's elements once and
+                    // keeps none of the array itself.
                     const values = lowerer.compileKnownValueForSink(
-                        result,
+                        { ...result, unaliased: result.unaliased ?? "object" },
                         mappedType,
                         callback,
                     );
@@ -3230,6 +3235,21 @@ function compileMapDataMethod(
     if (method === "values" || method === "keys") {
         if (call.arguments.length !== 0) {
             lowerer.context.fail(call, `Map.${method} expects no arguments.`);
+        }
+        // An iterator kept past the call (`values: () => map.values()`) is
+        // live over the map, as JavaScript's is.
+        const contextual = lowerer.context.checker.getContextualType(call);
+        if (
+            contextual &&
+            lowerer.context.dataTypes.fromTsType(contextual, call)?.kind ===
+                "iterator"
+        ) {
+            const element = method === "values" ? dataType.value : dataType.key;
+            lowerer.context.reachJsData();
+            return lowerer.leafValue(
+                `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
+                { kind: "iterator", element, traced: true },
+            );
         }
         return {
             kind: "data",

@@ -518,6 +518,40 @@ public:
         return left.strict_equals(right);
     }
 
+    /** SameValueZero, the key equality of Map and Set: NaN is one key. */
+    [[nodiscard]] bool same_value_zero(const JsonValue& other) const {
+        return strict_equals(other) ||
+               (kind_ == Kind::number && other.kind_ == Kind::number && std::isnan(number_) &&
+                std::isnan(other.number_));
+    }
+
+    /** The hash a Map or Set files this key under, consistent with `same_value_zero`. */
+    [[nodiscard]] std::size_t key_hash() const noexcept {
+        switch (kind_) {
+        case Kind::undefined:
+            return 1;
+        case Kind::null:
+            return 2;
+        case Kind::boolean:
+            return boolean_ ? 4 : 3;
+        case Kind::number:
+            return detail::number_key_hash(number_);
+        case Kind::string:
+            return static_cast<std::size_t>(hash_bytes(string_.data(), string_.size()));
+        case Kind::array:
+            return reinterpret_cast<std::uintptr_t>(array_identity());
+        case Kind::object:
+            return reinterpret_cast<std::uintptr_t>(native_ ? native_->identity()
+                                                           : static_cast<const void*>(object_.get()));
+        }
+        return 0;
+    }
+
+    /** The key Map.prototype.set and Set.prototype.add store: -0 becomes +0. */
+    [[nodiscard]] JsonValue stored_key() const {
+        return kind_ == Kind::number && number_ == 0.0 ? from_number(0.0) : *this;
+    }
+
     [[nodiscard]] Kind kind() const { return kind_; }
     [[nodiscard]] bool is_undefined() const { return kind_ == Kind::undefined; }
     [[nodiscard]] bool is_null() const { return kind_ == Kind::null; }

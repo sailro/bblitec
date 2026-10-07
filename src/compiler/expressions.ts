@@ -529,6 +529,25 @@ export function stringConcatPart(
     );
 }
 
+/** The properties Number.prototype, Boolean.prototype and Object.prototype define. */
+const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
+    "constructor",
+    "toExponential",
+    "toFixed",
+    "toPrecision",
+    "toString",
+    "toLocaleString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "__proto__",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+]);
+
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
 
@@ -1422,7 +1441,7 @@ export class ExpressionLowerer {
                     ts.SyntaxKind.AmpersandAmpersandToken)
         ) {
             const logical =
-                this.context.dataLowerer.compileOptionalBooleanLogicalValue(
+                this.context.dataLowerer.compileOptionalScalarLogicalValue(
                     unwrapped,
                 );
             if (logical) return logical;
@@ -4067,50 +4086,54 @@ export class ExpressionLowerer {
         }
         const value = this.compileValue(unwrapped);
         if (value.kind === "number") return value;
-        if (isStringValue(value)) {
+        const present = (cpp: string, type: DataType | undefined) =>
+            type?.kind === "number"
+                ? `static_cast<double>(${cpp})`
+                : type?.kind === "string"
+                  ? `bbl::js::number_from_string(${cpp})`
+                  : type?.kind === "boolean"
+                    ? `(${cpp} ? 1.0 : 0.0)`
+                    : type?.kind === "json" || type?.kind === "bigint"
+                      ? `(${cpp}).to_number()`
+                      : undefined;
+        const number = (cpp: string): Value => {
             this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::number_from_string(${value.cpp})`,
-                dataType: { kind: "number" },
-            };
-        }
-        // `Number(bigint)` is the nearest double.
-        if (value.kind === "data" && value.dataType?.kind === "bigint")
-            return {
-                kind: "number",
-                cpp: `(${value.cpp}).to_number()`,
-                dataType: { kind: "number" },
-            };
-        if (value.kind === "boolean" || value.dataType?.kind === "boolean")
-            return {
-                kind: "number",
-                cpp: `(${value.cpp} ? 1.0 : 0.0)`,
-                dataType: { kind: "number" },
-            };
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            (value.dataType.inner.kind === "string" ||
-                value.dataType.inner.kind === "number")
-        ) {
-            const present =
-                value.dataType.inner.kind === "string"
-                    ? "bbl::js::number_from_string(*v)"
-                    : "static_cast<double>(*v)";
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp:
-                    `([&]() { const auto& v = ${value.cpp}; ` +
-                    `return v.has_value() ? ${present} : ` +
-                    `std::numeric_limits<double>::quiet_NaN(); }())`,
-                dataType: { kind: "number" },
-            };
+            return { kind: "number", cpp, dataType: { kind: "number" } };
+        };
+        if (isStringValue(value))
+            return number(present(value.cpp, { kind: "string" })!);
+        if (value.kind === "boolean")
+            return number(present(value.cpp, { kind: "boolean" })!);
+        const direct =
+            value.kind === "data" && present(value.cpp, value.dataType);
+        if (direct) return number(direct);
+        // An absent operand is NaN when it is `undefined` and 0 when it is
+        // `null`, so the storage must say which one it holds.
+        const inner =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : undefined;
+        if (inner && present("*v", inner)) {
+            const absence = absenceKind(this.context.checker, value, unwrapped);
+            const absent =
+                absence === "null"
+                    ? "0.0"
+                    : absence === "either"
+                      ? this.context.fail(
+                            expression,
+                            "Number() of a value that may be null or undefined requires storage telling them apart.",
+                        )
+                      : typeof absence === "object"
+                        ? `(${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
+                        : "std::numeric_limits<double>::quiet_NaN()";
+            return number(
+                `([&]() { const auto& v = ${value.cpp}; ` +
+                    `return v.has_value() ? ${present("*v", inner)} : ${absent}; }())`,
+            );
         }
         this.context.fail(
             expression,
-            `Number() supports number and string values, received ${value.kind}.`,
+            `Number() supports numbers, strings, booleans, BigInts, parsed documents and their optionals, received ${value.kind}.`,
         );
     }
 
@@ -4790,6 +4813,34 @@ export class ExpressionLowerer {
                 }
                 const indexedType =
                     this.context.dataLowerer.dataTypeAt(unwrapped);
+                // A record read as `Record<string, unknown>` by a key known
+                // only at run time reads a parsed view of the record: the
+                // property the key names, or undefined.
+                if (
+                    !indexedType &&
+                    (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0 &&
+                    (key.kind === "number" ||
+                        key.kind === "string" ||
+                        key.dataType?.kind === "string")
+                ) {
+                    const view =
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            owner,
+                            { kind: "json" },
+                            unwrapped.expression,
+                        );
+                    const name =
+                        key.kind === "number"
+                            ? `bbl::js::number_to_string(${this.context.castNumber(key, "double")})`
+                            : key.cpp;
+                    this.context.reachJsData();
+                    return this.context.dataLowerer.leafValue(
+                        `${view}.get(${name})`,
+                        { kind: "json" },
+                    );
+                }
                 if (!indexedType) {
                     this.context.fail(
                         unwrapped,
@@ -5002,6 +5053,21 @@ export class ExpressionLowerer {
                 );
             }
             return value;
+        }
+        // A property no prototype of a number or boolean defines reads
+        // undefined (`(42)["format"]`).
+        if (owner.kind === "number" || owner.kind === "boolean") {
+            const key = this.compileValue(unwrapped.argumentExpression);
+            const name =
+                key.staticString ??
+                (key.staticNumber !== undefined
+                    ? String(key.staticNumber)
+                    : undefined);
+            if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
+                this.context.emitDiscardedValue(owner);
+                this.context.emitDiscardedValue(key);
+                return { kind: "json-null", cpp: "std::nullopt" };
+            }
         }
         if (owner.kind !== "tuple") {
             this.context.fail(
