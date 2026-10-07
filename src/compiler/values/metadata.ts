@@ -11,7 +11,7 @@ const nodeParticleMetadataFields = [
 
 /** Metadata admitted by each value family; native data retains transported fields. */
 const resourceMetadataFields = {
-    regexp: ["regexpCaptureCount"],
+    regexp: ["regexpCaptureCount", "regexpUnicode"],
     "static-fetch-response": ["packagedSources", "staticJson"],
     "environment-textures": ["environmentAsset"],
     "pbr-local-probe-set": ["localCubemap"],

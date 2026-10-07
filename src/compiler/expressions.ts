@@ -106,6 +106,7 @@ import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
+import { unicodeUnitPattern } from "./regexp-unicode.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathConstantAccess,
@@ -974,11 +975,24 @@ export class ExpressionLowerer {
                         "Reached RegExp constructor flags must be static.",
                     );
                 }
+                if (flags.includes("u")) {
+                    if (patternValue.staticString === undefined)
+                        this.context.fail(
+                            arguments_[0]!,
+                            "A u-flag RegExp constructor needs a pattern known at generation.",
+                        );
+                    return this.compileRegExp(
+                        patternValue.staticString,
+                        flags,
+                        arguments_[1] ?? unwrapped,
+                        "constructors",
+                    );
+                }
                 for (const flag of flags) {
                     if (flag !== "g" && flag !== "i") {
                         this.context.fail(
                             arguments_[1] ?? unwrapped,
-                            `Reached RegExp constructors support the g and i flags, not '${flag}'.`,
+                            `Reached RegExp constructors support the g, i and u flags, not '${flag}'.`,
                         );
                     }
                 }
@@ -1208,23 +1222,7 @@ export class ExpressionLowerer {
                     unwrapped,
                     "Malformed regular expression literal.",
                 );
-            for (const flag of flags) {
-                if (flag !== "g" && flag !== "i") {
-                    this.context.fail(
-                        unwrapped,
-                        `Reached RegExp literals support the g and i flags, not '${flag}'.`,
-                    );
-                }
-            }
-            this.context.reachJsData();
-            return {
-                kind: "regexp",
-                regexpCaptureCount: regexpCaptureCount(pattern),
-                cpp:
-                    `bbl::js::RegExp(${this.context.cppString(pattern)}, ` +
-                    `${flags.includes("g") ? "true" : "false"}, ` +
-                    `${flags.includes("i") ? "true" : "false"})`,
-            };
+            return this.compileRegExp(pattern, flags, unwrapped, "literals");
         }
         if (
             ts.isStringLiteral(unwrapped) ||
@@ -5729,6 +5727,44 @@ export class ExpressionLowerer {
             ),
             type,
         );
+    }
+
+    /**
+     * A RegExp of a known pattern. A `u` pattern is rewritten over UTF-16
+     * units (`unicodeUnitPattern`), its case folding included.
+     */
+    private compileRegExp(
+        pattern: string,
+        flags: string,
+        node: ts.Node,
+        site: "literals" | "constructors",
+    ): Value {
+        for (const flag of flags) {
+            if (flag !== "g" && flag !== "i" && flag !== "u") {
+                this.context.fail(
+                    node,
+                    `Reached RegExp ${site} support the g, i and u flags, not '${flag}'.`,
+                );
+            }
+        }
+        const unicode = flags.includes("u");
+        const ignoreCase = flags.includes("i");
+        const translated = unicode
+            ? unicodeUnitPattern(pattern, ignoreCase)
+            : { pattern };
+        if ("refusal" in translated)
+            return this.context.fail(node, translated.refusal);
+        this.context.reachJsData();
+        return {
+            kind: "regexp",
+            regexpCaptureCount: regexpCaptureCount(translated.pattern),
+            ...(unicode ? { regexpUnicode: true as const } : {}),
+            cpp:
+                `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
+                `${flags.includes("g") ? "true" : "false"}, ` +
+                `${ignoreCase && !unicode ? "true" : "false"}` +
+                `${unicode ? ", true" : ""})`,
+        };
     }
 
     private compilePropertyCall(

@@ -2181,6 +2181,8 @@ export interface ValueFields {
     requiresApplicationRealm?: true;
     /** Known RegExp grammar determines the positional replacement callback arguments. */
     regexpCaptureCount?: number;
+    /** A `u`-flag RegExp, whose runtime pattern matches whole code points. */
+    regexpUnicode?: true;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration

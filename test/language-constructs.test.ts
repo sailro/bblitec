@@ -3269,6 +3269,75 @@ test("structuredClone refuses shapes without a clone codec", () => {
 });
 
 check(
+    "regexp-unicode-flag-matches-code-points",
+    String.raw`
+    function stripMarks(value: string): string { return value.replace(/\p{Diacritic}/gu, "").toLowerCase().trim(); }
+    if (stripMarks("Élodie Brontë ") !== "elodie bronte") throw new Error("diacritics");
+    const s = ["abc", "a\u{1F600}b", "x\ud800y", "😀"];
+    const astral = s[1]!;
+    if (!/^a/u.test(s[0]!) || astral.match(/./gu)!.length !== 3 || astral.match(/./g)!.length !== 4) throw new Error("dot");
+    if (!/^a.b$/u.test(astral) || /^a.b$/.test(astral)) throw new Error("dot anchors");
+    if (astral.replace(/(?:)/gu, "-") !== "-a-\u{1F600}-b-") throw new Error("empty matches advance by code point");
+    const parts = s[3]!.split(/(?:)/u);
+    if (parts.length !== 1 || parts[0] !== "\u{1F600}" || "a,b".split(/,/u).join("|") !== "a|b" || "".split(/x/u).length !== 1) throw new Error("split");
+    if (/\ude00/u.test(s[3]!) || !/😀/u.test(s[3]!) || !/^[\u{1F600}-\u{1F64F}]$/u.test(s[3]!)) throw new Error("surrogates");
+    if (!/^x[\ud800-\udbff]y$/u.test(s[2]!) || !/^x.y$/u.test(s[2]!) || /^x𐀀/u.test("x\ud800")) throw new Error("lone lead");
+    if (/[^a]/u.exec(s[3]!)![0] !== "\u{1F600}" || !/^\S$/u.test(s[3]!)) throw new Error("negated sets");
+    if (!/ſ/iu.test("s") || /ſ/i.test("s") || !/[a-z]/iu.test("K") || !/^K$/iu.test("k")) throw new Error("case folding");
+    if (!/^\p{Lu}+$/u.test("ÀB") || /^\P{L}$/u.test("é") || !/^\p{Script=Greek}$/u.test("α")) throw new Error("properties");
+    const re = /./gu;
+    re.lastIndex = 1;
+    const found = re.exec("\u{1F600}\u{1F600}");
+    if (!found || found[0] !== "\u{1F600}" || re.lastIndex !== 2) throw new Error("lastIndex inside a pair");
+    if ("a1b22".replace(/(\d)(\d)?/gu, "[$1|$2|$&|$$|$01|$3]") !== "a[1||1|$|1|$3]b[2|2|22|$|2|$3]") throw new Error("substitution");
+    if ("x\u{1F600}y".replace(/\u{1F600}/u, "$` +
+        "`" +
+        String.raw`$'") !== "xxyy") throw new Error("context substitution");
+    const words = [..."é a\u{1F600}b".matchAll(/\w+/gu)].map((m) => m[0]);
+    if (words.join(",") !== "a,b" || !/\bx/u.test("éx") || /\bé/u.test(" é")) throw new Error("words");
+    const dynamic = new RegExp("^\\p{N}+$", "u");
+    if (!dynamic.test("٣" + "3") || dynamic.test("x")) throw new Error("constructor");
+    let count = 0;
+    const replaced = "a\u{1F600}".replace(/(.)/gu, (match, char: string, offset: number) => { count++; return char + offset; });
+    if (replaced !== "a0\u{1F600}1" || count !== 2) throw new Error("callback offsets");
+`,
+);
+
+test("u-flag RegExp forms the runtime engine cannot express refuse", () => {
+    for (const [source, message] of [
+        [
+            String.raw`const t = ["a"]; const r = /(?<=a)b/u.test(t[0]!);`,
+            /Lookbehind assertions are not lowered/,
+        ],
+        [
+            String.raw`const t = ["a"]; const r = /(?<x>a)/u.test(t[0]!);`,
+            /Named groups are not lowered/,
+        ],
+        [
+            String.raw`const t = ["aa"]; const r = /(a)\1/iu.test(t[0]!);`,
+            /A backreference under the i and u flags/,
+        ],
+        [
+            String.raw`const t = ["a"]; const r = /\ba/iu.test(t[0]!);`,
+            /A word boundary under the i and u flags/,
+        ],
+        [
+            String.raw`const t = ["a,b"]; const r = t[0]!.split(/(,)/u);`,
+            /String\.split by a u-flag RegExp with capture groups/,
+        ],
+        [
+            String.raw`const p = ["a"]; const r = new RegExp(p[0]!, "u");`,
+            /A u-flag RegExp constructor needs a pattern known at generation/,
+        ],
+        [
+            String.raw`const t = ["a"]; const r = /a/y.test(t[0]!);`,
+            /support the g, i and u flags, not 'y'/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
     "buffer-source-unions",
     `
     function sourceBytes(source: ArrayBuffer | ArrayBufferView): Uint8Array {
@@ -7985,8 +8054,8 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
             /Enumerating a struct with optional properties as a fixed list requires known own keys/,
         ],
         [
-            `const names = ["\\u00e9"]; console.log(/\\p{L}/u.test(names[0]!));`,
-            /Reached RegExp literals support the g and i flags, not 'u'/,
+            `const names = ["a"]; console.log(/^a/m.test(names[0]!));`,
+            /Reached RegExp literals support the g, i and u flags, not 'm'/,
         ],
     ];
     for (const [source, message] of refusals)

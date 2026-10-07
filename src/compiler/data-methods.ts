@@ -3524,6 +3524,16 @@ function compileStringDataMethod(
             argumentAt(call, 0),
         );
         if (separatorValue.kind === "regexp") {
+            // Split pushes each capture, an unmatched one as undefined, which
+            // a string list cannot hold; the code point split takes none.
+            if (
+                separatorValue.regexpUnicode &&
+                separatorValue.regexpCaptureCount !== 0
+            )
+                lowerer.context.fail(
+                    argumentAt(call, 0),
+                    "String.split by a u-flag RegExp with capture groups is not lowered.",
+                );
             return {
                 kind: "data",
                 cpp: `${separatorValue.cpp}.split(${narrowed.cpp})`,

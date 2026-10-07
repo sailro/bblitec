@@ -1375,11 +1375,16 @@ struct RegExpReplacement {
     }
 };
 
-/** RegExp aliases share their expression and lastIndex, measured in UTF-16 units. */
+/**
+ * RegExp aliases share their expression and lastIndex, measured in UTF-16 units.
+ * A `unicode` expression is the compiler's rewrite of a `u` pattern over UTF-16
+ * units, each atom consuming whole code points: matches start at code point
+ * boundaries and an empty match advances by one code point.
+ */
 class RegExp {
 public:
-    RegExp(std::string source, bool global, bool ignore_case)
-        : state_(std::make_shared<State>(source, global, ignore_case)) {}
+    RegExp(std::string source, bool global, bool ignore_case, bool unicode = false)
+        : state_(std::make_shared<State>(source, global, ignore_case, unicode)) {}
 
     [[nodiscard]] double& last_index() const { return state_->last_index; }
 
@@ -1395,7 +1400,8 @@ public:
         }
         const auto start = static_cast<std::size_t>(requested);
         std::wsmatch match;
-        if (!search(units, start, match)) {
+        const auto position = search(units, start, match);
+        if (!position) {
             if (state_->global)
                 last_index() = 0.0;
             return std::nullopt;
@@ -1406,8 +1412,7 @@ public:
             groups.push_back(group.matched ? narrow(group.str()) : std::string{});
         }
         if (state_->global) {
-            last_index() = static_cast<double>(start + static_cast<std::size_t>(match.position()) +
-                                               match.length());
+            last_index() = static_cast<double>(*position + match.length());
         }
         return groups;
     }
@@ -1415,6 +1420,33 @@ public:
     [[nodiscard]] Array<std::string> split(const std::string& input) const {
         Array<std::string> result;
         const auto units = wide(input);
+        if (state_->unicode) {
+            // String.prototype[Symbol.split]: a sticky match at each code point.
+            std::wsmatch match;
+            if (units.empty()) {
+                if (!match_at(units, 0, match))
+                    result.push_back(input);
+                return result;
+            }
+            std::size_t previous = 0;
+            for (std::size_t position = 0; position < units.size();) {
+                if (!match_at(units, position, match)) {
+                    position = advance(units, position);
+                    continue;
+                }
+                const auto end =
+                    std::min(position + static_cast<std::size_t>(match.length()), units.size());
+                if (end == previous) {
+                    position = advance(units, position);
+                    continue;
+                }
+                result.push_back(narrow(units.substr(previous, position - previous)));
+                previous = end;
+                position = end;
+            }
+            result.push_back(narrow(units.substr(previous)));
+            return result;
+        }
         std::wsregex_token_iterator part(units.begin(), units.end(), state_->expression, -1);
         const std::wsregex_token_iterator end;
         for (; part != end; ++part)
@@ -1429,7 +1461,10 @@ public:
             last_index() = 0.0;
         std::size_t start = 0;
         std::wsmatch found;
-        while (start <= units.size() && search(units, start, found)) {
+        while (start <= units.size()) {
+            const auto position = search(units, start, found);
+            if (!position)
+                break;
             if (state_->global)
                 result.push_back(narrow(found.str()));
             else {
@@ -1438,9 +1473,9 @@ public:
                     result.push_back(group.matched ? narrow(group.str()) : std::string{});
                 break;
             }
-            start += static_cast<std::size_t>(found.position() + found.length());
+            start = *position + static_cast<std::size_t>(found.length());
             if (found.length() == 0)
-                ++start;
+                start = advance(units, start);
         }
         return result.empty() ? Nullable<Array<std::string>>(std::nullopt)
                               : Nullable<Array<std::string>>(std::move(result));
@@ -1458,22 +1493,29 @@ public:
             return result;
         std::size_t start = static_cast<std::size_t>(requested);
         std::wsmatch found;
-        while (start <= units.size() && search(units, start, found)) {
+        while (start <= units.size()) {
+            const auto position = search(units, start, found);
+            if (!position)
+                break;
             Array<std::string> groups;
             groups.reserve(found.size());
             for (const auto& group : found) {
                 groups.push_back(group.matched ? narrow(group.str()) : std::string{});
             }
             result.push_back(std::move(groups));
-            start += static_cast<std::size_t>(found.position() + found.length());
+            start = *position + static_cast<std::size_t>(found.length());
             if (found.length() == 0)
-                ++start;
+                start = advance(units, start);
         }
         return result;
     }
 
     [[nodiscard]] std::string replace(const std::string& input,
                                       const std::string& replacement) const {
+        if (state_->unicode)
+            return replace_with(input, [&replacement](const RegExpReplacement& match) {
+                return substitution(match, replacement);
+            });
         const auto units = wide(input);
         if (state_->global)
             last_index() = 0.0;
@@ -1512,23 +1554,108 @@ private:
     static std::string narrow(const std::wstring& input) {
         return string_from_code_units({input.begin(), input.end()});
     }
+    static bool lead_surrogate(wchar_t unit) { return unit >= 0xD800 && unit <= 0xDBFF; }
+    static bool trail_surrogate(wchar_t unit) { return unit >= 0xDC00 && unit <= 0xDFFF; }
     struct State {
         std::wregex expression;
         bool global;
+        bool unicode;
         double last_index = 0;
-        State(const std::string& source, bool global_, bool ignore_case)
+        State(const std::string& source, bool global_, bool ignore_case, bool unicode_)
             : expression(wide(source), ignore_case ? std::regex_constants::ECMAScript |
                                                          std::regex_constants::icase
                                                    : std::regex_constants::ECMAScript),
-              global(global_) {}
+              global(global_), unicode(unicode_) {}
     };
     std::shared_ptr<State> state_;
 
-    bool search(const std::wstring& input, std::size_t start, std::wsmatch& match) const {
-        const auto flags = start == 0 ? std::regex_constants::match_default
-                                      : std::regex_constants::match_prev_avail;
-        return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start), input.cend(),
-                                 match, state_->expression, flags);
+    /** AdvanceStringIndex: one code point in unicode mode, one unit otherwise. */
+    std::size_t advance(const std::wstring& input, std::size_t index) const {
+        return state_->unicode && index + 1 < input.size() && lead_surrogate(input[index]) &&
+                       trail_surrogate(input[index + 1])
+                   ? index + 2
+                   : index + 1;
+    }
+
+    /** A match starting exactly at `position`. */
+    bool match_at(const std::wstring& input, std::size_t position, std::wsmatch& match) const {
+        const auto flags = (position == 0 ? std::regex_constants::match_default
+                                          : std::regex_constants::match_prev_avail) |
+                           std::regex_constants::match_continuous;
+        return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(position),
+                                 input.cend(), match, state_->expression, flags);
+    }
+
+    /** The first match at or after `start`, as its UTF-16 index. */
+    std::optional<std::size_t> search(const std::wstring& input, std::size_t start,
+                                      std::wsmatch& match) const {
+        if (!state_->unicode) {
+            const auto flags = start == 0 ? std::regex_constants::match_default
+                                          : std::regex_constants::match_prev_avail;
+            if (!std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start),
+                                   input.cend(), match, state_->expression, flags))
+                return std::nullopt;
+            return start + static_cast<std::size_t>(match.position());
+        }
+        // A start inside a surrogate pair begins at the pair, as V8 reads lastIndex.
+        if (start > 0 && start < input.size() && trail_surrogate(input[start]) &&
+            lead_surrogate(input[start - 1]))
+            --start;
+        for (std::size_t position = start; position <= input.size();
+             position = advance(input, position))
+            if (match_at(input, position, match))
+                return position;
+        return std::nullopt;
+    }
+
+    /** GetSubstitution over UTF-16 units: `$$`, `$&`, `` $` ``, `$'` and `$n`/`$nn`. */
+    static std::string substitution(const RegExpReplacement& match,
+                                    const std::string& replacement) {
+        const auto pattern = string_code_units(replacement);
+        const auto input = string_code_units(match.input);
+        const auto matched = string_code_units(*match.groups[0]);
+        const auto position = static_cast<std::size_t>(match.offset);
+        const std::size_t captures = match.groups.size() - 1;
+        std::u16string output;
+        for (std::size_t index = 0; index < pattern.size(); ++index) {
+            const char16_t unit = pattern[index];
+            if (unit != u'$' || index + 1 >= pattern.size()) {
+                output.push_back(unit);
+                continue;
+            }
+            const char16_t next = pattern[index + 1];
+            if (next == u'$') {
+                output.push_back(u'$');
+                ++index;
+            } else if (next == u'&') {
+                output += matched;
+                ++index;
+            } else if (next == u'`') {
+                output.append(input, 0, position);
+                ++index;
+            } else if (next == u'\'') {
+                const auto tail = std::min(position + matched.size(), input.size());
+                output.append(input, tail, input.size() - tail);
+                ++index;
+            } else if (next >= u'0' && next <= u'9') {
+                const std::size_t one = static_cast<std::size_t>(next - u'0');
+                const bool two_digits = index + 2 < pattern.size() && pattern[index + 2] >= u'0' &&
+                                        pattern[index + 2] <= u'9';
+                const std::size_t both =
+                    two_digits ? one * 10 + static_cast<std::size_t>(pattern[index + 2] - u'0') : 0;
+                const std::size_t group = two_digits && both >= 1 && both <= captures ? both : one;
+                if (group < 1 || group > captures) {
+                    output.push_back(unit);
+                    continue;
+                }
+                if (const auto& captured = match.groups[group])
+                    output += string_code_units(*captured);
+                index += group == both && two_digits ? 2 : 1;
+            } else {
+                output.push_back(unit);
+            }
+        }
+        return string_from_code_units(output);
     }
 
     std::vector<RegExpReplacement> replacements(const std::string& input) const {
@@ -1538,9 +1665,11 @@ private:
             last_index() = 0.0;
         std::size_t start = 0;
         std::wsmatch match;
-        while (start <= units.size() && search(units, start, match)) {
-            const auto position = start + static_cast<std::size_t>(match.position());
-            RegExpReplacement result{{}, static_cast<double>(position), input};
+        while (start <= units.size()) {
+            const auto position = search(units, start, match);
+            if (!position)
+                break;
+            RegExpReplacement result{{}, static_cast<double>(*position), input};
             result.groups.reserve(match.size());
             for (const auto& group : match)
                 result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str()))
@@ -1548,9 +1677,9 @@ private:
             results.push_back(std::move(result));
             if (!state_->global)
                 break;
-            start = position + static_cast<std::size_t>(match.length());
+            start = *position + static_cast<std::size_t>(match.length());
             if (match.length() == 0)
-                ++start;
+                start = advance(units, start);
         }
         return results;
     }
