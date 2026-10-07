@@ -4077,6 +4077,23 @@ test("promise combinator literal spreads refuse mixed settlement types", () => {
         );
 });
 
+
+checkInRealm(
+    "reactions-adopt-a-value-or-promise-result",
+    `
+    async function later(value: number): Promise<number> { await Promise.resolve(); return value; }
+    function pick(slow: boolean, value: number): number | Promise<number> { return slow ? later(value) : value; }
+    let slow = false;
+    void (async () => {
+        const quick = await Promise.resolve(0).then(() => pick(slow, 2));
+        slow = true;
+        const adopted = await Promise.resolve(0).then(() => pick(slow, 5));
+        if (quick + 1 !== 3 || adopted + 1 !== 6) throw new Error("adopted " + quick + " " + adopted);
+        globalThis.close();
+    })();
+`,
+);
+
 checkInRealm(
     "structured-clone-copies-data",
     `

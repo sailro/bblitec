@@ -120,10 +120,7 @@ export class AsyncLowerer {
                     node,
                 ));
         const raw = context.compileValue(expression);
-        const value =
-            this.adoptOptionalPromise(raw, expression) ??
-            this.adoptValueOrPromise(raw) ??
-            raw;
+        const value = this.adoptPromiseUnion(raw, expression) ?? raw;
         if (value.kind === "promise") {
             const expected = type
                 ? context.dataTypes.cppType(type)
@@ -1644,15 +1641,20 @@ export class AsyncLowerer {
             expected,
         );
     }
-    /** An absent promise settles to absence; a present promise adopts its payload. */
-    private adoptOptionalPromise(
+    /**
+     * A union holding a promise, as resolution adopts it: an absent promise
+     * settles to absence and a present one adopts its payload; a
+     * value-or-promise union (`T | Promise<T>`) is its promise arm itself,
+     * or its value arm resolved.
+     */
+    private adoptPromiseUnion(
         value: Value,
         node: ts.Node,
         source = this.context.checker.getTypeAtLocation(node),
     ): Value | undefined {
         const type = value.dataType;
         if (type?.kind !== "optional" || type.inner.kind !== "promise")
-            return undefined;
+            return this.adoptValueOrPromise(value);
         const context = this.context;
         const awaited = context.checker.getAwaitedType(source);
         const mapped = awaited && context.dataTypes.fromTsType(awaited, node);
@@ -1696,9 +1698,7 @@ export class AsyncLowerer {
         source = this.context.checker.getTypeAtLocation(node),
     ): Value {
         if (value.kind === "promise") return value;
-        const adopted =
-            this.adoptOptionalPromise(value, node, source) ??
-            this.adoptValueOrPromise(value);
+        const adopted = this.adoptPromiseUnion(value, node, source);
         if (adopted) return adopted;
         value = this.normalizeUndefined(
             value,
@@ -1778,7 +1778,7 @@ export class AsyncLowerer {
         node: ts.Node,
         source: ts.Type | undefined,
     ): Value {
-        const adopted = this.adoptOptionalPromise(value, node, source);
+        const adopted = this.adoptPromiseUnion(value, node, source);
         if (adopted) return adopted;
         const awaited =
             source && (this.context.checker.getAwaitedType(source) ?? source);
@@ -1895,10 +1895,6 @@ export class AsyncLowerer {
             owned,
         );
     }
-    /**
-     * A value-or-promise union (`T | Promise<T>`) as a promise: its promise
-     * arm itself, or its value arm resolved.
-     */
     private adoptValueOrPromise(value: Value): Value | undefined {
         const type = value.dataType;
         if (value.kind !== "data" || type?.kind !== "union") return undefined;
