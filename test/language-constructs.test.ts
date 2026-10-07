@@ -8419,6 +8419,19 @@ check(
     if (session.resolve(request) !== 5) throw new Error("resolve");
     request.axis0 = 7;
     if (session.resolve(request) !== 8) throw new Error("written request");
+    interface Box<T> { value: T }
+    interface Held<S> { readonly state: S; distance: number }
+    interface Concrete extends Held<Box<number>> { readonly extra: number }
+    function keep<T>(make: () => Held<Box<T>>): Held<Box<T>>[] {
+        const kept: Held<Box<T>>[] = [];
+        const held = make();
+        kept.push(held);
+        held.distance = 3;
+        return kept;
+    }
+    const concrete: Concrete = { state: { value: 1 }, distance: 2, extra: 4 };
+    const kept = keep<number>(() => concrete);
+    if (kept[0] !== concrete || concrete.distance !== 3 || kept[0]!.state.value !== 1) throw new Error("nested instantiation");
 `,
 );
 

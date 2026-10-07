@@ -66,7 +66,8 @@ export function recordIdentity(
  */
 export interface InstantiatedRecord {
     readonly generic: ts.Symbol | ts.Type;
-    readonly arguments: readonly ts.Type[];
+    /** Each argument's concrete type, or a generic one's instantiation. */
+    readonly arguments: readonly (ts.Type | InstantiatedRecord)[];
 }
 
 /** @unjournaled Canonical identities of the checked program's types, kept across replays. */
@@ -78,7 +79,7 @@ const instantiatedRecords = new WeakMap<
 /** The one identity of a generic record type's instantiation. */
 export function instantiatedRecord(
     generic: ts.Symbol | ts.Type,
-    arguments_: readonly ts.Type[],
+    arguments_: readonly (ts.Type | InstantiatedRecord)[],
 ): InstantiatedRecord {
     let known = instantiatedRecords.get(generic);
     if (!known) instantiatedRecords.set(generic, (known = []));

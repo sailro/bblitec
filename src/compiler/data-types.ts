@@ -1185,9 +1185,9 @@ export class DataTypeRegistry {
     /**
      * A generic record type naming type parameters the instantiations in
      * force substitute, as that one instantiation: its generic interface,
-     * class or alias with each argument resolved. Undefined for a type no
-     * instantiation reaches, and for one whose arguments do not resolve to
-     * concrete types.
+     * class or alias with each argument resolved (a generic argument as its
+     * own instantiation). Undefined for a type no instantiation reaches,
+     * and for one an argument of which does not resolve.
      */
     private instantiatedRecordOf(
         type: ts.Type,
@@ -1204,12 +1204,13 @@ export class DataTypeRegistry {
                     ]
                   : [undefined, []];
         if (!generic) return undefined;
-        const resolved = arguments_.map((argument) =>
-            this.resolveTypeParameter(argument),
-        );
-        return resolved.every(
-            (argument) => !this.mentionsSubstitution(argument),
-        )
+        const resolved = arguments_.map((argument) => {
+            const concrete = this.resolveTypeParameter(argument);
+            return this.mentionsSubstitution(concrete)
+                ? this.instantiatedRecordOf(concrete)
+                : concrete;
+        });
+        return resolved.every((argument) => argument !== undefined)
             ? instantiatedRecord(generic, resolved)
             : undefined;
     }
