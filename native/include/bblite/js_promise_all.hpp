@@ -72,12 +72,31 @@ Promise<std::tuple<T...>> promise_all_tuple(const std::tuple<Promise<T>...>& inp
     return promise_detail::all_tuple(inputs, std::index_sequence_for<T...>{});
 }
 
-template <typename T> Promise<Array<T>> promise_all(const Array<Promise<T>>& inputs) {
-    using PendingValues = std::vector<std::optional<T>>;
-    auto state = make_gc_shared<promise_detail::AllState<PendingValues, Array<T>>>(inputs.size());
+namespace promise_detail {
+
+/** What an aggregate array holds for one fulfillment: a void fulfillment is undefined. */
+template <typename T> struct AllElement {
+    using type = T;
+    static const T& from(const T& value) { return value; }
+};
+template <> struct AllElement<PromiseVoid> {
+    using type = Undefined;
+    static Undefined from(const PromiseVoid&) { return {}; }
+};
+
+} // namespace promise_detail
+
+template <typename T>
+Promise<Array<typename promise_detail::AllElement<T>::type>>
+promise_all(const Array<Promise<T>>& inputs) {
+    using Element = promise_detail::AllElement<T>;
+    using Stored = typename Element::type;
+    using PendingValues = std::vector<std::optional<Stored>>;
+    auto state =
+        make_gc_shared<promise_detail::AllState<PendingValues, Array<Stored>>>(inputs.size());
     state->values.resize(inputs.size());
     if (inputs.empty())
-        state->result.resolve(Array<T>{});
+        state->result.resolve(Array<Stored>{});
     for (std::size_t index = 0; index < inputs.size(); ++index)
         inputs[index].observe(
             make_closure(std::tuple{state, index},
@@ -87,9 +106,9 @@ template <typename T> Promise<Array<T>> promise_all(const Array<Promise<T>>& inp
                              if (owned.settled)
                                  return;
                              try {
-                                 owned.values[position] = value;
+                                 owned.values[position] = Element::from(value);
                                  owned.ready([](const PendingValues& values) {
-                                     Array<T> result;
+                                     Array<Stored> result;
                                      result.reserve(values.size());
                                      for (const auto& item : values)
                                          result.push_back(*item);

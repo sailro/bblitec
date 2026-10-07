@@ -5,6 +5,7 @@
 // checker already rejects; it refuses here too.
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
+import { BIGINT_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { pinOperand } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { expressionMayRunCode, isUpdateExpression } from "./syntax.js";
@@ -319,12 +320,6 @@ export function compileBigIntUpdate(
     };
 }
 
-/** BigInt64Array and BigUint64Array, by constructor name. */
-const BIGINT_ARRAYS = new Map<string, "i64array" | "u64array">([
-    ["BigInt64Array", "i64array"],
-    ["BigUint64Array", "u64array"],
-]);
-
 function bigintArrayElement(kind: "i64array" | "u64array"): string {
     return kind === "i64array" ? "std::int64_t" : "std::uint64_t";
 }
@@ -339,7 +334,7 @@ export function compileBigIntArrayNew(
 ): Value | undefined {
     const context = lowerer.context;
     const constructor = context.libraryGlobal(expression.expression);
-    const kind = constructor ? BIGINT_ARRAYS.get(constructor) : undefined;
+    const kind = constructor ? BIGINT_ARRAY_KINDS.get(constructor) : undefined;
     if (!kind) return undefined;
     context.reachJsData();
     const type = { kind } as const;

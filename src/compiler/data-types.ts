@@ -28,6 +28,7 @@ export {
     isBinaryDataType,
     isNumericSequenceType,
     isTypedArrayType,
+    typedArrayBytesPerElement,
     typedArrayConstructorName,
     typedArrayStem,
     typedArrayElement,

@@ -940,22 +940,18 @@ export class AsyncLowerer {
             const awaited = type && context.checker.getAwaitedType(type);
             return ((awaited?.flags ?? 0) & ts.TypeFlags.Never) !== 0;
         };
-        if (ts.isArrayLiteralExpression(argument))
-            promises = argument.elements.map((element) => {
-                if (ts.isSpreadElement(element))
-                    return context.fail(
-                        element,
-                        `Promise.${operation} literal spreads require a represented array first.`,
-                    );
-                return pin(
+        const spread = this.spreadLiteralInput(argument, operation);
+        if (ts.isArrayLiteralExpression(argument) && !spread)
+            promises = argument.elements.map((element) =>
+                pin(
                     ts.isOmittedExpression(element)
                         ? { kind: "void", cpp: "" }
                         : context.compileValue(element),
                     element,
-                );
-            });
+                ),
+            );
         else {
-            const value = context.compileValue(argument);
+            const value = spread ?? context.compileValue(argument);
             if (value.kind === "tuple")
                 promises = (value.tupleElements ?? []).map((value) =>
                     pin(value),
@@ -997,6 +993,52 @@ export class AsyncLowerer {
             nativeCaptures: promises.flatMap(
                 (value) => value.nativeCaptures ?? [],
             ),
+        };
+    }
+
+    /**
+     * An array literal with spreads (`[p, ...ps]`) holds a count known only
+     * at run time: it is the fresh array JavaScript builds first, element by
+     * element in source order, which the combinator then reads as a stored
+     * array. Its elements must be promises of one settlement type.
+     */
+    private spreadLiteralInput(
+        argument: ts.Expression,
+        operation: string,
+    ): Value | undefined {
+        if (
+            !ts.isArrayLiteralExpression(argument) ||
+            !argument.elements.some(ts.isSpreadElement)
+        )
+            return undefined;
+        const lowerer = this.context.dataLowerer;
+        let element: DataType | undefined;
+        for (const item of argument.elements) {
+            const declared = lowerer.dataTypeAt(
+                ts.isSpreadElement(item) ? item.expression : item,
+            );
+            const type = !ts.isSpreadElement(item)
+                ? declared
+                : declared?.kind === "vector" || declared?.kind === "span"
+                  ? declared.element
+                  : undefined;
+            if (
+                type?.kind !== "promise" ||
+                (element !== undefined && !dataTypesEqual(element, type))
+            )
+                return this.context.fail(
+                    item,
+                    `Promise.${operation} literal spreads require promises and arrays of promises of one settlement type.`,
+                );
+            element = type;
+        }
+        const array: DataType = { kind: "vector", element: element! };
+        return {
+            ...lowerer.leafValue(
+                lowerer.compileForSink(argument, array),
+                array,
+            ),
+            freshData: true,
         };
     }
 
@@ -1111,22 +1153,24 @@ export class AsyncLowerer {
             );
         };
         let promises: Value[];
-        if (ts.isArrayLiteralExpression(argument)) {
-            promises = argument.elements.map((element) => {
-                if (ts.isSpreadElement(element))
-                    context.fail(
-                        element,
-                        `Promise.${operation} literal spreads require a represented array first.`,
-                    );
-                return pin(
+        const spread = settled
+            ? this.spreadLiteralInput(argument, operation)
+            : context.asyncActivations.withOrderedAggregateInput(
+                  call,
+                  argument,
+                  () => this.spreadLiteralInput(argument, operation),
+              );
+        if (ts.isArrayLiteralExpression(argument) && !spread) {
+            promises = argument.elements.map((element) =>
+                pin(
                     ts.isOmittedExpression(element)
                         ? { kind: "void", cpp: "" }
                         : compileInput(element),
                     element,
-                );
-            });
+                ),
+            );
         } else {
-            const value = compileInput(argument);
+            const value = spread ?? compileInput(argument);
             if (value.kind === "tuple") {
                 const type = context.checker.getTypeAtLocation(argument);
                 promises = (value.tupleElements ?? []).map((element, index) =>
@@ -1155,14 +1199,16 @@ export class AsyncLowerer {
                         },
                     );
                 }
-                if (!element)
-                    return context.fail(
-                        argument,
-                        "Promise.all stored void arrays need an undefined element representation.",
-                    );
+                // A void fulfillment is undefined in the aggregate array.
                 return context.dataLowerer.leafValue(
                     `bbl::js::promise_all(${value.cpp})`,
-                    { kind: "promise", result: { kind: "vector", element } },
+                    {
+                        kind: "promise",
+                        result: {
+                            kind: "vector",
+                            element: element ?? { kind: "undefined" },
+                        },
+                    },
                 );
             }
         }

@@ -122,6 +122,7 @@ import {
     sharesStorageKind,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
+    typedArrayBytesPerElement,
     typedArrayConstructorName,
     typedArrayStem,
     typedArrayStoreExpression,
@@ -4411,6 +4412,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (dataType.kind === "symbol")
             return symbolProperty(this, owner, property);
+        // The kind fixes every instance's element size; an owner that runs
+        // code still runs, in place.
+        if (
+            property === "BYTES_PER_ELEMENT" &&
+            (isTypedArrayType(dataType) ||
+                dataType.kind === "i64array" ||
+                dataType.kind === "u64array")
+        ) {
+            const size = numberConstantValue(
+                typedArrayBytesPerElement(dataType.kind),
+            );
+            return expressionMayRunCode(access.expression)
+                ? this.leafValue(
+                      `(static_cast<void>(${owner.cpp}), ${size.cpp})`,
+                      size.dataType!,
+                  )
+                : size;
+        }
         if (dataType.kind === "i64array" || dataType.kind === "u64array")
             return bigintArrayProperty(this, owner, property);
         if (

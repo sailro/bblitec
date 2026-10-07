@@ -97,6 +97,13 @@ export function compileImmediatePromise(
             context.fail(call, "Promise.all requires one static iterable.");
         }
         const argument = argumentAt(call, 0);
+        // A spread's count is known only at run time: the realm's owned
+        // promises aggregate it.
+        if (
+            ts.isArrayLiteralExpression(argument) &&
+            argument.elements.some(ts.isSpreadElement)
+        )
+            throw new ApplicationRealmRequired();
         if (!ts.isArrayLiteralExpression(argument)) {
             const iterable = context.compileValue(argument);
             if (

@@ -3509,6 +3509,60 @@ checkInRealm(
 );
 
 checkInRealm(
+    "promise-combinators-over-literal-spreads",
+    `
+    const order: string[] = [];
+    async function tick(count: number): Promise<void> { for (let i = 0; i < count; i++) await Promise.resolve(); }
+    async function step(name: string): Promise<void> { order.push(name); await tick(1); }
+    async function value(name: string, result: number, delay: number): Promise<number> { order.push(name); await tick(delay); return result; }
+    async function fail(error: Error, delay: number): Promise<number> { await tick(delay); throw error; }
+    function startAll(extra: boolean, ready: Promise<void> | null): Promise<void> | null {
+        return Promise.all([ready!, step("a"), ...(extra ? [step("extra")] : [])]).then(() => undefined);
+    }
+    function many(names: string[]): Promise<number>[] { order.push("spread"); return names.map((name, index) => value(name, index, 3 - index)); }
+    void (async () => {
+        const started = startAll(true, step("first"));
+        if (order.join() !== "first,a,extra") throw new Error("inputs start in order " + order.join());
+        await started;
+        await startAll(false, step("again"));
+        order.length = 0;
+        const values = await Promise.all([value("x", 10, 1), ...many(["p", "q"]), value("y", 20, 0)]);
+        if (values.join() !== "10,0,1,20" || order.join() !== "x,spread,p,q,y") throw new Error("ordered results " + values.join() + " " + order.join());
+        const xs = [1, 2, 3];
+        const doubled = await Promise.all([...xs.map((x) => value("m", x * 2, 3 - x)), value("n", 7, 0)]);
+        if (doubled.join() !== "2,4,6,7") throw new Error("mapped spread " + doubled.join());
+        const voids = await Promise.all([step("v"), ...[step("w")]]);
+        if (voids.length !== 2 || voids[0] !== undefined || voids[1] !== undefined) throw new Error("void results are undefined");
+        const pending: Promise<void>[] = [step("k"), step("l")];
+        const fromStored = await Promise.all(pending);
+        if (fromStored.length !== 2 || fromStored[1] !== undefined) throw new Error("stored void array");
+        const slow = new RangeError("slow"), fast = new TypeError("fast");
+        let caught = "none";
+        try { await Promise.all([fail(slow, 3), ...[fail(fast, 1)], value("z", 1, 0)]); } catch (error) { caught = error === fast ? "fast" : "other"; }
+        if (caught !== "fast") throw new Error("first rejection wins: " + caught);
+        const settled = await Promise.allSettled([value("s", 5, 1), ...[fail(slow, 0)]]);
+        const kept = settled[0]!, lost = settled[1]!;
+        if (kept.status !== "fulfilled" || kept.value !== 5 || lost.status !== "rejected" || lost.reason !== slow) throw new Error("settled spread");
+        const winner = await Promise.race([value("r", 1, 3), ...[value("t", 2, 1)]]);
+        const any = await Promise.any([fail(slow, 0), ...[value("u", 9, 2)]]);
+        if (winner !== 2 || any !== 9) throw new Error("race and any over spreads");
+        globalThis.close();
+    })();
+`,
+);
+
+test("promise combinator literal spreads refuse mixed settlement types", () => {
+    for (const source of [
+        "async function n(): Promise<number> { return 1; } async function s(): Promise<string> { return ''; } const xs = [s()]; void Promise.all([n(), ...xs]);",
+        "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /Promise\.all literal spreads require promises and arrays of promises of one settlement type/,
+        );
+});
+
+checkInRealm(
     "structured-clone-copies-data",
     `
     interface Row { a: number[]; name: string; when?: Date }
@@ -4014,6 +4068,37 @@ check(
     if (!(bytes instanceof Uint8Array) || bytes.join() !== "1,255,0" || !(floats instanceof Float32Array) || floats.join() !== "0.5,0") throw new Error("new through the read");
     if (!(copied instanceof Int16Array) || copied.join() !== "7,-3") throw new Error("from through the read");
     if (!(sized instanceof Uint32Array) || sized.join() !== "0,0" || reads !== 1) throw new Error("owner evaluated once");
+`,
+);
+
+check(
+    "typed-array-bytes-per-element",
+    `
+    const sizes = [Int8Array.BYTES_PER_ELEMENT, Uint8Array.BYTES_PER_ELEMENT, Uint8ClampedArray.BYTES_PER_ELEMENT, Int16Array.BYTES_PER_ELEMENT, Uint16Array.BYTES_PER_ELEMENT, Int32Array.BYTES_PER_ELEMENT, Uint32Array.BYTES_PER_ELEMENT, Float32Array.BYTES_PER_ELEMENT, Float64Array.BYTES_PER_ELEMENT, BigInt64Array.BYTES_PER_ELEMENT, BigUint64Array.BYTES_PER_ELEMENT];
+    if (sizes.join() !== "1,1,1,2,2,4,4,4,8,8,8") throw new Error("class constants " + sizes.join());
+    function floatsAt(section: Uint8Array, floats: number): Float32Array {
+        return section.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
+            ? new Float32Array(section.buffer, section.byteOffset, floats)
+            : new Float32Array(Uint8Array.from(section).buffer, 0, floats);
+    }
+    const buffer = new ArrayBuffer(16);
+    const whole = new Float32Array(buffer);
+    whole[1] = 2.5;
+    const aligned = floatsAt(new Uint8Array(buffer, 4, 8), 2);
+    const copied = floatsAt(new Uint8Array(buffer, 2, 8), 2);
+    if (aligned.buffer !== buffer || aligned[0] !== 2.5 || copied.buffer === buffer || copied.byteOffset !== 0) throw new Error("aligned view or copy");
+    const words = new Uint32Array(3);
+    if (words.BYTES_PER_ELEMENT * words.length !== words.byteLength || new BigInt64Array(1).BYTES_PER_ELEMENT !== 8) throw new Error("instance constants");
+    const Kind = Int16Array;
+    const ofView = words.constructor as Uint32ArrayConstructor;
+    if (Kind.BYTES_PER_ELEMENT !== 2 || ofView.BYTES_PER_ELEMENT !== 4) throw new Error("class values");
+    function pick(wide: boolean): Float64Array | Uint8Array { return wide ? new Float64Array(1) : new Uint8Array(1); }
+    if (pick(true).BYTES_PER_ELEMENT !== 8 || pick(false).BYTES_PER_ELEMENT !== 1) throw new Error("union members");
+    const order: string[] = [];
+    function make(): Int8Array { order.push("make"); return new Int8Array(2); }
+    function mark(step: string): number { order.push(step); return 0; }
+    if (mark("left") + make().BYTES_PER_ELEMENT + mark("right") !== 1) throw new Error("owner constant");
+    if (order.join() !== "left,make,right") throw new Error("owner evaluated once, in order " + order.join());
 `,
 );
 
@@ -8659,6 +8744,23 @@ check(
     if (specs[1]!.scrub !== "x" || specs[1]!.onCommit !== undefined || specs[1]!.frame !== undefined)
         throw new Error("absent optional fields");
     if (kept.scrub !== "a" || replaced.scrub !== "b") throw new Error("typed spread override");
+`,
+);
+
+check(
+    "typed-conditional-spread-readonly-array-fields",
+    `
+    interface Options { file: string; bones?: readonly number[]; names?: readonly string[] }
+    function options(file: string, bone: number | undefined): Options {
+        return { file, ...(bone === undefined ? {} : { bones: [bone, bone + 1] }), names: ["mesh"] };
+    }
+    function key(opts: Options): string { return JSON.stringify({ file: opts.file, bones: opts.bones ?? null }); }
+    const some = options("a", 4), none = options("b", undefined);
+    if (key(some) !== '{"file":"a","bones":[4,5]}' || key(none) !== '{"file":"b","bones":null}' || "bones" in none) throw new Error("conditional readonly array field");
+    const bones: number[] = [];
+    bones.push(9);
+    function hold(shared: readonly number[]): Options { return { file: "c", ...(shared.length > 0 ? { bones: shared } : {}) }; }
+    if (hold(bones).bones !== bones) throw new Error("spread keeps the array's identity");
 `,
 );
 
