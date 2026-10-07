@@ -14146,9 +14146,14 @@ test("projects open string records into optional struct parameters", () => {
         const count = spawn(entities);
     `);
 
+    // Each struct views its record's entries: reads see later writes, and
+    // an absent entry reads as undefined.
     assert.match(result.cpp, /project_result/);
-    assert.match(result.cpp, /\.get\("classname"\)/);
-    assert.match(result.cpp, /\.get\("origin"\)/);
+    assert.match(
+        result.cpp,
+        /optional_entry_accessor<.+>\([^,]+, "classname"\)/,
+    );
+    assert.match(result.cpp, /optional_entry_accessor<.+>\([^,]+, "origin"\)/);
 });
 
 test("runs data cleanup in finally across an early return", () => {

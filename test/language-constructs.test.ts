@@ -14049,10 +14049,18 @@ test("module records and tokens refuse what one object cannot represent", () => 
     assert.throws(
         () =>
             compileSource(
-                `const pairs = [{}, {}];
+                `const pairs = [{ side: 1 }, { side: 1 }];
                 if (pairs[0] === pairs[1]) throw new Error("distinct");`,
             ),
         /Comparison requires represented operands, received record and record\./,
+    );
+    // Empty object tokens compare by being one object: two literals never are.
+    assert.doesNotMatch(
+        compileSource(
+            `const pairs = [{}, {}];
+            if (pairs[0] === pairs[1]) throw new Error("distinct");`,
+        ).cpp,
+        /distinct/,
     );
     assert.throws(
         () =>
