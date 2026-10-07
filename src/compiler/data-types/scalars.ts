@@ -59,6 +59,9 @@ export const scalarKinds: DataKindOperations<
     | "text-decoder"
     | "text-encoder"
     | "collator"
+    | "number-format"
+    | "plural-rules"
+    | "list-format"
     | "number"
     | "boolean"
     | "string"
@@ -117,6 +120,9 @@ export const scalarKinds: DataKindOperations<
     "text-decoder": opaqueLeaf("bbl::js::TextDecoder", "textdecoder"),
     "text-encoder": opaqueLeaf("bbl::js::TextEncoder", "textencoder"),
     collator: opaqueLeaf("bbl::pal::Collator", "collator"),
+    "number-format": opaqueLeaf("bbl::pal::NumberFormat", "numberformat"),
+    "plural-rules": opaqueLeaf("bbl::pal::PluralRules", "pluralrules"),
+    "list-format": opaqueLeaf("bbl::pal::ListFormat", "listformat"),
     number: reseatingLeaf(CPP_SCALAR.number, "n"),
     boolean: reseatingLeaf(CPP_SCALAR.boolean, "b"),
     string: reseatingLeaf(CPP_SCALAR.string, "str"),

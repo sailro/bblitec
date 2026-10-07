@@ -5919,6 +5919,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.reachJson();
             return this.leafValue(`bbl::js::json_value(${lookup})`, type);
         }
+        // A slot of an opaque object reference reads as the Nullable an
+        // optional object of that kind is stored as.
+        if (isOpaqueReference(type))
+            return {
+                ...this.leafValue(
+                    `bbl::js::nullable_object(${lookup})`,
+                    this.context.dataTypes.nullableType(type),
+                ),
+                ownedCpp: `bbl::js::nullable_object(${owner}.get_owned(${key}))`,
+                ...(preserveUncheckedLookup
+                    ? { preserveUncheckedLookup: true as const }
+                    : {}),
+            };
         return {
             ...this.leafValue(
                 lookup,
@@ -13584,6 +13597,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) {
                 const equal =
                     leftValue.staticString === rightValue.staticString;
+                return equal !== negated ? "true" : "false";
+            }
+        }
+        // Typed-array classes are generation-time values: one per kind.
+        const constructorOperand = (node: ts.Expression): boolean =>
+            ts.isIdentifier(node) ||
+            (ts.isPropertyAccessExpression(node) &&
+                node.name.text === "constructor");
+        if (constructorOperand(left) && constructorOperand(right)) {
+            const classes = this.context.probeEmission(() => {
+                try {
+                    const values = [left, right].map((operand) =>
+                        this.context.compileValue(operand),
+                    );
+                    return values.every(
+                        (value) => value.kind === "typed-array-constructor",
+                    )
+                        ? values
+                        : undefined;
+                } catch (error) {
+                    if (error instanceof CompileError) return undefined;
+                    throw error;
+                }
+            });
+            if (classes) {
+                const [first, second] = [left, right].map((operand) =>
+                    this.context.compileValue(operand),
+                );
+                const equal =
+                    first!.typedArrayConstructor ===
+                    second!.typedArrayConstructor;
                 return equal !== negated ? "true" : "false";
             }
         }

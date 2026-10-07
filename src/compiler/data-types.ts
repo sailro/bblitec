@@ -1,8 +1,5 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
-import {
-    DEFERRED_DOM_OBJECTS,
-    DEFERRED_INTL_OBJECTS,
-} from "./data-types/model.js";
+import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
     BUFFER_VIEW_KINDS,
@@ -535,6 +532,9 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "text-decoder"
         | "text-encoder"
         | "collator"
+        | "number-format"
+        | "plural-rules"
+        | "list-format"
     ),
 ])[] = [
     ["Storage", "dom", "storage"],
@@ -548,6 +548,9 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["TextDecoder", "dom", "text-decoder"],
     ["TextEncoder", "dom", "text-encoder"],
     ["Collator", "default", "collator"],
+    ["NumberFormat", "default", "number-format"],
+    ["PluralRules", "default", "plural-rules"],
+    ["ListFormat", "default", "list-format"],
 ];
 
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
@@ -2057,14 +2060,8 @@ export class DataTypeRegistry {
         );
         if (libraryObject) return { kind: libraryObject[2] };
         const deferredObject =
-            (declaredInDomLibrary(type.symbol) &&
-                DEFERRED_DOM_OBJECTS.find(
-                    (name) => name === type.symbol.name,
-                )) ||
-            (declaredIn(type.symbol, "default-lib") &&
-                DEFERRED_INTL_OBJECTS.find(
-                    (name) => name === type.symbol.name,
-                ));
+            declaredInDomLibrary(type.symbol) &&
+            DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
         if (deferredObject)
             return { kind: "deferred-platform-object", name: deferredObject };
         if (

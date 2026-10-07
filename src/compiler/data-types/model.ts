@@ -104,8 +104,6 @@ export const DEFERRED_DOM_OBJECTS = [
     "DecompressionStream",
 ] as const;
 
-export const DEFERRED_INTL_OBJECTS = ["ListFormat", "PluralRules"] as const;
-
 interface DataKinds {
     "module-namespace": { kind: "module-namespace"; module: string };
     undefined: { kind: "undefined" };
@@ -116,10 +114,7 @@ interface DataKinds {
     "event-target": { kind: "event-target" };
     "deferred-platform-object": {
         kind: "deferred-platform-object";
-        name:
-            | (typeof DEFERRED_DOM_OBJECTS)[number]
-            | (typeof DEFERRED_INTL_OBJECTS)[number]
-            | "ReadableByteStream";
+        name: (typeof DEFERRED_DOM_OBJECTS)[number] | "ReadableByteStream";
     };
     "http-response": { kind: "http-response" };
     "gpu-adapter": { kind: "gpu-adapter" };
@@ -133,6 +128,9 @@ interface DataKinds {
     "text-decoder": { kind: "text-decoder" };
     "text-encoder": { kind: "text-encoder" };
     collator: { kind: "collator" };
+    "number-format": { kind: "number-format" };
+    "plural-rules": { kind: "plural-rules" };
+    "list-format": { kind: "list-format" };
     number: {
         kind: "number";
     };

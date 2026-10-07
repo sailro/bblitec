@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { Value } from "./types.js";
+import { compileDateLocaleString } from "./locale.js";
 
 /** The default Intl formatter captures its host time zone at construction. */
 export function compileDateTimeFormat(
@@ -192,6 +193,9 @@ export function compileDateMethod(
             };
         }
         default:
-            return context.fail(call, `Date.${method} is not lowered.`);
+            return (
+                compileDateLocaleString(lowerer, call, owner, method) ??
+                context.fail(call, `Date.${method} is not lowered.`)
+            );
     }
 }

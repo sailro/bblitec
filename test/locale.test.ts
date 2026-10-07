@@ -438,6 +438,224 @@ test("native locale case mapping matches JavaScript", (t) => {
     execFileSync(executable, { stdio: "pipe" });
 });
 
+/** Compiles `source` with the platform layer linked and runs it; the snippet throws on a mismatch. */
+function runWithLocale(
+    native: NonNullable<ReturnType<typeof optionalNativeFixtureTools>>,
+    name: string,
+    source: string,
+): void {
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ESNext },
+        }).outputText,
+    );
+    const result = compileSource(source, { fileName: `test/${name}.ts` });
+    assert.ok(result.manifest.features.includes("data:locale"));
+    const directory = resolve(`artifacts/${name}`);
+    mkdirSync(directory, { recursive: true });
+    const file = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(file, result.cpp);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/utf-8",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+        "native/src/pal_locale.cpp",
+        "icu.lib",
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
+}
+
+/** One expectation per expression, read from JavaScript's own Intl. */
+function expectations(expressions: readonly string[]): string {
+    return expressions
+        .map((expression, index) => {
+            const expected: unknown = runInNewContext(expression);
+            assert.ok(typeof expected === "string");
+            return `if (${expression} !== ${JSON.stringify(expected)}) throw new Error("case ${index}: " + ${expression});`;
+        })
+        .join("\n");
+}
+
+test("native Intl NumberFormat, PluralRules and ListFormat match JavaScript", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required");
+        return;
+    }
+    const numbers = [
+        `new Intl.NumberFormat("en-US", {maximumFractionDigits: 1}).format(1.25)`,
+        `Intl.NumberFormat("de-DE").format(1234567.891)`,
+        `new Intl.NumberFormat("fr-FR", {style: "percent"}).format(0.256)`,
+        `new Intl.NumberFormat(["zz-ZZ", "pt-BR"], {minimumFractionDigits: 2}).format(5)`,
+        `new Intl.NumberFormat("en", {maximumSignificantDigits: 3}).format(123456)`,
+        `new Intl.NumberFormat("en", {useGrouping: false}).format(-1234.5)`,
+    ];
+    const plurals = [
+        ...[0, 1, 2, 1.5, 1.0001, -1, NaN, Infinity].map(
+            (value) => `new Intl.PluralRules("en").select(${value})`,
+        ),
+        ...[1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111].map(
+            (value) =>
+                `new Intl.PluralRules("en", {type: "ordinal"}).select(${value})`,
+        ),
+        ...[0, 1, 1.5, 2].map(
+            (value) => `new Intl.PluralRules("fr").select(${value})`,
+        ),
+        ...[1, 2, 5, 21, 1.5].map(
+            (value) => `new Intl.PluralRules("ru").select(${value})`,
+        ),
+        ...[0, 1, 2, 3, 11, 100].map(
+            (value) => `new Intl.PluralRules("ar").select(${value})`,
+        ),
+        `new Intl.PluralRules("ja").select(1)`,
+        `new Intl.PluralRules("en", {maximumFractionDigits: 0}).select(1.4)`,
+        `new Intl.PluralRules("en", {maximumFractionDigits: 0}).select(1.6)`,
+        `new Intl.PluralRules("en", {minimumFractionDigits: 1}).select(1)`,
+        `new Intl.PluralRules("en", {minimumSignificantDigits: 2}).select(1)`,
+    ];
+    const lists = ["en", "fr", "de", "es", "ja"].flatMap((locale) =>
+        ["conjunction", "disjunction", "unit"].flatMap((type) =>
+            ["long", "short", "narrow"].flatMap((style) =>
+                [[], ["a"], ["a", "b"], ["a", "b", "c"]].map(
+                    (values) =>
+                        `new Intl.ListFormat(${JSON.stringify(locale)}, {type: ${JSON.stringify(type)}, style: ${JSON.stringify(style)}}).format(${JSON.stringify(values)})`,
+                ),
+            ),
+        ),
+    );
+    runWithLocale(
+        native,
+        "intl-formatters-check",
+        `${expectations([...numbers, ...plurals, ...lists])}
+        let order = "";
+        function locale(): string { order += "l"; return "en"; }
+        function precision(): number { order += "p"; return 1; }
+        const cache = new Map<string, Map<number | undefined, Intl.PluralRules>>();
+        function counted(value: number, digits?: number): string {
+            let entries = cache.get("en");
+            if (!entries) { entries = new Map(); cache.set("en", entries); }
+            let rules = entries.get(digits);
+            if (!rules) {
+                rules = new Intl.PluralRules(locale(), digits === undefined ? undefined : {maximumFractionDigits: precision()});
+                entries.set(digits, rules);
+            }
+            return rules.select(value);
+        }
+        if (counted(1) !== "one" || counted(1.04, 1) !== "one" || counted(2, 1) !== "other" || order !== "llp") throw new Error("cached rules " + order);
+        const list = new Intl.ListFormat(locale(), {style: "long", type: "disjunction"});
+        const callbacks: Array<(values: readonly string[]) => string> = [values => list.format(values)];
+        if (callbacks[0]!(["one", "two"]) !== "one or two") throw new Error("retained list format");
+        const optional: Array<Intl.ListFormat | undefined> = [undefined, list];
+        if (optional[0]?.format(["x"]) !== undefined || optional[1]?.format(["x"]) !== "x") throw new Error("optional list format");
+        const formats: Intl.NumberFormat[] = [new Intl.NumberFormat("en", {minimumIntegerDigits: 3})];
+        if (formats[0]!.format(5) !== "005") throw new Error("stored number format");
+        let rejected = 0;
+        try { new Intl.PluralRules("en", {type: "bogus" as Intl.PluralRuleType}); } catch { rejected++; }
+        try { new Intl.PluralRules("en", {maximumFractionDigits: 101}); } catch { rejected++; }
+        try { new Intl.ListFormat("en", {type: "bogus" as Intl.ListFormatType}); } catch { rejected++; }
+        try { new Intl.ListFormat("en", {style: "bogus" as Intl.ListFormatStyle}); } catch { rejected++; }
+        try { new Intl.NumberFormat("en_US"); } catch { rejected++; }
+        if (rejected !== 5) throw new Error("invalid options " + rejected);
+    `,
+    );
+});
+
+test("native Date locale strings match JavaScript", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required");
+        return;
+    }
+    const times = [0, 1700000000123, -100000000000, Date.UTC(1500, 0, 1)];
+    const options: Array<Record<string, string | boolean>> = [
+        {},
+        { year: "numeric", month: "short", day: "numeric" },
+        { weekday: "long" },
+        { year: "2-digit", month: "2-digit", day: "2-digit" },
+        { month: "long" },
+        { era: "short", year: "numeric" },
+        { hour: "numeric", minute: "2-digit" },
+        { hour12: false },
+        { second: "numeric" },
+    ];
+    const zones = ["UTC", "America/New_York", "Asia/Kolkata"];
+    const dates = times.flatMap((time) =>
+        ["en-US", "fr-FR", "de", "ja", "th"].flatMap((locale, localeIndex) =>
+            // CLDR revisions differ in Thai day periods; the platform ICU's apply.
+            [
+                ...options,
+                ...(locale === "th" ? [] : [{ hour12: true }]),
+            ].flatMap((option, optionIndex) =>
+                [
+                    "toLocaleDateString",
+                    "toLocaleTimeString",
+                    "toLocaleString",
+                ].map(
+                    (method) =>
+                        `new Date(${time}).${method}(${JSON.stringify(locale)}, ${JSON.stringify({ ...option, timeZone: zones[(localeIndex + optionIndex) % zones.length] })})`,
+                ),
+            ),
+        ),
+    );
+    runWithLocale(
+        native,
+        "date-locale-strings-check",
+        `${expectations(dates)}
+        const host = new Date(1700000000000);
+        if (host.toLocaleString() !== host.toLocaleString(undefined) || host.toLocaleDateString() !== host.toLocaleDateString([])) throw new Error("default locale and zone");
+        if (new Date(NaN).toLocaleDateString("en", {timeZone: "Nowhere/Zone"}) !== "Invalid Date") throw new Error("invalid date");
+        function formatDate(ms: number, locale: string): string {
+            try {
+                return new Date(ms).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+            } catch {
+                return "";
+            }
+        }
+        if (formatDate(0, "en-US") !== "Jan 1, 1970" || formatDate(0, "en_US") !== "") throw new Error("guarded format");
+        let rejected = 0;
+        try { new Date(0).toLocaleDateString("en", {timeZone: "Nowhere/Zone"}); } catch { rejected++; }
+        try { new Date(0).toLocaleDateString("en", {month: "bogus" as "long"}); } catch { rejected++; }
+        if (rejected !== 2) throw new Error("invalid options " + rejected);
+    `,
+    );
+});
+
+test("unlowered Intl and Date locale contracts refuse explicitly", () => {
+    for (const [source, message] of [
+        [
+            `const f = new Intl.NumberFormat("en", { style: "currency", currency: "EUR" }); f.format(1);`,
+            /Intl\.NumberFormat option 'currency' is not lowered/,
+        ],
+        [
+            `const p = new Intl.PluralRules("en", { roundingMode: "floor" }); p.select(1);`,
+            /Intl\.PluralRules option 'roundingMode' is not lowered/,
+        ],
+        [
+            `const p = new Intl.PluralRules("en"); p.selectRange(1, 2);`,
+            /Intl\.PluralRules\.selectRange is not lowered/,
+        ],
+        [
+            `new Date(0).toLocaleDateString("en", { dateStyle: "full" });`,
+            /Date\.toLocaleDateString option 'dateStyle' is not lowered/,
+        ],
+        [
+            `const l = new Intl.ListFormat("en"); l.formatToParts(["a"]);`,
+            /Intl\.ListFormat\.formatToParts is not lowered/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
 test("unlowered number format contracts refuse explicitly", () => {
     assert.throws(
         () =>

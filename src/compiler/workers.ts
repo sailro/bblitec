@@ -194,6 +194,12 @@ function uncloneablePosition(
             return refuse("a TextEncoder");
         case "collator":
             return refuse("an Intl.Collator");
+        case "number-format":
+            return refuse("an Intl.NumberFormat");
+        case "plural-rules":
+            return refuse("an Intl.PluralRules");
+        case "list-format":
+            return refuse("an Intl.ListFormat");
         case "weak-ref":
             return refuse("a WeakRef");
         case "bufferview":

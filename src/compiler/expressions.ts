@@ -33,7 +33,11 @@ import ts from "typescript";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
-import { isHandleKind, isUndefinedDataType } from "./data-types.js";
+import {
+    isHandleKind,
+    isUndefinedDataType,
+    TYPED_ARRAY_KINDS,
+} from "./data-types.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -96,7 +100,7 @@ import {
 import { compileWindowIdentity } from "./window-events.js";
 import { compileDateTimeFormat } from "./dates.js";
 import {
-    compileCollatorConstruction,
+    compileIntlConstruction,
     compileNumberLocaleString,
 } from "./locale.js";
 import { compileSearchParams } from "./search-params.js";
@@ -590,7 +594,7 @@ export class ExpressionLowerer {
                 unwrapped,
             );
             if (formatter) return formatter;
-            const collator = compileCollatorConstruction(
+            const collator = compileIntlConstruction(
                 this.context.dataLowerer,
                 unwrapped,
             );
@@ -782,6 +786,17 @@ export class ExpressionLowerer {
                     cpp: this.context.compileNumber(unwrapped, "double"),
                 };
             }
+            // A typed-array class as a value: what its instances' `constructor` reads.
+            const typedArrayClass =
+                numeric === undefined
+                    ? undefined
+                    : TYPED_ARRAY_KINDS.get(numeric);
+            if (typedArrayClass)
+                return {
+                    kind: "typed-array-constructor",
+                    cpp: "",
+                    typedArrayConstructor: typedArrayClass,
+                };
             const resolved = this.context.resolveStaticExpression(unwrapped);
             if (resolved !== unwrapped) {
                 const value = this.compileValue(resolved);

@@ -1223,12 +1223,23 @@ throw_nullish_access(const char* message = "Cannot read properties of null or un
     throw NamedError("TypeError", message);
 }
 
+template <typename T> struct IsRef : std::false_type {};
+template <typename T> struct IsRef<Ref<T>> : std::true_type {};
+
 template <typename T> class Nullable {
 public:
     Nullable() = default;
     Nullable(std::nullopt_t) {}
-    Nullable(const T& value) : owned_(value) {}
-    Nullable(T&& value) : owned_(std::move(value)) {}
+    // An empty reference is no object: a Map slot or record field holding
+    // none reads as absent, never as a present null.
+    Nullable(const T& value) {
+        if (present(value))
+            owned_.emplace(value);
+    }
+    Nullable(T&& value) {
+        if (present(value))
+            owned_.emplace(std::move(value));
+    }
     template <typename U>
         requires(!std::is_same_v<std::remove_cvref_t<U>, Nullable> &&
                  std::is_constructible_v<T, U &&>)
@@ -1281,12 +1292,18 @@ public:
     }
     Nullable& operator=(const T& value) {
         reference_ = nullptr;
-        owned_ = value;
+        if (present(value))
+            owned_ = value;
+        else
+            owned_.reset();
         return *this;
     }
     Nullable& operator=(T&& value) {
         reference_ = nullptr;
-        owned_ = std::move(value);
+        if (present(value))
+            owned_ = std::move(value);
+        else
+            owned_.reset();
         return *this;
     }
     template <typename U>
@@ -1299,6 +1316,12 @@ public:
     }
 
 private:
+    static bool present([[maybe_unused]] const T& value) {
+        if constexpr (IsRef<T>::value)
+            return static_cast<bool>(value);
+        else
+            return true;
+    }
     /** JavaScript refuses a property read through null or undefined. */
     template <typename Self> static auto& require_owned(Self& self) {
         if (!self.owned_)
@@ -1312,6 +1335,14 @@ private:
 namespace gc {
 template <typename T> struct Traceable<Nullable<T>> : Traceable<T> {};
 } // namespace gc
+
+/** A Map slot of an object reference, as the Nullable an optional object is stored as. */
+template <typename T> [[nodiscard]] Nullable<Ref<T>> nullable_object(const Ref<T>& value) {
+    return Nullable<Ref<T>>(value);
+}
+template <typename T> [[nodiscard]] Nullable<T> nullable_object(const Nullable<T>& value) {
+    return value;
+}
 
 template <typename T> struct IsNullable : std::false_type {};
 template <typename T> struct IsNullable<Nullable<T>> : std::true_type {};

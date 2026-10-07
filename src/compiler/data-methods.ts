@@ -32,7 +32,7 @@ import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
 import { compileTextCodecMethod } from "./text-codecs.js";
-import { compileCollatorMethod } from "./locale.js";
+import { compileIntlMethod } from "./locale.js";
 import { compileWeakRefMethod } from "./weak-refs.js";
 import {
     compileSearchParamsMethod,
@@ -505,8 +505,22 @@ export function compileDataMethodCall(
         dynamicOwner?.dataType?.kind === "text-encoder"
     )
         return compileTextCodecMethod(lowerer, call, dynamicOwner, method);
-    if (dynamicOwner?.dataType?.kind === "collator")
-        return compileCollatorMethod(lowerer, call, dynamicOwner, method);
+    const intlOwner =
+        dynamicOwner?.dataType?.kind === "optional"
+            ? dynamicOwner.dataType.inner.kind
+            : dynamicOwner?.dataType?.kind;
+    if (
+        dynamicOwner &&
+        (intlOwner === "collator" ||
+            intlOwner === "number-format" ||
+            intlOwner === "plural-rules" ||
+            intlOwner === "list-format")
+    )
+        return dynamicOwner.dataType?.kind === "optional"
+            ? lowerer.optionalAccess(dynamicOwner, call, (present) =>
+                  compileIntlMethod(lowerer, call, present, method),
+              )
+            : compileIntlMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "weak-ref")
         return compileWeakRefMethod(lowerer, call, dynamicOwner, method);
     if (

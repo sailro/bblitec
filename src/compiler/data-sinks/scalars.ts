@@ -283,6 +283,9 @@ export const scalarsSinks: DataSinkOperations<
     | "text-decoder"
     | "text-encoder"
     | "collator"
+    | "number-format"
+    | "plural-rules"
+    | "list-format"
     | "weak-ref"
     | "number"
     | "boolean"
@@ -446,6 +449,9 @@ export const scalarsSinks: DataSinkOperations<
     "text-decoder": opaqueSink,
     "text-encoder": opaqueSink,
     collator: opaqueSink,
+    "number-format": opaqueSink,
+    "plural-rules": opaqueSink,
+    "list-format": opaqueSink,
     "weak-ref": opaqueSink,
     date: opaqueSink,
     number: { expression: expressionNumber, value: valueNumber },

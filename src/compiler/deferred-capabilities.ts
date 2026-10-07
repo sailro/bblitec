@@ -4,10 +4,7 @@ import { sceneRelativeSourceLabel } from "../source-location.js";
 import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
-import {
-    DEFERRED_DOM_OBJECTS,
-    DEFERRED_INTL_OBJECTS,
-} from "./data-types/model.js";
+import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     declarationOrigin,
@@ -141,16 +138,6 @@ export const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Blob.bytes",
         "HTMLMediaElement.play",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
-    ...[
-        "Intl.ListFormat.constructor",
-        "Intl.ListFormat.format",
-        "Intl.PluralRules.constructor",
-        "Intl.PluralRules.select",
-    ].map((api): Descriptor => ({
-        origin: "default-lib",
-        api,
-        timing: "throw",
-    })),
     ...[
         "createAudioEngineAsync.options",
         "createSoundSourceAsync.options",
@@ -562,10 +549,7 @@ export class DeferredCapabilities {
             : api.split(".")[0];
         if (owner === "Window") return this.windowReceiver(value, node);
         const type = value.dataType;
-        if (
-            DEFERRED_DOM_OBJECTS.some((name) => name === owner) ||
-            DEFERRED_INTL_OBJECTS.some((name) => name === owner)
-        )
+        if (DEFERRED_DOM_OBJECTS.some((name) => name === owner))
             return (
                 type?.kind === "deferred-platform-object" && type.name === owner
             );

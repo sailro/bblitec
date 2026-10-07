@@ -3303,6 +3303,33 @@ check(
 `,
 );
 
+check(
+    "map-reads-of-reference-backed-objects-are-absent-when-missing",
+    `
+    const dates = new Map<string, Date>();
+    const missing = dates.get("x");
+    if (missing !== undefined || dates.has("x")) throw new Error("missing date");
+    dates.set("a", new Date(5));
+    const found = dates.get("a");
+    if (!found || found.getTime() !== 5 || dates.get("a") !== found) throw new Error("found date");
+    let fallback = dates.get("y") ?? new Date(7);
+    if (fallback.getTime() !== 7) throw new Error("fallback");
+    fallback = dates.get("a") ?? new Date(9);
+    if (fallback !== found) throw new Error("present identity");
+`,
+);
+
+check(
+    "typed-array-classes-are-values",
+    `
+    const a = new Int32Array(2);
+    const B = a.constructor;
+    if (B !== Int32Array || a.constructor === Float32Array || !(Uint8Array === new Uint8Array(1).constructor)) throw new Error("class identity");
+    const made = new B(3);
+    if (made.length !== 3 || typeof Int32Array !== "function") throw new Error("construct through the class");
+`,
+);
+
 test("u-flag RegExp forms the runtime engine cannot express refuse", () => {
     for (const [source, message] of [
         [
