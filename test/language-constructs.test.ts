@@ -6218,12 +6218,20 @@ check(
 `,
 );
 
-test("numeric tuples outside a binding refuse array parameters that may grow them", () => {
+check(
+    "record-tuple-fields-grown-through-array-parameters",
+    `
+    function push(out: number[]): void { out.push(1); }
+    interface Holder { lanes: [number, number, number] }
+    function make(): Holder { return { lanes: [0, 0, 0] }; }
+    const holder = make();
+    push(holder.lanes);
+    if (holder.lanes.length !== 4 || holder.lanes[3] !== 1) throw new Error("grown field");
+`,
+);
+
+test("numeric tuple parameters refuse array parameters that may grow them", () => {
     for (const source of [
-        `interface Holder { lanes: [number, number, number] }
-        function make(): Holder { return { lanes: [0, 0, 0] }; }
-        const holder = make();
-        push(holder.lanes);`,
         `function frame(t: [number, number, number]): void { push(t); }
         const frames: Array<typeof frame> = [frame];
         const lanes: [number, number, number] = [0, 0, 0];
@@ -7579,6 +7587,178 @@ check(
 );
 
 check(
+    "absence-tagged-locals-and-inlined-parameters",
+    `
+    interface Region { minX: number; maxX: number; }
+    const gate = new Float32Array([0, 1]);
+    let pending: Region | null | undefined;
+    const log: string[] = [];
+    const queue = (dirty: Region | null | undefined): void => {
+        if (dirty === undefined || pending === null) return;
+        pending = dirty === null ? null : { minX: Math.min(pending?.minX ?? dirty.minX, dirty.minX), maxX: dirty.maxX };
+    };
+    const consume = (): string => {
+        const taken = pending;
+        pending = undefined;
+        return taken === undefined ? "none" : taken === null ? "full" : String(taken.minX);
+    };
+    queue(undefined);
+    log.push(consume());
+    queue({ minX: 3, maxX: 4 });
+    queue({ minX: 1, maxX: 5 });
+    log.push(consume());
+    queue(null);
+    queue({ minX: 7, maxX: 8 });
+    log.push(consume());
+    log.push(consume());
+    let picked: Region | null | undefined = gate[1]! > 0 ? null : undefined;
+    log.push(String(picked === null), typeof picked);
+    picked = gate[0]! > 0 ? null : undefined;
+    log.push(String(picked === null), typeof picked, String(picked === undefined));
+    picked = { minX: 9, maxX: 9 };
+    const alias = picked;
+    alias.minX = 10;
+    log.push(String(picked.minX), String(alias === picked));
+    if (log.join(",") !== "none,1,full,none,true,object,false,undefined,true,10,true") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "absence-tagged-stored-parameters-and-defaults",
+    `
+    interface Region { minX: number; }
+    interface Field { rebuild(base?: Region | null): string; }
+    function createField(): Field {
+        const describe = (dirty: Region | null | undefined): string =>
+            dirty === undefined ? "none" : dirty === null ? "full" : "r" + dirty.minX;
+        const rebuild = (base?: Region | null): string => describe(base);
+        return { rebuild };
+    }
+    const field = createField();
+    const results = [field.rebuild(), field.rebuild(null), field.rebuild({ minX: 2 }), field.rebuild(undefined)];
+    if (results.join(",") !== "none,full,r2,none") throw new Error(results.join(","));
+    let made = 0;
+    interface Ticket { id: number; }
+    function make(studio: boolean): Ticket | null { made++; return studio ? null : { id: made }; }
+    function kickoff(studio: boolean, ready: Ticket | null = make(studio)): string {
+        return ready === null ? "null" : "t" + ready.id;
+    }
+    const roots: Array<typeof kickoff> = [kickoff];
+    const outcomes = [roots[0]!(false), roots[0]!(false, null), roots[0]!(true), roots[0]!(true, { id: 7 })];
+    if (outcomes.join(",") !== "t1,null,null,t7" || made !== 2) throw new Error(outcomes.join(",") + made);
+`,
+);
+
+check(
+    "absence-tagged-record-fields",
+    `
+    interface Mask { cells: number; }
+    interface Reach { ok(x: number): boolean; }
+    interface Options { mask?: Mask | null; reach?: Reach | null; }
+    const describe = (opts: Options): string =>
+        opts.mask === undefined ? "build" : opts.mask === null ? "none" : "m" + opts.mask.cells;
+    const step = (opts: Options, x: number): string =>
+        opts.reach === null ? "pending" : opts.reach === undefined ? "direct" : opts.reach.ok(x) ? "yes" : "no";
+    const all: Options[] = [{}, { mask: null }, { mask: { cells: 3 } }, { mask: undefined, reach: null }, { reach: { ok: (x) => x > 1 } }];
+    const seen = all.map((opts) => describe(opts) + ":" + step(opts, 2));
+    if (seen.join(",") !== "build:direct,none:direct,m3:direct,build:pending,build:yes") throw new Error(seen.join(","));
+    const changed = all[0]!;
+    changed.mask = null;
+    changed.reach = { ok: (x) => x > 5 };
+    if (describe(changed) !== "none" || step(changed, 2) !== "no") throw new Error("field writes");
+    changed.mask = undefined;
+    if (describe(changed) !== "build" || step(changed, 9) !== "yes") throw new Error("undefined field");
+`,
+);
+
+check(
+    "absence-tagged-shared-function-parameters",
+    `
+    interface Reach { ok(x: number): boolean; }
+    interface Step { reach?: Reach | null; x: number; }
+    const log: string[] = [];
+    function find(x: number, reach: Reach | null | undefined): string {
+        if (reach === null) return "pending";
+        if (reach !== undefined && !reach.ok(x)) return "blocked";
+        return "free";
+    }
+    function select(step: Step): string {
+        if (step.reach === null) return "nav";
+        return find(step.x, step.reach);
+    }
+    function selectAll(steps: Step[]): void {
+        for (const step of steps) log.push(select(step), find(step.x * 2, step.reach));
+    }
+    const roots: Array<typeof selectAll> = [selectAll];
+    roots[0]!([{ x: 1 }, { x: 2, reach: null }, { x: 3, reach: { ok: (x) => x > 4 } }]);
+    if (log.join(",") !== "free,free,nav,pending,blocked,free") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "absence-tagged-option-records-through-stored-signatures",
+    `
+    interface Region { minX: number; }
+    interface Pipeline {
+        refreshOnly(baseDirty?: Region | null): string;
+        refreshAndDecor(opts?: { decorations?: boolean; baseDirty?: Region | null }): string;
+    }
+    function createPipeline(): Pipeline {
+        let pending: Region | null | undefined;
+        const queue = (dirty: Region | null | undefined): void => {
+            if (dirty === undefined || pending === null) return;
+            pending = dirty;
+        };
+        const refreshOnly = (baseDirty?: Region | null): string => {
+            queue(baseDirty);
+            const taken = pending;
+            pending = undefined;
+            return taken === undefined ? "none" : taken === null ? "full" : "r" + taken.minX;
+        };
+        const refreshAndDecor = (opts: { decorations?: boolean; baseDirty?: Region | null } = {}): string => {
+            const result = refreshOnly(opts.baseDirty);
+            return opts.decorations !== false ? result + "+decor" : result;
+        };
+        const kick = (): string => refreshAndDecor({ baseDirty: null });
+        return { refreshOnly, refreshAndDecor: (opts) => (opts ? refreshAndDecor(opts) : kick()) };
+    }
+    const roots: Array<typeof createPipeline> = [createPipeline];
+    const pipeline = roots[0]!();
+    const seen = [pipeline.refreshOnly(), pipeline.refreshAndDecor({ baseDirty: { minX: 3 } }), pipeline.refreshAndDecor(), pipeline.refreshAndDecor({ decorations: false })];
+    if (seen.join(",") !== "none,r3+decor,full+decor,none") throw new Error(seen.join(","));
+`,
+);
+
+check(
+    "record-tuple-fields-entering-number-arrays-take-array-storage",
+    `
+    type Vec4 = [number, number, number, number];
+    type Vec3 = [number, number, number];
+    interface Params { hs: number; bump: number; sunDir: Vec3; }
+    function pack(p: Params): { uParams0: Vec4; uSunDir: Vec3 } {
+        return { uParams0: [p.hs, p.bump, 0, 1], uSunDir: p.sunDir };
+    }
+    const uploaded: string[] = [];
+    const kept: number[][] = [];
+    function upload(name: string, value: number | number[]): void {
+        if (typeof value !== "number") kept.push(value);
+        uploaded.push(name + ":" + (typeof value === "number" ? value : value.join("/")));
+    }
+    function setParameters(params: Params, scale?: number): void {
+        const packed = pack(params);
+        for (const [name, value] of Object.entries(packed)) upload(name, value);
+        upload("uScale", scale ?? 1);
+    }
+    const roots: Array<typeof setParameters> = [setParameters];
+    const params: Params = { hs: 2, bump: 3, sunDir: [0, 1, 0] };
+    roots[0]!(params);
+    if (uploaded.join(",") !== "uParams0:2/3/0/1,uSunDir:0/1/0,uScale:1") throw new Error(uploaded.join(","));
+    kept[1]!.push(7);
+    if (params.sunDir.length !== 4 || kept[1] !== params.sunDir) throw new Error("one growable array");
+`,
+);
+
+check(
     "paired-absence-tests-inside-longer-chains",
     `
     const gate = new Float32Array([0, 1]);
@@ -8896,15 +9076,19 @@ check(
     if (holder.points.length !== 2 || (points[1] as Wheel).label !== "rear") throw new Error("one array, one record");
 `,
 );
-test("tuples stored as growable number arrays need growable storage", () => {
-    assert.throws(
-        () =>
-            compileSource(`interface H { pos: [number, number] }
-            const h: H = { pos: [1, 2] };
-            const store: number[][] = [];
-            store.push(h.pos);`),
-        /fixed-length tuple stored as a number array could grow through that array/,
-    );
+check(
+    "record-tuple-fields-stored-in-number-array-containers",
+    `
+    interface H { pos: [number, number] }
+    const h: H = { pos: [1, 2] };
+    const store: number[][] = [];
+    store.push(h.pos);
+    store[0]!.push(3);
+    if (h.pos.length !== 3 || store[0] !== h.pos) throw new Error("one growable array");
+`,
+);
+
+test("tuple parameters stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>
             compileSource(`const store: number[][] = [];

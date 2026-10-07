@@ -56,6 +56,7 @@ import {
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
+import { requireAbsenceTag } from "./absence-tag-storage.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import {
@@ -533,6 +534,10 @@ interface DataLoweringContext extends Pick<
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+    /** Source storages that keep `null` and `undefined` apart. */
+    readonly absenceTags: ReadonlySet<ts.Declaration>;
+    /** Record properties storing their numeric tuples as growable arrays. */
+    readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 }
 
 /**
@@ -4286,6 +4291,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             writable(value).nativeLvalue = true;
             if (field.uncheckedProperty)
                 writable(value).preserveUncheckedLookup = true;
+            // The slot's own declarations, should a use demand it retyped.
+            if (field.declarations)
+                writable(value).slotDeclarations = field.declarations;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
                 field.readOnly ||
@@ -6171,6 +6179,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public leafValue(cpp: string, dataType: DataType): Value {
         if (dataType.kind === "module-namespace")
             return this.context.moduleNamespaces.value(dataType, cpp);
+        if (dataType.kind === "tagged") {
+            // The value is read through a const view, so only a tagged
+            // store (`absenceTagStorageCpp`) can change it; whether it is
+            // defined is what tells `undefined` from `null`.
+            if (cppIdentifierPattern.test(cpp))
+                this.context.registerNativeBindingType(
+                    cpp,
+                    this.context.dataTypes.cppType(dataType),
+                );
+            return {
+                ...this.leafValue(`${cpp}.value()`, dataType.inner),
+                slotFoundCpp: `${cpp}.defined()`,
+                absenceTagStorageCpp: cpp,
+                absenceTagType: dataType,
+            };
+        }
         if (cppIdentifierPattern.test(cpp))
             this.context.registerNativeBindingType(
                 cpp,
@@ -10569,6 +10593,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // check below is what keeps aggregates out.
         const target = this.compileDataPath(left, "read");
         if (
+            target?.absenceTagStorageCpp !== undefined &&
+            target.absenceTagType !== undefined
+        ) {
+            // A tagged binding takes the value and which absent value it is.
+            this.context.emit({
+                kind: "expression",
+                code: `${target.absenceTagStorageCpp} = ${this.compileForSink(expression.right, target.absenceTagType)};`,
+            });
+            return true;
+        }
+        if (
             (target?.kind !== "data" && target?.kind !== "promise") ||
             !target.dataType
         ) {
@@ -12197,6 +12232,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const invalidateRootRecordSnapshot = (): void =>
             this.invalidateRecordFieldSnapshot(left);
         if (
+            target.absenceTagStorageCpp !== undefined &&
+            target.absenceTagType !== undefined
+        ) {
+            // A tagged field takes the value and which absent value it is.
+            if (operator !== "=")
+                this.context.fail(
+                    expression,
+                    `Assignment operator '${operator}' is not supported for storage telling null from undefined.`,
+                );
+            this.context.emit({
+                kind: "expression",
+                code: `${target.absenceTagStorageCpp} = ${this.compileForSink(expression.right, target.absenceTagType)};`,
+            });
+            invalidateRootRecordSnapshot();
+            return true;
+        }
+        if (
             target.dataType &&
             this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
         ) {
@@ -13637,11 +13689,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (loose || literal === undefined)
                 return negated ? present : absent;
             const state = absenceKind(this.context.checker, value, node);
-            if (state === "either")
+            if (state === "either") {
+                requireAbsenceTag(
+                    this.context.checker,
+                    this.context.absenceTags,
+                    node,
+                    value,
+                );
                 this.context.fail(
                     node,
                     `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
                 );
+            }
             // A read that knows whether its slot existed tells a missing
             // one (`undefined`) from a stored `null` exactly.
             if (typeof state === "object") {

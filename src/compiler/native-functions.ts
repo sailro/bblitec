@@ -1509,6 +1509,11 @@ export class NativeFunctionLowerer {
                         parameterType,
                     );
             }
+            if (parameterType)
+                parameterType = this.context.dataTypes.absenceTaggedStorage(
+                    parameter,
+                    parameterType,
+                );
             if (
                 !parameterType ||
                 parameterType.kind === "function" ||

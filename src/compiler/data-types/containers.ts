@@ -4,6 +4,7 @@ export const containerKinds: DataKindOperations<
     | "promise"
     | "weak-ref"
     | "optional"
+    | "tagged"
     | "union"
     | "vector"
     | "arguments"
@@ -81,6 +82,16 @@ export const containerKinds: DataKindOperations<
         equal: (left, right, equal) =>
             left.undefinedOnly === right.undefinedOnly &&
             equal(left.inner, right.inner),
+        children: (type) => [type.inner],
+        byReference: false,
+        tracedEdges: "children",
+        reseats: "children",
+    },
+    tagged: {
+        cpp: (type, context) =>
+            `bbl::js::Tagged<${context.cppType(type.inner)}>`,
+        key: (type, key) => `tagged(${key(type.inner)})`,
+        equal: (left, right, equal) => equal(left.inner, right.inner),
         children: (type) => [type.inner],
         byReference: false,
         tracedEdges: "children",

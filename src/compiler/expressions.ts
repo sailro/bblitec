@@ -39,6 +39,7 @@ import {
     TYPED_ARRAY_KINDS,
 } from "./data-types.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { requireAbsenceTag } from "./absence-tag-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
@@ -376,6 +377,7 @@ function staticStringCoercion(value: Value): string | undefined {
 export function emitStringAppend(
     context: Pick<
         LoweringServices,
+        | "absenceTags"
         | "checker"
         | "compileValue"
         | "cppString"
@@ -398,7 +400,7 @@ export function emitStringAppend(
 export function stringConcatPart(
     context: Pick<
         LoweringServices,
-        "checker" | "cppString" | "dataTypes" | "fail"
+        "checker" | "cppString" | "dataTypes" | "fail" | "absenceTags"
     >,
     value: Value,
     node: ts.Node,
@@ -460,11 +462,18 @@ export function stringConcatPart(
             node,
         );
         const absence = absenceKind(context.checker, value, node);
-        if (absence === "either")
+        if (absence === "either") {
+            requireAbsenceTag(
+                context.checker,
+                context.absenceTags,
+                node,
+                value,
+            );
             return context.fail(
                 node,
                 'A value that may be null or undefined is spelled only once one of them is ruled out (`value ?? "undefined"`).',
             );
+        }
         // A read that knows whether its slot existed spells a stored `null`
         // and a missing slot apart.
         const absent =
@@ -1456,11 +1465,18 @@ export class ExpressionLowerer {
                     operand,
                     expression,
                 );
-                if (absence === "either")
+                if (absence === "either") {
+                    requireAbsenceTag(
+                        this.context.checker,
+                        this.context.absenceTags,
+                        expression,
+                        operand,
+                    );
                     return this.context.fail(
                         expression,
                         "typeof a value that may be null or undefined answers only once one of them is ruled out (narrow the type).",
                     );
+                }
                 return typeof absence === "object"
                     ? {
                           cpp: `(${absence.slotFoundCpp} ? "object" : "undefined")`,

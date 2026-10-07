@@ -74,6 +74,7 @@ import {
     type NativeRecordStorageDemand,
 } from "./compiler/native-record-storage.js";
 import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
+import type { AbsenceTagDeclaration } from "./compiler/absence-tag-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
@@ -585,6 +586,8 @@ function compileSourceApplication(
             NativeRecordStorageDemand
         >();
         const genericFunctions = new GenericFunctionStorage();
+        const absenceTags = new Set<AbsenceTagDeclaration>();
+        const tupleArraySlots = new Set<ts.Declaration>();
         const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planning: boolean): Compiler => {
             recordStorageCompileAttempt(planning);
@@ -597,6 +600,8 @@ function compileSourceApplication(
                 ownedRecords,
                 genericFunctions,
                 lazyModules,
+                absenceTags,
+                tupleArraySlots,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -637,6 +642,16 @@ function compileSourceApplication(
                 genericFunctions.add(request.demand)
             ) {
                 return true;
+            } else if (
+                request.kind === "absence-tag" &&
+                !absenceTags.has(request.declaration)
+            ) {
+                absenceTags.add(request.declaration);
+            } else if (
+                request.kind === "tuple-array" &&
+                !tupleArraySlots.has(request.declaration)
+            ) {
+                tupleArraySlots.add(request.declaration);
             } else return false;
             return true;
         };
@@ -966,6 +981,8 @@ class Compiler implements LoweringServices {
         >,
         genericFunctions: GenericFunctionStorage,
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
+        public readonly absenceTags: ReadonlySet<ts.Declaration>,
+        public readonly tupleArraySlots: ReadonlySet<ts.Declaration>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -975,6 +992,8 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             genericFunctions,
+            absenceTags,
+            tupleArraySlots,
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -5993,7 +6012,9 @@ class Compiler implements LoweringServices {
             counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
-                : (value.optionalStorageCpp ?? value.cpp));
+                : (value.absenceTagStorageCpp ??
+                  value.optionalStorageCpp ??
+                  value.cpp));
         if (
             isCompileTimeOnlyValue(value.kind) ||
             value.kind === "browser" ||
@@ -6016,17 +6037,19 @@ class Compiler implements LoweringServices {
                       : value.kind === "texture" &&
                           value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
-                        : value.dataType
-                          ? this.dataTypes.cppType(value.dataType)
-                          : isHandleKind(value.kind)
-                            ? handleCppType(value.kind)
-                            : value.kind === "number"
-                              ? "double"
-                              : value.kind === "boolean"
-                                ? "bool"
-                                : value.kind === "string"
-                                  ? "std::string"
-                                  : undefined;
+                        : value.absenceTagType
+                          ? this.dataTypes.cppType(value.absenceTagType)
+                          : value.dataType
+                            ? this.dataTypes.cppType(value.dataType)
+                            : isHandleKind(value.kind)
+                              ? handleCppType(value.kind)
+                              : value.kind === "number"
+                                ? "double"
+                                : value.kind === "boolean"
+                                  ? "bool"
+                                  : value.kind === "string"
+                                    ? "std::string"
+                                    : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,

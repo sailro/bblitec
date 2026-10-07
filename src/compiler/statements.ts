@@ -95,6 +95,7 @@ import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
+    | "absenceTags"
     | "classLowerer"
     | "resolveRecordValue"
     | "admissions"
@@ -4591,6 +4592,18 @@ export class StatementLowerer {
                     return;
                 }
                 const rightExpression = context.unwrap(unwrapped.right);
+                if (target.absenceTagStorageCpp !== undefined) {
+                    // Tagged storage changes only through a tagged store.
+                    if (
+                        operator !== "=" ||
+                        !context.dataLowerer.emitAssignment(unwrapped)
+                    )
+                        context.fail(
+                            unwrapped,
+                            `Assignment operator '${operator}' is not supported for storage telling null from undefined.`,
+                        );
+                    return;
+                }
                 if (target.kind === "pending-let" && operator === "=") {
                     // `let set;` bound by its first assignment: a
                     // compile-time record, in the declaring scope.

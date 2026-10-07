@@ -99,6 +99,8 @@ export interface LoweringServices {
     readonly recordProxies: import("./proxies.js").RecordProxies;
     moduleContainerIsMutated(name: ts.Identifier): boolean;
     readonly checker: ts.TypeChecker;
+    /** Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
+    readonly absenceTags: ReadonlySet<ts.Declaration>;
     readonly options: ResolvedCompileOptions;
     readonly symbols: CompilerSymbols;
     readonly evaluator: StaticEvaluator;

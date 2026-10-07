@@ -193,6 +193,7 @@ interface UiUnknownAttributeMutation {
 
 interface UiProjectionContext extends Pick<
     LoweringServices,
+    | "absenceTags"
     | "activeThis"
     | "assets"
     | "assetOutputs"
