@@ -32,6 +32,7 @@ import {
     storedSignatureParameter,
 } from "./absence-tag-storage.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
+import { isCustomThenable } from "./promises.js";
 import {
     functionBodyPrologue,
     type RecentStringsParameter,
@@ -5612,6 +5613,9 @@ export class UserFunctionLowerer {
             declaredRecord?.kind === "struct" &&
             (returned.kind === "record" ||
                 returned.dataType?.kind === "struct") &&
+            // Resolution reads a custom thenable's `then` before settling;
+            // the async lowering owns that refusal.
+            !isCustomThenable(context.dataTypes, returned, expression) &&
             !(
                 returned.dataType?.kind === "struct" &&
                 returned.dataType.name === declaredRecord.name
