@@ -1,5 +1,10 @@
 import ts from "typescript";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import {
+    declaredSymbol,
+    isRetypableDeclaration,
+    resolvedSymbol,
+} from "./symbols.js";
+import { contextualProperty } from "./type-facts.js";
 import { unwrapExpression } from "./syntax.js";
 
 /**
@@ -25,21 +30,13 @@ export class AbsenceTagStorageRequired extends Error {
     }
 }
 
-/**
- * A program source's own storage: a declaration file (an engine or library
- * typing) describes storage its producer owns.
- */
+/** A program source's own storage ({@link isRetypableDeclaration}) that holds a value. */
 function isAbsenceTagDeclaration(
     declaration: ts.Declaration | undefined,
 ): declaration is AbsenceTagDeclaration {
     return (
-        declaration !== undefined &&
-        !declaration.getSourceFile().isDeclarationFile &&
-        (((ts.isVariableDeclaration(declaration) ||
-            ts.isParameter(declaration)) &&
-            ts.isIdentifier(declaration.name)) ||
-            ts.isPropertySignature(declaration) ||
-            ts.isPropertyDeclaration(declaration))
+        isRetypableDeclaration(declaration) &&
+        !ts.isMethodSignature(declaration)
     );
 }
 
@@ -115,9 +112,11 @@ export function storedSignatureParameter(
         ts.isShorthandPropertyAssignment(parent) &&
         parent.name === site
     ) {
-        const owner = checker.getContextualType(parent.parent);
-        const property =
-            owner && checker.getPropertyOfType(owner, parent.name.text);
+        const property = contextualProperty(
+            checker,
+            parent.parent,
+            parent.name.text,
+        );
         slot = property && checker.getTypeOfSymbolAtLocation(property, site);
     } else slot = checker.getContextualType(site);
     const signatures = slot
@@ -135,35 +134,4 @@ export function requireDeclarationAbsenceTag(
 ): void {
     if (isAbsenceTagDeclaration(declaration) && !tagged.has(declaration))
         throw new AbsenceTagStorageRequired(declaration);
-}
-
-/**
- * A record property whose fixed-length tuples are stored where a number
- * array could grow them: the compile replays with growable array storage
- * for the property, which every record type sharing its layout keeps.
- */
-export class TupleArraySlotRequired extends Error {
-    constructor(
-        readonly declaration: ts.PropertySignature | ts.PropertyDeclaration,
-    ) {
-        super("A record property must store its tuples as arrays.");
-    }
-}
-
-/**
- * Demands growable array storage for the record slot a tuple value was read
- * from, when it has one not yet retyped; returns otherwise.
- */
-export function requireTupleArraySlot(
-    slots: ReadonlySet<ts.Declaration>,
-    value: { readonly slotDeclarations?: readonly ts.Declaration[] },
-): void {
-    for (const declaration of value.slotDeclarations ?? [])
-        if (
-            (ts.isPropertySignature(declaration) ||
-                ts.isPropertyDeclaration(declaration)) &&
-            !declaration.getSourceFile().isDeclarationFile &&
-            !slots.has(declaration)
-        )
-            throw new TupleArraySlotRequired(declaration);
 }

@@ -9,9 +9,9 @@ import {
 import { CompileError } from "./compile-error.js";
 import {
     AbsenceTagStorageRequired,
-    TupleArraySlotRequired,
     type AbsenceTagDeclaration,
 } from "./absence-tag-storage.js";
+import { TupleArraySlotRequired } from "./tuple-array-storage.js";
 import {
     DynamicBindingStorageRequired,
     type DynamicBindingStorage,

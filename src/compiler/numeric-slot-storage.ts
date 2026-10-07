@@ -1,6 +1,14 @@
 import ts from "typescript";
-import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
-import { isTypeReference, presentMembers } from "./type-facts.js";
+import {
+    declaredInDefaultLibrary,
+    isRetypableDeclaration,
+    resolvedSymbol,
+} from "./symbols.js";
+import {
+    contextualProperty,
+    isTypeReference,
+    presentMembers,
+} from "./type-facts.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataType, TypedArrayKind } from "./data-types/model.js";
 import { isTypedArrayType } from "./data-types/typed-arrays.js";
@@ -153,30 +161,21 @@ function climb(node: ts.Node): ts.Node {
     return current;
 }
 
-/** A program's own declaration whose storage a demand can retype. */
+/** A program's own declaration whose storage a demand can retype ({@link isRetypableDeclaration}). */
 function isNumericSlotDeclaration(
     declaration: ts.Declaration | undefined,
 ): declaration is NumericSlotDeclaration {
-    return (
-        declaration !== undefined &&
-        !declaration.getSourceFile().isDeclarationFile &&
-        ((ts.isVariableDeclaration(declaration) &&
-            ts.isIdentifier(declaration.name)) ||
-            ts.isPropertySignature(declaration) ||
-            ts.isPropertyDeclaration(declaration) ||
-            ts.isMethodSignature(declaration))
-    );
+    return isRetypableDeclaration(declaration) && !ts.isParameter(declaration);
 }
 
 /** The declaration of the one property `name` of the type an object literal is stored as. */
-function contextualProperty(
+function contextualPropertyDeclaration(
     checker: ts.TypeChecker,
     literal: ts.ObjectLiteralExpression,
     name: string,
 ): ts.Declaration | undefined {
-    const owner = checker.getContextualType(literal);
-    const property = owner && presentType(owner)?.getProperty(name);
-    const declarations = property?.declarations ?? [];
+    const declarations =
+        contextualProperty(checker, literal, name)?.declarations ?? [];
     return declarations.length === 1 ? declarations[0] : undefined;
 }
 
@@ -190,10 +189,18 @@ function storageDeclaration(
     if (ts.isPropertyAssignment(parent) && parent.initializer === node)
         return ts.isObjectLiteralExpression(parent.parent) &&
             !ts.isComputedPropertyName(parent.name)
-            ? contextualProperty(checker, parent.parent, parent.name.text)
+            ? contextualPropertyDeclaration(
+                  checker,
+                  parent.parent,
+                  parent.name.text,
+              )
             : undefined;
     if (ts.isShorthandPropertyAssignment(parent) && parent.name === node)
-        return contextualProperty(checker, parent.parent, parent.name.text);
+        return contextualPropertyDeclaration(
+            checker,
+            parent.parent,
+            parent.name.text,
+        );
     if (ts.isVariableDeclaration(parent) && parent.initializer === node)
         return parent;
     if (
