@@ -1052,10 +1052,128 @@ export class DataTypeRegistry {
                 else if (
                     ts.isAsExpression(node) ||
                     ts.isTypeAssertionExpression(node)
-                )
+                ) {
                     this.registerAssertedRecord(node);
+                    if (ts.isTypeReferenceNode(node.type))
+                        this.namedAssertions.push(node);
+                }
             });
         }
+    }
+
+    /**
+     * @unjournaled Source facts gathered once before lowering: the
+     * assertions to a named type, whose types resolve only when a phantom
+     * brand needs them.
+     */
+    private readonly namedAssertions: (ts.AsExpression | ts.TypeAssertion)[] =
+        [];
+    /** @unjournaled The object type each phantom brand's assertions brand, from source alone. */
+    private readonly brandSources = new Map<string, ts.Type | null>();
+
+    /**
+     * A phantom brand (`Readonly<{ readonly [brand]: true }>` over a
+     * `declare const brand: unique symbol`): every property is keyed by a
+     * symbol with no runtime value, so no object has one and the type adds
+     * nothing to the object asserted to it. The key names its symbols.
+     */
+    private phantomBrandKey(type: ts.Type): string | undefined {
+        const cached = this.phantomBrandKeys.get(type);
+        if (cached !== undefined) return cached ?? undefined;
+        const key = this.computePhantomBrandKey(type);
+        this.phantomBrandKeys.set(type, key ?? null);
+        return key;
+    }
+
+    /** @unjournaled Whether a checked type is a phantom brand, from source alone. */
+    private readonly phantomBrandKeys = new WeakMap<ts.Type, string | null>();
+
+    private computePhantomBrandKey(type: ts.Type): string | undefined {
+        if (
+            type.isUnionOrIntersection() ||
+            type.getCallSignatures().length > 0 ||
+            type.getConstructSignatures().length > 0 ||
+            this.checker.getIndexInfosOfType(type).length > 0
+        )
+            return undefined;
+        const properties = this.checker.getPropertiesOfType(type);
+        if (properties.length === 0) return undefined;
+        for (const property of properties) {
+            const declaration = property.declarations?.[0];
+            const name =
+                declaration && ts.isPropertySignature(declaration)
+                    ? declaration.name
+                    : undefined;
+            if (
+                !name ||
+                !ts.isComputedPropertyName(name) ||
+                !ts.isIdentifier(name.expression)
+            )
+                return undefined;
+            const key = resolvedSymbol(
+                this.checker,
+                name.expression,
+            )?.valueDeclaration;
+            if (
+                !key ||
+                !ts.isVariableDeclaration(key) ||
+                key.initializer !== undefined ||
+                key.getSourceFile().isDeclarationFile ||
+                (ts.getCombinedModifierFlags(key) &
+                    ts.ModifierFlags.Ambient) ===
+                    0
+            )
+                return undefined;
+        }
+        return properties
+            .map((property) => String(property.escapedName))
+            .sort()
+            .join(",");
+    }
+
+    /**
+     * A phantom brand stores the one object type the program asserts to it
+     * (`new Key() as unknown as Brand`): the brand is that object, so it
+     * keeps that object's storage and identity. Assertions from another
+     * brand value or from an unknown value decide nothing; a brand asserted
+     * from several object types has no one storage.
+     */
+    private brandStorage(type: ts.Type, node: ts.Node): DataType | undefined {
+        const key = this.phantomBrandKey(type);
+        if (key === undefined) return undefined;
+        let source = this.brandSources.get(key);
+        if (source === undefined) {
+            const sources = new Set<ts.Symbol | ts.Type>();
+            let first: ts.Type | undefined;
+            for (const assertion of this.namedAssertions) {
+                if (
+                    this.phantomBrandKey(
+                        this.checker.getTypeFromTypeNode(assertion.type),
+                    ) !== key
+                )
+                    continue;
+                const sourceType = this.checker.getTypeAtLocation(
+                    unwrapExpression(assertion.expression),
+                );
+                if (
+                    (sourceType.flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0 ||
+                    this.phantomBrandKey(sourceType) === key
+                )
+                    continue;
+                first ??= sourceType;
+                sources.add(sourceType.symbol ?? sourceType);
+            }
+            source = sources.size === 1 ? first! : null;
+            this.brandSources.set(key, source);
+        }
+        return source
+            ? this.fromStoredTsType(source, node)
+            : this.fail(
+                  node,
+                  `A phantom brand stores the one object type the program asserts to it; '${this.checker.typeToString(type)}' has no single such type.`,
+              );
     }
 
     private registerAssertedRecord(

@@ -9365,3 +9365,42 @@ test("a rest object pattern keeps refusing", () => {
         /A rest parameter is the last parameter and an identifier or array pattern/,
     );
 });
+
+check(
+    "phantom-branded-objects-keep-their-object",
+    `
+    declare const keyBrand: unique symbol;
+    type Key = Readonly<{ readonly [keyBrand]: true }>;
+    class Holder { text = ""; }
+    function issue(text: string): Key {
+        const holder = new Holder();
+        holder.text = text;
+        return holder as unknown as Key;
+    }
+    function rename(key: Key, text: string): void { (key as unknown as Holder).text = text; }
+    function read(key: Key): string { return (key as unknown as Holder).text; }
+    const issues: Array<typeof issue> = [issue];
+    const renames: Array<typeof rename> = [rename];
+    const reads: Array<typeof read> = [read];
+    const first = issues[0]!("a");
+    const second = issues[0]!("a");
+    const keys: Key[] = [first, second];
+    renames[0]!(keys[0]!, "b");
+    if (reads[0]!(first) !== "b" || reads[0]!(second) !== "a" || keys[0] !== first || first === second)
+        throw new Error("branded identity");
+`,
+);
+
+test("a phantom brand asserted from several object types refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            declare const brand: unique symbol;
+            type Key = Readonly<{ readonly [brand]: true }>;
+            class A { a = 1; }
+            class B { b = 2; }
+            const keys: Key[] = [new A() as unknown as Key, new B() as unknown as Key];
+            if (keys.length !== 2) throw new Error("x");`),
+        /A phantom brand stores the one object type the program asserts to it/,
+    );
+});
