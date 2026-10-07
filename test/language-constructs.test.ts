@@ -12022,3 +12022,28 @@ check(
     if (w.length !== 2 || w[1]!.side !== 3 || w[0]!.height !== 0.96 || recipes[0]!(3).length !== 3) throw new Error("windows");
 `,
 );
+
+check(
+    "tagged-union-arms-hold-symbol-fields",
+    `
+    type Outcome = { kind: "hit"; token: symbol } | { kind: "miss" };
+    const hitToken = Symbol("hit");
+    function outcome(hit: boolean): Outcome {
+        return hit ? { kind: "hit", token: hitToken } : { kind: "miss" };
+    }
+    const first = outcome(Date.now() > 0);
+    if (first.kind !== "hit" || first.token !== hitToken || first.token.description !== "hit") throw new Error("symbol arm");
+    if (outcome(false).kind !== "miss") throw new Error("miss arm");
+`,
+);
+
+check(
+    "typed-arrays-view-shared-array-buffers",
+    `
+    const shared = new SharedArrayBuffer(16);
+    const values = new Float32Array(shared);
+    values[0] = 1.5;
+    const again = new Float32Array(shared);
+    if (again[0] !== 1.5 || values.buffer !== shared || !(values.buffer instanceof SharedArrayBuffer)) throw new Error("shared view");
+`,
+);

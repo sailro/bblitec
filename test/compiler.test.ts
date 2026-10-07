@@ -8725,15 +8725,15 @@ test("a tagged union arm with an unrepresented field refuses at that field", () 
     assert.throws(
         () =>
             compileSource(`
-                type Outcome = { kind: "hit"; token: symbol } | { kind: "miss" };
+                type Outcome = { kind: "hit"; token: FinalizationRegistry<number> } | { kind: "miss" };
                 function outcome(hit: boolean): Outcome {
-                    return hit ? { kind: "hit", token: Symbol("hit") } : { kind: "miss" };
+                    return hit ? { kind: "hit", token: new FinalizationRegistry<number>(() => {}) } : { kind: "miss" };
                 }
                 const first = outcome(Date.now() > 0);
                 if (first.kind !== "hit") throw new Error("outcome");
             `),
         (error: Error) =>
-            /Symbol/.test(error.message) &&
+            /Unsupported constructor expression/.test(error.message) &&
             !/unknown field/.test(error.message),
     );
 });

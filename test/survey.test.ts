@@ -165,8 +165,10 @@ test("a record whose native initializer refused refuses where it is stored", () 
         interface Facts { id: number; failures: Candidate[] }
         const store = new Map<number, Facts>();
         export function record(id: number, failures: Failure[]): void {
-            const facts: Facts = { id, failures: failures.slice() as Candidate[] };
+            const facts: Facts = { id, failures: failures as Candidate[] };
             store.set(id, facts);
+            failures.push("c");
+            if (facts.failures.length !== failures.length) throw new Error("alias");
         }
         const roots: Array<typeof record> = [record];
         roots[0]!(1, ["a", "c"]);
