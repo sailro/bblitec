@@ -338,7 +338,12 @@ export function mayCompileDataMethodCall(
     );
     // Handle methods belong to their platform adapter. Plain records may
     // contain stored callbacks and still need the data-method dispatcher.
+    // A class or namespace receiver is a static member call, not data.
+    const receiver = resolvedSymbol(checker, callee.expression);
     return (
+        ((receiver?.flags ?? 0) &
+            (ts.SymbolFlags.Class | ts.SymbolFlags.ValueModule)) ===
+            0 &&
         !pinnedHandleKind(owner) &&
         !platformHandleKind(owner) &&
         (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
