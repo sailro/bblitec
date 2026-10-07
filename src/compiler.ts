@@ -650,12 +650,21 @@ function compileSourceApplication(
                     previous,
                     request.demand,
                 );
+                const accessorsKey = (
+                    demand: NativeRecordStorageDemand,
+                ): string =>
+                    (demand.accessors ?? [])
+                        .map(({ name, setter }) => `${name}:${setter}`)
+                        .join(",");
                 if (
                     previous &&
                     previous.proxy === merged.proxy &&
+                    previous.armFields === merged.armFields &&
+                    previous.view === merged.view &&
                     previous.document === merged.document &&
                     (previous.joins?.length ?? 0) ===
-                        (merged.joins?.length ?? 0)
+                        (merged.joins?.length ?? 0) &&
+                    accessorsKey(previous) === accessorsKey(merged)
                 )
                     return false;
                 ownedRecords.set(key, merged);

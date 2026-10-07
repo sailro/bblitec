@@ -136,10 +136,12 @@ export function structOwnEntries(
     const fields = excludedKeys?.size
         ? sourceFields.filter((field) => !excludedKeys.has(field.sourceName))
         : sourceFields;
+    // Accessor slots are own and enumerable (a getter runs as its key is
+    // read) unless they may hold a class's prototype accessor.
     const accessor = fields.find(
         (field) => field.accessor && !field.accessorReceiver,
     );
-    if (accessor)
+    if (accessor && context.dataTypes.holdsPrototypeAccessors(dataType.name))
         context.dataTypes.structField(dataType.name, accessor.sourceName, node);
     return fields.map((field) => {
         const key = field.sourceName;

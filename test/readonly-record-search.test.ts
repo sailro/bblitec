@@ -58,8 +58,7 @@ test("readonly tuple storage preserves heterogeneous lanes and own-key distincti
             registry.ownPropertyPresence(distinct.element.name, field),
             "stored",
         );
-    // A lane whose field is only null keeps its own struct, holding JSON's
-    // null.
+    // A lane whose field is only null keeps its own struct, holding null.
     assert.ok(empty?.kind === "vector");
     assert.ok(empty.element.kind === "optional");
     assert.ok(empty.element.inner.kind === "union");
@@ -75,7 +74,7 @@ test("readonly tuple storage preserves heterogeneous lanes and own-key distincti
                       .map((field) => `${field.sourceName}:${field.type.kind}`)
                 : [member.kind],
         ),
-        [["left:json"], ["right:string"]],
+        [["left:null"], ["right:string"]],
     );
 });
 

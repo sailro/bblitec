@@ -44,6 +44,7 @@ function typedArray(kind: TypedArrayKind) {
 export const scalarKinds: DataKindOperations<
     | "module-namespace"
     | "undefined"
+    | "null"
     | "weak-key"
     | "error"
     | "file"
@@ -87,6 +88,8 @@ export const scalarKinds: DataKindOperations<
     },
     // A unit value: rebinding it aliases nothing.
     undefined: reseatingLeaf("bbl::js::Undefined", "undefined"),
+    // A property only null fills (`houseArc: null`).
+    null: reseatingLeaf("bbl::js::Null", "null"),
     "weak-key": leaf("bbl::js::WeakIdentity", "weak-key"),
     error: leaf("bbl::js::Error", "error", false, true),
     file: {

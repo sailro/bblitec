@@ -1338,6 +1338,16 @@ export class DeclarationLowerer {
                 narrowedFound,
                 referenceStruct ? undefined : optionalFoundCpp,
             );
+            const reference =
+                stableOwnerAlias ||
+                (aliases && !wrapperCopiesIdentity) ||
+                narrowed.borrowedData;
+            // An alias of a read-only reference parameter is a const handle,
+            // through which the shared record stays writable.
+            const constant =
+                reference && referenceStruct && narrowed.readOnly
+                    ? "const "
+                    : "";
             this.context.emit({
                 kind: "declaration",
                 name: cppName,
@@ -1345,7 +1355,7 @@ export class DeclarationLowerer {
                     ? "auto"
                     : stableOwnerAlias && narrowed.dataType.kind === "string"
                       ? "auto&"
-                      : `${localType}${stableOwnerAlias || (aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
+                      : `${constant}${localType}${reference ? "&" : ""}`,
                 initializer: sharedDataBinding
                     ? `bbl::js::make_gc_shared<${localType}>(${initializerCpp})`
                     : initializerCpp,

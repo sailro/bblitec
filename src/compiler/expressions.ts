@@ -5675,6 +5675,21 @@ export class ExpressionLowerer {
                 ts.isSpreadAssignment(property) &&
                 this.spreadsOptionalOwnKeys(property.expression),
         );
+        // A computed key a run-time value selects writes the record of the
+        // position's type; no compile-time record can name it.
+        const runtimeKeyed = unwrapped.properties.some((property) => {
+            const key = this.context.dataLowerer.runtimeKey(property);
+            return (
+                key !== undefined &&
+                this.context.probeEmission(
+                    () => {
+                        const value = this.compileValue(key);
+                        return value.staticString ?? value.staticNumber;
+                    },
+                    () => false,
+                ) === undefined
+            );
+        });
         if (
             unwrapped.properties.some((property) => {
                 if (!ts.isSpreadAssignment(property)) return false;
@@ -5689,13 +5704,16 @@ export class ExpressionLowerer {
                 );
             }) ||
             dynamicSpread ||
-            optionalKeysSpread
+            optionalKeysSpread ||
+            runtimeKeyed
         ) {
             // The expression creates its own properties. A contextual interface
             // can be narrower, or open-ended, without changing those properties.
-            const record = this.context.probeEmission(() =>
-                this.compileStaticObjectValue(unwrapped, true),
-            );
+            const record = runtimeKeyed
+                ? undefined
+                : this.context.probeEmission(() =>
+                      this.compileStaticObjectValue(unwrapped, true),
+                  );
             if (record) return record;
             const contextual =
                 this.context.checker.getContextualType(unwrapped);
@@ -5714,6 +5732,10 @@ export class ExpressionLowerer {
                         contextualType?.kind === "map" &&
                         contextualType.dictionary
                     )
+                        return contextualType;
+                    // A run-time key selects one of the position's fields;
+                    // the literal's own type is an index signature.
+                    if (runtimeKeyed && contextualType?.kind === "struct")
                         return contextualType;
                     return (
                         this.context.dataLowerer.dataTypeAt(unwrapped) ??

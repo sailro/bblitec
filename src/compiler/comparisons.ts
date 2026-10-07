@@ -79,18 +79,46 @@ export function conditionComparison(
 }
 
 /**
+ * An empty object a literal created without a native object (an identity
+ * token, `const token = {}`): its one property table, which every value of
+ * that object shares (`BindingScopes.recordDeclaration`).
+ */
+function emptyObjectToken(value: Value): object | undefined {
+    return value.kind === "record" &&
+        !value.cpp &&
+        value.recordProperties &&
+        !value.classDeclaration &&
+        [
+            value.recordProperties,
+            value.recordMethods,
+            value.recordGetters,
+            value.recordSetters,
+        ].every((members) => Object.keys(members ?? {}).length === 0)
+        ? value.recordProperties
+        : undefined;
+}
+
+/**
  * A comparison whose operands generation settled, folded: two static
  * strings compare for identity, two finite static numbers through the
- * shared numeric fold. Undefined when either operand is still a runtime
- * value or the operator does not fold them.
+ * shared numeric fold, two empty object tokens by being one object.
+ * Undefined when either operand is still a runtime value or the operator
+ * does not fold them.
  */
 export function foldSettledComparison(
     kind: ts.SyntaxKind,
     left: Value,
     right: Value,
 ): boolean | undefined {
-    if (left.staticString !== undefined && right.staticString !== undefined) {
-        const equal = left.staticString === right.staticString;
+    const leftToken = emptyObjectToken(left);
+    const rightToken = emptyObjectToken(right);
+    const sameString =
+        left.staticString !== undefined && right.staticString !== undefined
+            ? left.staticString === right.staticString
+            : undefined;
+    const equal =
+        leftToken && rightToken ? leftToken === rightToken : sameString;
+    if (equal !== undefined) {
         if (kind === ts.SyntaxKind.EqualsEqualsEqualsToken) return equal;
         if (kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) return !equal;
     }

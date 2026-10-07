@@ -108,6 +108,7 @@ export const DEFERRED_DOM_OBJECTS = [
 interface DataKinds {
     "module-namespace": { kind: "module-namespace"; module: string };
     undefined: { kind: "undefined" };
+    null: { kind: "null" };
     error: { kind: "error" };
     file: { kind: "file" };
     blob: { kind: "blob" };

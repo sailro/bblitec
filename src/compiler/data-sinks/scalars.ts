@@ -330,6 +330,7 @@ export const scalarsSinks: DataSinkOperations<
     | "module-namespace"
     | "weak-key"
     | "undefined"
+    | "null"
     | "error"
     | "file"
     | "blob"
@@ -405,6 +406,22 @@ export const scalarsSinks: DataSinkOperations<
                 node,
                 "A weak object key requires an owned record or represented DOM target.",
             );
+        },
+    },
+    null: {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (_type, lowerer, value) => {
+            if (value.dataType?.kind === "null")
+                return `(static_cast<void>(${value.cpp}), bbl::js::Null{})`;
+            if (value.kind !== "json-null" || value.cpp === "std::nullopt")
+                return undefined;
+            lowerer.context.emitDiscardedValue(value);
+            return "bbl::js::Null{}";
         },
     },
     undefined: {
