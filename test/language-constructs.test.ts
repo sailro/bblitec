@@ -6715,6 +6715,32 @@ checkInRealm(
 `,
 );
 checkInRealm(
+    "async-results-of-another-record-type-settle-as-the-declared-type",
+    `
+    interface Info { name: string; icon: string | null; tint: [number, number, number] | null }
+    const cache = new Map<string, Promise<Info>>();
+    function delay(value: number): Promise<number> { return new Promise((resolve) => setTimeout(() => resolve(value), 0)); }
+    async function readUncached(url: string): Promise<Info> {
+        const size = await delay(url.length);
+        return { name: url, icon: size > 3 ? "icon" : null, tint: size > 100 ? [1, 2, 3] : null };
+    }
+    function readInfo(url: string): Promise<Info> {
+        let p = cache.get(url);
+        if (!p) {
+            p = readUncached(url);
+            cache.set(url, p);
+        }
+        return p;
+    }
+    const first = readInfo("abcd");
+    if (first !== readInfo("abcd")) throw new Error("cached promise");
+    void first.then((info) => {
+        if (info.icon !== "icon" || info.name !== "abcd" || info.tint !== null) throw new Error("settled record");
+        globalThis.close();
+    });
+`,
+);
+checkInRealm(
     "stored-promise-then-finally",
     `
     interface Deps { spawn(x: number): Promise<boolean>; despawn(): void }
