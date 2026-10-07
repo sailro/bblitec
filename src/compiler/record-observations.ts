@@ -229,7 +229,12 @@ function holdsRecord(
         0
     )
         return false;
-    return records.some((record) => checker.isTypeAssignableTo(record, holder));
+    // A record union's value is a record of one of its members.
+    return records.some((record) =>
+        (record.isUnion() ? record.types : [record]).some((member) =>
+            checker.isTypeAssignableTo(member, holder),
+        ),
+    );
 }
 
 /** A wrapper that keeps the value of the expression it encloses. */

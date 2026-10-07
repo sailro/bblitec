@@ -400,7 +400,13 @@ export function layoutsCompatible(
 ): boolean {
     const a = checker.getNonNullableType(left);
     const b = checker.getNonNullableType(right);
-    if (a === b) return true;
+    // A field only null or undefined is the other's empty storage.
+    if (
+        a === b ||
+        (a.flags & ts.TypeFlags.Never) !== 0 ||
+        (b.flags & ts.TypeFlags.Never) !== 0
+    )
+        return true;
     let compared = seen.get(a);
     if (!compared) seen.set(a, (compared = new Set()));
     if (compared.has(b)) return true;

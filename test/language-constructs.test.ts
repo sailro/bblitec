@@ -8459,6 +8459,88 @@ check(
 );
 
 check(
+    "records-holding-a-field-only-undefined-share-the-other-type-layout",
+    `
+    interface Pose { pitch?: number; pivot?: readonly [number, number, number] }
+    const upright = { pitch: 0, pivot: undefined };
+    const suspended = { pitch: Math.PI / 2, pivot: [0.5, 0.5, 0] as const };
+    function orientation(kind: string): Pose { return kind === "fish" ? suspended : upright; }
+    const fish = orientation("fish");
+    const seen = new Set<Pose>([fish, orientation("x")]);
+    if (!seen.has(suspended) || !seen.has(upright) || fish.pivot?.[1] !== 0.5 || orientation("x").pivot !== undefined) throw new Error("one object per pose");
+    fish.pitch = 1;
+    if (suspended.pitch !== 1 || JSON.stringify(orientation("x")) !== '{"pitch":0}') throw new Error("write through the declared type");
+`,
+);
+
+check(
+    "union-arms-requiring-a-field-another-arm-makes-optional-enumerate-it",
+    `
+    interface Appearance { seed?: number }
+    interface Tower extends Appearance { seed: number }
+    interface House extends Appearance { label: string }
+    function keysOf(before: Tower | House, after: Tower | House): string { return [...new Set([...Object.keys(before), ...Object.keys(after)])].sort().join(); }
+    const classify: Array<typeof keysOf> = [keysOf];
+    const tower: Tower = { seed: 3 };
+    const house: House = { label: "h" };
+    const seeded: House = { label: "s", seed: 2 };
+    if (classify[0]!(tower, tower) !== "seed" || classify[0]!(house, house) !== "label" || classify[0]!(seeded, house) !== "label,seed") throw new Error("own keys");
+`,
+);
+
+test("union arms holding an undefined field another arm makes optional refuse its own-key presence", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface Tower { seed: number | undefined }
+            interface House { seed?: number; label: string }
+            function keysOf(before: Tower | House): string { return Object.keys(before).join(); }
+            const classify: Array<typeof keysOf> = [keysOf];
+            if (classify[0]!({ seed: undefined }) !== "seed") throw new Error("own undefined key");`),
+        /Own-property presence of 'seed' is not represented/,
+    );
+});
+
+check(
+    "union-records-narrowed-to-an-arm-with-methods-stay-one-object",
+    `
+    interface Step { id: number }
+    interface ReleasePlan { readonly steps: readonly Step[]; commit(): void }
+    type ReleasePreparation = ReleasePlan | { readonly state: "pending" } | { readonly state: "refused" };
+    const planOf = (preparation: ReleasePreparation): ReleasePlan | null => ("steps" in preparation ? preparation : null);
+    const roots: Array<typeof planOf> = [planOf];
+    let committed = 0;
+    const plan: ReleasePlan = { steps: [{ id: 1 }], commit() { committed++; } };
+    const preparations: ReleasePreparation[] = [plan, { state: "pending" }];
+    const found = roots[0]!(preparations[0]!);
+    if (found !== plan || roots[0]!(preparations[1]!) !== null) throw new Error("narrowed plan");
+    found.commit();
+    if (committed !== 1 || found.steps[0]!.id !== 1) throw new Error("commit");
+`,
+);
+
+check(
+    "records-holding-a-field-only-null-keep-it",
+    `
+    interface Face { polygon: readonly number[]; houseArc: readonly number[] | null }
+    interface Ring extends Face { houseArc: null }
+    interface Enclosure extends Face { houseArc: readonly number[] }
+    function ringFrom(n: number): Ring | null {
+        if (n < 0) return null;
+        const polygon = [n, n + 1];
+        if (polygon.length > 5) return null;
+        return { polygon, houseArc: null };
+    }
+    const make: Array<typeof ringFrom> = [ringFrom];
+    const yards: (Ring | Enclosure)[] = [{ polygon: [1], houseArc: [2] }];
+    const ring = make[0]!(3);
+    if (ring) yards.push(ring);
+    if (yards.length !== 2 || yards[1] !== ring || yards[1]!.houseArc !== null || make[0]!(-1) !== null) throw new Error("ring");
+    const text = JSON.stringify(ring);
+    if (!text.includes('"houseArc":null') || !text.includes('"polygon":[3,4]') || Object.keys(ring!).sort().join() !== "houseArc,polygon") throw new Error("keys " + text);
+`,
+);
+
+check(
     "records-stored-as-a-tagged-union-stay-one-object",
     `
     interface A { kind: "a"; x: number }

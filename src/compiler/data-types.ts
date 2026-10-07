@@ -823,6 +823,24 @@ function fieldPresence(
     };
 }
 
+/** The storage a field holds its values in: its present type, literal tags as strings. */
+function fieldStorage(type: DataType): DataType {
+    return type.kind === "optional"
+        ? fieldStorage(type.inner)
+        : type.kind === "enum"
+          ? { kind: "string" }
+          : type;
+}
+
+/** Whether field storage holds records, directly or in an array. */
+function holdsRecordStorage(type: DataType): boolean {
+    return (
+        type.kind === "struct" ||
+        ((type.kind === "vector" || type.kind === "span") &&
+            holdsRecordStorage(fieldStorage(type.element)))
+    );
+}
+
 /** One fact two shapes give: shapes that disagree leave `conflict`. */
 function mergedFact<T>(
     previous: T | undefined,
@@ -844,7 +862,19 @@ function unionPresence(
         (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
     );
     if (optional.every((flag) => !flag)) return "own";
-    if (!optional.every(Boolean)) return "ambiguous";
+    // A required property no empty value holds fills its slot, and an
+    // optional one holding undefined is absent: the slot alone says whether
+    // the key is own. An optional undefined-only property keeps its own
+    // presence, which no slot of the required one's storage holds.
+    if (
+        optional.some((flag) => !flag) &&
+        !optional.every((flag, index) =>
+            flag
+                ? presentMembers(types[index]!).length > 0
+                : valueAbsence([types[index]!]) === undefined,
+        )
+    )
+        return "ambiguous";
     return storedPresence(
         mapped,
         types.some((type) => nullability(type).null),
@@ -1600,7 +1630,8 @@ export class DataTypeRegistry {
      * (`recordCopyObservation`): records read out of a shared array
      * (`sharedArray`) never are, except for a call lending a copy to a
      * callee that only reads it (`lentForCall`); a copy handed to a call as
-     * `argument` needs only the call's writes. Otherwise the two types join
+     * `argument` needs only the call's writes. The `stored` expression's own
+     * and contextual types name the two records. Otherwise the two types join
      * one record component (`record-components.ts`) through a storage
      * replay, after which both map to one struct and no conversion is left;
      * types no one layout holds (`layoutsCompatible`; a union's layout,
@@ -1616,16 +1647,19 @@ export class DataTypeRegistry {
             sharedArray = false,
             lentForCall = false,
             argument,
+            stored,
         }: {
             sharedArray?: boolean;
             lentForCall?: boolean;
             argument?: ts.Node | undefined;
+            stored?: ts.Expression | undefined;
         } = {},
     ): void {
         // The stored expression's own and contextual types name the stored
         // records (`storedRecordSource`).
         const expression =
-            argument && ts.isExpression(argument) ? argument : undefined;
+            stored ??
+            (argument && ts.isExpression(argument) ? argument : undefined);
         const source = this.storedRecordSource(
             sourceType,
             expression && this.checker.getTypeAtLocation(expression),
@@ -1767,25 +1801,15 @@ export class DataTypeRegistry {
         left: readonly DataStructField[],
         right: readonly DataStructField[],
     ): boolean {
-        const storage = (type: DataType): DataType =>
-            type.kind === "optional"
-                ? storage(type.inner)
-                : type.kind === "enum"
-                  ? { kind: "string" }
-                  : type;
-        const holdsRecords = (type: DataType): boolean =>
-            type.kind === "struct" ||
-            ((type.kind === "vector" || type.kind === "span") &&
-                holdsRecords(storage(type.element)));
         return right.every((field) => {
             const held = left.find(
                 (candidate) => candidate.sourceName === field.sourceName,
             );
             if (!held) return true;
-            const a = storage(held.type);
-            const b = storage(field.type);
+            const a = fieldStorage(held.type);
+            const b = fieldStorage(field.type);
             return (
-                (holdsRecords(a) && holdsRecords(b)) ||
+                (holdsRecordStorage(a) && holdsRecordStorage(b)) ||
                 this.joinedStorage(a, b) !== undefined
             );
         });
@@ -1893,16 +1917,6 @@ export class DataTypeRegistry {
         beforeJoin = false,
     ): void {
         const fields = this.structFields(union.name, node, "accessors");
-        const storage = (type: DataType): DataType =>
-            type.kind === "optional"
-                ? storage(type.inner)
-                : type.kind === "enum"
-                  ? { kind: "string" }
-                  : type;
-        const holdsRecords = (type: DataType): boolean =>
-            type.kind === "struct" ||
-            ((type.kind === "vector" || type.kind === "span") &&
-                holdsRecords(storage(type.element)));
         for (const property of this.structProperties(member)) {
             const field = fields.find(
                 (candidate) => candidate.sourceName === property.name,
@@ -1910,27 +1924,44 @@ export class DataTypeRegistry {
             if (!field && beforeJoin) continue;
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
+            const propertyType = this.checker.getTypeOfSymbolAtLocation(
+                property,
+                declaration ?? node,
+            );
+            // A stored function maps as a layout stores it; the joined
+            // layout decides whether one storage holds both signatures.
+            const callable = this.checker.getNonNullableType(propertyType);
+            if (callable.getCallSignatures().length > 0 && beforeJoin) continue;
+            // A property only null or undefined is the field's empty state.
+            if (
+                (field?.type.kind === "optional" ||
+                    field?.type.kind === "undefined") &&
+                presentMembers(propertyType).length === 0
+            )
+                continue;
             const own =
                 field &&
-                this.fromRecordFieldType(
-                    this.checker.getTypeOfSymbolAtLocation(
-                        property,
-                        declaration ?? node,
-                    ),
-                    declaration ?? node,
-                    property,
-                );
-            const held = field && storage(field.type);
+                (callable.getCallSignatures().length > 0
+                    ? this.fromFunctionType(callable, declaration ?? node)
+                    : this.fromRecordFieldType(
+                          propertyType,
+                          declaration ?? node,
+                          property,
+                      ));
+            const held = field && fieldStorage(field.type);
             const joined =
                 held &&
                 own &&
-                this.joinedStorage(storage(markIdentityFunctions(own)), held);
+                this.joinedStorage(
+                    fieldStorage(markIdentityFunctions(own)),
+                    held,
+                );
             if (
                 held &&
                 own &&
                 beforeJoin &&
-                holdsRecords(held) &&
-                holdsRecords(storage(own))
+                holdsRecordStorage(held) &&
+                holdsRecordStorage(fieldStorage(own))
             )
                 continue;
             if (!held || !joined || !dataTypesEqual(joined, held))
@@ -4466,7 +4497,8 @@ export class DataTypeRegistry {
             const held = storage(mapped);
             if (
                 values.every(({ type, mapped: own }) => {
-                    if (!own) return presentMembers(type).length === 0;
+                    if (!own || own.kind === "undefined")
+                        return presentMembers(type).length === 0;
                     const joined = this.joinedStorage(storage(own), held);
                     return joined !== undefined && dataTypesEqual(joined, held);
                 })
@@ -4555,14 +4587,31 @@ export class DataTypeRegistry {
             }): boolean => mapped !== undefined || !callable;
             // A shape declaring the property only null or undefined holds
             // it in the empty state of the storage the others give it.
-            const empty = ({
+            const nullish = ({
                 type,
                 mapped,
             }: (typeof values)[number]): boolean =>
-                mapped === undefined && presentMembers(type).length === 0;
-            const mappedValue = values.find(
-                (value) => storing(value) && !empty(value),
-            )?.mapped;
+                (mapped === undefined || mapped.kind === "undefined") &&
+                presentMembers(type).length === 0;
+            const valued = values.filter(
+                (value) => storing(value) && !nullish(value),
+            );
+            const empty = (value: (typeof values)[number]): boolean =>
+                valued.length > 0 && nullish(value);
+            // A required property every shape declares only null holds
+            // JSON's null.
+            const onlyNull =
+                valued.length === 0 &&
+                values.length > 0 &&
+                values.every(
+                    (value) =>
+                        nullish(value) &&
+                        nullability(value.type).null &&
+                        !nullability(value.type).undefined,
+                );
+            const mappedValue: DataType | undefined = onlyNull
+                ? { kind: "json" }
+                : (valued[0] ?? values.find(storing))?.mapped;
             if (!mappedValue) {
                 return undefined;
             }
@@ -4575,7 +4624,7 @@ export class DataTypeRegistry {
             let stored: DataType = storage(mappedValue);
             let unionField: DataType | undefined;
             for (const [index, value] of values.entries()) {
-                if (!storing(value) || empty(value)) continue;
+                if (!storing(value) || empty(value) || onlyNull) continue;
                 const { mapped } = value;
                 const next =
                     mapped && this.joinedStorage(stored, storage(mapped));
@@ -4613,7 +4662,7 @@ export class DataTypeRegistry {
             )?.mapped;
             const joined: DataType =
                 unionField ??
-                (declared.length === 1
+                (declared.length === 1 || onlyNull
                     ? mappedValue
                     : nullable && dataTypesEqual(storage(nullable), stored)
                       ? nullable
@@ -4726,10 +4775,23 @@ export class DataTypeRegistry {
             if (!next) return;
             const key = `${structName}.${field.sourceName}`;
             const previous = this.fieldPresences.get(key);
+            // A shape whose field is own and never empty fills the slot a
+            // shape storing it optionally reads presence from.
+            const filled = (fact: FieldPresence | undefined): boolean =>
+                fact?.presence === "own" && fact.absence === undefined;
+            const presence =
+                (filled(previous) && next.presence === "stored") ||
+                (filled(next) && previous?.presence === "stored")
+                    ? "stored"
+                    : mergedFact(
+                          previous?.presence,
+                          next.presence,
+                          "ambiguous",
+                      );
             this.fieldPresences.set(
                 key,
                 fieldPresence(
-                    mergedFact(previous?.presence, next.presence, "ambiguous"),
+                    presence,
                     mergedFact(previous?.absence, next.absence, "either"),
                     mergedFact(
                         previous?.armPresence,
