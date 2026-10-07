@@ -27,7 +27,12 @@ import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
-import { isStringValue, sameCompiledValue, type Value } from "./types.js";
+import {
+    isStringValue,
+    optionalPresentCpp,
+    sameCompiledValue,
+    type Value,
+} from "./types.js";
 
 function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
     if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
@@ -70,8 +75,50 @@ interface ConditionContext
             | "unwrap"
         > {}
 
+/** The collection classes `instanceof` names, by their storage. */
+const COLLECTION_CLASSES: ReadonlyMap<
+    string,
+    { kind: "map" | "set"; weak: boolean }
+> = new Map([
+    ["Map", { kind: "map", weak: false }],
+    ["WeakMap", { kind: "map", weak: true }],
+    ["Set", { kind: "set", weak: false }],
+    ["WeakSet", { kind: "set", weak: true }],
+]);
+
 export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
+
+    /**
+     * `value instanceof Map` (and Set, WeakMap, WeakSet): whether the
+     * storage holding the value is that collection. A union answers by the
+     * member it holds, an optional by its presence; a dictionary, a parsed
+     * document or any other storage is not one.
+     */
+    private collectionInstanceOf(
+        operand: ts.Expression,
+        collection: { kind: "map" | "set"; weak: boolean },
+    ): string {
+        const value = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(operand),
+            "instance_operand",
+            operand,
+        );
+        const holds = (type: DataType): boolean =>
+            type.kind === collection.kind &&
+            !(type.kind === "map" && type.dictionary) &&
+            (type.weak === true) === collection.weak;
+        const type = value.dataType;
+        if (type?.kind === "optional")
+            return holds(type.inner) ? optionalPresentCpp(value.cpp) : "false";
+        if (type?.kind === "union") {
+            const tests = type.members.flatMap((member, index) =>
+                holds(member) ? [`(${value.cpp}).index() == ${index}`] : [],
+            );
+            return tests.length ? `(${tests.join(" || ")})` : "false";
+        }
+        return type && holds(type) ? "true" : "false";
+    }
 
     /**
      * An `instanceof` operand naming a global or a class: no local binds
@@ -349,6 +396,12 @@ export class ConditionLowerer {
                     unwrapped.right,
                 );
                 if (classInstance !== undefined) return classInstance;
+                const collection = COLLECTION_CLASSES.get(global);
+                if (collection)
+                    return this.collectionInstanceOf(
+                        unwrapped.left,
+                        collection,
+                    );
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
                 const expected: string | undefined =

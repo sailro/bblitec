@@ -9257,3 +9257,30 @@ checkInRealm(
     })();
 `,
 );
+
+// instanceof Map, Set, WeakMap and WeakSet answer from the storage holding
+// the value; a dictionary or parsed document is none of them.
+check(
+    "collection-instanceof-over-unknown-values",
+    `
+    const m: unknown = new Map();
+    const s: unknown = new Set<number>([1]);
+    const ws = new WeakSet<{ id: number }>();
+    const wm = new WeakMap<object, number>();
+    const record: Record<string, number> = { a: 1 };
+    const parsed: unknown = JSON.parse('{"a":1}');
+    function kinds(value: unknown): string {
+        return (value instanceof Map ? "M" : "") + (value instanceof Set ? "S" : "") + (value instanceof WeakSet ? "w" : "") + (value instanceof WeakMap ? "W" : "");
+    }
+    let out = "";
+    out += (m instanceof Map ? "M" : "-") + (m instanceof Set ? "S" : "-");
+    out += (s instanceof Set ? "S" : "-") + (s instanceof Map ? "M" : "-");
+    out += (ws instanceof WeakSet ? "w" : "-") + ((ws as unknown) instanceof Set ? "S" : "-");
+    out += (wm instanceof WeakMap ? "W" : "-") + ((wm as unknown) instanceof Map ? "M" : "-");
+    out += ((record as unknown) instanceof Map ? "M" : "-") + (parsed instanceof Map ? "M" : "-");
+    const maybe: Map<string, number> | Set<string> | null = out.length > 3 ? new Set(["x"]) : null;
+    out += (maybe instanceof Set ? "S" : "-") + (maybe instanceof Map ? "M" : "-");
+    out += kinds(new Map<string, string>());
+    if (out !== "M-S-w-W---S-M") throw new Error(out);
+`,
+);

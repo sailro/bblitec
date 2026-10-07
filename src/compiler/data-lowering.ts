@@ -8041,6 +8041,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // Weak collections share the Map/Set operation family; key storage selects ownership.
         const constructedKind = constructor.endsWith("Map") ? "map" : "set";
+        const weakSet =
+            constructor === "WeakSet" ? { weak: true as const } : {};
         const direct = this.dataTypeAt(expression);
         const contextualType =
             this.context.checker.getContextualType(expression);
@@ -8061,7 +8063,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         true,
                         () =>
                             types.dynamicJsonType(argument) ??
-                            types.fromTsType(argument, expression),
+                            // `new Map()` without type arguments holds
+                            // whatever is stored, as documents.
+                            ((argument.flags & ts.TypeFlags.Any) !== 0
+                                ? { kind: "json" as const }
+                                : types.fromTsType(argument, expression)),
                     ),
                 );
             if (
@@ -8077,6 +8083,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   }
                 : {
                       kind: "set",
+                      ...weakSet,
                       element: types.markStoredObjectReferences(first),
                   };
         };
@@ -8113,11 +8120,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (copiedType?.kind === "vector" ||
             copiedType?.kind === "span" ||
             copiedType?.kind === "set"
-                ? { kind: "set", element: copiedType.element }
+                ? { kind: "set", ...weakSet, element: copiedType.element }
                 : // A parsed array the checker widened to `any[]` keeps its
                   // elements as documents.
                   copiedType?.kind === "json"
-                  ? { kind: "set", element: copiedType }
+                  ? { kind: "set", ...weakSet, element: copiedType }
                   : undefined);
         if (!dataType) {
             this.context.fail(

@@ -2383,6 +2383,7 @@ export class DataTypeRegistry {
                 )
                     return {
                         kind: "set",
+                        weak: true,
                         element: {
                             kind: "handle",
                             handle: "dom-event-identity",
@@ -2391,6 +2392,9 @@ export class DataTypeRegistry {
                 return element
                     ? {
                           kind: "set",
+                          ...(symbolName === "WeakSet"
+                              ? { weak: true as const }
+                              : {}),
                           element: markIdentityFunctions(
                               this.markStoredObjectReferences(element),
                           ),
