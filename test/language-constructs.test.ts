@@ -7030,6 +7030,25 @@ check(
 );
 
 check(
+    "stored-unknown-methods-callbacks-and-map-values-take-literals",
+    `
+    interface Counter { count(raw: unknown): number; }
+    const counters: Counter[] = [{ count(raw: unknown): number { return raw === undefined ? 0 : 1; } }];
+    if (counters[0]!.count({ h: 1 }) + counters[0]!.count({ w: [1, 2] }) !== 2) throw new Error("stored record method");
+    const handlers: Array<(x: unknown) => number> = [(x: unknown) => (x === null ? 5 : 7)];
+    function apply(handler: (x: unknown) => number): number { return handler({ h: 1 }) + handler([{ a: 2 }]); }
+    if (apply(handlers[0]!) !== 14) throw new Error("callback parameter");
+    if (handlers[0]!({ n: { m: 1 } }) !== 7) throw new Error("stored callback");
+    const table = new Map<string, (raw: unknown) => number>();
+    table.set("count", (raw: unknown) => (raw === undefined ? 0 : 1));
+    if (table.get("count")!({ h: 1 }) + table.get("count")!({ n: { m: [1] } }) + table.get("count")!([{ k: 1 }]) !== 3) throw new Error("map value");
+    if (table.get("missing") !== undefined || table.get("count") === undefined) throw new Error("map value presence");
+    const found = table.get("count");
+    if (!found || found({ h: 1 }) !== 1) throw new Error("narrowed map value");
+`,
+);
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }
