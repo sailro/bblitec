@@ -2,7 +2,7 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
@@ -216,6 +216,36 @@ function isRecordWithMethods(initializer: ts.Expression): boolean {
                     (ts.isArrowFunction(property.initializer) ||
                         ts.isFunctionExpression(property.initializer))),
         )
+    );
+}
+
+/** Whether a function body reads `this` as its own receiver (arrow functions share it). */
+function readsOwnReceiver(body: ts.Node): boolean {
+    const visit = (node: ts.Node): boolean =>
+        node.kind === ts.SyntaxKind.ThisKeyword ||
+        (!ts.isClassLike(node) &&
+            !(ts.isFunctionLike(node) && !ts.isArrowFunction(node)) &&
+            ts.forEachChild(node, visit) === true);
+    return ts.forEachChild(body, visit) === true;
+}
+
+/** An object literal with a method or accessor that reads `this`. */
+function isRecordWithReceiverMethods(initializer: ts.Expression): boolean {
+    const current = unwrapExpression(initializer);
+    return (
+        ts.isObjectLiteralExpression(current) &&
+        current.properties.some((property) => {
+            const method =
+                ts.isMethodDeclaration(property) ||
+                ts.isGetAccessorDeclaration(property) ||
+                ts.isSetAccessorDeclaration(property)
+                    ? property
+                    : ts.isPropertyAssignment(property) &&
+                        ts.isFunctionExpression(property.initializer)
+                      ? property.initializer
+                      : undefined;
+            return method?.body !== undefined && readsOwnReceiver(method.body);
+        })
     );
 }
 
@@ -746,7 +776,8 @@ class ModuleInitializerPlanner {
                         symbol,
                         mutatedContainers,
                     ) &&
-                    !hasArraySnapshot(declaration)
+                    !hasArraySnapshot(declaration) &&
+                    !this.createsReceiverState(declaration)
                 ) {
                     continue;
                 }
@@ -754,6 +785,50 @@ class ModuleInitializerPlanner {
             }
         }
         return result;
+    }
+
+    /**
+     * A `const` whose initializer creates an object its members need, so
+     * JavaScript's one evaluation in module order is observable: a record
+     * whose methods read `this`, or a call whose function leaves closures
+     * behind that write its locals. Evaluated again at each use (the static
+     * path), every receiver would get another object, and a member call or
+     * a member read as a callback, through an element access or a holder
+     * would run on state no other use sees.
+     */
+    private createsReceiverState(declaration: ts.VariableDeclaration): boolean {
+        const initializer = declaration.initializer;
+        if (!initializer) return false;
+        if (isRecordWithReceiverMethods(initializer)) return true;
+        const call = unwrapExpression(initializer);
+        const called = ts.isCallExpression(call)
+            ? this.calledFunction(call.expression)
+            : undefined;
+        if (!called?.body) return false;
+        const owner = (node: ts.Node) =>
+            ts.findAncestor(node.parent, ts.isFunctionLike);
+        const writesLocal = (target: ts.Expression): boolean => {
+            const name = unwrapExpression(target);
+            const local = ts.isIdentifier(name)
+                ? this.symbols.valueSymbol(name)?.valueDeclaration
+                : undefined;
+            return (
+                local !== undefined &&
+                ts.isVariableDeclaration(local) &&
+                owner(local) === called
+            );
+        };
+        return (
+            findAnalysisNode(
+                called.body,
+                (node) =>
+                    owner(node) !== called &&
+                    (isAssignmentExpression(node)
+                        ? assignmentTargets(node.left).some(writesLocal)
+                        : isUpdateExpression(node) &&
+                          writesLocal(node.operand)),
+            ) !== undefined
+        );
     }
 
     /** @unjournaled Derived from the program alone, on first use. */
