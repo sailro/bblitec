@@ -32,7 +32,6 @@ import {
     storedSignatureParameter,
 } from "./absence-tag-storage.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
-import { isCustomThenable } from "./promises.js";
 import {
     functionBodyPrologue,
     type RecentStringsParameter,
@@ -5599,25 +5598,43 @@ export class UserFunctionLowerer {
     }
 
     /**
-     * A callback returning `Array.from(...)`, `.map(...)` or `.flatMap(...)`
-     * whose own array type has no native representation (a record literal
-     * with a `null` field infers `pending: null`) builds the array at the
-     * element type its invoking collection stores, as a spread does.
+     * A returned `Array.from(...)`, `.map(...)` or `.flatMap(...)` built at
+     * the array type that stores it, as a spread's source is: an annotated
+     * array result's own storage (mutable arrays in returned records,
+     * including empty arrays and tuple fields written through aliases), or,
+     * when the call's own array type has no native representation (a record
+     * literal with a `null` field infers `pending: null`), the element type
+     * the invoking collection stores.
      */
-    private sinkTypedArray(
+    private returnedArrayProjection(
         context: UserFunctionContext,
         expression: ts.Expression,
+        ir: UserFunctionIr,
+        resultType: ts.Type | undefined,
         sinkResult: DataType | undefined,
     ): Value | undefined {
         const source = context.unwrap(expression);
+        const declared =
+            resultType &&
+            ir.declaration.type &&
+            context.checker.isArrayType(resultType)
+                ? context.dataTypes.fromTsType(resultType, ir.declaration)
+                : undefined;
+        const owned = declared && context.dataTypes.ownReturnedArray(declared);
         if (
+        if (!ts.isCallExpression(source)) return undefined;
+        const mapped =
+            owned?.kind === "vector"
+                ? context.dataLowerer.compileArrayFrom(source, owned)
+                : undefined;
             sinkResult?.kind !== "vector" ||
-            !ts.isCallExpression(source) ||
-            !ts.isPropertyAccessExpression(source.expression)
+            mapped ||
+            !ts.isPropertyAccessExpression(source.expression) ||
+            context.dataTypes.returnsArray(
+                context.dataLowerer.dataTypeAt(source),
+            )
         )
-            return undefined;
-        const own = context.dataLowerer.dataTypeAt(source);
-        if (context.dataTypes.returnsArray(own)) return undefined;
+            return mapped;
         return ["map", "flatMap"].includes(source.expression.name.text)
             ? context.dataLowerer.compileDataMethodCall(source, sinkResult)
             : context.dataLowerer.compileArrayFrom(source, sinkResult);
@@ -5629,41 +5646,31 @@ export class UserFunctionLowerer {
         expression: ts.Expression,
         sinkResult?: DataType,
     ): Value {
-        // Mutable arrays in returned records retain their declared storage,
-        // including empty arrays and tuple fields written through aliases.
         const signature = context.checker.getSignatureFromDeclaration(
             ir.declaration,
         );
         const resultType =
             signature && context.checker.getReturnTypeOfSignature(signature);
-        const declaredResult =
-            resultType &&
-            ir.declaration.type &&
-            context.checker.isArrayType(resultType)
-                ? context.dataTypes.fromTsType(resultType, ir.declaration)
-                : undefined;
-        const ownedResult =
-            declaredResult &&
-            context.dataTypes.ownReturnedArray(declaredResult);
-        const source =
-            ownedResult?.kind === "vector"
-                ? context.unwrap(expression)
-                : undefined;
-        const mappedArray =
-            ownedResult?.kind === "vector" &&
-            source &&
-            ts.isCallExpression(source)
-                ? context.dataLowerer.compileArrayFrom(source, ownedResult)
-                : undefined;
         let returned =
-            mappedArray ??
-            this.sinkTypedArray(context, expression, sinkResult) ??
-            context.compileValue(expression);
+            this.returnedArrayProjection(
+                context,
+                ir,
+                resultType,
+                expression,
+                sinkResult,
+            ) ?? context.compileValue(expression);
+        const asynchronous =
+            (ts.getCombinedModifierFlags(ir.declaration) &
+                ts.ModifierFlags.Async) !==
+            0;
+        // Resolution reads a custom thenable's `then` before the settled
+        // value converts.
+        if (asynchronous)
+            context.asyncActivations.refuseThenable(returned, expression);
         // An async function's promise settles as its declared result: a
         // record returned as another record type is stored as that type.
         const settled =
-            resultType &&
-            ts.getCombinedModifierFlags(ir.declaration) & ts.ModifierFlags.Async
+            resultType && asynchronous
                 ? context.checker.getAwaitedType(resultType)
                 : undefined;
         const declaredRecord =
@@ -5674,13 +5681,7 @@ export class UserFunctionLowerer {
         if (
             declaredRecord?.kind === "struct" &&
             returned.dataType?.kind === "struct" &&
-            // Resolution reads a custom thenable's `then` before settling;
-            // the async lowering owns that refusal.
-            !isCustomThenable(context.dataTypes, returned, expression) &&
-            !(
-                returned.dataType?.kind === "struct" &&
-                returned.dataType.name === declaredRecord.name
-            ) &&
+            returned.dataType.name !== declaredRecord.name &&
             // A field holding a parsed document keeps its document storage.
             context.dataLowerer.retainedResultType(
                 returned,

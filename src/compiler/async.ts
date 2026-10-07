@@ -31,7 +31,7 @@ import {
     type DataStructField,
 } from "./data-types.js";
 import { errorValue } from "./error-values.js";
-import { isCustomThenable, isPromiseResultUsed } from "./promises.js";
+import { isPromiseResultUsed } from "./promises.js";
 import { isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
@@ -155,6 +155,7 @@ export class AsyncLowerer {
         const context = this.context;
         // unwrap intentionally removes awaits for the existing immediate path;
         // this realm path must see the suspension before that happens.
+        this.refuseThenable(value, expression);
         const node = unwrapExpression(expression);
         if (ts.isTypeOfExpression(node)) {
             const property = context.unwrap(node.expression);
@@ -1919,8 +1920,28 @@ export class AsyncLowerer {
         );
     }
 
-    private refuseThenable(value: Value, node: ts.Node): void {
-        if (isCustomThenable(this.context.dataTypes, value, node))
+    /**
+     * The one resolution entry point every settled value passes before its
+     * conversion: resolution reads a custom thenable's `then` (a method,
+     * getter, callable property or accessor field) and calls it when
+     * callable. A data `then` that is not a function is read unobservably.
+     */
+    refuseThenable(value: Value, node: ts.Node): void {
+        const property = value.recordProperties?.then;
+        const field =
+            value.dataType?.kind === "struct"
+                ? this.context.dataTypes
+                      .structFields(value.dataType.name, node, "accessors")
+                      .find((candidate) => candidate.sourceName === "then")
+                : undefined;
+        if (
+            value.recordMethods?.then ||
+            value.recordGetters?.then ||
+            property?.kind === "callback" ||
+            property?.dataType?.kind === "function" ||
+            field?.type.kind === "function" ||
+            field?.accessor
+        )
             this.context.fail(
                 node,
                 "Custom thenable assimilation requires an owned promise resolution protocol.",

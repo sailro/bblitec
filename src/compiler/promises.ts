@@ -364,31 +364,3 @@ function emitValue(context: PromiseLoweringContext, value: Value): void {
         context.emit({ kind: "expression", code: `${value.cpp};` });
     }
 }
-
-/**
- * Whether resolving a promise with `value` observes a custom thenable: a
- * `then` method, getter, callable property or accessor field, which
- * JavaScript's resolution reads (and calls when callable). A data `then`
- * that is not a function is read unobservably.
- */
-export function isCustomThenable(
-    dataTypes: LoweringServices["dataTypes"],
-    value: Value,
-    node: ts.Node,
-): boolean {
-    const property = value.recordProperties?.then;
-    const field =
-        value.dataType?.kind === "struct"
-            ? dataTypes
-                  .structFields(value.dataType.name, node, "accessors")
-                  .find((candidate) => candidate.sourceName === "then")
-            : undefined;
-    return Boolean(
-        value.recordMethods?.then ||
-        value.recordGetters?.then ||
-        property?.kind === "callback" ||
-        property?.dataType?.kind === "function" ||
-        field?.type.kind === "function" ||
-        field?.accessor,
-    );
-}
