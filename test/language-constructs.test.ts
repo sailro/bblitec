@@ -4087,6 +4087,83 @@ check(
 `,
 );
 
+test("module namespace entries fold computed constants and re-exports", async (t) => {
+    const directory = resolve("artifacts/namespace-entry-digest");
+    mkdirSync(directory, { recursive: true });
+    const layout = `
+        export const HEADER_INTS = 6;
+        export const HEADER_BYTES = HEADER_INTS * 4;
+        export const STRIDE = 3;
+        export const NAME = "layout";
+        export function pack(value: number): number { return value * STRIDE; }`;
+    const wider = `
+        export * from "./layout.js";
+        export const EXTRA = 7;`;
+    const mutable = `
+        export const STRIDE = 3;
+        export let counter = 1;
+        export function bump(): void { counter++; }`;
+    writeFileSync(join(directory, "layout.ts"), layout);
+    writeFileSync(join(directory, "wider.ts"), wider);
+    writeFileSync(join(directory, "mutable.ts"), mutable);
+    writeFileSync(
+        join(directory, "mutable-wider.ts"),
+        `export * from "./mutable.js"; export const EXTRA = 7;`,
+    );
+    const digest = `
+        function digest(table: Readonly<Record<string, unknown>>, excluding?: Readonly<Record<string, unknown>>): string {
+            return Object.entries(table)
+                .filter(([name, value]) => typeof value === "number" && (!excluding || excluding[name] !== value))
+                .map(([name, value]) => \`\${name}=\${value as number}\`)
+                .sort()
+                .join(";");
+        }`;
+    const entry = `
+        import * as layout from "./layout.js";
+        import * as wider from "./wider.js";
+        ${digest}
+        function parts(): string { return digest(layout) + "|" + digest(wider, layout); }
+        const stored: Array<typeof parts> = [parts];
+        if (stored[0]!() !== "HEADER_BYTES=24;HEADER_INTS=6;STRIDE=3|EXTRA=7") throw new Error("namespace digest " + stored[0]!());
+        if (layout.HEADER_BYTES !== wider.HEADER_BYTES || layout.pack(2) !== 6) throw new Error("namespace members");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    const layoutExports: Record<string, unknown> = {};
+    runInNewContext(commonJs(layout), { exports: layoutExports });
+    const widerExports: Record<string, unknown> = {};
+    runInNewContext(commonJs(wider), {
+        exports: widerExports,
+        require: () => layoutExports,
+    });
+    runInNewContext(commonJs(entry), {
+        exports: {},
+        require: (name: string) =>
+            name === "./layout.js" ? layoutExports : widerExports,
+    });
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "namespace-entry-digest", result.cpp);
+    // A live `let` export has no generation-time value to compare.
+    assert.throws(
+        () =>
+            compileSource(
+                `import * as base from "./mutable.js";
+                import * as wider from "./mutable-wider.js";
+                ${digest}
+                base.bump();
+                if (digest(wider, base) !== "EXTRA=7") throw new Error("digest");`,
+                { fileName: join(directory, "mutable-entry.ts") },
+            ),
+        /Unsupported call target 'Object\.entries\(table\)\s*\.filter'/,
+    );
+});
+
 check(
     "spread-string-literal-sets",
     `
