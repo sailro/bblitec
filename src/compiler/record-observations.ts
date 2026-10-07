@@ -41,6 +41,13 @@ const answers = new WeakMap<
     ts.Type,
     WeakMap<ts.Type, Map<string, string | null>>
 >();
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const arrayCopyAnswers = new WeakMap<
+    ts.Type,
+    WeakMap<ts.Type, string | null>
+>();
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const arrayIdentityAnswers = new WeakMap<ts.Type, string | null>();
 
 /**
  * Why a native copy of a `source` record stored as `target` could be told
@@ -141,6 +148,21 @@ export function arrayCopyObservation(
     source: ts.Type,
     target: ts.Type,
 ): string | undefined {
+    let byTarget = arrayCopyAnswers.get(source);
+    if (!byTarget) arrayCopyAnswers.set(source, (byTarget = new WeakMap()));
+    let answer = byTarget.get(target);
+    if (answer === undefined) {
+        answer = observedArrayCopy(context, source, target) ?? null;
+        byTarget.set(target, answer);
+    }
+    return answer ?? undefined;
+}
+
+function observedArrayCopy(
+    context: RecordObservationContext,
+    source: ts.Type,
+    target: ts.Type,
+): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
     const elementOf = (type: ts.Type): ts.Type | undefined =>
@@ -217,6 +239,18 @@ export function arrayCopyObservation(
  * or out of `any` or `unknown`, extends where the copy may flow.
  */
 export function arrayIdentityObservation(
+    context: RecordObservationContext,
+    target: ts.Type,
+): string | undefined {
+    let answer = arrayIdentityAnswers.get(target);
+    if (answer === undefined) {
+        answer = observedArrayIdentity(context, target) ?? null;
+        arrayIdentityAnswers.set(target, answer);
+    }
+    return answer ?? undefined;
+}
+
+function observedArrayIdentity(
     context: RecordObservationContext,
     target: ts.Type,
 ): string | undefined {
