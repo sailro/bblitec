@@ -549,6 +549,24 @@ function valueStruct(
         lowerer.context.dataTypes.noteRecordConversion(dataType, [
             UNKNOWN_PROPERTIES,
         ]);
+        const entryType = (field: DataStructField): boolean =>
+            dataTypesEqual(sourceMap.value, field.type) ||
+            (field.type.kind === "optional" &&
+                dataTypesEqual(sourceMap.value, field.type.inner));
+        const unprojected = (field: DataStructField): string =>
+            `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must hold its entry type.`;
+        const incompatible = fields.find((field) => !entryType(field));
+        if (incompatible) lowerer.context.fail(node, unprojected(incompatible));
+        // A destination field storing an entry as data would be a copy of
+        // the one object JavaScript keeps: the destination type becomes a
+        // view of the open record, whose slots read and write its entries.
+        const copied = fields.find((field) => !field.accessor);
+        if (copied)
+            lowerer.context.dataTypes.requireRecordView(
+                dataType.name,
+                node,
+                unprojected(copied),
+            );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const key = lowerer.context.cppString(field.sourceName);
@@ -563,12 +581,7 @@ function valueStruct(
                     (optional || dataTypesEqual(sourceMap.value, field.type))
                 )
                     return `bbl::js::${optional ? "optional_entry_accessor" : "entry_accessor"}<${lowerer.context.dataTypes.cppType(field.type)}>(${value.cpp}, ${key})`;
-                if (!field.accessor && optional)
-                    return `${value.cpp}.get(${key})`;
-                return lowerer.context.fail(
-                    node,
-                    `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must be compatible optionals.`,
-                );
+                return lowerer.context.fail(node, unprojected(field));
             })
             .join(", ")}}`;
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)

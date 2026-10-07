@@ -1300,15 +1300,26 @@ export class DataTypeRegistry {
      */
     public isPartialRecord(type: ts.Type): boolean {
         return (
-            this.partialRecords.has(this.structIdentity(type)) ||
+            this.assertedEmpty(type) ||
             this.lackedProperties.has(recordIdentity(this.checker, type))
+        );
+    }
+
+    /**
+     * Whether an empty object was asserted to the type, which was registered
+     * by its own identity before record components joined it with others.
+     */
+    private assertedEmpty(type: ts.Type): boolean {
+        return (
+            this.partialRecords.has(this.structIdentity(type)) ||
+            this.partialRecords.has(recordIdentity(this.checker, type))
         );
     }
 
     /** Whether a record of the type can lack this property it declares required. */
     public mayLackProperty(type: ts.Type, name: string): boolean {
         return (
-            this.partialRecords.has(this.structIdentity(type)) ||
+            this.assertedEmpty(type) ||
             this.lackedProperties
                 .get(recordIdentity(this.checker, type))
                 ?.has(name) === true
@@ -1318,6 +1329,8 @@ export class DataTypeRegistry {
     /** Property declarations a getter, and a setter, define. */
     private readonly getterProperties = new EmissionSet<ts.Node>();
     private readonly setterProperties = new EmissionSet<ts.Node>();
+    /** The structs of closed records asserted from open string-keyed records. */
+    private readonly recordViewStructs = new EmissionSet<string>();
     /** Closed records asserted from open string-keyed records, by struct identity. */
     private readonly recordViews = new EmissionSet<
         ts.Symbol | ts.Type | string
@@ -1363,6 +1376,10 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () =>
                     this.armFieldUnions.add(this.structIdentity(demand.type)),
                 );
+            if (demand.view)
+                this.withRecordDemand(demand, () =>
+                    this.recordViews.add(this.structIdentity(demand.type)),
+                );
             for (const { name, setter } of demand.accessors ?? [])
                 for (const declaration of this.checker.getPropertyOfType(
                     demand.type,
@@ -1397,6 +1414,23 @@ export class DataTypeRegistry {
         )
             this.fail(node, message);
         throw new NativeRecordStorageRequired({ ...source, armFields: true });
+    }
+
+    /**
+     * An open string-keyed record converted into the closed record type of
+     * the struct, whose fields would copy its entries: replays make the type
+     * a view of the open record (`registerAssertedRecord`), one object.
+     * Refuses with `message` otherwise.
+     */
+    public requireRecordView(
+        structName: string,
+        node: ts.Node,
+        message: string,
+    ): never {
+        const source = this.nativeRecordSources.get(structName);
+        if (!source || this.recordViews.has(this.structIdentity(source.type)))
+            this.fail(node, message);
+        throw new NativeRecordStorageRequired({ ...source, view: true });
     }
 
     /**
@@ -4684,7 +4718,7 @@ export class DataTypeRegistry {
         const fields: DataStructField[] = [];
         const presences: FieldPresence[] = [];
         // An asserted empty object is filled through its views later.
-        const partial = this.partialRecords.has(this.structIdentity(type));
+        const partial = this.assertedEmpty(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
         const valueOf = (
@@ -4842,7 +4876,11 @@ export class DataTypeRegistry {
                                   (value) => nullability(value.type).null,
                               ),
                           )
-                        : "own",
+                        : // A view's `?` slot reads an entry its open record
+                          // may lack; the slot does not say whether it has it.
+                          optional && view
+                          ? "ambiguous"
+                          : "own",
                     valueAbsence(values.map((value) => value.type)),
                 ),
             );
@@ -4862,12 +4900,23 @@ export class DataTypeRegistry {
             // is visible to the dispatcher after the call.
             this.referenceStructNames.add(provisionalName);
         }
-        return this.internMappedStruct(
+        const mapped = this.internMappedStruct(
             provisionalName,
             fields,
             presences,
             call,
         );
+        if (view) this.recordViewStructs.add(mapped.name);
+        return mapped;
+    }
+
+    /**
+     * Whether a struct is a closed record's view of the open record it was
+     * asserted from: its accessor slots read and write the entries, or hold
+     * a copied value as data, so each is an own enumerable property.
+     */
+    public isRecordViewStruct(name: string): boolean {
+        return this.recordViewStructs.has(name);
     }
 
     private internMappedStruct(
@@ -6738,12 +6787,22 @@ export class DataTypeRegistry {
                     ? undefined
                     : this.definedFieldValueCpp(name, field, "member");
                 const written = omittable
-                    ? [
-                          `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
-                          `        writer.key(${key});`,
-                          `        json_write(writer, *value.${field.name});`,
-                          "    }",
-                      ]
+                    ? field.accessor
+                        ? [
+                              "    {",
+                              `        const auto member = value.${field.name}.get();`,
+                              `        if (${optionalPresentCpp("member")}) {`,
+                              `            writer.key(${key});`,
+                              "            json_write(writer, *member);",
+                              "        }",
+                              "    }",
+                          ]
+                        : [
+                              `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
+                              `        writer.key(${key});`,
+                              `        json_write(writer, *value.${field.name});`,
+                              "    }",
+                          ]
                     : definedCpp !== undefined
                       ? [
                             "    {",

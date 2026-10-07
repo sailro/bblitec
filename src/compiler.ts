@@ -640,6 +640,7 @@ function compileSourceApplication(
                     previous &&
                     previous.proxy === merged.proxy &&
                     previous.armFields === merged.armFields &&
+                    previous.view === merged.view &&
                     (previous.joins?.length ?? 0) ===
                         (merged.joins?.length ?? 0) &&
                     accessorsKey(previous) === accessorsKey(merged)

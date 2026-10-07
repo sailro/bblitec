@@ -25,6 +25,11 @@ export interface NativeRecordStorageDemand {
      * struct stores every member's fields rather than their common view.
      */
     armFields?: true;
+    /**
+     * A closed record type an open string-keyed record is converted into:
+     * it is a view of that record (one object), its slots its entries.
+     */
+    view?: true;
 }
 
 /** A property a converted record reads through a getter, and writes through a setter. */

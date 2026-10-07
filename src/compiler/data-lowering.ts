@@ -165,6 +165,7 @@ import {
     argumentAt,
     identifierText,
     literalMember,
+    propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
 import {
@@ -1778,11 +1779,89 @@ export class DataLowerer {
 
     /** A literal property's key: a unique symbol's property key, else its source text. */
     private symbolKeyOrText(name: ts.PropertyName): string {
+        if (!ts.isComputedPropertyName(name)) return name.getText();
+        const type = this.context.checker.getTypeAtLocation(name.expression);
         return (
-            (ts.isComputedPropertyName(name)
-                ? symbolPropertyKey(this.context.checker, name.expression)
-                : undefined) ?? name.getText()
+            symbolPropertyKey(this.context.checker, name.expression) ??
+            (type.isStringLiteral() || type.isNumberLiteral()
+                ? String(type.value)
+                : name.getText())
         );
+    }
+
+    /**
+     * The key expression of a literal property whose computed key a run-time
+     * value selects; undefined for a written or generation-known key.
+     */
+    public runtimeKey(
+        property: ts.ObjectLiteralElementLike,
+    ): ts.Expression | undefined {
+        if (!property.name || !ts.isComputedPropertyName(property.name))
+            return undefined;
+        const key = property.name.expression;
+        if (symbolPropertyKey(this.context.checker, key) !== undefined)
+            return undefined;
+        const type = this.context.checker.getTypeAtLocation(key);
+        return (type.isStringLiteral() || type.isNumberLiteral()) &&
+            !expressionMayRunCode(key)
+            ? undefined
+            : key;
+    }
+
+    /**
+     * Writes `value` into the field of the struct `owner` names (its member
+     * operator included) that a run-time key of a finite string-literal union
+     * selects: the key, then the value, are evaluated once, and the fields it
+     * may select must store one data type. Returns the fields every run
+     * writes.
+     */
+    private emitKeyedFieldWrite(
+        owner: string,
+        dataType: DataType<"struct">,
+        key: ts.Expression,
+        value: ts.Expression,
+        node: ts.Node,
+    ): string[] {
+        const keyType = this.dataTypeAt(key);
+        if (keyType?.kind !== "enum")
+            this.context.fail(
+                key,
+                "Dynamic struct access requires a finite string-literal key union.",
+            );
+        const members = this.context.dataTypes.enumMembers(keyType.name);
+        const fields = members.map((member) =>
+            this.context.dataTypes.structField(dataType.name, member, node),
+        );
+        const common = fields[0]?.type;
+        if (
+            !common ||
+            fields.some((field) => !dataTypesEqual(field.type, common))
+        )
+            this.context.fail(
+                node,
+                "Dynamic struct keys must select fields with one common data type.",
+            );
+        const keyCpp = this.context.allocateTemporaryCppName("property_key");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: keyCpp,
+            initializer: this.compileEnumIndex(key, keyType.name),
+        });
+        const valueCpp =
+            this.context.allocateTemporaryCppName("property_value");
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: valueCpp,
+            initializer: this.compileForSink(value, common),
+        });
+        members.forEach((member, index) =>
+            this.context.emit(
+                `${index === 0 ? "" : "else "}if (${keyCpp} == ${this.context.dataTypes.enumMemberCpp(keyType, member, node)}) ${owner}${fields[index]!.name} = ${valueCpp};`,
+            ),
+        );
+        return fields.length === 1 ? [fields[0]!.name] : [];
     }
 
     public dataTypeAt(node: ts.Node): DataType | undefined {
@@ -2171,12 +2250,15 @@ export class DataLowerer {
         right: ts.Expression,
     ): boolean {
         const property = declaredSymbol(this.context.checker, left.name);
+        // A binding's record can be stored in a view of an open record (or
+        // another accessor struct) its declared type does not name.
         if (
             !property ||
-            !this.context.dataTypes.isAccessorProperty(
+            (!this.context.dataTypes.isAccessorProperty(
                 property,
                 this.context.checker.getTypeAtLocation(left.expression),
-            )
+            ) &&
+                !ts.isIdentifier(this.context.unwrap(left.expression)))
         )
             return false;
         // One evaluation of the receiver, kept when it stores the property
@@ -5043,69 +5125,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (dataType.kind === "struct") {
-            if (this.declaredAsDictionary(access.expression)) {
-                if (mode === "write")
-                    this.context.fail(
-                        access,
-                        "Writing through an open dictionary view of fixed fields requires dynamic object storage.",
-                    );
-                const fields = this.context.dataTypes.structFields(
-                    dataType.name,
-                    access,
-                    "accessors",
-                );
-                const common = fields[0]?.type;
-                if (
-                    !common ||
-                    common.kind === "optional" ||
-                    common.kind === "json" ||
-                    fields.some((field) => !dataTypesEqual(field.type, common))
+            // A write through a view of fixed fields names its field by a
+            // literal key or a finite key union, as a struct key does.
+            const keyTsType = this.context.checker.getTypeAtLocation(
+                access.argumentExpression,
+            );
+            if (
+                this.declaredAsDictionary(access.expression) &&
+                !(
+                    mode === "write" &&
+                    (keyTsType.isUnion() ? keyTsType.types : [keyTsType]).every(
+                        (member) => member.isStringLiteral(),
+                    )
                 )
-                    this.context.fail(
-                        access,
-                        "A fixed-field dictionary view requires one common non-nullable field type.",
-                    );
-                this.context.dataTypes.markStoredObjectReferences(dataType);
-                const receiver = this.context.bindings.pinValueToTemporary(
+            )
+                return this.fixedFieldDictionaryRead(
                     owner,
-                    "dictionary_view",
-                    access.expression,
+                    dataType,
+                    access,
+                    mode,
                 );
-                const key = this.compileForSink(access.argumentExpression, {
-                    kind: "string",
-                });
-                const parameter =
-                    this.context.allocateTemporaryCppName("property_key");
-                const arrow = this.context.dataTypes.isReferenceStruct(
-                    dataType.name,
-                )
-                    ? "->"
-                    : ".";
-                const resultType = this.context.dataTypes.nullableType(
-                    common,
-                    true,
-                );
-                const resultCpp = this.context.dataTypes.cppType(resultType);
-                this.context.reachJsData();
-                return {
-                    ...this.leafValue(
-                        `([&](const std::string& ${parameter}) -> ${resultCpp} { ` +
-                            fields
-                                .map((field) => {
-                                    const value = this.leafValue(
-                                        `${receiver.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`,
-                                        field.type,
-                                    );
-                                    return `if (${parameter} == ${this.context.cppString(field.sourceName)}) return ${this.compileKnownValueForSink(value, resultType, access)};`;
-                                })
-                                .join(" ") +
-                            ` return ${this.context.dataTypes.absentValue(resultType)}; })(${key})`,
-                        resultType,
-                    ),
-                    preserveUncheckedLookup: true,
-                    nativeCaptures: receiver.nativeCaptures ?? [],
-                };
-            }
             const staticMember = this.context.probeEmission(() => {
                 const key = this.context.compileValue(
                     access.argumentExpression,
@@ -5158,6 +5197,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             if (staticMember) return staticMember;
             const keyType = this.dataTypeAt(access.argumentExpression);
+            // A string key reads the fields as one dictionary would.
+            if (keyType?.kind === "string")
+                return this.fixedFieldDictionaryRead(
+                    owner,
+                    dataType,
+                    access,
+                    mode,
+                );
             if (keyType?.kind !== "enum") {
                 this.context.fail(
                     access.argumentExpression,
@@ -9730,6 +9777,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "enummap" },
     ): string {
+        if (
+            literal.properties.some(
+                (property) =>
+                    ts.isSpreadAssignment(property) ||
+                    (property.name && ts.isComputedPropertyName(property.name)),
+            )
+        )
+            return this.writtenEnumMapLiteral(literal, dataType);
         const members = this.context.dataTypes.enumMembers(dataType.enumName);
         const compiled = new EmissionMap<string, string>();
         const written: string[] = [];
@@ -9792,6 +9847,82 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
         this.context.reachJsData();
         return `${this.context.dataTypes.cppType(dataType)}{${slots.join(", ")}}`;
+    }
+
+    /**
+     * A `Record` literal spreading another record of its key union or
+     * writing a key a run-time tag selects (`{ ...byScheme, [scheme]: v }`):
+     * a new record written in source order, a spread copying every slot.
+     * Every slot must be written by a spread or a literal key.
+     */
+    private writtenEnumMapLiteral(
+        literal: ts.ObjectLiteralExpression,
+        dataType: DataType & { kind: "enummap" },
+    ): string {
+        const members = this.context.dataTypes.enumMembers(dataType.enumName);
+        const result = this.context.allocateTemporaryCppName("record_slots");
+        this.context.reachJsData();
+        this.context.emit(
+            `${this.context.dataTypes.cppType(dataType)} ${result}{};`,
+        );
+        const written = new EmissionSet<string>();
+        let spread = false;
+        for (const property of literal.properties) {
+            if (ts.isSpreadAssignment(property)) {
+                this.context.emit({
+                    kind: "expression",
+                    code: `${result} = ${this.compileForSink(property.expression, dataType)};`,
+                });
+                spread = true;
+                continue;
+            }
+            if (!ts.isPropertyAssignment(property))
+                this.context.fail(
+                    property,
+                    "Record literals support spreads and property assignments.",
+                );
+            const key = ts.isComputedPropertyName(property.name)
+                ? property.name.expression
+                : undefined;
+            const keyType = key && this.context.checker.getTypeAtLocation(key);
+            const name = keyType
+                ? keyType.isStringLiteral()
+                    ? keyType.value
+                    : undefined
+                : this.context.propertyName(property.name);
+            if (name !== undefined && !members.includes(name))
+                this.context.fail(
+                    property.name,
+                    `'${name}' is not a member of ${dataType.enumName}.`,
+                );
+            // The key is evaluated before the value, as JavaScript does.
+            const tag = this.context.allocateTemporaryCppName("record_key");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: tag,
+                initializer: key
+                    ? this.compileEnumIndex(key, dataType.enumName)
+                    : this.context.dataTypes.enumMemberCpp(
+                          { kind: "enum", name: dataType.enumName },
+                          name!,
+                          property.name,
+                      ),
+            });
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::js::enum_map_at(${result}, ${tag}) = ${this.compileForSink(property.initializer, dataType.element)};`,
+            });
+            if (name !== undefined) written.add(name);
+        }
+        const missing = members.find((member) => !written.has(member));
+        if (!spread && missing !== undefined)
+            this.context.fail(
+                literal,
+                `Record literal is missing the '${missing}' slot.`,
+            );
+        this.registerLocal(result, "owned");
+        return result;
     }
 
     public openRecordLiteral(
@@ -10021,6 +10152,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
                 literal,
             );
+        // A key a run-time tag selects writes the record in source order.
+        if (literal.properties.some((property) => this.runtimeKey(property))) {
+            const temporary = this.context.allocateTemporaryCppName("keyed");
+            this.emitSpreadStructDeclaration(temporary, literal, dataType);
+            this.registerLocal(temporary, "owned");
+            return temporary;
+        }
         const fields = this.context.dataTypes.structFields(
             dataType.name,
             literal,
@@ -10281,7 +10419,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         const targetFields = new EmissionMap(
             this.context.dataTypes
-                .structFields(target.type.name, source)
+                .structFields(target.type.name, source, "accessors")
                 .map((field) => [field.sourceName, field]),
         );
         const member = this.context.dataTypes.isReferenceStruct(
@@ -10382,10 +10520,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       nativeCaptures: owner.nativeCaptures ?? [],
                   }
                 : entry.value;
+            // An accessor slot of a new object (a spread, a rest) holds
+            // the copied value as data; one of an assigned object runs its
+            // setter.
+            if (targetField.accessorReceiver)
+                this.context.dataTypes.structField(
+                    target.type.name,
+                    targetField.sourceName,
+                    source,
+                );
+            const store = (stored: string): string =>
+                !targetField.accessor
+                    ? `${target.cpp}${member}${targetField.name} = ${stored};`
+                    : operation === "Object.assign"
+                      ? `${target.cpp}${member}${targetField.name}.set(${stored});`
+                      : `${target.cpp}${member}${targetField.name} = ${this.context.dataTypes.structFieldInitializerCpp(targetField, stored)};`;
             this.emitWhileOwn(presentCpp, () =>
                 this.context.emit({
                     kind: "expression",
-                    code: `${target.cpp}${member}${targetField.name} = ${this.compileKnownValueForSink(value, targetField.type, source)};`,
+                    code: store(
+                        this.compileKnownValueForSink(
+                            value,
+                            targetField.type,
+                            source,
+                        ),
+                    ),
                 }),
             );
             // A possibly absent source property cannot by itself satisfy a
@@ -10594,6 +10753,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Object spread requires a compile-time record or native struct of the target type.",
                 );
             }
+            const key = this.runtimeKey(property);
+            if (key && ts.isPropertyAssignment(property)) {
+                declareDefault();
+                for (const name of this.emitKeyedFieldWrite(
+                    cppName + member,
+                    dataType,
+                    key,
+                    property.initializer,
+                    property,
+                ))
+                    assigned.add(name);
+                continue;
+            }
             if (ts.isPropertyAssignment(property)) {
                 declareDefault();
                 const field = this.context.dataTypes.structField(
@@ -10622,9 +10794,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 assigned.add(field.name);
                 continue;
             }
+            // A method that does not read its home object is a stored
+            // function written in source order.
+            if (
+                ts.isMethodDeclaration(property) &&
+                !homeObjectMembers(literal).has(property)
+            ) {
+                const name = propertyNameText(property.name);
+                const field =
+                    name === undefined
+                        ? undefined
+                        : this.context.dataTypes.structField(
+                              dataType.name,
+                              name,
+                              property,
+                          );
+                if (field?.type.kind === "function") {
+                    declareDefault();
+                    this.context.recordProxies.requireIndependentFunction(
+                        field,
+                        property,
+                    );
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${cppName}${member}${field.name} = ${this.context.compileStoredDataFunction(property, field.type, undefined, false)};`,
+                    });
+                    assigned.add(field.name);
+                    continue;
+                }
+            }
             this.context.fail(
                 property,
-                "Spread struct literals support plain property overrides.",
+                "Spread struct literals support plain property overrides and methods that do not read 'this'.",
             );
         }
         declareDefault();
@@ -10837,6 +11038,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.bindings.invalidateRecordProperties(narrowed);
                 return;
             }
+            // A parsed document deletes its own property; a borrowed native
+            // object or an array refuses at run time.
+            if (narrowed && isJsonValue(narrowed)) {
+                this.context.reachJson();
+                const keyCpp =
+                    key.kind === "number" || key.dataType?.kind === "number"
+                        ? `bbl::js::number_to_string(${key.cpp})`
+                        : this.compileKnownValueForSink(
+                              key,
+                              { kind: "string" },
+                              target.argumentExpression,
+                          );
+                this.context.emit({
+                    kind: "expression",
+                    code: `${narrowed.cpp}.remove(${keyCpp});`,
+                });
+                return;
+            }
             // A key generation knows (a literal, or a specialized key
             // parameter) names one optional struct field.
             const keyType = this.context.checker.getTypeAtLocation(
@@ -10892,6 +11111,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 )
             )
                 return;
+            if (owner?.kind === "data" && isJsonValue(owner)) {
+                this.context.reachJson();
+                this.context.emit({
+                    kind: "expression",
+                    code: `${owner.cpp}.remove(${this.context.cppString(target.name.text)});`,
+                });
+                return;
+            }
             const field = this.compileDataPath(target, "write");
             if (field) {
                 const property = this.context.checker.getPropertyOfType(
@@ -11150,6 +11377,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return `${narrowed.cpp}.has(${keyCpp})`;
         }
+        // A closed record of a key union owns every member's key.
+        if (narrowed.kind === "data" && dataType?.kind === "enummap") {
+            this.context.emitDiscardedValue(narrowed);
+            const members = this.context.dataTypes.enumMembers(
+                dataType.enumName,
+            );
+            const inherited =
+                operator === "in"
+                    ? (name: string): boolean =>
+                          Object.hasOwn(Object.prototype, name)
+                    : (): boolean => false;
+            if (key.staticString !== undefined)
+                return String(
+                    members.includes(key.staticString) ||
+                        inherited(key.staticString),
+                );
+            const name = this.membershipStringKeyCpp(key, keyNode);
+            const tests = members.map(
+                (member) => `${name} == ${this.context.cppString(member)}`,
+            );
+            if (operator === "in") {
+                this.context.reachJsData();
+                tests.push(`bbl::js::object_prototype_has_property(${name})`);
+            }
+            return tests.length ? `(${tests.join(" || ")})` : "false";
+        }
         if (narrowed.kind === "data" && dataType?.kind === "struct") {
             if (key.staticString === undefined) {
                 const keyCpp = this.membershipStringKeyCpp(key, keyNode);
@@ -11239,6 +11492,74 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (presence === undefined) return "true";
         this.context.reachJsData();
         return presence.ownCpp;
+    }
+
+    /**
+     * A struct read by a string key, as a dictionary of its fields: one field
+     * type in common, the selected field's value, or absent for a key no
+     * field has. Writes need dynamic object storage.
+     */
+    private fixedFieldDictionaryRead(
+        owner: Value,
+        dataType: DataType<"struct">,
+        access: ts.ElementAccessExpression,
+        mode: "read" | "write",
+    ): Value {
+        if (mode === "write")
+            this.context.fail(
+                access,
+                "Writing through an open dictionary view of fixed fields requires dynamic object storage.",
+            );
+        const fields = this.context.dataTypes.structFields(
+            dataType.name,
+            access,
+            "accessors",
+        );
+        const common = fields[0]?.type;
+        if (
+            !common ||
+            common.kind === "optional" ||
+            common.kind === "json" ||
+            fields.some((field) => !dataTypesEqual(field.type, common))
+        )
+            this.context.fail(
+                access,
+                "A fixed-field dictionary view requires one common non-nullable field type.",
+            );
+        this.context.dataTypes.markStoredObjectReferences(dataType);
+        const receiver = this.context.bindings.pinValueToTemporary(
+            owner,
+            "dictionary_view",
+            access.expression,
+        );
+        const key = this.compileForSink(access.argumentExpression, {
+            kind: "string",
+        });
+        const parameter = this.context.allocateTemporaryCppName("property_key");
+        const arrow = this.context.dataTypes.isReferenceStruct(dataType.name)
+            ? "->"
+            : ".";
+        const resultType = this.context.dataTypes.nullableType(common, true);
+        const resultCpp = this.context.dataTypes.cppType(resultType);
+        this.context.reachJsData();
+        return {
+            ...this.leafValue(
+                `([&](const std::string& ${parameter}) -> ${resultCpp} { ` +
+                    fields
+                        .map((field) => {
+                            const value = this.leafValue(
+                                `${receiver.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`,
+                                field.type,
+                            );
+                            return `if (${parameter} == ${this.context.cppString(field.sourceName)}) return ${this.compileKnownValueForSink(value, resultType, access)};`;
+                        })
+                        .join(" ") +
+                    ` return ${this.context.dataTypes.absentValue(resultType)}; })(${key})`,
+                resultType,
+            ),
+            preserveUncheckedLookup: true,
+            nativeCaptures: receiver.nativeCaptures ?? [],
+        };
     }
 
     /**
@@ -11959,6 +12280,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.emitSwapAssignment(expression)
             );
         }
+        if (ts.isObjectLiteralExpression(left) && operator === "=")
+            return this.emitObjectDestructuringAssignment(expression);
         if (ts.isIdentifier(left) && operator === "=") {
             return this.emitLocalDataAssignment(expression, left);
         }
@@ -12776,182 +13099,286 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 continue;
             }
-            const symbol =
-                ts.isPropertyAccessExpression(name) ||
-                ts.isElementAccessExpression(name)
-                    ? resolvedSymbol(this.context.checker, name)
-                    : undefined;
+            this.emitDestructuringTargetWrite(name, readForTarget);
+        }
+    }
+
+    /**
+     * `({ a: x, b } = source)`: the source evaluated once, then each target
+     * written in order from the property it names (an accessor's getter
+     * runs as its property is read). Patterns with defaults, nested
+     * patterns or a rest decline.
+     */
+    public emitObjectDestructuringAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean {
+        const left = this.context.unwrap(expression.left);
+        if (!ts.isObjectLiteralExpression(left)) return false;
+        const targets: { key: string; name: ts.Expression }[] = [];
+        for (const property of left.properties) {
             if (
-                symbol?.declarations?.some(
-                    (declaration) =>
-                        ts.isGetAccessorDeclaration(declaration) ||
-                        ts.isSetAccessorDeclaration(declaration),
-                )
+                ts.isShorthandPropertyAssignment(property) &&
+                !property.objectAssignmentInitializer
             ) {
-                if (
-                    !ts.isPropertyAccessExpression(name) &&
-                    !ts.isElementAccessExpression(name)
-                )
-                    this.context.fail(
-                        name,
-                        "An accessor assignment requires a member target.",
-                    );
-                const owner = this.context.compileValue(name.expression);
-                const property = ts.isPropertyAccessExpression(name)
-                    ? name.name.text
-                    : this.context.compileValue(name.argumentExpression)
-                          .staticString;
-                const setter =
-                    property === undefined
-                        ? undefined
-                        : owner.recordSetters?.[property];
-                if (!setter || owner.moduleNamespace)
-                    this.context.fail(
-                        name,
-                        "Destructuring accessors require a represented writable setter.",
-                    );
-                const type = this.dataTypeAt(setter.parameters[0]!);
-                if (!type)
-                    this.context.fail(
-                        name,
-                        "A destructuring setter requires a concrete parameter type.",
-                    );
-                const item = readForTarget(type);
-                this.context.refuseBorrowedPlatformEventEscape(
-                    item,
-                    name,
-                    "a destructuring assignment",
-                );
-                const cpp = this.context.allocateTemporaryCppName(
-                    "destructure_argument",
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: cpp,
-                    initializer: this.compileKnownValueForSink(
-                        item,
-                        type,
-                        name,
-                    ),
-                });
-                const argument = {
-                    ...this.leafValue(cpp, type),
-                    nativeCaptures: [this.context.registerNativeBinding(cpp)],
-                };
-                this.context.withRecordScopes(owner, () =>
-                    this.context.classLowerer.compileSetter(
-                        owner,
-                        setter,
-                        name,
-                        argument,
-                    ),
-                );
+                targets.push({ key: property.name.text, name: property.name });
                 continue;
             }
-            // Evaluate each reference after the RHS completes, immediately
-            // before consuming that element. Earlier stores can change later
-            // computed targets. Pin the slot before source reads/conversions.
-            const entry = this.dictionaryEntry(name);
-            const indexed =
-                !entry && ts.isElementAccessExpression(name)
-                    ? this.prepareArrayAssignmentTarget(name)
-                    : undefined;
-            const member =
-                !entry && ts.isPropertyAccessExpression(name)
-                    ? this.preparePropertyAssignmentTarget(name)
-                    : undefined;
-            const target =
-                entry?.owner ??
-                indexed ??
-                member ??
-                (ts.isIdentifier(name)
-                    ? this.context.bindings.lookupOptional(name)
-                    : this.compileDataPath(name, "write"));
-            if (!target || target.freshData)
-                this.context.fail(
-                    name,
-                    "Destructuring assignment requires a represented writable target.",
-                );
-            let targetType =
-                entry?.dataType.value ??
-                target.dataType ??
-                (target.kind === "number" ||
-                target.kind === "string" ||
-                target.kind === "boolean"
-                    ? { kind: target.kind }
-                    : isHandleKind(target.kind)
-                      ? { kind: "handle", handle: target.kind }
-                      : undefined);
-            if (!targetType)
-                this.context.fail(
-                    name,
-                    "Destructuring targets require a concrete storage type.",
-                );
+            const key = ts.isPropertyAssignment(property)
+                ? propertyNameText(property.name)
+                : undefined;
+            const name =
+                ts.isPropertyAssignment(property) &&
+                this.context.unwrap(property.initializer);
             if (
-                !entry &&
-                target.optionalStorageCpp &&
-                targetType.kind !== "optional"
+                key === undefined ||
+                !name ||
+                !(
+                    ts.isIdentifier(name) ||
+                    ts.isPropertyAccessExpression(name) ||
+                    ts.isElementAccessExpression(name)
+                )
             )
-                targetType = { kind: "optional", inner: targetType };
+                return false;
+            targets.push({ key, name });
+        }
+        const raw = this.context.compileValue(expression.right);
+        const narrowed =
+            raw.kind === "data"
+                ? this.narrowOptional(raw, expression.right)
+                : raw;
+        const source =
+            narrowed.kind === "record"
+                ? narrowed
+                : this.context.bindings.pinValueToTemporary(
+                      narrowed,
+                      "destructure_source",
+                      expression.right,
+                  );
+        for (const { key, name } of targets)
+            this.emitDestructuringTargetWrite(name, () =>
+                this.destructuredMember(source, key, name),
+            );
+        return true;
+    }
+
+    /** The value of property `key` an object destructuring reads from `source`. */
+    private destructuredMember(
+        source: Value,
+        key: string,
+        node: ts.Node,
+    ): Value {
+        if (source.kind === "record") {
+            const member = source.recordProperties?.[key];
+            if (!member || source.recordGetters?.[key])
+                this.context.fail(
+                    node,
+                    `Object destructuring reads the data property '${key}' of a compile-time record.`,
+                );
+            return member;
+        }
+        const type = source.dataType;
+        if (source.kind !== "data" || type?.kind !== "struct")
+            this.context.fail(
+                node,
+                "Object destructuring assignment requires a record or struct source.",
+            );
+        const field = this.context.dataTypes.structField(
+            type.name,
+            key,
+            node,
+            "accessors",
+        );
+        const arrow = this.context.dataTypes.isReferenceStruct(type.name)
+            ? "->"
+            : ".";
+        return {
+            ...this.leafValue(
+                `${source.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`,
+                field.type,
+            ),
+            nativeCaptures: source.nativeCaptures ?? [],
+        };
+    }
+
+    /**
+     * Writes one destructuring assignment target from the item
+     * `readForTarget` reads for the target's storage type: a setter, a
+     * dictionary entry, an element or a binding, each target reference
+     * evaluated just before its item is read.
+     */
+    private emitDestructuringTargetWrite(
+        name: ts.Expression,
+        readForTarget: (type: DataType) => Value,
+    ): void {
+        const symbol =
+            ts.isPropertyAccessExpression(name) ||
+            ts.isElementAccessExpression(name)
+                ? resolvedSymbol(this.context.checker, name)
+                : undefined;
+        if (
+            symbol?.declarations?.some(
+                (declaration) =>
+                    ts.isGetAccessorDeclaration(declaration) ||
+                    ts.isSetAccessorDeclaration(declaration),
+            )
+        ) {
             if (
-                targetType.kind === "struct" &&
-                !this.context.dataTypes.isReferenceStruct(targetType.name)
+                !ts.isPropertyAccessExpression(name) &&
+                !ts.isElementAccessExpression(name)
             )
                 this.context.fail(
                     name,
-                    "Destructuring assignment requires reference storage for object targets.",
+                    "An accessor assignment requires a member target.",
                 );
-            let slot = target.optionalStorageCpp ?? target.cpp;
-            let key: string | undefined;
-            if (!ts.isIdentifier(name) && !indexed) {
-                const temporary =
-                    this.context.allocateTemporaryCppName("destructure_target");
-                this.context.emit({
-                    kind: "declaration",
-                    type: entry ? "auto" : "auto&&",
-                    name: temporary,
-                    initializer: slot,
-                });
-                slot = temporary;
-            }
-            if (entry) {
-                key = this.context.allocateTemporaryCppName("destructure_key");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: key,
-                    initializer: entry.keyCpp,
-                });
-            }
-            const item = readForTarget(targetType);
+            const owner = this.context.compileValue(name.expression);
+            const property = ts.isPropertyAccessExpression(name)
+                ? name.name.text
+                : this.context.compileValue(name.argumentExpression)
+                      .staticString;
+            const setter =
+                property === undefined
+                    ? undefined
+                    : owner.recordSetters?.[property];
+            if (!setter || owner.moduleNamespace)
+                this.context.fail(
+                    name,
+                    "Destructuring accessors require a represented writable setter.",
+                );
+            const type = this.dataTypeAt(setter.parameters[0]!);
+            if (!type)
+                this.context.fail(
+                    name,
+                    "A destructuring setter requires a concrete parameter type.",
+                );
+            const item = readForTarget(type);
             this.context.refuseBorrowedPlatformEventEscape(
                 item,
                 name,
                 "a destructuring assignment",
             );
-            let cpp = this.compileKnownValueForSink(item, targetType, name);
-            // Legacy nullable resource locals store std::optional, while data
-            // fields and arrays retain JavaScript's null/undefined wrapper.
-            if (
-                !entry &&
-                target.optionalStorageCpp &&
-                target.dataType?.kind !== "optional"
-            )
-                cpp = `${this.context.dataTypes.cppType(targetType)}{${cpp}}.to_optional()`;
-            this.context.emit(
-                entry
-                    ? `${slot}.set(${key}, ${cpp});`
-                    : `${slot} = ${target.dataStore ? typedArrayStoreExpression(target.dataStore, cpp) : cpp};`,
+            const cpp = this.context.allocateTemporaryCppName(
+                "destructure_argument",
             );
-            this.invalidateStaticElements(target);
-            this.context.bindings.invalidateRecordProperties(target);
-            const root = rootIdentifier(name, (node) =>
-                this.context.unwrap(node),
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: cpp,
+                initializer: this.compileKnownValueForSink(item, type, name),
+            });
+            const argument = {
+                ...this.leafValue(cpp, type),
+                nativeCaptures: [this.context.registerNativeBinding(cpp)],
+            };
+            this.context.withRecordScopes(owner, () =>
+                this.context.classLowerer.compileSetter(
+                    owner,
+                    setter,
+                    name,
+                    argument,
+                ),
             );
-            const owner = root && this.context.bindings.lookupOptional(root);
-            if (owner) this.context.bindings.invalidateRecordProperties(owner);
+            return;
         }
+        // Evaluate each reference after the RHS completes, immediately
+        // before consuming that element. Earlier stores can change later
+        // computed targets. Pin the slot before source reads/conversions.
+        const entry = this.dictionaryEntry(name);
+        const indexed =
+            !entry && ts.isElementAccessExpression(name)
+                ? this.prepareArrayAssignmentTarget(name)
+                : undefined;
+        const member =
+            !entry && ts.isPropertyAccessExpression(name)
+                ? this.preparePropertyAssignmentTarget(name)
+                : undefined;
+        const target =
+            entry?.owner ??
+            indexed ??
+            member ??
+            (ts.isIdentifier(name)
+                ? this.context.bindings.lookupOptional(name)
+                : this.compileDataPath(name, "write"));
+        if (!target || target.freshData)
+            this.context.fail(
+                name,
+                "Destructuring assignment requires a represented writable target.",
+            );
+        let targetType =
+            entry?.dataType.value ??
+            target.dataType ??
+            (target.kind === "number" ||
+            target.kind === "string" ||
+            target.kind === "boolean"
+                ? { kind: target.kind }
+                : isHandleKind(target.kind)
+                  ? { kind: "handle", handle: target.kind }
+                  : undefined);
+        if (!targetType)
+            this.context.fail(
+                name,
+                "Destructuring targets require a concrete storage type.",
+            );
+        if (
+            !entry &&
+            target.optionalStorageCpp &&
+            targetType.kind !== "optional"
+        )
+            targetType = { kind: "optional", inner: targetType };
+        if (
+            targetType.kind === "struct" &&
+            !this.context.dataTypes.isReferenceStruct(targetType.name)
+        )
+            this.context.fail(
+                name,
+                "Destructuring assignment requires reference storage for object targets.",
+            );
+        let slot = target.optionalStorageCpp ?? target.cpp;
+        let key: string | undefined;
+        if (!ts.isIdentifier(name) && !indexed) {
+            const temporary =
+                this.context.allocateTemporaryCppName("destructure_target");
+            this.context.emit({
+                kind: "declaration",
+                type: entry ? "auto" : "auto&&",
+                name: temporary,
+                initializer: slot,
+            });
+            slot = temporary;
+        }
+        if (entry) {
+            key = this.context.allocateTemporaryCppName("destructure_key");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: key,
+                initializer: entry.keyCpp,
+            });
+        }
+        const item = readForTarget(targetType);
+        this.context.refuseBorrowedPlatformEventEscape(
+            item,
+            name,
+            "a destructuring assignment",
+        );
+        let cpp = this.compileKnownValueForSink(item, targetType, name);
+        // Legacy nullable resource locals store std::optional, while data
+        // fields and arrays retain JavaScript's null/undefined wrapper.
+        if (
+            !entry &&
+            target.optionalStorageCpp &&
+            target.dataType?.kind !== "optional"
+        )
+            cpp = `${this.context.dataTypes.cppType(targetType)}{${cpp}}.to_optional()`;
+        this.context.emit(
+            entry
+                ? `${slot}.set(${key}, ${cpp});`
+                : `${slot} = ${target.dataStore ? typedArrayStoreExpression(target.dataStore, cpp) : cpp};`,
+        );
+        this.invalidateStaticElements(target);
+        this.context.bindings.invalidateRecordProperties(target);
+        const root = rootIdentifier(name, (node) => this.context.unwrap(node));
+        const owner = root && this.context.bindings.lookupOptional(root);
+        if (owner) this.context.bindings.invalidateRecordProperties(owner);
     }
 
     /** The right side may replace the last owner of the record being assigned. */
@@ -13714,6 +14141,131 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return undefined;
     }
 
+    /**
+     * `record[key] === undefined` where a run-time key selects a field of a
+     * struct: the selected field's own absence test, the record and the key
+     * evaluated once. A finite string-literal key union selects among its
+     * members (undefined where they share one type: the element read
+     * decides); a string key among every field, a key no field has reading
+     * undefined unless Object.prototype has it.
+     */
+    private keyedFieldAbsence(
+        access: ts.ElementAccessExpression,
+        literal: "null" | "undefined" | undefined,
+        negated: boolean,
+        loose: boolean,
+    ): string | undefined {
+        if (ts.isOptionalChain(access)) return undefined;
+        const keyType = this.dataTypeAt(access.argumentExpression);
+        if (keyType?.kind !== "enum" && keyType?.kind !== "string")
+            return undefined;
+        return this.context.probeEmission(() => {
+            const path = this.compileDataPath(access.expression, "read");
+            const owner =
+                path?.kind === "data"
+                    ? this.narrowOptional(path, access.expression)
+                    : undefined;
+            const dataType = owner?.dataType;
+            if (!owner || dataType?.kind !== "struct") return undefined;
+            const all = this.context.dataTypes.structFields(
+                dataType.name,
+                access,
+                "accessors",
+            );
+            const fields =
+                keyType.kind === "enum"
+                    ? this.context.dataTypes
+                          .enumMembers(keyType.name)
+                          .map((member) =>
+                              this.context.dataTypes.structField(
+                                  dataType.name,
+                                  member,
+                                  access,
+                                  "accessors",
+                              ),
+                          )
+                    : all;
+            // Fields of one type read through the element read (a dictionary
+            // view of a string key needs one non-nullable type).
+            const first = fields[0];
+            if (
+                !first ||
+                (fields.every((field) =>
+                    dataTypesEqual(field.type, first.type),
+                ) &&
+                    (keyType.kind === "enum" ||
+                        (first.type.kind !== "optional" &&
+                            first.type.kind !== "json")))
+            )
+                return undefined;
+            const receiver = this.context.bindings.pinValueToTemporary(
+                owner,
+                "keyed_owner",
+                access.expression,
+            );
+            const key = this.context.allocateTemporaryCppName("property_key");
+            this.context.emit({
+                kind: "declaration",
+                type:
+                    keyType.kind === "enum"
+                        ? "const auto"
+                        : "const std::string",
+                name: key,
+                initializer:
+                    keyType.kind === "enum"
+                        ? this.compileEnumIndex(
+                              access.argumentExpression,
+                              keyType.name,
+                          )
+                        : this.compileForSink(access.argumentExpression, {
+                              kind: "string",
+                          }),
+            });
+            const arrow = this.context.dataTypes.isReferenceStruct(
+                dataType.name,
+            )
+                ? "->"
+                : ".";
+            const tests = fields.map((field) => {
+                const test = this.absentComparison(
+                    this.leafValue(
+                        `${receiver.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`,
+                        field.type,
+                    ),
+                    access,
+                    literal,
+                    negated,
+                    loose,
+                );
+                if (test === undefined)
+                    this.context.fail(
+                        access,
+                        `Property '${field.sourceName}' has no absent state to compare.`,
+                    );
+                return test;
+            });
+            const selects = (index: number): string =>
+                keyType.kind === "enum"
+                    ? `${key} == ${this.context.dataTypes.enumMemberCpp(keyType, fields[index]!.sourceName, access)}`
+                    : `${key} == ${this.context.cppString(fields[index]!.sourceName)}`;
+            // A key no field has reads an inherited method, or undefined.
+            let selected: string;
+            if (keyType.kind === "enum") selected = tests.at(-1)!;
+            else {
+                this.context.reachJsData();
+                const inherited = `bbl::js::object_prototype_has_property(${key})`;
+                const absent =
+                    literal === "null" && !loose ? "false" : `!${inherited}`;
+                selected = negated ? `!(${absent})` : absent;
+            }
+            const last =
+                keyType.kind === "enum" ? fields.length - 2 : fields.length - 1;
+            for (let index = last; index >= 0; --index)
+                selected = `(${selects(index)} ? ${tests[index]} : ${selected})`;
+            return selected;
+        });
+    }
+
     private absentComparison(
         value: Value,
         node: ts.Expression,
@@ -14210,6 +14762,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const literal = this.absentLiteral(
                 nullSide === left ? right : left,
             );
+            const keyed = ts.isElementAccessExpression(nullSide)
+                ? this.keyedFieldAbsence(nullSide, literal, negated, loose)
+                : undefined;
+            if (keyed !== undefined) return keyed;
             const value =
                 (ts.isElementAccessExpression(nullSide)
                     ? this.compileGuardableElementAccess(nullSide)

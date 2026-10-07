@@ -2278,6 +2278,258 @@ check(
 `,
 );
 
+check(
+    "empty-object-tokens-compare-by-identity",
+    `
+    declare const brand: unique symbol;
+    type Id = Readonly<{ readonly [brand]: true }>;
+    const capability = (() => {
+        const constructorToken = {};
+        let issue!: (value: number) => Id;
+        let value!: (id: Id) => number;
+        class Capability {
+            readonly #value: number;
+            constructor(token: object, durable: number) {
+                if (token !== constructorToken) throw new TypeError("private constructor token");
+                this.#value = durable;
+            }
+            static {
+                issue = (durable) => new Capability(constructorToken, durable) as unknown as Id;
+                value = (id) => (id as unknown as Capability).#value;
+            }
+        }
+        return { issue, value } as const;
+    })();
+    const a = capability.issue(3), b = capability.issue(4);
+    if (capability.value(a) !== 3 || capability.value(b) !== 4 || a === b) throw new Error("issued");
+    const token = {}, other = {};
+    const alias = token;
+    if (!(alias === token) || token === (other as object) || alias !== token) throw new Error("tokens");
+`,
+);
+
+check(
+    "closed-record-own-keys-and-keyed-literals",
+    `
+    const KINDS = ["deer", "rabbit", "fox"] as const;
+    type Kind = (typeof KINDS)[number];
+    const DEFS: Record<Kind, { speed: number }> = { deer: { speed: 2 }, rabbit: { speed: 3 }, fox: { speed: 4 } };
+    const isKind = (value: string): value is Kind => Object.prototype.hasOwnProperty.call(DEFS, value);
+    const kinds = ["deer", "wolf", "toString", "fox"].filter(isKind);
+    if (kinds.join(",") !== "deer,fox" || DEFS[kinds[1]!].speed !== 4 || !Object.hasOwn(DEFS, "rabbit")) throw new Error("own keys");
+    type Scheme = "classic" | "wasd";
+    type Action = "nature" | "build";
+    type Profile = Record<Action, string>;
+    const DEFINITIONS: readonly { action: Action; defaults: Record<Scheme, string> }[] = [
+        { action: "nature", defaults: { classic: "n", wasd: "1" } },
+        { action: "build", defaults: { classic: "b", wasd: "2" } },
+    ];
+    const profileOf = (scheme: Scheme): Profile =>
+        Object.fromEntries(DEFINITIONS.map((definition) => [definition.action, definition.defaults[scheme]])) as Profile;
+    interface Preferences { scheme: Scheme; shortcuts: Record<Scheme, Profile>; }
+    let current: Preferences = { scheme: "classic", shortcuts: { classic: profileOf("classic"), wasd: profileOf("wasd") } };
+    const clone = (preferences: Preferences): Preferences =>
+        ({ scheme: preferences.scheme, shortcuts: { classic: { ...preferences.shortcuts.classic }, wasd: { ...preferences.shortcuts.wasd } } });
+    const reset = (scheme: Scheme): void => { current = { ...current, shortcuts: { ...current.shortcuts, [scheme]: profileOf(scheme) } }; };
+    const copy = clone(current);
+    copy.shortcuts.classic.nature = "x";
+    if (current.shortcuts.classic.nature !== "n" || copy.shortcuts.classic.build !== "b") throw new Error("view spread");
+    current.shortcuts.wasd.build = "9";
+    reset("wasd");
+    if (current.shortcuts.wasd.build !== "2" || current.shortcuts.classic.nature !== "n") throw new Error("keyed record");
+    if (Object.values(current.shortcuts.classic).join(",") !== "n,b") throw new Error("view values");
+    interface Production { logs: number; pots: number; crates: number; }
+    const TALLY: Partial<Record<"wood" | "pot" | "egg", keyof Production>> = { wood: "logs", pot: "pots" };
+    let produced: Production = { logs: 0, pots: 0, crates: 0 };
+    const note = (kind: "wood" | "pot" | "egg"): boolean => {
+        const key = TALLY[kind];
+        if (key === undefined) return false;
+        produced = { ...produced, [key]: produced[key] + 1 };
+        return true;
+    };
+    note("wood"); note("wood"); note("pot"); note("egg");
+    if (JSON.stringify(produced) !== '{"logs":2,"pots":1,"crates":0}') throw new Error("keyed spread");
+    interface Params { tint: string; scale: number; relief: number; }
+    let params: Params = { tint: "red", scale: 1, relief: 2 };
+    const seen: string[] = [];
+    const setParams = (p: Partial<Params>): void => { seen.push(Object.keys(p).join("+")); params = { ...params, ...p }; };
+    const apply = (key: Exclude<keyof Params, "tint">, value: number): void => { setParams({ [key]: value }); };
+    const appliers: Array<(key: Exclude<keyof Params, "tint">, value: number) => void> = [apply];
+    const keys: Array<Exclude<keyof Params, "tint">> = ["relief", "scale"];
+    appliers[0]!(keys[0]!, 5);
+    appliers[0]!(keys[1]!, 3);
+    if (params.scale !== 3 || params.relief !== 5 || params.tint !== "red" || seen.join("|") !== "relief|scale") throw new Error("keyed literal");
+`,
+);
+
+test("a run-time key selecting fields of different types refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Mixed { count: number; label: string; }
+            let mixed: Mixed = { count: 1, label: "a" };
+            const keys: Array<keyof Mixed> = ["count"];
+            const write = (key: keyof Mixed): void => { mixed = { ...mixed, [key]: 2 }; };
+            const writers: Array<(key: keyof Mixed) => void> = [write];
+            writers[0]!(keys[0]!);
+            if (mixed.count !== 2) throw new Error("count");
+            `),
+        /Dynamic struct keys must select fields with one common data type/,
+    );
+});
+
+check(
+    "object-destructuring-assignments-and-keyed-absence",
+    `
+    interface Auto { dawn?: string; dusk?: string; stops?: readonly { dawn?: string }[]; }
+    const flags = (auto: Auto): { hasDawn: boolean; hasDusk: boolean } =>
+        ({ hasDawn: !!(auto.dawn || auto.stops?.some((stop) => !!stop.dawn)), hasDusk: !!auto.dusk });
+    function prepare(config: { auto?: Auto }): string {
+        let autoHasDawn = false;
+        let autoHasDusk = false;
+        if (config.auto) ({ hasDawn: autoHasDawn, hasDusk: autoHasDusk } = flags(config.auto));
+        return autoHasDawn + ":" + autoHasDusk;
+    }
+    const configs: { auto?: Auto }[] = [{}, { auto: { dawn: "a" } }, { auto: { dusk: "b", stops: [{ dawn: "c" }] } }];
+    if (configs.map(prepare).join(",") !== "false:false,true:false,true:true") throw new Error("destructuring assignment");
+    interface Args { readonly point?: { x: number }; readonly hostId?: number; readonly label?: string; }
+    const argsOnly = (args: Args, allowed: readonly (keyof Args)[]): boolean =>
+        (Object.keys(args) as Array<keyof Args>).every((key) => args[key] === undefined || allowed.includes(key));
+    const all: Args[] = [{ point: { x: 1 } }, { hostId: 3, label: "x" }, {}];
+    if (all.map((args) => argsOnly(args, ["point", "hostId"])).join(",") !== "true,false,true") throw new Error("keyed absence");
+    interface Recorder<T extends Record<string, number>> { push(t: number, values: T): void; samples(): readonly ({ t: number } & T)[]; }
+    function createRecorder<T extends Record<string, number>>(): Recorder<T> {
+        const data: ({ t: number } & T)[] = [];
+        const same = (a: { t: number } & T, b: T): boolean => {
+            for (const k of Object.keys(b)) if (a[k] !== b[k]) return false;
+            return true;
+        };
+        return {
+            push(t: number, values: T): void {
+                const last = data[data.length - 1];
+                if (last && same(last, values)) { last.t = t; return; }
+                data.push({ t, ...values });
+            },
+            samples: () => data,
+        };
+    }
+    const recorder = createRecorder<{ deer: number; rabbit: number }>();
+    recorder.push(1, { deer: 1, rabbit: 2 });
+    recorder.push(2, { deer: 1, rabbit: 2 });
+    recorder.push(3, { deer: 2, rabbit: 2 });
+    const samples = recorder.samples();
+    if (samples.length !== 2 || samples[0]!.t !== 2 || samples[1]!.deer !== 2) throw new Error("string-keyed reads");
+`,
+);
+
+check(
+    "open-record-views-setters-and-document-deletes",
+    `
+    type Job = "none" | "hunter" | "baker" | "witch";
+    const JOBS: readonly Exclude<Job, "none">[] = ["hunter", "baker", "witch"];
+    interface Capacity { readonly posts: number; readonly activeByJob: Readonly<Record<Exclude<Job, "none">, number>>; }
+    function capacityOf(workers: readonly { id: number; job: Job }[], posts: number): Capacity {
+        const activeByJob = {} as Record<Exclude<Job, "none">, number>;
+        for (const job of JOBS) activeByJob[job] = 0;
+        for (const worker of workers) if (worker.job !== "none" && activeByJob[worker.job] < posts) activeByJob[worker.job]++;
+        return { posts, activeByJob };
+    }
+    const capacity = capacityOf([{ id: 1, job: "hunter" }, { id: 2, job: "hunter" }, { id: 3, job: "baker" }, { id: 4, job: "none" }], 1);
+    if (JSON.stringify(capacity.activeByJob) !== '{"hunter":1,"baker":1,"witch":0}') throw new Error("view of an open record");
+    interface Appearance { seed?: number; patternSeed?: number; }
+    interface HouseSave extends Appearance { cx: number; cz: number; }
+    const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+    const adopt = (record: Appearance, legacy: number): void => { if (!finite(record.seed)) record.seed = legacy; };
+    const fields: [string, number][] = [["cx", 1], ["cz", 2]];
+    const house = Object.fromEntries(fields) as unknown as HouseSave;
+    const adopters: Array<(record: Appearance, legacy: number) => void> = [adopt];
+    adopters[0]!(house, 9);
+    adopters[0]!(house, 4);
+    if (house.seed !== 9 || house.cx !== 1 || JSON.stringify(house) !== '{"cx":1,"cz":2,"seed":9}') throw new Error("setter through a view");
+    const parsed = JSON.parse('{"a":1,"b":2,"c":3}') as Record<string, number>;
+    delete parsed.a;
+    const key = "b";
+    delete parsed[key];
+    if (JSON.stringify(parsed) !== '{"c":3}') throw new Error("document delete");
+    interface Field { count: number; refresh(): number; }
+    interface Live extends Field { publish(): number; }
+    const createField = (): Field => { let n = 0; return { count: 1, refresh: () => ++n }; };
+    function createLive(): Live {
+        const field = createField();
+        return { ...field, publish() { return field.refresh() * 10; } };
+    }
+    const live = createLive();
+    if (live.publish() !== 10 || live.publish() !== 20 || live.count !== 1) throw new Error("spread method");
+    const SLOT_REEL = 19, SLOT_PICK = 7;
+    interface Profile { readonly file: string; readonly contacts?: Readonly<Partial<Record<number, number>>>; }
+    const profiles: Profile[] = [{ file: "base.glb", contacts: { [SLOT_REEL]: 0.876, [SLOT_PICK]: 0.459 } }, { file: "other.glb" }];
+    if (profiles.map((profile) => profile.contacts?.[SLOT_REEL] ?? -1).join(",") !== "0.876,-1") throw new Error("numeric keys");
+`,
+);
+
+check(
+    "fixed-field-views-written-by-literal-keys",
+    `
+    interface Mutable { [key: string]: unknown; }
+    interface SaveData { version: number; season?: number; seasonPhase?: number; name: string; towers: { id: number }[]; }
+    const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+    function clampScalars(save: SaveData, repaired: string[]): void {
+        const mutable = save as unknown as Mutable;
+        const clampUnitField = (key: "season" | "seasonPhase"): void => {
+            const value = save[key];
+            if (value === undefined) return;
+            if (!Number.isFinite(value) || value < 0 || value > 1) {
+                mutable[key] = clamp01(Number.isFinite(value) ? value : 0);
+                repaired.push(key);
+            }
+        };
+        clampUnitField("season");
+        clampUnitField("seasonPhase");
+    }
+    const described = (save: SaveData, keys: readonly string[]): string[] =>
+        keys.filter((key) => (save as unknown as Mutable)[key] !== undefined);
+    function rename(save: SaveData): void {
+        const alias = save;
+        alias.name = alias.name.toUpperCase();
+    }
+    const saves: SaveData[] = [{ version: 1, season: 3, name: "a", towers: [] }, { version: 2, seasonPhase: -1, name: "b", towers: [{ id: 1 }] }];
+    const repaired: string[] = [];
+    for (const save of saves) { clampScalars(save, repaired); rename(save); }
+    if (saves[0]!.season !== 1 || saves[1]!.seasonPhase !== 0 || repaired.join() !== "season,seasonPhase") throw new Error("view writes");
+    if (saves[1]!.name !== "B") throw new Error("alias write");
+    if (described(saves[1]!, ["version", "season", "seasonPhase", "towers", "missing", "toString"]).join() !== "version,seasonPhase,towers,toString")
+        throw new Error("described keys");
+`,
+);
+
+test("an open record projected into fields of another entry type refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Named { label: string; }
+            const fields: [string, number][] = [["label", 1]];
+            const named = Object.fromEntries(fields) as unknown as Named;
+            const show = (value: Named): string => value.label;
+            const shows: Array<(value: Named) => string> = [show];
+            if (shows[0]!(named) !== "1") throw new Error("label");
+            `),
+        /Open string record cannot project field 'label' into .*; destination fields must hold its entry type/,
+    );
+});
+
+test("object destructuring assignments with defaults refuse", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            let a = 0;
+            const source = (): { a?: number } => ({});
+            ({ a = 3 } = source());
+            if (a !== 3) throw new Error("a");
+            `),
+        /Only property assignments are supported/,
+    );
+});
+
 async function executeGeneratedAssertions(
     t: TestContext,
     name: string,
