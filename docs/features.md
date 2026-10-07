@@ -155,10 +155,12 @@ parameter refuse.
 | `finally` | Waits for cleanup; preserves original result unless cleanup throws/rejects |
 | `all` | Ordered literal tuples and stored arrays of promises (a void fulfillment is undefined); first rejection wins |
 | `allSettled` | Ordered literal tuples and stored promise arrays, including void; fresh settlement records and original Error identities |
-| `race` / `any` | Homogeneous represented arrays/tuples (a `Promise<never>` input joins any); `race` with empty input stays pending; `any` rejects with an AggregateError of every reason |
+| `race` / `any` | Homogeneous represented arrays/tuples; `race` with empty input stays pending; `any` rejects with an AggregateError of every reason |
 
-Optional promise values adopt their present payload or settle to absence through `await`, async returns,
-`resolve`, reactions and literal `all` tuples. An async `return c ? promise : value` returns each branch
+Optional promise values adopt their present payload or settle to absence, and value-or-promise unions
+adopt their promise arm, through `await`, async returns, `resolve`, reactions and literal `all` tuples.
+A `Promise<never>` joins any settlement type: combinator inputs and literal spreads, conditional arms,
+stored promises and async returns. An async `return c ? promise : value` returns each branch
 as its own return. Arbitrary rejection values, heterogeneous race results
 and unrepresented aggregation shapes refuse.
 A literal with spreads is the runtime array of its promises, which share one settlement type. `all`
