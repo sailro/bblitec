@@ -30,33 +30,13 @@ import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
-import { numericSlotKind } from "./numeric-slot-storage.js";
-import { cppIdentifierPattern } from "../cpp-literals.js";
-import {
-    absentAwareIdentity,
-    pinSlotFound,
-    sameAbsenceCpp,
-} from "./data-comparisons.js";
+import { pinSlotFound, strictEqualsCpp } from "./data-comparisons.js";
 import {
     isStringValue,
     optionalPresentCpp,
     sameCompiledValue,
     type Value,
 } from "./types.js";
-
-function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
-    if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
-    if (type?.kind === "union")
-        return type.members.some(hasBorrowedArrayIdentity);
-    return type?.kind === "span" || type?.kind === "table";
-}
-
-/** A record keyed by a closed union is stored by value, one copy per location. */
-function isRecordTable(type: DataType | undefined): boolean {
-    return type?.kind === "optional"
-        ? isRecordTable(type.inner)
-        : type?.kind === "enummap";
-}
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -728,89 +708,16 @@ export class ConditionLowerer {
                 rightValue,
                 unwrapped.right,
             );
-            // A BigInt is strictly equal only to a BigInt.
-            if (
-                equality &&
-                (leftValue.dataType?.kind === "bigint") !==
-                    (rightValue.dataType?.kind === "bigint")
-            ) {
-                this.context.emitDiscardedValue(leftValue);
-                this.context.emitDiscardedValue(rightValue);
-                return operator === "==" ? "false" : "true";
-            }
-            if (
-                equality &&
-                (hasBorrowedArrayIdentity(leftValue.dataType) ||
-                    hasBorrowedArrayIdentity(rightValue.dataType))
-            )
-                this.context.fail(
-                    unwrapped,
-                    "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
-                );
-            if (
-                equality &&
-                isRecordTable(leftValue.dataType) &&
-                isRecordTable(rightValue.dataType)
-            )
-                this.context.fail(
-                    unwrapped,
-                    "A record keyed by a closed union is stored by value and cannot preserve JavaScript object identity in a comparison.",
-                );
-            // A numeric view is the array it views: it is another numeric
-            // array when the two name one array (two views compare as such).
-            if (
-                equality &&
-                (leftValue.dataType?.kind === "numberindex") !==
-                    (rightValue.dataType?.kind === "numberindex")
-            ) {
-                const present = (value: Value): boolean =>
-                    value.dataType?.kind !== "optional" &&
-                    numericSlotKind(value.dataType) !== undefined;
-                if (!present(leftValue) || !present(rightValue))
-                    this.context.fail(
-                        unwrapped,
-                        "A numeric view compares by identity only with a present numeric array.",
-                    );
-                return `(${leftValue.cpp}).identity() ${operator} (${rightValue.cpp}).identity()`;
-            }
-            // A shared record or a function is absent as one native null;
-            // two absent ones must also be the same absent value.
-            const nullable = (value: Value): string | undefined =>
-                value.kind === "data" &&
-                (value.dataType?.kind === "function" ||
-                    value.dataType?.kind === "struct")
-                    ? this.context.dataTypes.slotPresentCpp(
-                          value.dataType,
-                          value.cpp,
-                      )
-                    : undefined;
-            if (
-                equality &&
-                nullable(leftValue) !== undefined &&
-                nullable(rightValue) !== undefined
-            ) {
-                const same = sameAbsenceCpp(
-                    this.context.dataLowerer,
-                    { node: unwrapped.left, value: leftValue },
-                    { node: unwrapped.right, value: rightValue },
-                );
-                if (same !== "true") {
-                    const stable = cppIdentifierPattern.test(leftValue.cpp)
-                        ? leftValue
-                        : this.context.bindings.pinValueToTemporary(
-                              leftValue,
-                              "comparison_left",
-                              unwrapped.left,
-                          );
-                    return absentAwareIdentity(
-                        same,
-                        `static_cast<bool>(${stable.cpp})`,
-                        (identity) =>
-                            `${stable.cpp} ${identity} ${rightValue.cpp}`,
-                        operator === "!=",
-                    );
-                }
-            }
+            const strict = equality
+                ? strictEqualsCpp(
+                      this.context.dataLowerer,
+                      unwrapped,
+                      leftValue,
+                      rightValue,
+                      operator === "!=",
+                  )
+                : undefined;
+            if (strict !== undefined) return strict;
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

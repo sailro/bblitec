@@ -15448,22 +15448,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // An operand that reads undefined (a property no prototype of a
         // primitive defines) is strictly equal only to an operand that can
-        // be undefined.
-        if (!loose && !isNullish(left) && !isNullish(right)) {
+        // be undefined. Only a property or element read, or an operand whose
+        // type admits undefined, can read it, and only against an operand
+        // whose type excludes it does that decide: other comparisons skip
+        // compiling both operands here.
+        const excludesUndefined = (operand: ts.Expression): boolean => {
+            const type = this.context.checker.getTypeAtLocation(operand);
+            return (
+                (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
+                    0 && !nullability(type).undefined
+            );
+        };
+        const mayReadUndefined = (operand: ts.Expression): boolean =>
+            ts.isPropertyAccessExpression(operand) ||
+            ts.isElementAccessExpression(operand) ||
+            !excludesUndefined(operand);
+        if (
+            !loose &&
+            !isNullish(left) &&
+            !isNullish(right) &&
+            ((mayReadUndefined(left) && excludesUndefined(right)) ||
+                (mayReadUndefined(right) && excludesUndefined(left)))
+        ) {
             const known = this.context.probeEmission(() => {
                 const a = this.context.compileValue(left);
                 const b = this.context.compileValue(right);
                 const absent = (value: Value): boolean =>
                     value.kind === "json-null" && value.cpp === "std::nullopt";
-                if (absent(a) === absent(b)) return undefined;
-                const other = this.context.checker.getTypeAtLocation(
-                    absent(a) ? right : left,
-                );
                 if (
-                    (other.flags &
-                        (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                        0 ||
-                    nullability(other).undefined
+                    absent(a) === absent(b) ||
+                    !excludesUndefined(absent(a) ? right : left)
                 )
                     return undefined;
                 this.context.emitDiscardedValue(absent(a) ? b : a);
