@@ -484,6 +484,9 @@ public:
         return native_ && native_->type() == typeid(T);
     }
 
+    /** The class instance this value holds, asserted to be one. */
+    template <typename T> [[nodiscard]] const T& asserted_instance() const;
+
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(array_);
         visitor(object_);
@@ -1041,6 +1044,16 @@ template <typename T> JsonValue JsonValue::from_native(T source) {
     value.kind_ = Kind::object;
     value.native_ = make_gc_shared<JsonNativeBox<T>>(std::move(source));
     return value;
+}
+
+/**
+ * Any other value has no storage as that instance and throws TypeError here,
+ * where JavaScript throws only once a private member of the class is read.
+ */
+template <typename T> const T& JsonValue::asserted_instance() const {
+    if (!instance_of<T>())
+        throw NamedError("TypeError", "Value is not an instance of the asserted class");
+    return static_cast<const JsonNativeBox<T>&>(*native_).value;
 }
 
 template <typename Getter> struct JsonRecordView final : JsonNativeObject {

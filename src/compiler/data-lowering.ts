@@ -488,6 +488,7 @@ interface DataLoweringContext extends Pick<
     | "sourceFile"
     | "program"
     | "activeThis"
+    | "classOf"
     | "admissions"
     | "asyncActivations"
     | "libraryGlobal"
@@ -1862,6 +1863,38 @@ export class DataLowerer {
     }
 
     /**
+     * A method writing `this.field` of an object literal lowered as a
+     * compile-time record, where the field holds a generation-time constant:
+     * the binding the literal initializes takes the one object it creates,
+     * which the method then writes.
+     */
+    private requireHomeObjectStorage(
+        instance: Value,
+        access: ts.PropertyAccessExpression,
+    ): void {
+        const member = instance.recordProperties?.[access.name.text];
+        if (
+            !member ||
+            member.sharedStorageCpp ||
+            member.nativeLvalue ||
+            (member.staticNumber === undefined &&
+                member.staticBoolean === undefined &&
+                member.staticString === undefined)
+        )
+            return;
+        const declaration = this.context.bindings.recordDeclaration(
+            instance,
+            access.expression,
+        );
+        if (declaration && !this.context.dynamicBindings.has(declaration))
+            throw new DynamicBindingStorageRequired(declaration, "source");
+        this.context.fail(
+            access,
+            "A write through `this` needs the object its literal creates stored where a binding names it.",
+        );
+    }
+
+    /**
      * Compiles an identifier/property/element path rooted at a data local or
      * a static table. Returns undefined when the expression is not a data
      * path; fails only for definite data-model errors.
@@ -1957,6 +1990,12 @@ export class DataLowerer {
                 !this.context.dataTypes.isClassStruct(instance.dataType.name)
             )
                 return this.propertyRead(instance, unwrapped);
+            if (
+                mode === "write" &&
+                instance.kind === "record" &&
+                !this.context.classOf(instance)
+            )
+                this.requireHomeObjectStorage(instance, unwrapped);
             // A class field resolves to the local it was bound to, so
             // container methods and alias tracking see the same
             // storage a field read outside the method sees.
@@ -10240,6 +10279,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 freshData: true,
             };
         this.requireNumericSlot(value, dataType, expression);
+        // A dynamic value asserted to a class's type is the instance it
+        // holds; any other value throws TypeError (docs/fidelity.md).
+        if (
+            isJsonValue(value) &&
+            dataType.kind === "struct" &&
+            this.context.dataTypes.isClassStruct(dataType.name)
+        )
+            return {
+                kind: "data",
+                cpp: `${value.cpp}.asserted_instance<${this.context.dataTypes.cppType(dataType)}>()`,
+                dataType,
+            };
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         this.context.fail(
             expression,

@@ -38,7 +38,10 @@ import {
     isUndefinedDataType,
     TYPED_ARRAY_KINDS,
 } from "./data-types.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    initializedVariableDeclaration,
+} from "./dynamic-binding-storage.js";
 import { requireAbsenceTag } from "./absence-tag-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -239,6 +242,8 @@ export interface ExpressionContext
             | "compileWorkerValue"
             | "audioSessionCpp"
             | "checker"
+            | "program"
+            | "sourceFile"
             | "evaluationOrder"
             | "hasStableNativeBinding"
             | "options"
@@ -2008,6 +2013,38 @@ export class ExpressionLowerer {
         operands.push(node);
     }
 
+    /**
+     * `binding.member(...)` through an imported module's variable whose
+     * initializer stayed on the static path, which has no object for a
+     * member to run against. Demand the binding's storage: its module then
+     * evaluates the initializer once, in module order, and every call
+     * reaches that one object.
+     */
+    private requireModuleReceiverStorage(callee: ts.Expression): void {
+        if (!ts.isPropertyAccessExpression(callee)) return;
+        const receiver = this.context.unwrap(callee.expression);
+        if (
+            !ts.isIdentifier(receiver) ||
+            this.context.bindings.lookupOptional(receiver) ||
+            this.context.resolveStaticExpression(receiver) === receiver
+        )
+            return;
+        const declaration = initializedVariableDeclaration(
+            this.context.checker,
+            receiver,
+        );
+        const module = declaration?.parent.parent.parent;
+        if (
+            declaration &&
+            module &&
+            ts.isSourceFile(module) &&
+            module !== this.context.sourceFile &&
+            !this.context.program.isSourceFileFromExternalLibrary(module) &&
+            !this.context.dataLowerer.context.dynamicBindings.has(declaration)
+        )
+            throw new DynamicBindingStorageRequired(declaration, "source");
+    }
+
     /** A local module namespace exposes value exports in lexical key order. */
     private compileModuleNamespace(
         identifier: ts.Identifier,
@@ -3575,6 +3612,7 @@ export class ExpressionLowerer {
             }
             const missing = this.compileMissingPrimitiveMethodCall(call);
             if (missing) return missing;
+            this.requireModuleReceiverStorage(callee);
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
                 ts.isIdentifier(callee.expression)

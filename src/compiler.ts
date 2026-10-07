@@ -1291,11 +1291,15 @@ class Compiler implements LoweringServices {
         );
         for (const demand of this.ownedRecords.values())
             if (!demand.document) this.dataTypes.predeclareOwnedRecord(demand);
-        for (const declaration of this.dynamicBindings.keys()) {
-            const type = this.dataTypes.fromTsType(
-                this.checker.getTypeAtLocation(declaration.name),
-                declaration,
-            );
+        for (const [declaration, storage] of this.dynamicBindings) {
+            const source = this.checker.getTypeAtLocation(declaration.name);
+            // A record of methods has a type only as the storage it takes:
+            // the binding's one object, whose methods read it as `this`.
+            const type =
+                this.dataTypes.fromTsType(source, declaration) ??
+                (storage === "source"
+                    ? this.dataTypes.fromStoredTsType(source, declaration)
+                    : undefined);
             if (type) this.dataTypes.markStoredObjectReferences(type);
         }
         const visit = (root: ts.Node): void =>

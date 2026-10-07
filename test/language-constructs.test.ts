@@ -12812,3 +12812,232 @@ check(
     if (again[0] !== 1.5 || values.buffer !== shared || !(values.buffer instanceof SharedArrayBuffer)) throw new Error("shared view");
 `,
 );
+
+/**
+ * Writes project modules beside an entry, runs them as CommonJS in Node (in
+ * the order given, each resolving the earlier ones by name) and returns the
+ * entry's compiled C++.
+ */
+function compileModules(
+    directory: string,
+    modules: ReadonlyArray<readonly [string, string]>,
+    entry: string,
+): string {
+    mkdirSync(directory, { recursive: true });
+    const loaded = new Map<string, Record<string, unknown>>();
+    const run = (source: string): Record<string, unknown> => {
+        const exports: Record<string, unknown> = {};
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.CommonJS,
+                },
+            }).outputText,
+            {
+                exports,
+                require: (specifier: string) => {
+                    const required = loaded.get(specifier.slice(2, -3));
+                    if (!required) throw new Error(`unresolved ${specifier}`);
+                    return required;
+                },
+            },
+        );
+        return exports;
+    };
+    for (const [name, source] of modules) {
+        writeFileSync(join(directory, `${name}.ts`), source);
+        loaded.set(name, run(source));
+    }
+    run(entry);
+    return compileSource(entry, { fileName: join(directory, "entry.ts") }).cpp;
+}
+
+test("imported module records run their members on the one object their module creates", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-module-records"),
+        [
+            [
+                "records",
+                `function plus(a: number, b: number): number { return a + b; }
+                export const ops = { plus };
+                export const capability = {
+                    issue(): number { return 1; },
+                    value(token: number): string { return String(token); },
+                };
+                export const counter = {
+                    count: 0,
+                    bump(): number { this.count += 1; return this.count; },
+                    read(): number { return this.count; },
+                };
+                let evaluations = 0;
+                const sequence = (() => {
+                    evaluations += 1;
+                    let next = 0;
+                    const issue = (): number => ++next;
+                    const peek = (): number => next;
+                    return { issue, peek } as const;
+                })();
+                export function bumpTwice(): number { counter.bump(); return counter.bump(); }
+                export function allocate(): number { return sequence.issue() * 10 + sequence.peek(); }
+                export function evaluated(): number { return evaluations; }
+                export function sum(a: number): number { return ops.plus(a, 1); }`,
+            ],
+        ],
+        `import { allocate, bumpTwice, capability, counter, evaluated, sum } from "./records.js";
+        const key = capability.issue();
+        const text = capability.value(key);
+        if (key !== 1 || text !== "1") throw new Error("method record");
+        if (bumpTwice() !== 2 || counter.read() !== 2 || counter.count !== 2) throw new Error("this record");
+        const alias = counter;
+        alias.bump();
+        if (counter.count !== 3 || alias !== counter) throw new Error("one record");
+        const allocators: Array<typeof allocate> = [allocate];
+        if (allocators[0]!() !== 11 || allocate() !== 22 || evaluated() !== 1) throw new Error("module closure state");
+        if (sum(2) !== 3) throw new Error("function shorthand");`,
+    );
+    await executeGeneratedAssertions(t, "imported-module-records", cpp);
+});
+
+test("imported capability records issue class instances behind empty-object tokens", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-capability-records"),
+        [
+            ["order", `export const log: string[] = [];`],
+            [
+                "capability",
+                `import { log } from "./order.js";
+                declare const keyBrand: unique symbol;
+                export type Key = Readonly<{ readonly [keyBrand]: true }>;
+                const capability = (() => {
+                    const constructorToken = {};
+                    let issue!: (value: number) => Key;
+                    let value!: (id: Key) => number;
+                    log.push("capability");
+                    class Capability {
+                        readonly #value: number;
+                        constructor(token: object, durableValue: number) {
+                            if (token !== constructorToken) throw new TypeError("requires its private constructor token");
+                            this.#value = durableValue;
+                            Object.freeze(this);
+                        }
+                        static {
+                            issue = (durableValue) => new Capability(constructorToken, durableValue) as unknown as Key;
+                            value = (id) => (id as unknown as Capability).#value;
+                        }
+                    }
+                    void Capability;
+                    return { issue, value } as const;
+                })();
+                log.push("after");
+                declare const labelBrand: unique symbol;
+                export type Label = Readonly<{ readonly [labelBrand]: true }>;
+                const labels = (() => {
+                    const labelToken = {};
+                    let issue!: () => Label;
+                    let update!: (key: Label, text: string) => void;
+                    let signature!: (key: Label, suffix: string) => string;
+                    class LabelCapability {
+                        #text = "";
+                        constructor(token: object) {
+                            if (token !== labelToken) throw new TypeError("requires its private constructor token");
+                        }
+                        static {
+                            issue = () => new LabelCapability(labelToken) as unknown as Label;
+                            update = (key, text) => { (key as unknown as LabelCapability).#text = text; };
+                            signature = (key, suffix) => \`rb\${(key as unknown as LabelCapability).#text}:\${suffix}\`;
+                        }
+                    }
+                    void LabelCapability;
+                    return { issue, update, signature } as const;
+                })();
+                export function keyOf(value: unknown): number | null {
+                    if ((typeof value !== "object" && typeof value !== "function") || value === null) return null;
+                    try {
+                        const key = capability.value(value as Key);
+                        return Number.isSafeInteger(key) && key > 0 ? key : null;
+                    } catch {
+                        return null;
+                    }
+                }
+                export function allocate(next: number): { id: Key; nextId: number } {
+                    return { id: capability.issue(next), nextId: next + 1 };
+                }
+                export function labelKey(text: string, reuse?: Label): Label {
+                    const key = reuse ?? labels.issue();
+                    labels.update(key, text);
+                    return key;
+                }
+                export function labelSignature(key: Label, suffix: string): string {
+                    return labels.signature(key, suffix);
+                }`,
+            ],
+        ],
+        `import { log } from "./order.js";
+        import { allocate, keyOf, labelKey, labelSignature } from "./capability.js";
+        const keys: Array<(value: unknown) => number | null> = [keyOf];
+        const first = allocate(4);
+        const second = allocate(first.nextId);
+        if (keys[0]!(first.id) !== 4 || keys[0]!(second.id) !== 5) throw new Error("live keys");
+        if (first.id === second.id || keys[0]!(first.id) !== keyOf(first.id)) throw new Error("distinct identities");
+        if (keys[0]!({}) !== null || keys[0]!(3) !== null || keys[0]!(null) !== null) throw new Error("foreign values");
+        const label = labelKey("a");
+        const reused = labelKey("b", label);
+        if (reused !== label || labelSignature(label, "x") !== "rbb:x") throw new Error("label");
+        const other = labelKey("c");
+        if (other === label || labelSignature(other, "y") !== "rbc:y") throw new Error("fresh label");
+        if (log.join(",") !== "capability,after") throw new Error("module order " + log.join(","));`,
+    );
+    await executeGeneratedAssertions(t, "imported-capability-records", cpp);
+});
+
+check(
+    "empty-object-tokens-compare-by-identity",
+    `
+    const token = {};
+    const other = {};
+    if (token === other || token !== token) throw new Error("token identity");
+    const alias = token;
+    if (alias !== token || alias === other) throw new Error("alias");
+    function same(value: object): boolean { return value === token; }
+    const checks: Array<(value: object) => boolean> = [same];
+    if (!same(token) || same(other)) throw new Error("argument identity");
+    if (!checks[0]!(token) || checks[0]!(other)) throw new Error("stored token identity");
+`,
+);
+
+test("module records and tokens refuse what one object cannot represent", () => {
+    const directory = resolve("artifacts/imported-module-record-refusals");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "counter.ts"),
+        `export const counter = { count: 0, bump(): number { this.count += 1; return this.count; } };
+        export function detached(): () => number { const bump = counter.bump; return bump; }`,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `import { counter, detached } from "./counter.js";
+                counter.bump();
+                const f = detached();`,
+                { fileName: join(directory, "entry.ts") },
+            ),
+        /Method 'bump' reads `this`, and counter\.ts:2 reads its function value, which could call it with another receiver\./,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `const pairs = [{}, {}];
+                if (pairs[0] === pairs[1]) throw new Error("distinct");`,
+            ),
+        /Comparison requires represented operands, received record and record\./,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `const holder = { inner: { count: 0, bump(): number { this.count += 1; return this.count; } } };
+                if (holder.inner.bump() !== 1) throw new Error("bump");`,
+            ),
+        /A write through `this` needs the object its literal creates stored where a binding names it\./,
+    );
+});

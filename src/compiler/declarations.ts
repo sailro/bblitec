@@ -208,6 +208,14 @@ export function initializerNamesBinding(
     return found;
 }
 
+/** `{}`: a fresh object with no members. */
+function isFreshEmptyObject(expression: ts.Expression): boolean {
+    return (
+        ts.isObjectLiteralExpression(expression) &&
+        expression.properties.length === 0
+    );
+}
+
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
 
@@ -2446,10 +2454,18 @@ export class DeclarationLowerer {
                           )
                         : storage === "error-array"
                           ? undefined
-                          : this.context.dataTypes.fromStoredTsType(
+                          : (this.context.dataTypes.fromStoredTsType(
                                 source,
                                 declaration,
-                            );
+                            ) ??
+                            // A fresh `{}` has no members to type: a parsed
+                            // document holds it as one object with identity.
+                            (storage === "source" &&
+                            isFreshEmptyObject(
+                                this.context.unwrap(declaration.initializer),
+                            )
+                                ? { kind: "json" as const }
+                                : undefined));
                 let type: DataType | undefined = mapped;
                 if (typeof storage === "object" && type) {
                     const absent = nullability(source);
