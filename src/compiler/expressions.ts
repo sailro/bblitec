@@ -39,6 +39,7 @@ import {
     TYPED_ARRAY_KINDS,
 } from "./data-types.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { requireAbsenceTag } from "./absence-tag-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
@@ -384,6 +385,7 @@ function staticStringCoercion(value: Value): string | undefined {
 export function emitStringAppend(
     context: Pick<
         LoweringServices,
+        | "absenceTags"
         | "checker"
         | "compileValue"
         | "cppString"
@@ -406,7 +408,7 @@ export function emitStringAppend(
 export function stringConcatPart(
     context: Pick<
         LoweringServices,
-        "checker" | "cppString" | "dataTypes" | "fail"
+        "checker" | "cppString" | "dataTypes" | "fail" | "absenceTags"
     >,
     value: Value,
     node: ts.Node,
@@ -475,11 +477,18 @@ export function stringConcatPart(
             node,
         );
         const absence = absenceKind(context.checker, value, node);
-        if (absence === "either")
+        if (absence === "either") {
+            requireAbsenceTag(
+                context.checker,
+                context.absenceTags,
+                node,
+                value,
+            );
             return context.fail(
                 node,
                 'A value that may be null or undefined is spelled only once one of them is ruled out (`value ?? "undefined"`).',
             );
+        }
         // A read that knows whether its slot existed spells a stored `null`
         // and a missing slot apart.
         const absent =
@@ -519,6 +528,25 @@ export function stringConcatPart(
         "String concatenation supports string, number, boolean, enum and null values, and absent ones of those kinds.",
     );
 }
+
+/** The properties Number.prototype, Boolean.prototype and Object.prototype define. */
+const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
+    "constructor",
+    "toExponential",
+    "toFixed",
+    "toPrecision",
+    "toString",
+    "toLocaleString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "__proto__",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+]);
 
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
@@ -1413,7 +1441,7 @@ export class ExpressionLowerer {
                     ts.SyntaxKind.AmpersandAmpersandToken)
         ) {
             const logical =
-                this.context.dataLowerer.compileOptionalBooleanLogicalValue(
+                this.context.dataLowerer.compileOptionalScalarLogicalValue(
                     unwrapped,
                 );
             if (logical) return logical;
@@ -1513,11 +1541,18 @@ export class ExpressionLowerer {
                     operand,
                     expression,
                 );
-                if (absence === "either")
+                if (absence === "either") {
+                    requireAbsenceTag(
+                        this.context.checker,
+                        this.context.absenceTags,
+                        expression,
+                        operand,
+                    );
                     return this.context.fail(
                         expression,
                         "typeof a value that may be null or undefined answers only once one of them is ruled out (narrow the type).",
                     );
+                }
                 return typeof absence === "object"
                     ? {
                           cpp: `(${absence.slotFoundCpp} ? "object" : "undefined")`,
@@ -1570,9 +1605,9 @@ export class ExpressionLowerer {
                     ? operand.dataType.inner
                     : operand.dataType;
             const type =
-                operand.kind === "number"
+                operand.kind === "number" || dataType?.kind === "number"
                     ? "number"
-                    : operand.kind === "boolean"
+                    : operand.kind === "boolean" || dataType?.kind === "boolean"
                       ? "boolean"
                       : operand.kind === "string" ||
                           dataType?.kind === "string" ||
@@ -2685,6 +2720,15 @@ export class ExpressionLowerer {
                     continue;
                 }
                 const present = trueValue ?? falseValue!;
+                // The record holds the array a compile-time member builds,
+                // so a readonly one owns its storage as a returned one does.
+                const memberType =
+                    present.dataType === undefined &&
+                    present.kind !== "number" &&
+                    present.kind !== "boolean" &&
+                    present.kind !== "string"
+                        ? this.selectedDataType(node, [...path, name], true)
+                        : undefined;
                 const inner =
                     present.dataType ??
                     (present.kind === "number"
@@ -2693,10 +2737,9 @@ export class ExpressionLowerer {
                           ? { kind: "boolean" as const }
                           : present.kind === "string"
                             ? { kind: "string" as const }
-                            : this.selectedDataType(
-                                  node,
-                                  [...path, name],
-                                  true,
+                            : memberType &&
+                              this.context.dataTypes.ownReturnedArray(
+                                  memberType,
                               ));
                 if (!inner) {
                     this.context.fail(
@@ -3526,6 +3569,8 @@ export class ExpressionLowerer {
             if (predicate) {
                 return predicate;
             }
+            const missing = this.compileMissingPrimitiveMethodCall(call);
+            if (missing) return missing;
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
                 ts.isIdentifier(callee.expression)
@@ -4051,44 +4096,54 @@ export class ExpressionLowerer {
         }
         const value = this.compileValue(unwrapped);
         if (value.kind === "number") return value;
-        if (isStringValue(value)) {
+        const present = (cpp: string, type: DataType | undefined) =>
+            type?.kind === "number"
+                ? `static_cast<double>(${cpp})`
+                : type?.kind === "string"
+                  ? `bbl::js::number_from_string(${cpp})`
+                  : type?.kind === "boolean"
+                    ? `(${cpp} ? 1.0 : 0.0)`
+                    : type?.kind === "json" || type?.kind === "bigint"
+                      ? `(${cpp}).to_number()`
+                      : undefined;
+        const number = (cpp: string): Value => {
             this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::number_from_string(${value.cpp})`,
-                dataType: { kind: "number" },
-            };
-        }
-        // `Number(bigint)` is the nearest double.
-        if (value.kind === "data" && value.dataType?.kind === "bigint")
-            return {
-                kind: "number",
-                cpp: `(${value.cpp}).to_number()`,
-                dataType: { kind: "number" },
-            };
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            (value.dataType.inner.kind === "string" ||
-                value.dataType.inner.kind === "number")
-        ) {
-            const present =
-                value.dataType.inner.kind === "string"
-                    ? "bbl::js::number_from_string(*v)"
-                    : "static_cast<double>(*v)";
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp:
-                    `([&]() { const auto& v = ${value.cpp}; ` +
-                    `return v.has_value() ? ${present} : ` +
-                    `std::numeric_limits<double>::quiet_NaN(); }())`,
-                dataType: { kind: "number" },
-            };
+            return { kind: "number", cpp, dataType: { kind: "number" } };
+        };
+        if (isStringValue(value))
+            return number(present(value.cpp, { kind: "string" })!);
+        if (value.kind === "boolean")
+            return number(present(value.cpp, { kind: "boolean" })!);
+        const direct =
+            value.kind === "data" && present(value.cpp, value.dataType);
+        if (direct) return number(direct);
+        // An absent operand is NaN when it is `undefined` and 0 when it is
+        // `null`, so the storage must say which one it holds.
+        const inner =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : undefined;
+        if (inner && present("*v", inner)) {
+            const absence = absenceKind(this.context.checker, value, unwrapped);
+            const absent =
+                absence === "null"
+                    ? "0.0"
+                    : absence === "either"
+                      ? this.context.fail(
+                            expression,
+                            "Number() of a value that may be null or undefined requires storage telling them apart.",
+                        )
+                      : typeof absence === "object"
+                        ? `(${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
+                        : "std::numeric_limits<double>::quiet_NaN()";
+            return number(
+                `([&]() { const auto& v = ${value.cpp}; ` +
+                    `return v.has_value() ? ${present("*v", inner)} : ${absent}; }())`,
+            );
         }
         this.context.fail(
             expression,
-            `Number() supports number and string values, received ${value.kind}.`,
+            `Number() supports numbers, strings, booleans, BigInts, parsed documents and their optionals, received ${value.kind}.`,
         );
     }
 
@@ -4504,6 +4559,86 @@ export class ExpressionLowerer {
         );
     }
 
+    /**
+     * A method the receiver's primitive lacks (`text.map(...)`), called on
+     * storage holding only that primitive or nothing: JavaScript reads
+     * `undefined` (or throws reading from an absent receiver), then the
+     * call throws TypeError. A branch its storage cannot take, such as the
+     * array arm of `typeof value === "string" ? ... : value.map(...)` over a
+     * dictionary of strings, throws as JavaScript would. Arguments must be
+     * effect-free: a present receiver evaluates them before throwing.
+     */
+    private compileMissingPrimitiveMethodCall(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const callee = this.context.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            ts.isOptionalChain(callee) ||
+            !ts.isIdentifier(callee.name) ||
+            !call.arguments.every(
+                (argument) =>
+                    ts.isArrowFunction(argument) ||
+                    ts.isFunctionExpression(argument) ||
+                    this.context.evaluationOrder.isPureExpression(argument),
+            )
+        )
+            return undefined;
+        const checker = this.context.checker;
+        const primitiveOf = (
+            type: DataType | undefined,
+        ): ts.Type | undefined =>
+            type?.kind === "string" || type?.kind === "enum"
+                ? checker.getStringType()
+                : type?.kind === "number"
+                  ? checker.getNumberType()
+                  : type?.kind === "boolean"
+                    ? checker.getBooleanType()
+                    : undefined;
+        const name = callee.name.text;
+        const missing = this.context.probeEmission(() => {
+            try {
+                const value = this.compileValue(callee.expression);
+                const stored =
+                    value.dataType?.kind === "optional"
+                        ? value.dataType.inner
+                        : value.dataType;
+                const primitive = primitiveOf(stored);
+                const result =
+                    value.kind === "data" &&
+                    primitive &&
+                    !checker.getPropertyOfType(
+                        checker.getApparentType(primitive),
+                        name,
+                    )
+                        ? this.context.dataLowerer.dataTypeAt(call)
+                        : undefined;
+                return result ? { receiver: value, result } : undefined;
+            } catch (error) {
+                if (error instanceof CompileError) return undefined;
+                throw error;
+            }
+        });
+        if (!missing) return undefined;
+        const { receiver, result } = missing;
+        this.context.reachJsData();
+        const thrown = (message: string): string =>
+            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(result)}>(${this.context.cppString(message)})`;
+        const notCallable = thrown(`${callee.getText()} is not a function`);
+        const present = presenceCpp(receiver);
+        const absent =
+            receiver.dataType?.kind === "optional" &&
+            receiver.dataType.undefinedOnly
+                ? "undefined"
+                : "null or undefined";
+        return this.context.dataLowerer.leafValue(
+            present === undefined
+                ? `(static_cast<void>(${receiver.cpp}), ${notCallable})`
+                : `(${present} ? ${notCallable} : ${thrown(`Cannot read properties of ${absent} (reading '${name}')`)})`,
+            result,
+        );
+    }
+
     private compileIndexedValue(
         unwrapped: ts.ElementAccessExpression,
         expression: ts.Expression,
@@ -4768,6 +4903,34 @@ export class ExpressionLowerer {
                 }
                 const indexedType =
                     this.context.dataLowerer.dataTypeAt(unwrapped);
+                // A record read as `Record<string, unknown>` by a key known
+                // only at run time reads a parsed view of the record: the
+                // property the key names, or undefined.
+                if (
+                    !indexedType &&
+                    (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0 &&
+                    (key.kind === "number" ||
+                        key.kind === "string" ||
+                        key.dataType?.kind === "string")
+                ) {
+                    const view =
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            owner,
+                            { kind: "json" },
+                            unwrapped.expression,
+                        );
+                    const name =
+                        key.kind === "number"
+                            ? `bbl::js::number_to_string(${this.context.castNumber(key, "double")})`
+                            : key.cpp;
+                    this.context.reachJsData();
+                    return this.context.dataLowerer.leafValue(
+                        `${view}.get(${name})`,
+                        { kind: "json" },
+                    );
+                }
                 if (!indexedType) {
                     this.context.fail(
                         unwrapped,
@@ -4980,6 +5143,21 @@ export class ExpressionLowerer {
                 );
             }
             return value;
+        }
+        // A property no prototype of a number or boolean defines reads
+        // undefined (`(42)["format"]`).
+        if (owner.kind === "number" || owner.kind === "boolean") {
+            const key = this.compileValue(unwrapped.argumentExpression);
+            const name =
+                key.staticString ??
+                (key.staticNumber !== undefined
+                    ? String(key.staticNumber)
+                    : undefined);
+            if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
+                this.context.emitDiscardedValue(owner);
+                this.context.emitDiscardedValue(key);
+                return { kind: "json-null", cpp: "std::nullopt" };
+            }
         }
         if (owner.kind !== "tuple") {
             this.context.fail(

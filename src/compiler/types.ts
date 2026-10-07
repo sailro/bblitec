@@ -2467,6 +2467,19 @@ export interface ValueFields {
      * and spells them apart.
      */
     slotFoundCpp?: string;
+    /**
+     * The tagged storage (`DataType<"tagged">`) a value was read from, whose
+     * `cpp` is a const view of the value: a store into the slot writes the
+     * value and its defined state together through this.
+     */
+    absenceTagStorageCpp?: string;
+    absenceTagType?: DataType<"tagged">;
+    /**
+     * The declarations of the record slot a value was read from: the
+     * storage a use the slot's representation cannot serve demands retyped
+     * (tagged absence, growable tuple lanes).
+     */
+    slotDeclarations?: readonly ts.Declaration[];
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */

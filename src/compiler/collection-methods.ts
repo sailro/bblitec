@@ -204,18 +204,24 @@ export function compileEntryCollection(
         );
         if (source.kind === "tuple") {
             for (const pair of source.tupleElements ?? []) {
-                if (pair.kind !== "tuple" || pair.tupleElements?.length !== 2)
+                const lanes =
+                    pair.kind === "tuple"
+                        ? pair.tupleElements?.length === 2
+                            ? pair.tupleElements
+                            : undefined
+                        : storedPairLanes(lowerer, pair, input);
+                if (!lanes)
                     lowerer.context.fail(
                         input,
                         "Collection entries must be key/value pairs.",
                     );
-                const key = lowerer.compileKnownValueForSink(
-                    pair.tupleElements[0]!,
+                const key = lowerer.compileLaneForSink(
+                    lanes[0]!,
                     type.key,
                     input,
                 );
-                const value = lowerer.compileKnownValueForSink(
-                    pair.tupleElements[1]!,
+                const value = lowerer.compileLaneForSink(
+                    lanes[1]!,
                     type.value,
                     input,
                 );
@@ -226,12 +232,12 @@ export function compileEntryCollection(
             }
         } else if (source.dataType?.kind === "map") {
             const entry = lowerer.context.allocateTemporaryCppName("map_entry");
-            const key = lowerer.compileKnownValueForSink(
+            const key = lowerer.compileLaneForSink(
                 lowerer.leafValue(`${entry}.first`, source.dataType.key),
                 type.key,
                 input,
             );
-            const value = lowerer.compileKnownValueForSink(
+            const value = lowerer.compileLaneForSink(
                 lowerer.leafValue(`${entry}.second`, source.dataType.value),
                 type.value,
                 input,
@@ -244,30 +250,20 @@ export function compileEntryCollection(
             source.dataType?.kind === "vector" ||
             source.dataType?.kind === "span"
         ) {
-            const pair = source.dataType.element;
-            const element =
-                pair.kind === "tuple"
-                    ? ({ kind: "number" } as const)
-                    : pair.kind === "vector" || pair.kind === "span"
-                      ? pair.element
-                      : undefined;
-            if (!element && pair.kind !== "product")
+            const entry = lowerer.context.allocateTemporaryCppName("map_entry");
+            const lanes = nativePairLanes(
+                lowerer,
+                lowerer.leafValue(entry, source.dataType.element),
+                input,
+            );
+            if (!lanes)
                 lowerer.context.fail(
                     input,
                     "Collection entries must be arrays of key/value pairs.",
                 );
-            const entry = lowerer.context.allocateTemporaryCppName("map_entry");
-            const entryValue = lowerer.leafValue(entry, pair);
-            const lane = (index: number) =>
-                lowerer.fixedTupleElement(entryValue, index, input) ??
-                lowerer.leafValue(`${entry}[${index}]`, element!);
-            const key = lowerer.compileKnownValueForSink(
-                lane(0),
-                type.key,
-                input,
-            );
-            const value = lowerer.compileKnownValueForSink(
-                lane(1),
+            const key = lowerer.compileLaneForSink(lanes[0], type.key, input);
+            const value = lowerer.compileLaneForSink(
+                lanes[1],
                 type.value,
                 input,
             );
@@ -296,4 +292,57 @@ export function compileEntryCollection(
     }
     lowerer.registerLocal(result, "owned");
     return { kind: "data", cpp: result, dataType: type };
+}
+
+/**
+ * The lanes of one native pair a compile-time entry list holds, evaluated
+ * once; an array pair must carry a key and a value, as the stored form's
+ * loop checks.
+ */
+function storedPairLanes(
+    lowerer: DataLowerer,
+    pair: Value,
+    node: ts.Node,
+): readonly [Value, Value] | undefined {
+    const kind = pair.dataType?.kind;
+    if (
+        kind !== "tuple" &&
+        kind !== "product" &&
+        kind !== "vector" &&
+        kind !== "span"
+    )
+        return undefined;
+    const pinned = lowerer.context.bindings.pinValueToTemporary(
+        pair,
+        "map_entry",
+    );
+    if (kind === "vector" || kind === "span")
+        lowerer.context.emit({
+            kind: "expression",
+            code: `if (${pinned.cpp}.size() < 2) throw std::runtime_error("Collection entry requires a key and value");`,
+        });
+    return nativePairLanes(lowerer, pinned, node);
+}
+
+/**
+ * The key and value lanes of a native entry pair: a fixed tuple's own
+ * lanes, or an array's first two elements. Undefined for any other value.
+ * An array pair's length is the consumer's to check.
+ */
+function nativePairLanes(
+    lowerer: DataLowerer,
+    pair: Value,
+    node: ts.Node,
+): readonly [Value, Value] | undefined {
+    const type = pair.dataType;
+    if (type?.kind === "tuple" || type?.kind === "product")
+        return [
+            lowerer.fixedTupleElement(pair, 0, node)!,
+            lowerer.fixedTupleElement(pair, 1, node)!,
+        ];
+    if (type?.kind !== "vector" && type?.kind !== "span") return undefined;
+    return [
+        lowerer.leafValue(`${pair.cpp}[0]`, type.element),
+        lowerer.leafValue(`${pair.cpp}[1]`, type.element),
+    ];
 }

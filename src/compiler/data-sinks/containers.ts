@@ -1,6 +1,11 @@
 import ts from "typescript";
 
-import { dataTypesEqual, doubleLiteral, type DataType } from "../data-types.js";
+import {
+    dataTypesEqual,
+    doubleLiteral,
+    isUndefinedDataType,
+    type DataType,
+} from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
 
 import {
@@ -9,8 +14,23 @@ import {
 } from "../dynamic-binding-storage.js";
 import { unaliasedValue } from "./aliasing.js";
 import { ownEntries } from "../object-statics.js";
-import { argumentOnlyRead, arrayLentForCall } from "../record-observations.js";
+import {
+    argumentOnlyRead,
+    arrayCopyObservation,
+    arrayDestructuredAtOnce,
+    arrayIdentityObservation,
+    arrayLentForCall,
+} from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
+import {
+    absenceKind,
+    admitsUndefined,
+    storedAsReadonlyArray,
+} from "../type-facts.js";
+import {
+    requireAbsenceTag,
+    requireTupleArraySlot,
+} from "../absence-tag-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function expressionOptional(
@@ -60,6 +80,84 @@ function expressionMapOrSet(
     return value.cpp;
 }
 
+/**
+ * Into storage that tells `undefined` from `null` (`DataType<"tagged">`): a
+ * value that cannot be `undefined` is stored defined, the way its own sink
+ * stores it; any other value states which absent value it holds.
+ */
+function expressionTagged(
+    dataType: DataType<"tagged">,
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
+    const checker = lowerer.context.checker;
+    if (!admitsUndefined(checker.getTypeAtLocation(expression)))
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${lowerer.compileForSink(expression, dataType.inner)}, true}`;
+    const value = lowerer.context.compileValue(unwrapped);
+    const tagged = valueTagged(dataType, lowerer, value, expression);
+    if (tagged === undefined)
+        lowerer.context.fail(
+            expression,
+            `Expected a value storable as ${lowerer.context.dataTypes.cppType(dataType.inner)}, received ${value.kind}.`,
+        );
+    return tagged;
+}
+
+function valueTagged(
+    dataType: DataType<"tagged">,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
+    const context = lowerer.context;
+    const cppType = context.dataTypes.cppType(dataType);
+    const inner = dataType.inner;
+    if (value.kind === "json-null")
+        return value.cpp === "std::nullopt"
+            ? `${cppType}{}`
+            : `${cppType}{${context.dataTypes.absentValue(inner)}, true}`;
+    if (isUndefinedDataType(value.dataType)) {
+        context.emitDiscardedValue(value);
+        return `${cppType}{}`;
+    }
+    // Another tagged storage of this type is copied with its state.
+    if (
+        value.absenceTagStorageCpp !== undefined &&
+        value.absenceTagType !== undefined &&
+        dataTypesEqual(value.absenceTagType, dataType)
+    )
+        return value.absenceTagStorageCpp;
+    const absence = absenceKind(context.checker, value, node);
+    if (absence === "either") {
+        requireAbsenceTag(context.checker, context.absenceTags, node, value);
+        return context.fail(
+            node,
+            "A value that may be null or undefined is stored where they are told apart only once one of them is ruled out (narrow the type).",
+        );
+    }
+    const pinned =
+        typeof absence === "object" && ts.isExpression(node)
+            ? context.bindings.pinValueToTemporary(value, "tagged_source", node)
+            : value;
+    const {
+        slotFoundCpp: _found,
+        absenceTagStorageCpp: _storage,
+        absenceTagType: _type,
+        ...stored
+    } = pinned;
+    const converted = lowerer.compileKnownValueForSink(stored, inner, node);
+    if (typeof absence === "object")
+        return `${cppType}{${converted}, static_cast<bool>(${absence.slotFoundCpp})}`;
+    if (absence !== "undefined") return `${cppType}{${converted}, true}`;
+    // Only `undefined` is absent here: the value is defined when present.
+    const slot = context.allocateTemporaryCppName("tagged_slot");
+    const present = context.dataTypes.slotPresentCpp(inner, slot);
+    return present === undefined
+        ? `${cppType}{${converted}, true}`
+        : `([&]() { auto ${slot} = ${converted}; return ${cppType}{${slot}, ${present}}; }())`;
+}
+
 function expressionSpanOrTupleOrTable(
     dataType: DataType<"span" | "tuple" | "table">,
     lowerer: DataSinkHost,
@@ -93,6 +191,9 @@ function valueOptional(
     if (value.kind === "json-null") {
         return absent;
     }
+    // A value that is always undefined is evaluated, then stored absent.
+    if (isUndefinedDataType(value.dataType))
+        return `(static_cast<void>(${value.cpp}), ${absent})`;
     if (value.dataType?.kind === "optional") {
         const sourceType = value.dataType.inner;
         const source =
@@ -161,6 +262,7 @@ function valueVector(
         );
     }
     if (value.kind === "tuple") {
+        requireOneNamedArray(lowerer, value, node);
         lowerer.context.reachJsData();
         const elements = value.tupleElements ?? [];
         elements.forEach((entry, index) =>
@@ -247,15 +349,155 @@ function valueVector(
             `return ${result}; }()`
         );
     }
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "vector" &&
+        !dataTypesEqual(value.dataType.element, dataType.element)
+    )
+        return convertedElementsCopy(
+            dataType,
+            lowerer,
+            value,
+            value.dataType.element,
+            node,
+        );
+    // A numeric tuple stored as an array of other lanes (`[number, number]`
+    // beside `[number, number, boolean]`) converts its lanes the same way.
+    if (value.kind === "data" && value.dataType?.kind === "tuple")
+        return convertedElementsCopy(
+            dataType,
+            lowerer,
+            value,
+            { kind: "number" },
+            node,
+        );
     return undefined;
+}
+
+/**
+ * A compile-time array a declaration names is built anew at each use that
+ * stores it. JavaScript keeps the declaration's one array, so where the
+ * program may compare such arrays by identity the declaration takes one
+ * runtime array instead.
+ */
+function requireOneNamedArray(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): void {
+    const expression = lowerer.convertedExpression(node);
+    const declaration =
+        expression &&
+        lowerer.context.bindings.tupleDeclaration(value, expression);
+    if (!declaration || lowerer.context.dynamicBindings.has(declaration))
+        return;
+    const checker = lowerer.context.checker;
+    const target =
+        checker.getContextualType(expression) ??
+        checker.getTypeAtLocation(expression);
+    if (arrayIdentityObservation(lowerer.context, target) !== undefined)
+        throw new DynamicBindingStorageRequired(declaration, "array");
+}
+
+/** A lane with no identity of its own: a number, string, boolean or literal union, or a union or optional of them. */
+export function plainLane(type: DataType): boolean {
+    switch (type.kind) {
+        case "number":
+        case "boolean":
+        case "string":
+        case "enum":
+        case "undefined":
+            return true;
+        case "optional":
+            return plainLane(type.inner);
+        case "union":
+            return type.members.every(plainLane);
+        default:
+            return false;
+    }
+}
+
+/**
+ * An array stored as an array of another element type (literal-union
+ * lanes as strings, a lane as an optional one, record lanes as another
+ * record type) is a second array, each element converted as it is stored.
+ * JavaScript keeps one array, so the copy is admitted only where nothing
+ * can tell the two apart: nothing else holds the array (a fresh one, whose
+ * elements are then judged one by one), the callee it is handed to only
+ * reads it and nothing the call runs changes it, a destructuring reads it
+ * where it is produced, or its lanes are plain values and no change or
+ * identity use in the program reaches an array that may be either one.
+ */
+function convertedElementsCopy(
+    dataType: DataType<"vector">,
+    lowerer: DataSinkHost,
+    value: Value,
+    element: DataType,
+    node: ts.Node,
+): string {
+    const array = lowerer.convertedExpression(node);
+    const unaliased = unaliasedValue(lowerer, value, node);
+    const lent =
+        !unaliased &&
+        array !== undefined &&
+        (arrayLentForCall(lowerer.context, array) ||
+            arrayDestructuredAtOnce(array));
+    if (!unaliased && !lent) {
+        const checker = lowerer.context.checker;
+        const target = array && checker.getContextualType(array);
+        const observed =
+            !array ||
+            !target ||
+            !plainLane(element) ||
+            !plainLane(dataType.element)
+                ? "the array may still be reached through another reference"
+                : arrayCopyObservation(
+                      lowerer.context,
+                      checker.getTypeAtLocation(array),
+                      target,
+                  );
+        if (observed !== undefined) {
+            // An array of ArrayLike slots takes the kind of its elements.
+            lowerer.requireNumericSlot(value, dataType, node);
+            lowerer.context.fail(
+                node,
+                `An array stored as an array of another element type is a copy, and ${observed}; JavaScript keeps one array.`,
+            );
+        }
+    }
+    lowerer.context.reachJsData();
+    const source = lowerer.context.allocateTemporaryCppName("convert_source");
+    const item = lowerer.context.allocateTemporaryCppName("convert_item");
+    const result = lowerer.context.allocateTemporaryCppName("convert_result");
+    let converted = "";
+    const lines = lowerer.context.captureEmittedLines(() => {
+        converted = lowerer.compileMemberForSink(
+            {
+                ...lowerer.leafValue(item, element),
+                ...(unaliased === "elements"
+                    ? { unaliased: "object" as const }
+                    : {}),
+            },
+            dataType.element,
+            node,
+        );
+    });
+    return (
+        `[&]() { auto ${source} = ${value.cpp}; ` +
+        `${lowerer.context.dataTypes.cppType(dataType)} ${result}; ` +
+        `${result}.reserve(${source}.size()); ` +
+        `for (const auto& ${item} : ${source}) { ` +
+        `${lines.join("\n")} ${result}.push_back(${converted}); } ` +
+        `return ${result}; }()`
+    );
 }
 
 /**
  * A number array holding a tuple is the tuple itself, and can grow. The
  * tuple's fixed native storage cannot follow that growth, so it is adopted
- * only when nothing else holds the tuple or the callee it is handed to only
- * reads it; a tuple binding instead takes growable array storage, and any
- * other tuple refuses.
+ * only when nothing else holds the tuple, the callee it is handed to only
+ * reads it or the slot is typed as a readonly array; a tuple binding
+ * instead takes growable array storage, and any other tuple refuses.
  */
 function requireGrowableTuple(
     lowerer: DataSinkHost,
@@ -265,8 +507,13 @@ function requireGrowableTuple(
     const converted = lowerer.convertedExpression(node);
     const expression = converted && unwrapExpression(converted);
     if (unaliasedValue(lowerer, value, node)) return;
-    // A callee that only reads the array cannot grow or retain it.
-    if (expression && argumentOnlyRead(lowerer.context.checker, expression))
+    // A callee that only reads the array cannot grow or retain it, nor can
+    // a slot typed as a readonly array.
+    if (
+        expression &&
+        (argumentOnlyRead(lowerer.context.checker, expression) ||
+            storedAsReadonlyArray(lowerer.context.checker, converted))
+    )
         return;
     const declaration =
         (expression && ts.isIdentifier(expression)
@@ -278,6 +525,8 @@ function requireGrowableTuple(
         lowerer.context.bindings.variableDeclarationOf(value.cpp);
     if (declaration && !lowerer.context.dynamicBindings.has(declaration))
         throw new DynamicBindingStorageRequired(declaration, "array");
+    // A record property's tuples take growable array storage likewise.
+    requireTupleArraySlot(lowerer.context.tupleArraySlots, value);
     lowerer.context.fail(
         node,
         "A fixed-length tuple stored as a number array could grow through that array, which its native storage cannot follow; give it number[] storage or store a copy ([...tuple]).",
@@ -453,7 +702,15 @@ const identityContainerSink = {
         lowerer: DataSinkHost,
         expression: ts.Expression,
         unwrapped: ts.Expression,
-    ) => lowerer.requireDataValue(unwrapped, type, expression).cpp,
+    ) =>
+        // A traced collection cursor is stored where any iterator is.
+        type.kind === "iterator"
+            ? lowerer.compileKnownValueForSink(
+                  lowerer.context.compileValue(unwrapped),
+                  type,
+                  unwrapped,
+              )
+            : lowerer.requireDataValue(unwrapped, type, expression).cpp,
     value: (
         type: DataType<"iterator" | "arguments">,
         _lowerer: DataSinkHost,
@@ -466,6 +723,7 @@ const identityContainerSink = {
 
 export const containersSinks: DataSinkOperations<
     | "optional"
+    | "tagged"
     | "vector"
     | "map"
     | "set"
@@ -488,6 +746,7 @@ export const containersSinks: DataSinkOperations<
         value: valueProduct,
     },
     optional: { expression: expressionOptional, value: valueOptional },
+    tagged: { expression: expressionTagged, value: valueTagged },
     vector: { expression: expressionVector, value: valueVector },
     map: { expression: expressionMapOrSet, value: valueMap },
     set: { expression: expressionMapOrSet, value: valueSetOrTable },

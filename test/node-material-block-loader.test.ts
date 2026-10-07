@@ -509,7 +509,9 @@ test("rejects a compressed JSON decoder with an extra observable statement", () 
                     decoderExtra: 'console.log("decoding", encoded);',
                 }),
             ),
-        /Call 'atob' does not resolve to a supported Babylon intrinsic or local function declaration/,
+        // Not the folded idiom: it lowers as ordinary code and stops at the
+        // host stream API (`atob` itself lowers).
+        /Unsupported call target 'new Blob\(\[bytes\]\)/,
     );
 });
 
@@ -521,7 +523,9 @@ test("rejects a compressed JSON restorer that returns a different value", () => 
                     restorerReturn: "{ ...json }",
                 }),
             ),
-        /Call 'atob' does not resolve to a supported Babylon intrinsic or local function declaration/,
+        // Not the folded idiom: it lowers as ordinary code and stops at the
+        // host stream API (`atob` itself lowers).
+        /Unsupported call target 'new Blob\(\[bytes\]\)/,
     );
 });
 

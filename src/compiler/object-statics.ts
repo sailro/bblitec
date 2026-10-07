@@ -177,6 +177,9 @@ export function structOwnEntries(
                           field.type.inner,
                       )
                     : value),
+                ...(field.declarations
+                    ? { slotDeclarations: field.declarations }
+                    : {}),
                 nativeCaptures: owner.nativeCaptures ?? [],
             },
             ...(presence ? { presence } : {}),

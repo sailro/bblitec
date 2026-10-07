@@ -9,6 +9,7 @@ import {
 import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
+import { nullability } from "./type-facts.js";
 
 export interface WorkerLoweringContext
     extends
@@ -378,6 +379,35 @@ export function isNativeWorkerExpression(
     );
 }
 
+/**
+ * `clearTimeout(id)` and `clearInterval(id)`: an identifier that may be
+ * absent (`let timer: number | undefined`) cancels nothing while absent,
+ * as the browser does.
+ */
+export function timerCancellation(
+    context: Pick<
+        LoweringServices,
+        "checker" | "compileNumber" | "compileValue" | "fail"
+    >,
+    argument: ts.Expression,
+    cancel: (identifier: string) => string,
+): string {
+    const absent = nullability(context.checker.getTypeAtLocation(argument));
+    if (!absent.undefined && !absent.null)
+        return cancel(context.compileNumber(argument, "double"));
+    const value = context.compileValue(argument);
+    if (
+        value.kind !== "data" ||
+        value.dataType?.kind !== "optional" ||
+        value.dataType.inner.kind !== "number"
+    )
+        return context.fail(
+            argument,
+            "Timer cancellation requires a numeric identifier or an absent one.",
+        );
+    return `([&]() { const auto timer = ${value.cpp}; if (timer.has_value()) ${cancel("*timer")}; }())`;
+}
+
 /** Browser Worker operations lower to realm services, independently of an engine. */
 export function compileWorkerValue(
     context: WorkerLoweringContext,
@@ -708,7 +738,12 @@ export function compileWorkerValue(
             );
         return {
             kind: "void",
-            cpp: `${loop}.clear_timer(static_cast<bbl::pal::EventLoop::TimerId>(${context.compileNumber(argumentAt(node, 0), "double")}))`,
+            cpp: timerCancellation(
+                context,
+                argumentAt(node, 0),
+                (identifier) =>
+                    `${loop}.clear_timer(static_cast<bbl::pal::EventLoop::TimerId>(${identifier}))`,
+            ),
         };
     }
     if (global && member === "structuredClone")

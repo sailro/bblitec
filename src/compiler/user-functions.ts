@@ -26,7 +26,13 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
 import { nullability, typeCanCarryReference } from "./type-facts.js";
+import {
+    requireAbsenceTag,
+    requireDeclarationAbsenceTag,
+    storedSignatureParameter,
+} from "./absence-tag-storage.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
+import { isCustomThenable } from "./promises.js";
 import {
     functionBodyPrologue,
     type RecentStringsParameter,
@@ -55,6 +61,7 @@ import { readOnlyDataMethods } from "./receiver-methods.js";
 import {
     callArgumentIsReadOnly,
     parameterIsReadOnly,
+    parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
@@ -991,6 +998,7 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "absenceTags"
             | "classLowerer"
             | "callbacks"
             | "evaluationOrder"
@@ -2814,7 +2822,8 @@ export class UserFunctionLowerer {
                         mapped?.kind === "span" &&
                         mapped.element.kind === "number" &&
                         supplied &&
-                        isTypedArrayType(supplied)
+                        (isTypedArrayType(supplied) ||
+                            supplied.kind === "numberindex")
                     )
                         mapped = supplied;
                     const freshMatchingArray =
@@ -2825,6 +2834,22 @@ export class UserFunctionLowerer {
                     if (mapped && returnsArray && !freshMatchingArray) {
                         mapped = context.dataTypes.ownReturnedArray(mapped);
                     }
+                    // A readonly array the function compares, keeps or hands
+                    // on is its caller's array object; one it only reads is
+                    // lent as a borrowed view.
+                    if (
+                        mapped &&
+                        ts.isIdentifier(parameter.name) &&
+                        !parameterOnlyRead(
+                            this.checker,
+                            declaration,
+                            parameter.name,
+                        )
+                    )
+                        mapped = context.dataTypes.ownReadonlyArray(
+                            mapped,
+                            type,
+                        );
                     const inner =
                         mapped?.kind === "optional" ? mapped.inner : mapped;
                     const platformHandle =
@@ -4241,6 +4266,7 @@ export class UserFunctionLowerer {
                 owner,
                 identityCpp,
                 receiver,
+                expression,
             );
         } finally {
             this.loweringStoredDataFunctions.delete(declaration);
@@ -4254,7 +4280,9 @@ export class UserFunctionLowerer {
         owner?: Value,
         identityCpp?: string,
         receiver?: Value,
+        site?: ts.Node,
     ): string {
+        const signatureType = dataType;
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
             dataType.result &&
@@ -4523,6 +4551,25 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
+                        // A parameter that tells null from undefined needs
+                        // the signature its callers pass through to as well.
+                        if (
+                            type.kind !== "tagged" &&
+                            context.absenceTags.has(parameter.declaration)
+                        )
+                            requireDeclarationAbsenceTag(
+                                context.absenceTags,
+                                context.dataTypes.signatureParameterDeclaration(
+                                    signatureType,
+                                    runtimeIndex - 1,
+                                ) ??
+                                    (site &&
+                                        storedSignatureParameter(
+                                            this.checker,
+                                            site,
+                                            ir.parameters.indexOf(parameter),
+                                        )),
+                            );
                         // Stored callbacks receive owned parameters by value.
                         // Their separate source bindings can borrow that stable
                         // storage until a source assignment requires a copy.
@@ -4917,21 +4964,65 @@ export class UserFunctionLowerer {
             this.bindArgumentsObject(context, ir, arguments_, callNode) ??
             arguments_;
         ir.parameters.forEach((parameter, index) => {
+            const source = ts.isCallExpression(callNode)
+                ? callNode.arguments[index]
+                : undefined;
             const value = this.parameterValue(
                 context,
                 parameter,
                 values[index],
-                ts.isCallExpression(callNode)
-                    ? callNode.arguments[index]
-                    : undefined,
+                source,
             );
             this.bindSpecializedParameter(
                 context,
                 ir.declaration,
                 parameter,
-                value,
+                this.absenceTaggedParameter(context, parameter, value, source),
             );
         });
+    }
+
+    /**
+     * An inlined parameter whose `null` and `undefined` the body tells apart
+     * holds its argument in tagged storage, unless the argument already
+     * states which absent value it is.
+     */
+    private absenceTaggedParameter(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+        source: ts.Expression | undefined,
+    ): Value {
+        if (
+            !context.absenceTags.has(parameter.declaration) ||
+            value.slotFoundCpp !== undefined ||
+            value.kind === "json-null"
+        )
+            return value;
+        const stored = context.dataTypes.fromStoredTsType(
+            parameter.type,
+            parameter.declaration,
+        );
+        const type =
+            stored &&
+            context.dataTypes.absenceTaggedStorage(
+                parameter.declaration,
+                stored,
+            );
+        if (type?.kind !== "tagged") return value;
+        const name = context.allocateTemporaryCppName("tagged_argument");
+        context.emit({
+            kind: "declaration",
+            type: context.dataTypes.cppType(type),
+            name,
+            initializer: context.dataLowerer.compileKnownValueForSink(
+                value,
+                type,
+                source ?? parameter.declaration,
+            ),
+        });
+        context.registerNativeConstBinding(name);
+        return context.dataValue(name, type);
     }
 
     /** The implicit arguments owner is shared by native storage and finite-call admission. */
@@ -5527,6 +5618,45 @@ export class UserFunctionLowerer {
                 ? context.dataLowerer.compileArrayFrom(source, ownedResult)
                 : undefined;
         let returned = mappedArray ?? context.compileValue(expression);
+        // An async function's promise settles as its declared result: a
+        // record returned as another record type is stored as that type.
+        const settled =
+            resultType &&
+            ts.getCombinedModifierFlags(ir.declaration) & ts.ModifierFlags.Async
+                ? context.checker.getAwaitedType(resultType)
+                : undefined;
+        const declaredRecord =
+            settled && context.dataTypes.fromTsType(settled, expression);
+        if (
+            declaredRecord?.kind === "struct" &&
+            (returned.kind === "record" ||
+                returned.dataType?.kind === "struct") &&
+            // Resolution reads a custom thenable's `then` before settling;
+            // the async lowering owns that refusal.
+            !isCustomThenable(context.dataTypes, returned, expression) &&
+            !(
+                returned.dataType?.kind === "struct" &&
+                returned.dataType.name === declaredRecord.name
+            ) &&
+            // A field holding a parsed document keeps its document storage.
+            context.dataLowerer.retainedResultType(
+                returned,
+                declaredRecord,
+                expression,
+            ) === declaredRecord
+        ) {
+            // A settled record is one object every await shares.
+            const settledRecord =
+                context.dataTypes.markStoredObjectReferences(declaredRecord);
+            returned = context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    returned,
+                    settledRecord,
+                    expression,
+                ),
+                settledRecord,
+            );
+        }
         if (resultType) {
             returned = context.bindings.materializeDeclaredRecordContainers(
                 returned,
@@ -6286,6 +6416,39 @@ export class UserFunctionLowerer {
         return values;
     }
 
+    /**
+     * An optional argument bound to a parameter that admits both `null`
+     * and `undefined` (`id?: number | null`): its one absent state is the
+     * one absence the argument's own type admits, so the parameter holds it
+     * as a tagged document value later reads tell apart. Undefined when no
+     * such conversion applies.
+     */
+    private taggedAbsence(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        argument: Value,
+        source: ts.Expression | undefined,
+    ): Value | undefined {
+        if (
+            !source ||
+            argument.kind !== "data" ||
+            argument.dataType?.kind !== "optional" ||
+            context.dataTypes.fromTsType(parameter.type, parameter.declaration)
+                ?.kind !== "json"
+        )
+            return undefined;
+        const absent = nullability(this.checker.getTypeAtLocation(source));
+        if (absent.null === absent.undefined) return undefined;
+        return context.dataValue(
+            context.dataLowerer.compileKnownValueForSink(
+                argument,
+                { kind: "json" },
+                source,
+            ),
+            { kind: "json" },
+        );
+    }
+
     private parameterValue(
         context: UserFunctionContext,
         parameter: UserFunctionParameterIr,
@@ -6296,6 +6459,8 @@ export class UserFunctionLowerer {
         const initializer = parameter.declaration.initializer;
         if (!initializer)
             return (
+                (argument &&
+                    this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
                 (parameter.declaration.questionToken
                     ? { kind: "json-null", cpp: "std::nullopt" }
@@ -6336,6 +6501,9 @@ export class UserFunctionLowerer {
             isGlobalUndefined(this.checker, initializer)
         )
             return argument;
+        // An argument that states whether it is defined takes the default
+        // only when it is not: a `null` argument is the parameter's value.
+        const definedCpp = absent.null ? argument.slotFoundCpp : undefined;
         if (absent.null) {
             if (!mayBeUndefined) return argument;
             // A default of `null` gives an undefined argument the value a
@@ -6344,12 +6512,37 @@ export class UserFunctionLowerer {
                 unwrapExpression(initializer).kind === ts.SyntaxKind.NullKeyword
             )
                 return argument;
-            return context.fail(
-                source ?? parameter.declaration,
-                "A default parameter requires a distinct undefined state when its argument can also be null.",
-            );
+            if (definedCpp === undefined) {
+                if (source)
+                    requireAbsenceTag(
+                        this.checker,
+                        context.absenceTags,
+                        source,
+                        argument,
+                    );
+                else
+                    requireDeclarationAbsenceTag(
+                        context.absenceTags,
+                        parameter.declaration,
+                    );
+                return context.fail(
+                    source ?? parameter.declaration,
+                    "A default parameter requires a distinct undefined state when its argument can also be null.",
+                );
+            }
         }
-        const type = storage.kind === "optional" ? storage.inner : storage;
+        // A default that may itself be undefined (`p = record.optional`)
+        // leaves the parameter optional: its value is stored as the
+        // parameter's own type, absent or not.
+        const keepsAbsence =
+            storage.kind === "optional" &&
+            nullability(this.checker.getTypeAtLocation(initializer)).undefined;
+        const type =
+            definedCpp !== undefined ||
+            storage.kind !== "optional" ||
+            keepsAbsence
+                ? storage
+                : storage.inner;
         const input = context.allocateTemporaryCppName("default_argument");
         context.emit({
             kind: "declaration",
@@ -6369,10 +6562,16 @@ export class UserFunctionLowerer {
         const result = context.allocateTemporaryCppName("default_value");
         const cppType = context.dataTypes.cppType(type);
         const present =
-            storage.kind === "optional"
+            definedCpp ??
+            (storage.kind === "optional"
                 ? optionalPresentCpp(input)
-                : `static_cast<bool>(${input})`;
-        const selected = storage.kind === "optional" ? `*${input}` : input;
+                : `static_cast<bool>(${input})`);
+        const selected =
+            definedCpp === undefined &&
+            storage.kind === "optional" &&
+            !keepsAbsence
+                ? `*${input}`
+                : input;
         context.emit({
             kind: "declaration",
             // The selected binding is stable, but object and collection

@@ -3790,8 +3790,11 @@ test("narrows an optional string-union key before Record lookup", () => {
         const normal = picker.read();
     `);
 
-    assert.match(result.cpp, /property_key/);
-    assert.match(result.cpp, /Face::left/);
+    // A read-only record is the record it wraps: one slot per tag.
+    assert.match(
+        result.cpp,
+        /enum_map_at\(v_normals, \(\*\(\*v_bblite_class_field_face_\d+\)\)\)/,
+    );
 });
 
 test("narrows an optional string-union key passed to Map.get", () => {
@@ -8725,15 +8728,15 @@ test("a tagged union arm with an unrepresented field refuses at that field", () 
     assert.throws(
         () =>
             compileSource(`
-                type Outcome = { kind: "hit"; token: symbol } | { kind: "miss" };
+                type Outcome = { kind: "hit"; token: FinalizationRegistry<number> } | { kind: "miss" };
                 function outcome(hit: boolean): Outcome {
-                    return hit ? { kind: "hit", token: Symbol("hit") } : { kind: "miss" };
+                    return hit ? { kind: "hit", token: new FinalizationRegistry<number>(() => {}) } : { kind: "miss" };
                 }
                 const first = outcome(Date.now() > 0);
                 if (first.kind !== "hit") throw new Error("outcome");
             `),
         (error: Error) =>
-            /Symbol/.test(error.message) &&
+            /Unsupported constructor expression/.test(error.message) &&
             !/unknown field/.test(error.message),
     );
 });

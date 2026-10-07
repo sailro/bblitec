@@ -26,16 +26,30 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
-import { isStringValue, sameCompiledValue, type Value } from "./types.js";
+import { numericSlotKind } from "./numeric-slot-storage.js";
+import {
+    isStringValue,
+    optionalPresentCpp,
+    sameCompiledValue,
+    type Value,
+} from "./types.js";
 
 function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
     if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
     if (type?.kind === "union")
         return type.members.some(hasBorrowedArrayIdentity);
     return type?.kind === "span" || type?.kind === "table";
+}
+
+/** A record keyed by a closed union is stored by value, one copy per location. */
+function isRecordTable(type: DataType | undefined): boolean {
+    return type?.kind === "optional"
+        ? isRecordTable(type.inner)
+        : type?.kind === "enummap";
 }
 
 /** What condition lowering reads of the compiler. */
@@ -72,8 +86,50 @@ interface ConditionContext
             | "unwrap"
         > {}
 
+/** The collection classes `instanceof` names, by their storage. */
+const COLLECTION_CLASSES: ReadonlyMap<
+    string,
+    { kind: "map" | "set"; weak: boolean }
+> = new Map([
+    ["Map", { kind: "map", weak: false }],
+    ["WeakMap", { kind: "map", weak: true }],
+    ["Set", { kind: "set", weak: false }],
+    ["WeakSet", { kind: "set", weak: true }],
+]);
+
 export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
+
+    /**
+     * `value instanceof Map` (and Set, WeakMap, WeakSet): whether the
+     * storage holding the value is that collection. A union answers by the
+     * member it holds, an optional by its presence; a dictionary, a parsed
+     * document or any other storage is not one.
+     */
+    private collectionInstanceOf(
+        operand: ts.Expression,
+        collection: { kind: "map" | "set"; weak: boolean },
+    ): string {
+        const value = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(operand),
+            "instance_operand",
+            operand,
+        );
+        const holds = (type: DataType): boolean =>
+            type.kind === collection.kind &&
+            !(type.kind === "map" && type.dictionary) &&
+            (type.weak === true) === collection.weak;
+        const type = value.dataType;
+        if (type?.kind === "optional")
+            return holds(type.inner) ? optionalPresentCpp(value.cpp) : "false";
+        if (type?.kind === "union") {
+            const tests = type.members.flatMap((member, index) =>
+                holds(member) ? [`(${value.cpp}).index() == ${index}`] : [],
+            );
+            return tests.length ? `(${tests.join(" || ")})` : "false";
+        }
+        return type && holds(type) ? "true" : "false";
+    }
 
     /**
      * An `instanceof` operand naming a global or a class: no local binds
@@ -371,6 +427,12 @@ export class ConditionLowerer {
                     unwrapped.right,
                 );
                 if (classInstance !== undefined) return classInstance;
+                const collection = COLLECTION_CLASSES.get(global);
+                if (collection)
+                    return this.collectionInstanceOf(
+                        unwrapped.left,
+                        collection,
+                    );
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
                 // A SharedArrayBuffer is a buffer branded shared; the brand
@@ -605,6 +667,31 @@ export class ConditionLowerer {
                 this.context.expectSameEngine(leftValue, rightValue, unwrapped);
                 return `${leftValue.cpp} ${operator} ${rightValue.cpp}`;
             }
+            // A compile-time array a declaration names has no identity of
+            // its own; compared, the declaration takes one runtime array.
+            if (equality)
+                for (const [operand, node] of [
+                    [leftValue, unwrapped.left],
+                    [rightValue, unwrapped.right],
+                ] as const) {
+                    const declaration =
+                        operand.kind === "tuple"
+                            ? this.context.bindings.tupleDeclaration(
+                                  operand,
+                                  node,
+                              )
+                            : undefined;
+                    if (
+                        declaration &&
+                        !this.context.dataLowerer.context.dynamicBindings.has(
+                            declaration,
+                        )
+                    )
+                        throw new DynamicBindingStorageRequired(
+                            declaration,
+                            "array",
+                        );
+                }
             // The statement emitter supplies the condition's outer
             // parentheses. Comparisons bind more tightly than the logical
             // expressions that compose them, so another pair here is both
@@ -645,6 +732,32 @@ export class ConditionLowerer {
                     unwrapped,
                     "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
                 );
+            if (
+                equality &&
+                isRecordTable(leftValue.dataType) &&
+                isRecordTable(rightValue.dataType)
+            )
+                this.context.fail(
+                    unwrapped,
+                    "A record keyed by a closed union is stored by value and cannot preserve JavaScript object identity in a comparison.",
+                );
+            // A numeric view is the array it views: it is another numeric
+            // array when the two name one array (two views compare as such).
+            if (
+                equality &&
+                (leftValue.dataType?.kind === "numberindex") !==
+                    (rightValue.dataType?.kind === "numberindex")
+            ) {
+                const present = (value: Value): boolean =>
+                    value.dataType?.kind !== "optional" &&
+                    numericSlotKind(value.dataType) !== undefined;
+                if (!present(leftValue) || !present(rightValue))
+                    this.context.fail(
+                        unwrapped,
+                        "A numeric view compares by identity only with a present numeric array.",
+                    );
+                return `(${leftValue.cpp}).identity() ${operator} (${rightValue.cpp}).identity()`;
+            }
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

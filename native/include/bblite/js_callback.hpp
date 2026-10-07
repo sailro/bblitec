@@ -106,6 +106,11 @@ template <typename... Functions> [[nodiscard]] auto make_recursive_group(Functio
 
 inline std::size_t next_callback_identity() { return realm_state.callback_identity++; }
 
+/** Calling an absent function value is JavaScript's TypeError. */
+[[noreturn]] inline void throw_not_a_function() {
+    throw NamedError("TypeError", "Value is not a function");
+}
+
 /** A JavaScript function object: copies share identity and mutable captures. */
 template <typename R, typename... Args> class Callback<R(Args...)> {
     struct Body {
@@ -119,7 +124,7 @@ template <typename R, typename... Args> class Callback<R(Args...)> {
         R call(Args... args) override {
             if constexpr (std::is_pointer_v<F>) {
                 if (!function)
-                    throw std::bad_function_call();
+                    throw_not_a_function();
             }
             return function(std::forward<Args>(args)...);
         }
@@ -147,7 +152,7 @@ public:
             : body_(callback.body_), recursive_owner_(callback.recursive_owner_) {}
         R operator()(Args... args) const {
             if (!body_)
-                throw std::bad_function_call();
+                throw_not_a_function();
             return body_->call(std::forward<Args>(args)...);
         }
         explicit operator bool() const { return body_ && body_->present(); }
@@ -247,7 +252,7 @@ template <std::size_t Index, typename... Members>
 [[nodiscard]] const std::variant_alternative_t<Index, std::variant<Members...>>&
 function_member(const std::variant<Members...>& slot) {
     if (slot.index() != Index)
-        std::rethrow_exception(make_error("TypeError", "Value is not a function"));
+        throw_not_a_function();
     return std::get<Index>(slot);
 }
 
@@ -257,7 +262,7 @@ public:
     template <typename... Args>
     std::invoke_result_t<Function, Args...> operator()(Args&&... args) const {
         if (!function_)
-            throw std::bad_function_call();
+            throw_not_a_function();
         return function_(std::forward<Args>(args)...);
     }
     explicit operator bool() const { return function_ != nullptr; }

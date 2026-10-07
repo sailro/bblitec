@@ -171,6 +171,35 @@ export function nullability(type: ts.Type): Nullability {
     };
 }
 
+/**
+ * Whether the slot `expression` is stored into is typed so that nothing can
+ * change an array's length through it: its contextual type is known and no
+ * present member is a growable array (`readonly number[]`, `ArrayLike`,
+ * primitives).
+ */
+export function storedAsReadonlyArray(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const type = checker.getContextualType(expression);
+    if (type === undefined) return false;
+    const members = presentMembers(type);
+    return (
+        members.length > 0 &&
+        members.every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Any |
+                        ts.TypeFlags.Unknown |
+                        ts.TypeFlags.TypeParameter |
+                        ts.TypeFlags.Index |
+                        ts.TypeFlags.IndexedAccess)) ===
+                    0 &&
+                checker.getPropertyOfType(member, "push") === undefined,
+        )
+    );
+}
+
 /** Whether a value of `type` may be `undefined`: it names it, or it is `unknown` or `any`. */
 export function admitsUndefined(type: ts.Type): boolean {
     return (

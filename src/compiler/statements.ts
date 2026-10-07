@@ -100,6 +100,7 @@ import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
+    | "absenceTags"
     | "classLowerer"
     | "resolveRecordValue"
     | "admissions"
@@ -4634,6 +4635,18 @@ export class StatementLowerer {
                     return;
                 }
                 const rightExpression = context.unwrap(unwrapped.right);
+                if (target.absenceTagStorageCpp !== undefined) {
+                    // Tagged storage changes only through a tagged store.
+                    if (
+                        operator !== "=" ||
+                        !context.dataLowerer.emitAssignment(unwrapped)
+                    )
+                        context.fail(
+                            unwrapped,
+                            `Assignment operator '${operator}' is not supported for storage telling null from undefined.`,
+                        );
+                    return;
+                }
                 if (target.kind === "pending-let" && operator === "=") {
                     // `let set;` bound by its first assignment: a
                     // compile-time record, in the declaring scope.
@@ -4685,16 +4698,18 @@ export class StatementLowerer {
                 } else if (operator === "+=" && isStringValue(target)) {
                     emitStringAppend(context, target.cpp, unwrapped.right);
                 } else if (target.kind === "string" && operator === "=") {
+                    // A literal union or parsed value spells its string.
                     const value = context.compileValue(unwrapped.right);
-                    if (!isStringValue(value)) {
-                        context.fail(
-                            unwrapped.right,
-                            `String assignment requires a string, received ${value.kind}.`,
-                        );
-                    }
+                    const cpp = isStringValue(value)
+                        ? value.cpp
+                        : context.dataLowerer.compileKnownValueForSink(
+                              value,
+                              { kind: "string" },
+                              unwrapped.right,
+                          );
                     context.emit({
                         kind: "expression",
-                        code: `${target.cpp} = ${value.cpp};`,
+                        code: `${target.cpp} = ${cpp};`,
                     });
                 } else if (target.kind === "audio-node" && operator === "=") {
                     const value = context.compileValue(unwrapped.right);

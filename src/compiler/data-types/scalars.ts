@@ -147,7 +147,11 @@ export const scalarKinds: DataKindOperations<
     arraybuffer: reseatingLeaf("bbl::js::ArrayBuffer", "ab", true),
     dataview: reseatingLeaf("bbl::js::DataView", "dv", true),
     bufferview: reseatingLeaf("bbl::js::ArrayBufferView", "bv", true),
-    numberindex: leaf("bbl::js::NumericArrayView", "ni", false),
+    // A view's copies share the array it views.
+    numberindex: {
+        ...reseatingLeaf("bbl::js::NumericArrayView", "ni"),
+        sharesStorage: true,
+    },
     json: reseatingLeaf("bbl::js::JsonValue", "json", false, true),
     "borrowed-platform-event": {
         cpp: (type) =>

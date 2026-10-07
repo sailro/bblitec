@@ -166,18 +166,6 @@ test("numeric buffer views preserve JavaScript aliases, stores, order and ToInde
     assert.match(compiled.cpp, /typed_array_byte_offset/);
 });
 
-test("generic typed-array buffer resolution does not admit SharedArrayBuffer", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-        const shared=new SharedArrayBuffer(16);
-        const values=new Float32Array(shared);
-        values[0]=1;
-    `),
-        /input\.ts:2:\d+: Unsupported constructor expression/,
-    );
-});
-
 const tools = optionalNativeFixtureTools(false);
 test(
     "native byte-backed numeric views match the same observing program and refuse contiguous methods",

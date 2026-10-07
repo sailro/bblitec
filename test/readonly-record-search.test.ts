@@ -58,14 +58,23 @@ test("readonly tuple storage preserves heterogeneous lanes and own-key distincti
             registry.ownPropertyPresence(distinct.element.name, field),
             "stored",
         );
-    // A lane whose field only null fills keeps its own record: each element
-    // holds the member it was built as.
+    // A lane whose field is only null keeps its own struct, holding null.
     assert.ok(empty?.kind === "vector");
     assert.ok(empty.element.kind === "optional");
     assert.ok(empty.element.inner.kind === "union");
     assert.deepEqual(
-        empty.element.inner.members.map((member) => member.kind),
-        ["struct", "struct"],
+        empty.element.inner.members.map((member) =>
+            member.kind === "struct"
+                ? registry
+                      .structFields(
+                          member.name,
+                          frontend.sourceFile,
+                          "accessors",
+                      )
+                      .map((field) => `${field.sourceName}:${field.type.kind}`)
+                : [member.kind],
+        ),
+        [["left:null"], ["right:string"]],
     );
 });
 

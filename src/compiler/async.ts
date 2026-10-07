@@ -31,7 +31,7 @@ import {
     type DataStructField,
 } from "./data-types.js";
 import { errorValue } from "./error-values.js";
-import { isPromiseResultUsed } from "./promises.js";
+import { isCustomThenable, isPromiseResultUsed } from "./promises.js";
 import { isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
@@ -1878,21 +1878,7 @@ export class AsyncLowerer {
     }
 
     private refuseThenable(value: Value, node: ts.Node): void {
-        const property = value.recordProperties?.then;
-        const field =
-            value.dataType?.kind === "struct"
-                ? this.context.dataTypes
-                      .structFields(value.dataType.name, node, "accessors")
-                      .find((field) => field.sourceName === "then")
-                : undefined;
-        if (
-            value.recordMethods?.then ||
-            value.recordGetters?.then ||
-            property?.kind === "callback" ||
-            property?.dataType?.kind === "function" ||
-            field?.type.kind === "function" ||
-            field?.accessor
-        )
+        if (isCustomThenable(this.context.dataTypes, value, node))
             this.context.fail(
                 node,
                 "Custom thenable assimilation requires an owned promise resolution protocol.",

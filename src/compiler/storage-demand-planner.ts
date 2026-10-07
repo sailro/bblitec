@@ -8,6 +8,11 @@ import {
 } from "./syntax.js";
 import { CompileError } from "./compile-error.js";
 import {
+    AbsenceTagStorageRequired,
+    TupleArraySlotRequired,
+    type AbsenceTagDeclaration,
+} from "./absence-tag-storage.js";
+import {
     DynamicBindingStorageRequired,
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
@@ -21,12 +26,20 @@ import {
     mergeNativeRecordStorage,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
+import {
+    NumericSlotStorageRequired,
+    type NumericSlotDeclaration,
+    type NumericSlotKind,
+} from "./numeric-slot-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 type StorageDemand =
     | DynamicBindingStorageRequired
     | NativeRecordStorageRequired
-    | GenericFunctionStorageRequired;
+    | GenericFunctionStorageRequired
+    | AbsenceTagStorageRequired
+    | TupleArraySlotRequired
+    | NumericSlotStorageRequired;
 
 export type StorageRequest =
     | {
@@ -35,7 +48,17 @@ export type StorageRequest =
           storage: DynamicBindingStorage | undefined;
       }
     | { kind: "record"; demand: NativeRecordStorageDemand }
-    | { kind: "generic"; demand: GenericFunctionDemand };
+    | { kind: "generic"; demand: GenericFunctionDemand }
+    | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
+    | {
+          kind: "tuple-array";
+          declaration: ts.PropertySignature | ts.PropertyDeclaration;
+      }
+    | {
+          kind: "numeric-slot";
+          declaration: NumericSlotDeclaration;
+          numeric: NumericSlotKind;
+      };
 
 export function storageRequest(error: StorageDemand): StorageRequest {
     if (error instanceof DynamicBindingStorageRequired)
@@ -46,6 +69,16 @@ export function storageRequest(error: StorageDemand): StorageRequest {
         };
     if (error instanceof NativeRecordStorageRequired)
         return { kind: "record", demand: error.demand };
+    if (error instanceof AbsenceTagStorageRequired)
+        return { kind: "absence-tag", declaration: error.declaration };
+    if (error instanceof TupleArraySlotRequired)
+        return { kind: "tuple-array", declaration: error.declaration };
+    if (error instanceof NumericSlotStorageRequired)
+        return {
+            kind: "numeric-slot",
+            declaration: error.declaration,
+            numeric: error.kind,
+        };
     return { kind: "generic", demand: error.demand };
 }
 
@@ -53,7 +86,10 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
     return (
         error instanceof DynamicBindingStorageRequired ||
         error instanceof NativeRecordStorageRequired ||
-        error instanceof GenericFunctionStorageRequired
+        error instanceof GenericFunctionStorageRequired ||
+        error instanceof AbsenceTagStorageRequired ||
+        error instanceof TupleArraySlotRequired ||
+        error instanceof NumericSlotStorageRequired
     );
 }
 
@@ -181,6 +217,15 @@ export class StorageDemandPlanner {
     >();
     /** @unjournaled Discovery deduplicates requests discarded by emission. */
     private readonly generic = new GenericFunctionStorage();
+    /** @unjournaled Discovery deduplicates requests discarded by emission. */
+    private readonly absenceTags = new Set<AbsenceTagDeclaration>();
+    /** @unjournaled Discovery deduplicates requests discarded by emission. */
+    private readonly tupleArraySlots = new Set<ts.Declaration>();
+    /** @unjournaled Discovery deduplicates requests discarded by emission. */
+    private readonly numericSlots = new Map<
+        NumericSlotDeclaration,
+        Set<NumericSlotKind>
+    >();
     /** @unjournaled Bounds the discarded attempt, independently of rollback. */
     private statements = 0;
     /** @unjournaled Source declarations removed by a planning rollback. */
@@ -290,6 +335,21 @@ export class StorageDemandPlanner {
                 return;
             }
             this.records.set(request.demand.identity, request);
+        } else if (request.kind === "absence-tag") {
+            if (this.absenceTags.has(request.declaration)) return;
+            this.absenceTags.add(request.declaration);
+        } else if (request.kind === "tuple-array") {
+            if (this.tupleArraySlots.has(request.declaration)) return;
+            this.tupleArraySlots.add(request.declaration);
+        } else if (request.kind === "numeric-slot") {
+            const kinds = this.numericSlots.get(request.declaration);
+            if (kinds?.has(request.numeric)) return;
+            if (kinds) kinds.add(request.numeric);
+            else
+                this.numericSlots.set(
+                    request.declaration,
+                    new Set([request.numeric]),
+                );
         } else if (!this.generic.add(request.demand)) return;
         this.demands.push(request);
         statistics.collected++;

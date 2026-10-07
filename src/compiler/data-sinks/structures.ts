@@ -15,7 +15,7 @@ import {
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
-import { isNullishLiteral } from "../symbols.js";
+import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
@@ -428,12 +428,16 @@ function valueStruct(
                         property.callbackDeclaration,
                     );
                 const stored = property
-                    ? lowerer.compileMemberForSink(
-                          property,
-                          field.type,
-                          node,
-                          field.sourceName,
-                      )
+                    ? field.defaultWhenMissing &&
+                      property.dataType?.kind === "optional" &&
+                      field.type.kind !== "optional"
+                        ? armFieldOrDefault(lowerer, property, field, node)
+                        : lowerer.compileMemberForSink(
+                              property,
+                              field.type,
+                              node,
+                              field.sourceName,
+                          )
                     : field.defaultWhenMissing
                       ? "{}"
                       : field.type.kind === "optional"
@@ -471,7 +475,10 @@ function valueStruct(
                 dataType,
                 node,
                 lowerer.context,
-                { argument: recordExpression(lowerer, value, node) },
+                {
+                    argument: recordExpression(lowerer, value, node),
+                    stored: lowerer.convertedExpression(node),
+                },
             );
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
@@ -612,6 +619,44 @@ function valueStruct(
  * element was read out of: a copy handed to a callee that only reads that
  * argument lives for the call.
  */
+/**
+ * A field only some union arms hold, from a record whose selected arm may
+ * lack it (a conditional between two arms' literals): the value where the
+ * arm holds it, else the field's default storage, which its tags keep
+ * from being own.
+ */
+function armFieldOrDefault(
+    lowerer: DataSinkHost,
+    property: Value,
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    const type = property.dataType;
+    if (type?.kind !== "optional")
+        return lowerer.compileMemberForSink(
+            property,
+            field.type,
+            node,
+            field.sourceName,
+        );
+    const slot = lowerer.context.allocateTemporaryCppName("arm_field");
+    let converted = "";
+    const lines = lowerer.context.captureEmittedLines(() => {
+        converted = lowerer.compileMemberForSink(
+            lowerer.leafValue(optionalValueCpp(slot), type.inner),
+            field.type,
+            node,
+            field.sourceName,
+        );
+    });
+    const cppType = lowerer.context.dataTypes.cppType(field.type);
+    return (
+        `([&](const auto& ${slot}) -> ${cppType} { ` +
+        `if (!${optionalPresentCpp(slot)}) return ${cppType}{}; ` +
+        `${lines.join(" ")} return ${converted}; }(${property.cpp}))`
+    );
+}
+
 function recordExpression(
     lowerer: DataSinkHost,
     value: Value,
@@ -670,7 +715,7 @@ function refuseClassFieldCopy(
 ): void {
     const declaration = record.classDeclaration;
     const symbol = declaration?.name
-        ? lowerer.context.checker.getSymbolAtLocation(declaration.name)
+        ? declaredSymbol(lowerer.context.checker, declaration.name)
         : undefined;
     if (!symbol) return;
     const instance = lowerer.context.checker.getDeclaredTypeOfSymbol(symbol);
@@ -759,6 +804,7 @@ function valueEnummap(
                 ),
             ]),
         );
+        lowerer.context.dataTypes.observeEnumMapKeys(dataType, written, node);
         const reordered = members.some(
             (member, index) => written[index] !== member,
         );

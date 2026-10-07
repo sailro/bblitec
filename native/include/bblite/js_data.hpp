@@ -1364,6 +1364,27 @@ namespace gc {
 template <typename T> struct Traceable<Nullable<T>> : Traceable<T> {};
 } // namespace gc
 
+/**
+ * A slot that tells JavaScript's two absent values apart where the program
+ * observes the difference: `undefined` until it is defined, then its value,
+ * whose own empty state is `null`.
+ */
+template <typename T> class Tagged {
+public:
+    Tagged() = default;
+    Tagged(T value, bool defined) : value_(std::move(value)), defined_(defined) {}
+    [[nodiscard]] const T& value() const { return value_; }
+    [[nodiscard]] bool defined() const { return defined_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(value_); }
+
+private:
+    T value_{};
+    bool defined_ = false;
+};
+namespace gc {
+template <typename T> struct Traceable<Tagged<T>> : Traceable<T> {};
+} // namespace gc
+
 /** A Map slot of an object reference, as the Nullable an optional object is stored as. */
 template <typename T> [[nodiscard]] Nullable<Ref<T>> nullable_object(const Ref<T>& value) {
     return Nullable<Ref<T>>(value);
@@ -1782,6 +1803,7 @@ namespace detail {
  */
 template <typename T> inline constinit const Ref<T> empty_ref{};
 template <typename Signature> inline const Callback<Signature> empty_callback{};
+template <typename Table> inline const GenericCallback<Table> empty_generic_callback{};
 } // namespace detail
 
 template <typename T> struct MapGetResult<Ref<T>> {
@@ -1797,6 +1819,13 @@ template <typename R, typename... Args> struct MapGetResult<Callback<R(Args...)>
 
     [[nodiscard]] static Type missing() { return detail::empty_callback<R(Args...)>; }
     [[nodiscard]] static Type found(Callback<R(Args...)>& value) { return value; }
+};
+
+template <typename Table> struct MapGetResult<GenericCallback<Table>> {
+    using Type = const GenericCallback<Table>&;
+
+    [[nodiscard]] static Type missing() { return detail::empty_generic_callback<Table>; }
+    [[nodiscard]] static Type found(GenericCallback<Table>& value) { return value; }
 };
 
 /** An unmapped arguments object owns indexed values independently of the rest array. */
@@ -2006,6 +2035,9 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
                            return false;
                    },
                    left, right);
+    } else if constexpr (requires { left.same_value_zero(right); }) {
+        // A value carrying several kinds (a parsed document) owns its rule.
+        return left.same_value_zero(right);
     } else {
         return std::equal_to<T>{}(left, right);
     }
@@ -2028,6 +2060,8 @@ template <typename T> [[nodiscard]] decltype(auto) stored_key(const T& key) {
             },
             stored);
         return stored;
+    } else if constexpr (requires { key.stored_key(); }) {
+        return key.stored_key();
     } else {
         return key;
     }
@@ -2058,6 +2092,8 @@ template <typename T> struct ValueHash {
             return ValueHash<const void*>{}(value.get());
         } else if constexpr (requires { value.identity(); }) {
             return ValueHash<std::remove_cvref_t<decltype(value.identity())>>{}(value.identity());
+        } else if constexpr (requires { value.key_hash(); }) {
+            return value.key_hash();
         } else {
             return std::hash<T>{}(value);
         }
@@ -3067,6 +3103,45 @@ template <typename Yield, typename T, bool Entries> struct SetCursor {
 template <typename Yield, bool Entries, typename T>
 [[nodiscard]] Iterator<Yield> set_iterator(const Set<T>& values) {
     return Iterator<Yield>(SetCursor<Yield, T, Entries>{values, {}});
+}
+
+/** Which part of each entry a Map iterator yields. */
+enum class MapPart { keys, values, entries };
+
+/** A live Map iterator, pinned to its last yielded slot as SetCursor is. */
+template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor {
+    std::optional<Map<K, V>> values;
+    std::optional<InsertionOrderedIterator<std::pair<K, V>, true>> cursor;
+    Nullable<Yield> operator()() {
+        if (!values)
+            return {};
+        const Map<K, V>& source = *values;
+        if (cursor)
+            ++*cursor;
+        else
+            cursor.emplace(source.begin());
+        if (*cursor == source.end()) {
+            cursor.reset();
+            values.reset();
+            return {};
+        }
+        const auto& entry = **cursor;
+        if constexpr (Part == MapPart::keys)
+            return entry.first;
+        else if constexpr (Part == MapPart::values)
+            return entry.second;
+        else
+            return Yield{entry.first, entry.second};
+    }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(values);
+        visitor(cursor);
+    }
+};
+
+template <typename Yield, MapPart Part, typename K, typename V>
+[[nodiscard]] Iterator<Yield> map_iterator(const Map<K, V>& values) {
+    return Iterator<Yield>(MapCursor<Yield, K, V, Part>{values, {}});
 }
 
 template <typename T> using Span = std::span<T>;

@@ -1818,6 +1818,83 @@ check(
 `,
 );
 
+// A readonly array constant is one array wherever it is stored or
+// compared: a default, an argument and a field all hold the same object.
+check(
+    "named-constant-arrays-keep-one-identity",
+    `
+    interface Collider { readonly x: number; readonly r: number; group?: number }
+    const EMPTY: readonly Collider[] = [];
+    const NUMS: readonly number[] = [1, 2];
+    let kept: readonly Collider[] | null = null;
+    let keptNums: readonly number[] | null = null;
+    function keep(list: readonly Collider[] = EMPTY): boolean {
+        const same = kept === list;
+        kept = list;
+        return same;
+    }
+    function keepNums(list: readonly number[] = NUMS): boolean {
+        const same = keptNums === list;
+        keptNums = list;
+        return same;
+    }
+    const keeps: Array<typeof keep> = [keep];
+    const keepsNums: Array<typeof keepNums> = [keepNums];
+    if (keeps[0]!() || !keeps[0]!() || keeps[0]!(EMPTY) !== true) throw new Error("default constant");
+    if (keepsNums[0]!() || !keepsNums[0]!() || keepsNums[0]!(NUMS) !== true || keepsNums[0]!([1, 2])) throw new Error("numbers");
+    interface Index { colliders: readonly Collider[]; count: number }
+    let active: Index | null = null;
+    function matches(index: Index | null, colliders: readonly Collider[]): index is Index {
+        return index !== null && index.colliders === colliders && index.count === colliders.length;
+    }
+    function prime(colliders: readonly Collider[]): number {
+        if (matches(active, colliders)) return 0;
+        active = { colliders, count: colliders.length };
+        return 1;
+    }
+    function clear(x: number, colliders: readonly Collider[] = NO_COLLIDERS): number {
+        return prime(colliders) + x;
+    }
+    const NO_COLLIDERS: readonly Collider[] = [];
+    function run(x: number): number { return clear(x) + clear(x); }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!(1) !== 3) throw new Error("first prime");
+    const first = active;
+    if (runs[0]!(1) !== 2 || active !== first) throw new Error("one empty array");
+`,
+);
+
+// A recursive function's readonly array parameter is its caller's array
+// where the function compares it by identity.
+check(
+    "recursive-readonly-array-parameter-identity",
+    `
+    interface Collider { ax: number; radius: number; group?: number }
+    interface Index { colliders: readonly Collider[]; count: number }
+    let active: Index | null = null;
+    function matches(index: Index | null, colliders: readonly Collider[]): index is Index {
+        return index !== null && index.colliders === colliders && index.count === colliders.length;
+    }
+    function serves(colliders: readonly Collider[]): boolean { return matches(active, colliders); }
+    function prime(colliders: readonly Collider[]): void {
+        if (!matches(active, colliders)) active = { colliders, count: colliders.length };
+    }
+    let indexed = 0;
+    function pointClear(x: number, colliders: readonly Collider[], depth: number): boolean {
+        if (depth > 0 && !pointClear(x + 1, colliders, depth - 1)) return false;
+        if (serves(colliders)) { indexed++; return active!.colliders.every((c) => Math.abs(c.ax - x) > c.radius); }
+        return colliders.every((c) => Math.abs(c.ax - x) > c.radius);
+    }
+    function run(x: number, list: readonly Collider[], depth: number): boolean { return pointClear(x, list, depth); }
+    const set: Collider[] = [{ ax: 0, radius: 1 }];
+    const primes: Array<typeof prime> = [prime];
+    const runs: Array<typeof run> = [run];
+    primes[0]!(set);
+    if (runs[0]!(5, set, 2) !== true || runs[0]!(-1, set, 1) !== false || indexed !== 4) throw new Error("indexed set");
+    if (runs[0]!(5, [{ ax: 0, radius: 1 }], 1) !== true || indexed !== 4) throw new Error("equal set is another array");
+`,
+);
+
 test("borrowed array views refuse rebinding and identity", () => {
     assert.throws(
         () =>
@@ -1832,6 +1909,205 @@ test("borrowed array views refuse rebinding and identity", () => {
                 "function same(a: ArrayLike<number>, b: ArrayLike<number>): boolean { return a === b; } const xs = [1]; const unused = same(xs, xs);",
             ),
         /A borrowed array view cannot preserve JavaScript object identity in a comparison/,
+    );
+});
+
+// An ArrayLike<number> slot (a record or class field, a binding, a stored
+// function's result and its elements) holding typed arrays stores them as
+// themselves: one buffer, seen through every alias.
+check(
+    "array-like-slots-store-typed-arrays",
+    `
+    function poke(view: { [index: number]: number }, index: number, value: number): void { view[index] = value; }
+    interface Budget { startX: ArrayLike<number>; startZ: ArrayLike<number>; dt: number; }
+    let stepX = new Float32Array(0);
+    const budget: Budget = { startX: stepX, startZ: stepX, dt: 0 };
+    let stepZ = new Float32Array(0);
+    function step(count: number): number {
+        if (stepX.length < count) { stepX = new Float32Array(count); stepZ = new Float32Array(count); }
+        for (let i = 0; i < count; i++) { stepX[i] = i; stepZ[i] = i * 2; }
+        budget.startX = stepX; budget.startZ = stepZ; budget.dt = 1;
+        let total = 0;
+        for (let i = 0; i < count; i++) total += budget.startX[i]! + budget.startZ[i]!;
+        return total + budget.startX.length;
+    }
+    if (step(3) !== 12) throw new Error("record field");
+    stepX[1] = 0.5;
+    if (budget.startX[1] !== 0.5 || budget.startX !== stepX) throw new Error("the field is the typed array");
+    poke(budget.startZ, 2, 9);
+    if (stepZ[2] !== 9) throw new Error("writes through the field");
+    if (Array.from(budget.startX).join(",") !== "0,0.5,2") throw new Error("Array.from over the field");
+
+    interface Binding { readonly local: ArrayLike<number>; replace(placements: ArrayLike<number>): boolean; }
+    function bind(count: number): Binding {
+        const local = new Float32Array(count);
+        const replace = (placements: ArrayLike<number>): boolean => {
+            let changed = false;
+            for (let i = 0; i < local.length; i++) {
+                const value = Math.fround(placements[i]!);
+                if (local[i] !== value) { local[i] = value; changed = true; }
+            }
+            return changed;
+        };
+        const binding: Binding = { local, replace };
+        return binding;
+    }
+    const binding = bind(2);
+    if (!binding.replace([1.5, 2.5]) || binding.local[1] !== 2.5 || binding.local.length !== 2) throw new Error("readonly field");
+
+    interface Ops<S> { poseOf(state: S): ArrayLike<number>; list(): readonly ArrayLike<number>[]; }
+    interface State { base: Float32Array; }
+    function moved(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+        for (let i = 0; i < 2; i++) if (Math.abs((a[i] ?? 0) - (b[i] ?? 0)) > 1e-3) return true;
+        return false;
+    }
+    let extra = new Float32Array(0);
+    const states: State[] = [{ base: new Float32Array([1, 2]) }, { base: new Float32Array([1, 3]) }];
+    const ops: Ops<State> = { poseOf: (state) => state.base, list: () => [states[0]!.base, extra] };
+    if (moved(ops.poseOf(states[0]!), ops.poseOf(states[0]!)) || !moved(ops.poseOf(states[0]!), ops.poseOf(states[1]!))) throw new Error("results");
+    states[0]!.base[0] = 7;
+    if (ops.poseOf(states[0]!)[0] !== 7) throw new Error("the result is the typed array");
+    extra = new Float32Array([4, 5, 6]);
+    let lanes = 0;
+    for (const entry of ops.list()) lanes += entry.length;
+    if (lanes !== 5 || ops.list()[1]![2] !== 6) throw new Error("result elements");
+    interface Query { obstacles: readonly ArrayLike<number>[]; }
+    const widened: Ops<State> = { ...ops, list: () => [...ops.list(), stepX] };
+    const query = (source: Ops<State>): Query => ({ obstacles: source.list() });
+    extra = new Float32Array(1);
+    let circles = 0;
+    for (const entry of query(widened).obstacles) circles += entry.length;
+    if (circles !== 2 + 1 + 3) throw new Error("arrays of ArrayLike results");
+    interface Corridor { obstacles: readonly ArrayLike<number>[]; radius: number; x: number; }
+    interface Obstacles { obstacles(): readonly ArrayLike<number>[]; }
+    function segmentClear(x: number, circles: ArrayLike<number>, radius: number): boolean {
+        for (let i = 0; i + 2 < circles.length; i += 3) if (Math.abs(x - circles[i]!) < circles[i + 2]! + radius) return false;
+        return true;
+    }
+    function clears(x: number, obstacles: readonly ArrayLike<number>[], radius: number): boolean {
+        return obstacles.every((set) => segmentClear(x, set, radius));
+    }
+    function corridor(input: Corridor): boolean {
+        return clears(input.x, input.obstacles, input.radius) && clears(input.x + 10, input.obstacles, input.radius);
+    }
+    function corridorQuery(deps: Obstacles): (x: number) => boolean {
+        return (x) => corridor({ obstacles: deps.obstacles(), radius: 0.25, x });
+    }
+    let pad = new Float32Array([5, 0, 1]);
+    const queries: Array<typeof corridorQuery> = [corridorQuery];
+    const clear = queries[0]!({ obstacles: () => [new Float32Array([1, 0, 0.5]), pad] });
+    if (!clear(0)) throw new Error("clear corridor");
+    pad = new Float32Array([0.5, 0, 1]);
+    if (clear(0)) throw new Error("the corridor reads the current obstacles");
+
+    function invert(scale: number): Float32Array | null { return scale === 0 ? null : new Float32Array([1 / scale]); }
+    let prepared: ArrayLike<number> | null = null;
+    const prepare = (scale: number): boolean => {
+        prepared = invert(scale);
+        if (!prepared) return false;
+        return prepared !== null;
+    };
+    const read = (index: number): number => (prepared ? prepared[index]! : -1);
+    if (!prepare(4) || read(0) !== 0.25 || prepare(0) || read(0) !== -1) throw new Error("rebound nullable binding");
+`,
+);
+
+// A shared instance's stored array field is viewed by numeric index as that
+// array.
+check(
+    "stored-field-arrays-viewed-by-numeric-index",
+    `
+    class Shift {
+        private dx = 0;
+        private readonly scratch: [number, number, number] = [0, 0, 0];
+        private readonly lanes: number[] = [0];
+        get offset(): number { return this.dx; }
+        get lane(): number { return this.lanes[0]!; }
+        set(dx: number): void { this.dx = dx; }
+        relativeTo(base: Shift, out: Shift): void {
+            this.point(this.scratch, 1, base.dx);
+            this.point(this.lanes, 0, base.dx);
+            out.set(this.scratch[1] - base.dx);
+        }
+        point(out: { [index: number]: number }, offset: number, x: number): void { out[offset] = x + this.dx; }
+    }
+    const shifts: Shift[] = [new Shift(), new Shift(), new Shift()];
+    shifts[0]!.set(5);
+    shifts[1]!.set(2);
+    shifts[0]!.relativeTo(shifts[1]!, shifts[2]!);
+    if (shifts[2]!.offset !== 5 || shifts[0]!.lane !== 7) throw new Error("a stored field's array viewed by index");
+`,
+);
+
+// A slot handed arrays of several kinds stores one numeric view of
+// whichever it holds, keeping that array's identity.
+check(
+    "array-like-slots-share-one-view-across-kinds",
+    `
+    function total(values: ArrayLike<number>): number {
+        let sum = 0;
+        for (let i = 0; i < values.length; i++) sum += values[i]!;
+        return sum;
+    }
+    function poke(view: { [index: number]: number }, index: number, value: number): void { view[index] = value; }
+    interface Sample { values: ArrayLike<number>; readonly label: string; }
+    const floats = new Float32Array([1, 2, 3]);
+    const numbers: number[] = [4, 5];
+    const tuple: [number, number, number] = [7, 8, 9];
+    const sample: Sample = { values: floats, label: "s" };
+    if (total(sample.values) !== 6 || sample.values.length !== 3) throw new Error("typed array");
+    floats[0] = 10;
+    if (sample.values[0] !== 10) throw new Error("typed array alias");
+    poke(sample.values, 1, 20);
+    if (floats[1] !== 20) throw new Error("writes through the view");
+    sample.values = numbers;
+    numbers.push(6);
+    if (sample.values.length !== 3 || total(sample.values) !== 15 || sample.values !== numbers) throw new Error("number array");
+    if (sample.values === floats) throw new Error("identity");
+    if (Array.from(sample.values, (value) => value * 2).join(",") !== "8,10,12") throw new Error("Array.from over the view");
+    sample.values = tuple;
+    tuple[1] = 0;
+    if (total(sample.values) !== 16) throw new Error("tuple");
+
+    let view: ArrayLike<number> | null = null;
+    const viewed = (): number => (view ? view.length : -1);
+    if (viewed() !== -1) throw new Error("empty view");
+    view = floats;
+    if (viewed() !== 3) throw new Error("typed binding");
+    view = numbers;
+    numbers[0] = 40;
+    if (view[0] !== 40 || viewed() !== 3) throw new Error("array binding");
+
+    interface Pose { pose(): ArrayLike<number>; list(): readonly ArrayLike<number>[]; }
+    const poses: Pose[] = [
+        { pose: () => floats, list: () => [floats, tuple] },
+        { pose: () => numbers, list: () => [numbers] },
+    ];
+    let sum = 0;
+    for (const pose of poses) {
+        sum += pose.pose()[0]!;
+        for (const entry of pose.list()) sum += entry.length;
+    }
+    if (sum !== 10 + 40 + 3 + 3 + 3) throw new Error("results");
+    floats[2] = 30;
+    if (poses[0]!.pose()[2] !== 30 || poses[0]!.list()[0]![2] !== 30) throw new Error("result aliases");
+`,
+);
+
+test("ArrayLike slots refuse what cannot keep an array's identity", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "interface Holder { values: ArrayLike<number>; } function keep(values: ArrayLike<number>): Holder { return { values }; } const typed: Holder = { values: new Float32Array(2) }; const kept = keep([1, 2]); const unused = kept.values.length + typed.values.length;",
+            ),
+        /A borrowed array view cannot retain JavaScript array identity in owning storage/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "interface Holder { values: ArrayLike<number>; } const floats = new Float32Array(2); const numbers: number[] = [1]; const holder: Holder = { values: floats }; holder.values = numbers; let none: number[] | null = null; if (floats.length > 1) none = numbers; const unused = holder.values === none;",
+            ),
+        /A numeric view compares by identity only with a present numeric array/,
     );
 });
 
@@ -6733,12 +7009,20 @@ check(
 `,
 );
 
-test("numeric tuples outside a binding refuse array parameters that may grow them", () => {
+check(
+    "record-tuple-fields-grown-through-array-parameters",
+    `
+    function push(out: number[]): void { out.push(1); }
+    interface Holder { lanes: [number, number, number] }
+    function make(): Holder { return { lanes: [0, 0, 0] }; }
+    const holder = make();
+    push(holder.lanes);
+    if (holder.lanes.length !== 4 || holder.lanes[3] !== 1) throw new Error("grown field");
+`,
+);
+
+test("numeric tuple parameters refuse array parameters that may grow them", () => {
     for (const source of [
-        `interface Holder { lanes: [number, number, number] }
-        function make(): Holder { return { lanes: [0, 0, 0] }; }
-        const holder = make();
-        push(holder.lanes);`,
         `function frame(t: [number, number, number]): void { push(t); }
         const frames: Array<typeof frame> = [frame];
         const lanes: [number, number, number] = [0, 0, 0];
@@ -7508,6 +7792,158 @@ check(
 );
 
 check(
+    "stored-unknown-parameters-take-literal-arguments",
+    `
+    function count(raw: unknown): number { return raw === undefined ? 0 : 1; }
+    const counters: Array<typeof count> = [count];
+    if (counters[0]!({ h: 1 }) !== 1) throw new Error("object literal");
+    if (counters[0]!({ h: 2 }) + counters[0]!({ w: "x", h: 3 }) + counters[0]!({ h: 4 }) !== 3) throw new Error("several object literals");
+    if (counters[0]!([1, 2]) + counters[0]!([{ a: 1 }]) !== 2) throw new Error("array literals");
+    if (counters[0]!({ n: { b: 1 }, list: [{ c: "z" }] }) !== 1) throw new Error("nested object literal");
+    let looped = 0;
+    for (let i = 0; i < 3; i++) looped += counters[0]!({ i });
+    if (looped !== 3) throw new Error("literal in a loop");
+    function wrap<T>(value: T): number { return counters[0]!({ value }); }
+    if (wrap(1) + wrap("text") !== 2) throw new Error("literal of a type parameter");
+    function size(...raw: unknown[]): number { return raw.length; }
+    const sizes: Array<typeof size> = [size];
+    if (sizes[0]!("a", { h: 1 }, [{ b: 2 }]) !== 3) throw new Error("rest literals");
+    function describe(raw: unknown): string {
+        if (raw === undefined) return "absent";
+        if (Array.isArray(raw)) return "array:" + raw.length;
+        if (typeof raw === "object" && raw !== null) return "object:" + JSON.stringify(raw);
+        return typeof raw;
+    }
+    const describers: Array<typeof describe> = [describe];
+    const text = describers[0]!({ h: 1 }) + "|" + describers[0]!([1, 2]) + "|" + describers[0]!({ n: { b: 1 } });
+    if (text !== 'object:{"h":1}|array:2|object:{"n":{"b":1}}') throw new Error("literal values " + text);
+`,
+);
+
+check(
+    "stored-unknown-methods-callbacks-and-map-values-take-literals",
+    `
+    interface Counter { count(raw: unknown): number; }
+    const counters: Counter[] = [{ count(raw: unknown): number { return raw === undefined ? 0 : 1; } }];
+    if (counters[0]!.count({ h: 1 }) + counters[0]!.count({ w: [1, 2] }) !== 2) throw new Error("stored record method");
+    const handlers: Array<(x: unknown) => number> = [(x: unknown) => (x === null ? 5 : 7)];
+    function apply(handler: (x: unknown) => number): number { return handler({ h: 1 }) + handler([{ a: 2 }]); }
+    if (apply(handlers[0]!) !== 14) throw new Error("callback parameter");
+    if (handlers[0]!({ n: { m: 1 } }) !== 7) throw new Error("stored callback");
+    const table = new Map<string, (raw: unknown) => number>();
+    table.set("count", (raw: unknown) => (raw === undefined ? 0 : 1));
+    if (table.get("count")!({ h: 1 }) + table.get("count")!({ n: { m: [1] } }) + table.get("count")!([{ k: 1 }]) !== 3) throw new Error("map value");
+    if (table.get("missing") !== undefined || table.get("count") === undefined) throw new Error("map value presence");
+    const found = table.get("count");
+    if (!found || found({ h: 1 }) !== 1) throw new Error("narrowed map value");
+`,
+);
+
+check(
+    "stored-unknown-parameters-take-absent-values-and-empty-objects",
+    `
+    function classify(x: unknown): string {
+        if (x === undefined) return "u";
+        if (x === null) return "n";
+        if (typeof x === "object") return "o" + Object.keys(x).length;
+        return typeof x;
+    }
+    const classifiers: Array<(x: unknown) => string> = [classify];
+    const text = classifiers[0]!(undefined) + classifiers[0]!(null) + classifiers[0]!({}) + classifiers[0]!(5) + classifiers[0]!({ a: 1 });
+    if (text !== "uno0numbero1") throw new Error("absent values and empty objects " + text);
+    let looped = "";
+    for (let i = 0; i < 2; i++) looped += classifiers[0]!(i === 0 ? null : undefined);
+    if (looped !== "nu") throw new Error("absent union argument " + looped);
+`,
+);
+
+test("stored unknown parameters refuse a non-literal value typed {}", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'function f(x: unknown): number { return x === null ? 1 : 0; } const fs: Array<(x: unknown) => number> = [f]; function pick(flag: boolean): {} { return flag ? 1 : "a"; } const unused = fs[0]!(pick(true));',
+            ),
+        /Stored generic function instantiation requires a fully represented native signature/,
+    );
+});
+
+check(
+    "readonly-records-are-their-records",
+    `
+    const LANGS = ["en", "fr"] as const;
+    type Lang = typeof LANGS[number];
+    type Dict = Record<string, string>;
+    const EN: Dict = { hello: "hello" };
+    const FR: Dict = { hello: "bonjour" };
+    const TABLES: Record<Lang, Dict> = { en: EN, fr: FR };
+    function shipped(): Readonly<Record<Lang, Readonly<Dict>>> { return TABLES; }
+    function read(tables: Readonly<Record<Lang, Dict>>, lang: Lang, key: string): string { return tables[lang][key] ?? "?"; }
+    const view = shipped();
+    if (view.fr !== FR) throw new Error("shared dictionary");
+    FR["late"] = "tard";
+    if (view.fr["late"] !== "tard" || read(TABLES, "fr", "late") !== "tard") throw new Error("shared dictionary writes");
+    if (LANGS.map((lang) => read(view, lang, "hello")).join(",") !== "hello,bonjour") throw new Error("runtime keys");
+    const stored: Array<typeof shipped> = [shipped];
+    if (stored[0]!().fr["late"] !== "tard") throw new Error("stored function result");
+    const DELTA: Readonly<Record<"n" | "s", readonly [number, number]>> = { n: [0, -1], s: [0, 1] };
+    const steps: Array<"n" | "s"> = ["s", "n", "s"];
+    if (steps.map((d) => DELTA[d][1]).join(",") !== "1,-1,1") throw new Error("read-only table");
+`,
+);
+
+test("read-only closed-key records refuse what their copies would observe", () => {
+    const table =
+        'type Lang = "en" | "fr"; const TABLES: Record<Lang, number> = { en: 1, fr: 2 }; function shipped(): Readonly<Record<Lang, number>> { return TABLES; } const view = shipped();';
+    for (const [source, message] of [
+        [
+            `${table} TABLES.fr = 3; const unused = view.fr;`,
+            /'TABLES' was copied into another data location/,
+        ],
+        [
+            `${table} if (view !== TABLES) throw new Error("identity");`,
+            /stored by value and cannot preserve JavaScript object identity/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "dictionaries-of-one-arm-pass-as-union-dictionaries",
+    `
+    type Slots = Readonly<Record<string, string | readonly string[]>>;
+    function word(slots: Slots, name: string): string {
+        const value = slots[name];
+        if (value === undefined) return "-";
+        return typeof value === "string" ? value.toUpperCase() : value.map((part) => part.toUpperCase()).join("+");
+    }
+    function guarded(slots: Slots, name: string): string {
+        const value = slots[name];
+        try {
+            return typeof value === "string" ? value : value.map((part) => part).join("+");
+        } catch (error) {
+            return error instanceof TypeError ? "type" : "other";
+        }
+    }
+    interface Row { key: string; nouns?: Record<string, string> }
+    const rows: Row[] = [{ key: "a", nouns: { a: "potter" } }, { key: "b" }, { key: "c", nouns: { a: "x" } }];
+    const words = rows.map((row) => (row.nouns ? word(row.nouns, row.key) + guarded(row.nouns, row.key) : "none"));
+    if (words.join(",") !== "POTTERpotter,none,-type") throw new Error("one-arm dictionaries " + words.join(","));
+    const lists: Slots = { a: ["p", "q"], b: "r" };
+    if (rows.map((row) => word(lists, row.key)).join(",") !== "P+Q,R,-") throw new Error("union dictionary");
+`,
+);
+
+test("a missing primitive method refuses effectful arguments", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'let calls = 0; function next(): number { calls++; return calls; } type Slots = Readonly<Record<string, string | number[]>>; function word(slots: Slots, name: string): string { const value = slots[name]; if (value === undefined) return "-"; return typeof value === "string" ? value : value.fill(next()).length + ""; } interface Row { key: string; nouns?: Record<string, string> } const rows: Row[] = [{ key: "a", nouns: { a: "potter" } }]; const words = rows.map((row) => (row.nouns ? word(row.nouns, row.key) : "none")); if (words.join() !== "potter") throw new Error("w");',
+            ),
+        /Unsupported call target 'value.fill' on data:optional/,
+    );
+});
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }
@@ -7550,6 +7986,7 @@ function checkInRealm(name: string, source: string): void {
             {
                 close: () => (closed = true),
                 setTimeout,
+                clearTimeout,
                 queueMicrotask,
                 structuredClone,
             },
@@ -7575,6 +8012,69 @@ function checkInRealm(name: string, source: string): void {
 }
 
 checkInRealm(
+    "async-returns-of-a-promise-or-a-record-branch",
+    `
+    type Result = { status: "loaded"; text: string } | { status: "invalid" } | { status: "cancelled" } | { status: "error" };
+    async function parse(text: string): Promise<Result> {
+        await Promise.resolve();
+        return text.length > 0 ? { status: "loaded", text } : { status: "invalid" };
+    }
+    interface Picked { name: string; }
+    async function choose(name: string): Promise<Picked | null> {
+        await Promise.resolve();
+        if (name === "-") return null;
+        return { name };
+    }
+    async function pick(name: string): Promise<Result> {
+        try {
+            const file = await choose(name);
+            return file ? parse(file.name) : { status: "cancelled" };
+        } catch {
+            return { status: "error" };
+        }
+    }
+    async function direct(name: string): Promise<Result> {
+        return name === "" ? { status: "cancelled" } : parse(name);
+    }
+    void (async () => {
+        const seen = [await pick("a"), await pick("-"), await pick(""), await direct(""), await direct("b")].map((r) => r.status);
+        if (seen.join(",") !== "loaded,cancelled,invalid,cancelled,loaded") throw new Error(seen.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
+    "awaited-nullish-fallbacks-run-only-when-absent",
+    `
+    const order: string[] = [];
+    async function load(n: number): Promise<number> {
+        order.push("load" + n);
+        await Promise.resolve();
+        return n * 2;
+    }
+    const sizes = new Map<string, number>([["a", 1]]);
+    async function count(key: string): Promise<number> {
+        order.push("count:" + key);
+        const value = sizes.get(key) ?? (await load(5));
+        order.push("got" + value);
+        return value;
+    }
+    const labels = new Map<string, string>([["a", "x"]]);
+    async function label(key: string): Promise<string> {
+        return labels.get(key) ?? String(await load(1));
+    }
+    void (async () => {
+        const counted = [await count("a"), await count("b")];
+        const labelled = [await label("a"), await label("b")];
+        if (counted.join(",") !== "1,10" || labelled.join(",") !== "x,2") throw new Error(counted.join(",") + labelled.join(","));
+        if (order.join(",") !== "count:a,got1,count:b,load5,got10,load1") throw new Error(order.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
     "async-callees-read-records-past-the-call",
     `
     interface Wide { x: number; y: number; tag: string }
@@ -7587,6 +8087,32 @@ checkInRealm(
         if ((await pending) !== 50) throw new Error("an async callee reads the original after the call returns");
         globalThis.close();
     })();
+`,
+);
+checkInRealm(
+    "async-results-of-another-record-type-settle-as-the-declared-type",
+    `
+    interface Info { name: string; icon: string | null; tint: [number, number, number] | null }
+    const cache = new Map<string, Promise<Info>>();
+    function delay(value: number): Promise<number> { return new Promise((resolve) => setTimeout(() => resolve(value), 0)); }
+    async function readUncached(url: string): Promise<Info> {
+        const size = await delay(url.length);
+        return { name: url, icon: size > 3 ? "icon" : null, tint: size > 100 ? [1, 2, 3] : null };
+    }
+    function readInfo(url: string): Promise<Info> {
+        let p = cache.get(url);
+        if (!p) {
+            p = readUncached(url);
+            cache.set(url, p);
+        }
+        return p;
+    }
+    const first = readInfo("abcd");
+    if (first !== readInfo("abcd")) throw new Error("cached promise");
+    void first.then((info) => {
+        if (info.icon !== "icon" || info.name !== "abcd" || info.tint !== null) throw new Error("settled record");
+        globalThis.close();
+    });
 `,
 );
 checkInRealm(
@@ -7704,6 +8230,42 @@ check(
         bare.terrainY !== undefined || bare.onRelease !== undefined)
         throw new Error("absent properties");
     if ("secondary" in bare || !("secondary" in full) || "terrainY" in bare || !("onRelease" in full)) throw new Error("own keys");
+`,
+);
+
+// A readonly array a conditional spread builds is the record's own array,
+// stored and serialized as the one array JavaScript keeps.
+check(
+    "conditional-spread-readonly-array-member",
+    `
+    interface HerdOptions { file: string; capacity: number; anchors?: readonly number[]; bones?: readonly number[]; shadow?: boolean }
+    interface Prototype { file: string; bone?: number }
+    function herdOptions(options: Prototype): HerdOptions {
+        return { file: options.file, capacity: 1, ...(options.bone === undefined ? {} : { bones: [options.bone, options.bone + 1] }) };
+    }
+    function cacheKey(opts: HerdOptions): string {
+        return JSON.stringify({ file: opts.file, anchors: opts.anchors ?? null, bones: opts.bones ?? null });
+    }
+    const prepared = new Map<string, number>();
+    function create(file: string, shell: { bone: number } | null, shadow: boolean): string {
+        const opts: HerdOptions = { ...herdOptions({ file, ...(shell ? { bone: shell.bone } : {}) }), shadow };
+        const key = cacheKey(opts);
+        if (!prepared.has(key)) prepared.set(key, prepared.size);
+        return key + "#" + prepared.get(key) + ":" + (opts.bones === opts.bones) + ":" + (opts.shadow === true);
+    }
+    const creates: Array<typeof create> = [create];
+    if (creates[0]!("t", { bone: 3 }, true) !== '{"file":"t","anchors":null,"bones":[3,4]}#0:true:true') throw new Error("present");
+    if (creates[0]!("t", null, false) !== '{"file":"t","anchors":null,"bones":null}#1:true:false') throw new Error("absent");
+    if (creates[0]!("t", { bone: 3 }, false) !== '{"file":"t","anchors":null,"bones":[3,4]}#0:true:false') throw new Error("cached");
+    interface Track { name: string; points?: readonly number[] }
+    function track(name: string, from: number | null): Track {
+        return { name, ...(from === null ? {} : { points: [from, from * 2] }) };
+    }
+    const tracks: Array<typeof track> = [track];
+    const t = tracks[0]!("a", 2);
+    const points = t.points;
+    if (points !== t.points || points?.length !== 2 || points[1] !== 4 || tracks[0]!("b", null).points !== undefined)
+        throw new Error("one member array");
 `,
 );
 
@@ -8090,6 +8652,490 @@ check(
     pending = { x: 2 };
     changed = pending !== null && pending !== undefined;
     if (!changed) throw new Error("present pending");
+`,
+);
+
+check(
+    "callbacks-run-once-per-element-in-returned-array-methods",
+    `
+    let calls = 0;
+    const twice = (x: number): number => {
+        calls++;
+        return x * 2;
+    };
+    const keep = (x: number): boolean => {
+        calls++;
+        return x > 3;
+    };
+    const add = (sum: number, x: number): number => {
+        calls++;
+        return sum + x;
+    };
+    function blockMap(w: number): number[] {
+        return [w, w + 1].map(twice);
+    }
+    const arrowMap = (w: number): number[] => [w, w + 1].map(twice);
+    const inlineMap = (w: number): number[] =>
+        [w, w + 1].map((x) => {
+            calls++;
+            return x + 1;
+        });
+    const filtered = (w: number): number[] => [w, w + 1, w + 2].filter(keep);
+    const reduced = (w: number): number => [w, w + 1].reduce(add, 0);
+    const spread = (w: number): number[] => [...[w, w + 1].map(twice)];
+    const chosen = (w: number): number[] => (w > 0 ? [w, w].map(twice) : [w].map(twice));
+    const flat = (w: number): number[] =>
+        [w, w].flatMap((x) => {
+            calls++;
+            return [x, x];
+        });
+    const some = (w: number): boolean => [w, w + 1].some(keep);
+    const local = (w: number): number => {
+        const mapped: number[] = [w, w + 1].map(twice);
+        return mapped.length;
+    };
+    const runtime = (w: number): number[] => {
+        const xs: number[] = [];
+        for (let i = 0; i < w; i++) xs.push(i);
+        return xs.map(twice);
+    };
+    const shapes: [string, (w: number) => unknown, number][] = [
+        ["block map", blockMap, 2],
+        ["arrow map", arrowMap, 2],
+        ["inline map", inlineMap, 2],
+        ["filter", filtered, 3],
+        ["reduce", reduced, 2],
+        ["spread", spread, 2],
+        ["conditional", chosen, 2],
+        ["flatMap", flat, 2],
+        ["some", some, 1],
+        ["local", local, 2],
+        ["runtime map", runtime, 4],
+    ];
+    const failures: string[] = [];
+    for (const [label, run, expected] of shapes) {
+        calls = 0;
+        run(4);
+        if (calls !== expected) failures.push(label + " stored " + calls + "/" + expected);
+    }
+    calls = 0;
+    blockMap(4);
+    arrowMap(4);
+    spread(4);
+    chosen(4);
+    if (calls !== 8) failures.push("direct " + calls + "/8");
+    if (failures.length > 0) throw new Error(failures.join("; "));
+`,
+);
+
+check(
+    "callbacks-run-once-per-element-in-array-method-sinks",
+    `
+    let calls = 0;
+    const twice = (x: number): number => {
+        calls++;
+        return x * 2;
+    };
+    const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
+    const total = (xs: readonly number[]): number => xs.length;
+    const asTuple = (w: number): [number, number] => [w, w + 1].map(twice) as [number, number];
+    const asReadonly = (w: number): readonly number[] => [w, w + 1].map(twice);
+    const inRecord = (w: number): { values: number[] } => ({ values: [w, w + 1].map(twice) });
+    const asArgument = (w: number): number => sum([w, w + 1].map(twice));
+    const asReadonlyArgument = (w: number): number => total([w, w + 1].map(twice));
+    const joined = (w: number): string => [w, w + 1].map(twice).join(",");
+    const maximum = (w: number): number => Math.max(...[w, w + 1].map(twice));
+    const typed = (w: number): Float32Array => new Float32Array([w, w + 1].map(twice));
+    const chained = (w: number): number[] => [w, w + 1].map(twice).map(twice);
+    const assigned = (w: number): number[] => {
+        let out: number[] = [];
+        out = [w, w + 1].map(twice);
+        return out;
+    };
+    const nested = (w: number): number[][] => [[w, w + 1].map(twice)];
+    const viaFrom = (w: number): number[] => Array.from([w, w + 1], twice);
+    const pair = (x: number): [string, number] => {
+        calls++;
+        return [String(x), x];
+    };
+    const asSet = (w: number): ReadonlySet<number> => new Set([w, w + 1].map(twice));
+    const asMap = (w: number): ReadonlyMap<string, number> => new Map([w, w + 1].map(pair));
+    const shapes: [string, (w: number) => unknown, number][] = [
+        ["tuple", asTuple, 2],
+        ["readonly", asReadonly, 2],
+        ["record", inRecord, 2],
+        ["argument", asArgument, 2],
+        ["readonly argument", asReadonlyArgument, 2],
+        ["join", joined, 2],
+        ["max", maximum, 2],
+        ["typed", typed, 2],
+        ["chained", chained, 4],
+        ["assigned", assigned, 2],
+        ["nested", nested, 2],
+        ["from", viaFrom, 2],
+        ["set", asSet, 2],
+        ["map", asMap, 2],
+    ];
+    const failures: string[] = [];
+    for (const [label, run, expected] of shapes) {
+        calls = 0;
+        run(4);
+        if (calls !== expected) failures.push(label + " stored " + calls + "/" + expected);
+    }
+    calls = 0;
+    asTuple(4);
+    inRecord(4);
+    asArgument(4);
+    assigned(4);
+    nested(4);
+    if (calls !== 10) failures.push("direct " + calls + "/10");
+    if (failures.length > 0) throw new Error(failures.join("; "));
+`,
+);
+
+check(
+    "absence-tagged-locals-and-inlined-parameters",
+    `
+    interface Region { minX: number; maxX: number; }
+    const gate = new Float32Array([0, 1]);
+    let pending: Region | null | undefined;
+    const log: string[] = [];
+    const queue = (dirty: Region | null | undefined): void => {
+        if (dirty === undefined || pending === null) return;
+        pending = dirty === null ? null : { minX: Math.min(pending?.minX ?? dirty.minX, dirty.minX), maxX: dirty.maxX };
+    };
+    const consume = (): string => {
+        const taken = pending;
+        pending = undefined;
+        return taken === undefined ? "none" : taken === null ? "full" : String(taken.minX);
+    };
+    queue(undefined);
+    log.push(consume());
+    queue({ minX: 3, maxX: 4 });
+    queue({ minX: 1, maxX: 5 });
+    log.push(consume());
+    queue(null);
+    queue({ minX: 7, maxX: 8 });
+    log.push(consume());
+    log.push(consume());
+    let picked: Region | null | undefined = gate[1]! > 0 ? null : undefined;
+    log.push(String(picked === null), typeof picked);
+    picked = gate[0]! > 0 ? null : undefined;
+    log.push(String(picked === null), typeof picked, String(picked === undefined));
+    picked = { minX: 9, maxX: 9 };
+    const alias = picked;
+    alias.minX = 10;
+    log.push(String(picked.minX), String(alias === picked));
+    if (log.join(",") !== "none,1,full,none,true,object,false,undefined,true,10,true") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "absence-tagged-stored-parameters-and-defaults",
+    `
+    interface Region { minX: number; }
+    interface Field { rebuild(base?: Region | null): string; }
+    function createField(): Field {
+        const describe = (dirty: Region | null | undefined): string =>
+            dirty === undefined ? "none" : dirty === null ? "full" : "r" + dirty.minX;
+        const rebuild = (base?: Region | null): string => describe(base);
+        return { rebuild };
+    }
+    const field = createField();
+    const results = [field.rebuild(), field.rebuild(null), field.rebuild({ minX: 2 }), field.rebuild(undefined)];
+    if (results.join(",") !== "none,full,r2,none") throw new Error(results.join(","));
+    let made = 0;
+    interface Ticket { id: number; }
+    function make(studio: boolean): Ticket | null { made++; return studio ? null : { id: made }; }
+    function kickoff(studio: boolean, ready: Ticket | null = make(studio)): string {
+        return ready === null ? "null" : "t" + ready.id;
+    }
+    const roots: Array<typeof kickoff> = [kickoff];
+    const outcomes = [roots[0]!(false), roots[0]!(false, null), roots[0]!(true), roots[0]!(true, { id: 7 })];
+    if (outcomes.join(",") !== "t1,null,null,t7" || made !== 2) throw new Error(outcomes.join(",") + made);
+`,
+);
+
+check(
+    "absence-tagged-record-fields",
+    `
+    interface Mask { cells: number; }
+    interface Reach { ok(x: number): boolean; }
+    interface Options { mask?: Mask | null; reach?: Reach | null; }
+    const describe = (opts: Options): string =>
+        opts.mask === undefined ? "build" : opts.mask === null ? "none" : "m" + opts.mask.cells;
+    const step = (opts: Options, x: number): string =>
+        opts.reach === null ? "pending" : opts.reach === undefined ? "direct" : opts.reach.ok(x) ? "yes" : "no";
+    const all: Options[] = [{}, { mask: null }, { mask: { cells: 3 } }, { mask: undefined, reach: null }, { reach: { ok: (x) => x > 1 } }];
+    const seen = all.map((opts) => describe(opts) + ":" + step(opts, 2));
+    if (seen.join(",") !== "build:direct,none:direct,m3:direct,build:pending,build:yes") throw new Error(seen.join(","));
+    const changed = all[0]!;
+    changed.mask = null;
+    changed.reach = { ok: (x) => x > 5 };
+    if (describe(changed) !== "none" || step(changed, 2) !== "no") throw new Error("field writes");
+    changed.mask = undefined;
+    if (describe(changed) !== "build" || step(changed, 9) !== "yes") throw new Error("undefined field");
+`,
+);
+
+check(
+    "absence-tagged-shared-function-parameters",
+    `
+    interface Reach { ok(x: number): boolean; }
+    interface Step { reach?: Reach | null; x: number; }
+    const log: string[] = [];
+    function find(x: number, reach: Reach | null | undefined): string {
+        if (reach === null) return "pending";
+        if (reach !== undefined && !reach.ok(x)) return "blocked";
+        return "free";
+    }
+    function select(step: Step): string {
+        if (step.reach === null) return "nav";
+        return find(step.x, step.reach);
+    }
+    function selectAll(steps: Step[]): void {
+        for (const step of steps) log.push(select(step), find(step.x * 2, step.reach));
+    }
+    const roots: Array<typeof selectAll> = [selectAll];
+    roots[0]!([{ x: 1 }, { x: 2, reach: null }, { x: 3, reach: { ok: (x) => x > 4 } }]);
+    if (log.join(",") !== "free,free,nav,pending,blocked,free") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "absence-tagged-option-records-through-stored-signatures",
+    `
+    interface Region { minX: number; }
+    interface Pipeline {
+        refreshOnly(baseDirty?: Region | null): string;
+        refreshAndDecor(opts?: { decorations?: boolean; baseDirty?: Region | null }): string;
+    }
+    function createPipeline(): Pipeline {
+        let pending: Region | null | undefined;
+        const queue = (dirty: Region | null | undefined): void => {
+            if (dirty === undefined || pending === null) return;
+            pending = dirty;
+        };
+        const refreshOnly = (baseDirty?: Region | null): string => {
+            queue(baseDirty);
+            const taken = pending;
+            pending = undefined;
+            return taken === undefined ? "none" : taken === null ? "full" : "r" + taken.minX;
+        };
+        const refreshAndDecor = (opts: { decorations?: boolean; baseDirty?: Region | null } = {}): string => {
+            const result = refreshOnly(opts.baseDirty);
+            return opts.decorations !== false ? result + "+decor" : result;
+        };
+        const kick = (): string => refreshAndDecor({ baseDirty: null });
+        return { refreshOnly, refreshAndDecor: (opts) => (opts ? refreshAndDecor(opts) : kick()) };
+    }
+    const roots: Array<typeof createPipeline> = [createPipeline];
+    const pipeline = roots[0]!();
+    const seen = [pipeline.refreshOnly(), pipeline.refreshAndDecor({ baseDirty: { minX: 3 } }), pipeline.refreshAndDecor(), pipeline.refreshAndDecor({ decorations: false })];
+    if (seen.join(",") !== "none,r3+decor,full+decor,none") throw new Error(seen.join(","));
+`,
+);
+
+check(
+    "tuple-spreads-into-class-method-parameters",
+    `
+    type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number, pivotZ?: number];
+    type Shift = [number, number, number, number, number, number];
+    class Placement {
+        dx = 0; dy = 0; dz = 0; yaw = 0; pivotX = 0; pivotZ = 0;
+        set(dx: number, dy: number, dz: number, yaw = 0, pivotX = 0, pivotZ = 0): boolean {
+            if (dx === this.dx && dy === this.dy && dz === this.dz && yaw === this.yaw && pivotX === this.pivotX && pivotZ === this.pivotZ) return false;
+            this.dx = dx; this.dy = dy; this.dz = dz; this.yaw = yaw; this.pivotX = pivotX; this.pivotZ = pivotZ;
+            return true;
+        }
+    }
+    const gate = new Float32Array([1, 0]);
+    const current = new Placement();
+    const base = new Placement();
+    const shift: Shift = [1, 2, 3, 4, 5, 6];
+    const zero: Shift = [0, 0, 0, 0, 0, 0];
+    const bases = new Map<number, Shift>();
+    if (!current.set(...shift) || current.set(...shift)) throw new Error("fixed lanes");
+    base.set(...(bases.get(1) ?? zero));
+    bases.set(1, [9, 8, 7, 6, 5, 4]);
+    base.set(...(bases.get(1) ?? zero));
+    const offset = (wide: boolean): Pose => (wide ? shift : [7, 8, 9]);
+    const render = new Placement();
+    render.set(...offset(gate[1]! > 0));
+    if (current.yaw !== 4 || base.pivotZ !== 4 || render.dz !== 9 || render.yaw !== 0 || render.pivotZ !== 0) throw new Error("spread lanes");
+    render.set(...offset(gate[0]! > 0));
+    if (render.pivotZ !== 6 || render.yaw !== 4) throw new Error("present optional lanes");
+    let extra = 0;
+    const lanes = (): Shift => { extra++; return shift; };
+    render.set(1, ...lanes());
+    if (extra !== 1 || render.dx !== 1 || render.dy !== 1 || render.pivotZ !== 5) throw new Error("leading argument then lanes");
+`,
+);
+
+check(
+    "optional-receivers-typed-present-and-runtime-tuple-loops",
+    `
+    interface Control { u: number; y?: number; }
+    interface Curve { controls?: readonly { u?: unknown; y?: unknown }[]; }
+    const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    function sanitize(value: unknown): Control[] {
+        if (!Array.isArray(value)) return [];
+        const parsed: Control[] = [];
+        for (let index = 0; index < value.length; index++) {
+            const raw = value[index] as { u?: unknown; y?: unknown };
+            const u = finite(raw.u);
+            if (u === undefined) continue;
+            const y = finite(raw.y);
+            parsed.push(y === undefined ? { u } : { u, y });
+        }
+        return parsed;
+    }
+    const normalize = (curve: Curve): number => sanitize(curve.controls).length;
+    const curves: Curve[] = [{ controls: [{ u: 1, y: 2 }, { u: "x" }, { u: 3 }] }, {}];
+    if (curves.map(normalize).join(",") !== "2,0") throw new Error("narrowed optional receiver");
+    const counts = (rows: readonly { readonly id?: number }[] | undefined): Map<number, number> => {
+        const out = new Map<number, number>();
+        if (!Array.isArray(rows)) return out;
+        for (const row of rows) if (typeof row?.id === "number") out.set(row.id, (out.get(row.id) ?? 0) + 1);
+        return out;
+    };
+    const world: { props?: readonly { readonly id?: number }[] }[] = [{ props: [{ id: 2 }, {}, { id: 2 }] }, {}];
+    if (world.map((each) => counts(each.props).get(2) ?? 0).join(",") !== "2,0") throw new Error("narrowed optional iteration");
+    function endInset(width: number, heights: readonly [bottom: number, top: number] = [-0.5, 0]): number[] {
+        return [-width / 2, width / 2].map((across) => {
+            let inset = 0;
+            for (const height of heights) inset = Math.max(inset, across * height);
+            return inset;
+        });
+    }
+    const insets: Array<typeof endInset> = [endInset];
+    if (insets[0]!(4).join(",") !== "1,0" || insets[0]!(2, [2, 3]).join(",") !== "0,3") throw new Error("tuple loop");
+`,
+);
+
+check(
+    "record-tuple-fields-entering-number-arrays-take-array-storage",
+    `
+    type Vec4 = [number, number, number, number];
+    type Vec3 = [number, number, number];
+    interface Params { hs: number; bump: number; sunDir: Vec3; }
+    function pack(p: Params): { uParams0: Vec4; uSunDir: Vec3 } {
+        return { uParams0: [p.hs, p.bump, 0, 1], uSunDir: p.sunDir };
+    }
+    const uploaded: string[] = [];
+    const kept: number[][] = [];
+    function upload(name: string, value: number | number[]): void {
+        if (typeof value !== "number") kept.push(value);
+        uploaded.push(name + ":" + (typeof value === "number" ? value : value.join("/")));
+    }
+    function setParameters(params: Params, scale?: number): void {
+        const packed = pack(params);
+        for (const [name, value] of Object.entries(packed)) upload(name, value);
+        upload("uScale", scale ?? 1);
+    }
+    const roots: Array<typeof setParameters> = [setParameters];
+    const params: Params = { hs: 2, bump: 3, sunDir: [0, 1, 0] };
+    roots[0]!(params);
+    if (uploaded.join(",") !== "uParams0:2/3/0/1,uSunDir:0/1/0,uScale:1") throw new Error(uploaded.join(","));
+    kept[1]!.push(7);
+    if (params.sunDir.length !== 4 || kept[1] !== params.sunDir) throw new Error("one growable array");
+`,
+);
+
+test("absence tags, spread lanes and tuple storage refuse what no storage represents", () => {
+    for (const [source, message] of [
+        [
+            "interface R { x: number } const gate = new Float32Array([1]); function pick(i: number): R | null | undefined { return i > 0 ? { x: 1 } : i < 0 ? null : undefined; } const roots: Array<typeof pick> = [pick]; let p: R | null | undefined = roots[0]!(gate[0]!); if (p === null) throw new Error('null');",
+            /stored where they are told apart only once one of them is ruled out/,
+        ],
+        [
+            "class Placement { x = 0; set(a: number, b = 0): void { this.x = a + b; } } const numbers: number[] = [1, 2]; const placement = new Placement(); placement.set(...numbers);",
+            /A spread argument of a class method expands a tuple of a fixed length/,
+        ],
+        [
+            "function grow(t: [number, number]): number { const a: number[] = t; a.push(1); return a.length; } const roots: Array<typeof grow> = [grow]; if (roots[0]!([1, 2]) !== 3) throw new Error('grow');",
+            /A fixed-length tuple stored as a number array could grow through that array/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "nullish-fallbacks-that-never-complete-or-are-null",
+    `
+    interface Geometry { name: string; size: number; }
+    const names = ["a", "b"] as const;
+    function failMissing(name: string): never { throw new Error("missing " + name); }
+    function load(bundle: Map<string, Geometry>): Geometry[] {
+        return names.map((name) => bundle.get(name) ?? failMissing(name));
+    }
+    const bundle = new Map<string, Geometry>([["a", { name: "a", size: 1 }], ["b", { name: "b", size: 2 }]]);
+    const loaded = load(bundle);
+    if (loaded[1]!.size !== 2 || loaded[0] !== bundle.get("a")) throw new Error("present results");
+    let threw = "";
+    try { load(new Map([["a", { name: "a", size: 1 }]])); } catch (error) { threw = (error as Error).message; }
+    if (threw !== "missing b") throw new Error("never fallback " + threw);
+    const counts = new Map<string, number>([["x", 0]]);
+    const zero = counts.get("x") ?? failMissing("x");
+    if (zero !== 0) throw new Error("falsy present number");
+    interface Controls { pip?: () => { reading: string } | null; }
+    const read = (controls: Controls): string => {
+        const pip = controls.pip?.() ?? null;
+        return String(pip === null) + String(pip === undefined);
+    };
+    const controls: Controls[] = [{}, { pip: () => null }, { pip: () => ({ reading: "rain" }) }];
+    const roots: Array<typeof read> = [read];
+    if (controls.map((each) => roots[0]!(each)).join(",") !== "truefalse,truefalse,falsefalse") throw new Error("null fallback");
+    const slots: (Geometry | null)[] = [null];
+    const missing = slots[3] ?? null;
+    if (missing !== null || (slots[0] ?? undefined) !== undefined) throw new Error("fallback absence");
+`,
+);
+
+check(
+    "tuple-lanes-and-readonly-number-array-slots",
+    `
+    type Kind = "workshop" | "castle";
+    interface Facts { run: number; }
+    interface Home { id: number; workshop: Facts | null; castle: Facts | null; }
+    const rows: string[] = [];
+    function collect(list: readonly Home[]): void {
+        for (const home of list) {
+            const retained: readonly (readonly [Kind, number | null])[] = [
+                ["workshop", home.workshop?.run ?? null],
+                ["castle", home.castle?.run ?? null],
+            ];
+            for (const [kind, run] of retained) {
+                if (run === null || !Number.isSafeInteger(run) || run < 0) continue;
+                rows.push(kind + run);
+            }
+        }
+    }
+    collect([{ id: 1, workshop: { run: 2 }, castle: null }, { id: 2, workshop: null, castle: { run: -1 } }]);
+    if (rows.join(",") !== "workshop2") throw new Error(rows.join(","));
+    const ranked = [{ run: 2, settled: false }, { run: 1, settled: false }, { run: 2, settled: true }];
+    ranked.sort((a, b) => a.run - b.run || Number(b.settled) - Number(a.settled));
+    if (ranked.map((row) => row.run + String(row.settled)).join(",") !== "1false,2true,2false") throw new Error("Number(boolean)");
+    type Vec3 = readonly [number, number, number];
+    function aim(position: Vec3, lookAt: Vec3 | null = null): readonly number[] {
+        let target: readonly number[];
+        if (lookAt) {
+            target = lookAt;
+        } else {
+            target = [position[0] + 1, position[1], position[2]];
+        }
+        return target;
+    }
+    const fixed: Vec3 = [9, 9, 9];
+    if (aim([1, 2, 3])[0] !== 2 || aim([1, 2, 3], fixed) !== fixed || aim([1, 2, 3], fixed).length !== 3) throw new Error("readonly target");
+    interface Decl { name: string; value?: number | readonly number[]; }
+    function decls(cloud: readonly [number, number, number, number] = [0, 0, 0, 0]): Decl[] {
+        return [{ name: "a", value: 1 }, { name: "cloud", value: cloud }];
+    }
+    const cloud: [number, number, number, number] = [1, 2, 3, 4];
+    const made = decls(cloud);
+    cloud[0] = 5;
+    if ((made[1]!.value as readonly number[])[0] !== 5 || (decls()[1]!.value as readonly number[])[3] !== 0) throw new Error("readonly field");
 `,
 );
 
@@ -9136,6 +10182,328 @@ check(
 );
 
 check(
+    "union-arms-keep-nested-records-of-their-own-types",
+    `
+    const archiveTypes = [{ description: "Archive", accept: { "application/zip": [".zip"] } }];
+    const plainTypes = [{ description: "Plain", accept: { "application/json": [".json"] } }];
+    const saveTypes = [...archiveTypes, ...plainTypes];
+    const openTypes = saveTypes;
+    if (saveTypes[0] !== archiveTypes[0] || openTypes[1] !== plainTypes[0]) throw new Error("spread elements keep their objects");
+    saveTypes[0]!.description = "Zip";
+    if (archiveTypes[0]!.description !== "Zip") throw new Error("write through the union");
+    const accept = saveTypes[1]!.accept;
+    if (accept !== plainTypes[0]!.accept || !("application/json" in accept) || "application/zip" in accept) throw new Error("nested record of each arm");
+    plainTypes[0]!.accept["application/json"].push(".txt");
+    if (Object.keys(saveTypes[0]!.accept).join() !== "application/zip" || Object.keys(accept).join() !== "application/json") throw new Error("nested keys");
+    if (JSON.stringify(openTypes) !== '[{"description":"Zip","accept":{"application/zip":[".zip"]}},{"description":"Plain","accept":{"application/json":[".json",".txt"]}}]') throw new Error("json " + JSON.stringify(openTypes));
+`,
+);
+
+check(
+    "records-wider-than-a-union-keep-their-fields-in-its-layout",
+    `
+    interface End { s: number; x: number; y: number; z: number }
+    type Flat = Readonly<{ x: number; z: number }>;
+    type Mark = { readonly x: number; readonly z: number };
+    const ends: End[] = [{ s: 1, x: 2, y: 3, z: 4 }];
+    const flat: Flat = { x: 5, z: 6 };
+    const mark: Mark = { x: 7, z: 8 };
+    const spots: (Flat | Mark)[] = [flat, mark];
+    spots.push(ends[0]!);
+    const seen = new Set<Flat | Mark>(spots);
+    if (!seen.has(ends[0]!) || spots[2] !== ends[0] || spots[0] !== flat) throw new Error("one object");
+    ends[0]!.x = 20;
+    if (spots[2]!.x !== 20) throw new Error("write through the wider type");
+    if (Object.keys(spots[2]!).join() !== "s,x,y,z" || JSON.stringify(spots[2]) !== '{"s":1,"x":20,"y":3,"z":4}') throw new Error("wider keys " + Object.keys(spots[2]!).join());
+    if (Object.keys(spots[0]!).join() !== "x,z" || JSON.stringify(spots[1]) !== '{"x":7,"z":8}') throw new Error("arm keys");
+    if ("s" in spots[0]! || !("s" in spots[2]!)) throw new Error("absent field");
+`,
+);
+
+check(
+    "union-records-narrowed-to-an-arm-stay-one-object",
+    `
+    interface Circle { kind: "circle"; x: number; z: number; radius: number; grow?: number }
+    interface Rect { kind: "rect"; cx: number; cz: number; half: number; grow?: number }
+    type Boundary = Circle | Rect;
+    function area(r: Rect): number { r.grow = (r.grow ?? 0) + 1; return r.half * r.half * 4; }
+    function measure(b: Boundary): number { if (b.kind === "circle") return b.radius * 3; return area(b); }
+    const shapes: Boundary[] = [{ kind: "rect", cx: 1, cz: 2, half: 3 }, { kind: "circle", x: 0, z: 0, radius: 1 }];
+    if (Object.keys(shapes[0]!).join() !== "kind,cx,cz,half" || Object.keys(shapes[1]!).join() !== "kind,x,z,radius") throw new Error("keys " + Object.keys(shapes[0]!).join());
+    if (measure(shapes[0]!) !== 36 || shapes[0]!.grow !== 1 || !("grow" in shapes[0]!) || measure(shapes[1]!) !== 3) throw new Error("write through the arm");
+    const found = shapes.find((shape): shape is Rect => shape.kind === "rect");
+    if (found === undefined || found !== shapes[0] || found.half !== 3) throw new Error("guarded find keeps the object");
+`,
+);
+
+check(
+    "conditional-arms-of-own-fields-stay-one-object",
+    `
+    interface TowerRoof { x: number; z: number; yaw: number; baseY: number; baseRadius: number }
+    type Host =
+        | { readonly kind: "cone"; readonly roof: TowerRoof; readonly radius: number }
+        | { readonly kind: "flat"; readonly x: number; readonly z: number; readonly yaw: number; readonly y: number; readonly radius: number };
+    function frameOf(host: Host) { return host.kind === "cone" ? host.roof : host; }
+    const roof: TowerRoof = { x: 1, z: 2, yaw: 0, baseY: 3, baseRadius: 4 };
+    const hosts: Host[] = [{ kind: "cone", roof, radius: 1 }, { kind: "flat", x: 5, z: 6, yaw: 0, y: 7, radius: 2 }];
+    const frames = hosts.map(frameOf);
+    if (frames[0] !== roof || frames[1] !== hosts[1]) throw new Error("selected objects");
+    roof.x = 10;
+    if (frames[0]!.x + frames[1]!.z !== 16) throw new Error("reads through the frame");
+    if (Object.keys(frames[0]!).join() !== "x,z,yaw,baseY,baseRadius" || Object.keys(frames[1]!).join() !== "kind,x,z,yaw,y,radius") throw new Error("keys");
+`,
+);
+
+check(
+    "records-of-two-unions-take-one-layout",
+    `
+    interface A { tag: "a"; v: number }
+    interface B { tag: "b"; w: number }
+    interface C { tag: "c"; v: number; w: number }
+    const a: A = { tag: "a", v: 1 };
+    const first: (A | B)[] = [a, { tag: "b", w: 2 }];
+    const second: (A | C)[] = [a, { tag: "c", v: 3, w: 4 }];
+    if (first[0] !== second[0]) throw new Error("one object in two unions");
+    const held = first[0]!;
+    if (held.tag === "a") held.v = 10;
+    const other = second[0]!;
+    if (a.v !== 10 || other.tag !== "a" || other.v !== 10) throw new Error("write through one union");
+    if (Object.keys(first[1]!).join() !== "tag,w" || JSON.stringify(second) !== '[{"tag":"a","v":10},{"tag":"c","v":3,"w":4}]') throw new Error("keys");
+`,
+);
+
+check(
+    "records-stored-as-a-generic-instantiation-stay-one-object",
+    `
+    interface Projection<State> { readonly state: State; readonly distance: number; owns: boolean }
+    interface TowerState { tower: number }
+    interface TowerProjection extends Projection<TowerState> { readonly support: number }
+    interface AdapterOptions<State> { current(): Projection<State> }
+    interface Adapter<State> { candidate(): object; projectionOf(key: object): Projection<State> | undefined }
+    function createAdapter<State>(options: AdapterOptions<State>): Adapter<State> {
+        const byCandidate = new WeakMap<object, Projection<State>>();
+        return {
+            candidate() {
+                const projection = options.current();
+                const key = { distance: projection.distance };
+                byCandidate.set(key, projection);
+                return key;
+            },
+            projectionOf(key) { return byCandidate.get(key); },
+        };
+    }
+    const towerProjection: TowerProjection = { state: { tower: 1 }, distance: 2, owns: false, support: 3 };
+    const adapter = createAdapter<TowerState>({ current: () => towerProjection });
+    const found = adapter.projectionOf(adapter.candidate());
+    if (found !== towerProjection) throw new Error("one projection");
+    found.owns = true;
+    if (!towerProjection.owns || found.state.tower !== 1) throw new Error("write through the generic view");
+    interface Peer { key: string; x: number }
+    interface Request<P> { readonly key: string; axis0: number; readonly allow0?: boolean; readonly admit?: (peer: P) => boolean }
+    interface Session<P> { resolve(request: Request<P>): number }
+    function createSession<P extends Peer>(peers: readonly P[]): Session<P> {
+        const resolveAxis = (request: Request<P>): number => {
+            let best = request.axis0;
+            for (const peer of peers) if (request.admit === undefined || request.admit(peer)) best = Math.max(best, peer.x);
+            return best;
+        };
+        return { resolve(request) { return resolveAxis(request) + (request.allow0 === false ? 0 : 1); } };
+    }
+    const session = createSession<Peer>([{ key: "a", x: 4 }, { key: "b", x: 9 }]);
+    const request = { key: "a", axis0: 2, allow0: true, admit: (peer: Peer) => peer.key === "a" };
+    if (session.resolve(request) !== 5) throw new Error("resolve");
+    request.axis0 = 7;
+    if (session.resolve(request) !== 8) throw new Error("written request");
+    interface Box<T> { value: T }
+    interface Held<S> { readonly state: S; distance: number }
+    interface Concrete extends Held<Box<number>> { readonly extra: number }
+    function keep<T>(make: () => Held<Box<T>>): Held<Box<T>>[] {
+        const kept: Held<Box<T>>[] = [];
+        const held = make();
+        kept.push(held);
+        held.distance = 3;
+        return kept;
+    }
+    const concrete: Concrete = { state: { value: 1 }, distance: 2, extra: 4 };
+    const kept = keep<number>(() => concrete);
+    if (kept[0] !== concrete || concrete.distance !== 3 || kept[0]!.state.value !== 1) throw new Error("nested instantiation");
+`,
+);
+
+check(
+    "narrowed-union-records-returned-as-another-union-stay-one-object",
+    `
+    interface Ready { state: "ready"; pickupX: number; goalX: number }
+    interface Pending { state: "pending" }
+    interface Blocked { state: "blocked" }
+    type Rendezvous = Ready | Pending | Blocked;
+    type StandPoint = { state: "ready"; x: number; z: number } | Pending | Blocked;
+    const points: StandPoint[] = [{ state: "pending" }, { state: "ready", x: 1, z: 2 }];
+    function rendezvous(point: StandPoint): Rendezvous {
+        if (point.state !== "ready") return point;
+        return { state: "ready", pickupX: point.x, goalX: point.z };
+    }
+    const seen = new Set<Rendezvous>();
+    const first = rendezvous(points[0]!);
+    const second = rendezvous(points[1]!);
+    seen.add(first);
+    if (first !== points[0] || second === points[1] || seen.size !== 1) throw new Error("selected objects");
+    if (second.state !== "ready" || second.pickupX !== 1 || Object.keys(second).join() !== "state,pickupX,goalX") throw new Error("fresh arm");
+    if (Object.keys(first).join() !== "state" || JSON.stringify(points) !== '[{"state":"pending"},{"state":"ready","x":1,"z":2}]') throw new Error("keys");
+`,
+);
+
+check(
+    "records-holding-a-field-only-undefined-share-the-other-type-layout",
+    `
+    interface Pose { pitch?: number; pivot?: readonly [number, number, number] }
+    const upright = { pitch: 0, pivot: undefined };
+    const suspended = { pitch: Math.PI / 2, pivot: [0.5, 0.5, 0] as const };
+    function orientation(kind: string): Pose { return kind === "fish" ? suspended : upright; }
+    const fish = orientation("fish");
+    const seen = new Set<Pose>([fish, orientation("x")]);
+    if (!seen.has(suspended) || !seen.has(upright) || fish.pivot?.[1] !== 0.5 || orientation("x").pivot !== undefined) throw new Error("one object per pose");
+    fish.pitch = 1;
+    if (suspended.pitch !== 1 || JSON.stringify(orientation("x")) !== '{"pitch":0}') throw new Error("write through the declared type");
+`,
+);
+
+check(
+    "union-arms-requiring-a-field-another-arm-makes-optional-enumerate-it",
+    `
+    interface Appearance { seed?: number }
+    interface Tower extends Appearance { seed: number }
+    interface House extends Appearance { label: string }
+    function keysOf(before: Tower | House, after: Tower | House): string { return [...new Set([...Object.keys(before), ...Object.keys(after)])].sort().join(); }
+    const classify: Array<typeof keysOf> = [keysOf];
+    const tower: Tower = { seed: 3 };
+    const house: House = { label: "h" };
+    const seeded: House = { label: "s", seed: 2 };
+    if (classify[0]!(tower, tower) !== "seed" || classify[0]!(house, house) !== "label" || classify[0]!(seeded, house) !== "label,seed") throw new Error("own keys");
+`,
+);
+
+test("union arms holding an undefined field another arm makes optional refuse its own-key presence", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface Tower { seed: number | undefined }
+            interface House { seed?: number; label: string }
+            function keysOf(before: Tower | House): string { return Object.keys(before).join(); }
+            const classify: Array<typeof keysOf> = [keysOf];
+            if (classify[0]!({ seed: undefined }) !== "seed") throw new Error("own undefined key");`),
+        /Own-property presence of 'seed' is not represented/,
+    );
+});
+
+check(
+    "union-records-narrowed-to-an-arm-with-methods-stay-one-object",
+    `
+    interface Step { id: number }
+    interface ReleasePlan { readonly steps: readonly Step[]; commit(): void }
+    type ReleasePreparation = ReleasePlan | { readonly state: "pending" } | { readonly state: "refused" };
+    const planOf = (preparation: ReleasePreparation): ReleasePlan | null => ("steps" in preparation ? preparation : null);
+    const roots: Array<typeof planOf> = [planOf];
+    let committed = 0;
+    const plan: ReleasePlan = { steps: [{ id: 1 }], commit() { committed++; } };
+    const preparations: ReleasePreparation[] = [plan, { state: "pending" }];
+    const found = roots[0]!(preparations[0]!);
+    if (found !== plan || roots[0]!(preparations[1]!) !== null) throw new Error("narrowed plan");
+    found.commit();
+    if (committed !== 1 || found.steps[0]!.id !== 1) throw new Error("commit");
+`,
+);
+
+check(
+    "records-holding-a-field-only-null-keep-it",
+    `
+    interface Face { polygon: readonly number[]; houseArc: readonly number[] | null }
+    interface Ring extends Face { houseArc: null }
+    interface Enclosure extends Face { houseArc: readonly number[] }
+    function ringFrom(n: number): Ring | null {
+        if (n < 0) return null;
+        const polygon = [n, n + 1];
+        if (polygon.length > 5) return null;
+        return { polygon, houseArc: null };
+    }
+    const make: Array<typeof ringFrom> = [ringFrom];
+    const yards: (Ring | Enclosure)[] = [{ polygon: [1], houseArc: [2] }];
+    const ring = make[0]!(3);
+    if (ring) yards.push(ring);
+    if (yards.length !== 2 || yards[1] !== ring || yards[1]!.houseArc !== null || make[0]!(-1) !== null) throw new Error("ring");
+    const text = JSON.stringify(ring);
+    if (!text.includes('"houseArc":null') || !text.includes('"polygon":[3,4]') || Object.keys(ring!).sort().join() !== "houseArc,polygon") throw new Error("keys " + text);
+`,
+);
+
+check(
+    "records-storing-a-function-of-a-narrower-signature-share-the-declared-layout",
+    `
+    interface Storage { readonly name: string; readonly vertex?: boolean; readonly data: (n: number) => number[] | null | undefined }
+    interface Part { readonly storage: readonly Storage[] }
+    function compose(parts: readonly Part[]): Storage[] { const flat: Storage[] = []; for (const part of parts) flat.push(...part.storage); return flat; }
+    function makePart(scale: number): Part {
+        const entry = { name: "clip", vertex: true as const, data: (n: number): number[] | null => (n > 0 ? [n * scale] : null) };
+        return { storage: [entry] };
+    }
+    const roots = [compose];
+    const parts: Part[] = [makePart(2)];
+    const flat = roots[0]!(parts);
+    const first = flat[0]!;
+    if (first.name !== "clip" || first.data(3)?.[0] !== 6 || first.data(0) != null || parts[0]!.storage[0] !== first || first.vertex !== true) throw new Error("storage");
+`,
+);
+
+check(
+    "records-stored-as-a-tagged-union-stay-one-object",
+    `
+    interface A { kind: "a"; x: number }
+    interface B { kind: "b"; y: number }
+    const a: A = { kind: "a", x: 1 };
+    const u: A | B = a;
+    if (u.kind === "a") u.x = 5;
+    if (a.x !== 5) throw new Error("one object");
+    const w = { kind: "a" as const, x: 2, extra: 3 };
+    const v: A | B = w;
+    if (v.kind === "a") v.x = 7;
+    if (w.x !== 7 || Object.keys(v).join() !== "kind,x,extra" || "y" in v) throw new Error("wider object");
+    const b: A | B = { kind: "b", y: 4 };
+    if (b.kind !== "b" || b.y !== 4 || Object.keys(b).join() !== "kind,y") throw new Error("other arm");
+`,
+);
+
+check(
+    "records-stored-in-nullable-slots-of-another-type-stay-one-object",
+    `
+    interface Wide { a: number; b: number }
+    interface Narrow { a: number }
+    const slots: (Narrow | null)[] = [null];
+    const w: Wide = { a: 1, b: 2 };
+    slots[0] = w;
+    slots[0]!.a = 5;
+    if (w.a !== 5 || slots[0] !== w) throw new Error("one object in a nullable slot");
+    let held: Narrow | undefined;
+    held = w;
+    held.a = 7;
+    if (w.a !== 7 || Object.keys(held).join() !== "a,b") throw new Error("one object in a nullable local");
+`,
+);
+
+check(
+    "union-records-narrowed-in-generic-bodies-stay-one-object",
+    `
+    interface Circle { kind: "circle"; r: number }
+    interface Square { kind: "square"; side: number }
+    type Shape = Circle | Square;
+    function grow(s: Square): void { s.side += 1; }
+    function apply<T>(items: Shape[], tag: T): T { for (const item of items) if (item.kind === "square") grow(item); return tag; }
+    const shapes: Shape[] = [{ kind: "square", side: 1 }, { kind: "circle", r: 2 }];
+    if (apply(shapes, 3) !== 3 || apply(shapes, "x") !== "x") throw new Error("tags");
+    const first = shapes[0]!;
+    if (first.kind !== "square" || first.side !== 3) throw new Error("written through the arm in a generic body");
+`,
+);
+
+check(
     "records-stored-as-an-engine-record-type-stay-one-object",
     `
     type VatClip = import("@babylonjs/lite").VatClip;
@@ -9411,15 +10779,19 @@ check(
     if (holder.points.length !== 2 || (points[1] as Wheel).label !== "rear") throw new Error("one array, one record");
 `,
 );
-test("tuples stored as growable number arrays need growable storage", () => {
-    assert.throws(
-        () =>
-            compileSource(`interface H { pos: [number, number] }
-            const h: H = { pos: [1, 2] };
-            const store: number[][] = [];
-            store.push(h.pos);`),
-        /fixed-length tuple stored as a number array could grow through that array/,
-    );
+check(
+    "record-tuple-fields-stored-in-number-array-containers",
+    `
+    interface H { pos: [number, number] }
+    const h: H = { pos: [1, 2] };
+    const store: number[][] = [];
+    store.push(h.pos);
+    store[0]!.push(3);
+    if (h.pos.length !== 3 || store[0] !== h.pos) throw new Error("one growable array");
+`,
+);
+
+test("tuple parameters stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>
             compileSource(`const store: number[][] = [];
@@ -9813,6 +11185,189 @@ test("stored function storage refuses values reading arguments it drops", () => 
             () => compileSource(source),
             /reading arguments past its storage signature cannot share that signature with calls passing more arguments/,
         );
+});
+
+check(
+    "stored-function-adapts-required-lanes-to-optional-parameters",
+    `
+    interface Host {
+        place(x: number, height: (x: number, z: number, floor: number) => number | null): number | null;
+        label(name: (id: number) => string | undefined): string;
+    }
+    function sampler(base: number) {
+        return {
+            heightAt(x: number, z: number, floor?: number): number | null {
+                if (x < 0) return null;
+                return (floor ?? base) + x + z;
+            },
+            name(id: number): string { return "#" + id; },
+        };
+    }
+    function live(deps: Host): (x: number) => [number | null, string] {
+        const samplers: ReturnType<typeof sampler>[] = [sampler(10)];
+        const sampled = samplers[0]!;
+        return (x) => [deps.place(x, sampled.heightAt), deps.label(sampled.name)];
+    }
+    const lives: Array<typeof live> = [live];
+    const seen: Array<number | null> = [];
+    const run = lives[0]!({
+        place: (x, height) => {
+            const held = height;
+            seen.push(held(x, 2, 5));
+            return height(x, 3, 0.5);
+        },
+        label: (name) => name(7) ?? "none",
+    });
+    const [first, label] = run(1);
+    if (first !== 4.5 || seen[0] !== 8 || label !== "#7") throw new Error("adapted lanes");
+    if (run(-1)[0] !== null || seen[1] !== null) throw new Error("adapted absent result");
+`,
+);
+
+test("stored function adapters refuse lanes the value does not hold", () => {
+    for (const [source, message] of [
+        [
+            `interface Deps { run(f: (value: number | undefined) => number): number }
+            function make(deps: Deps): number {
+                const table: Array<{ twice(value: number): number }> = [{ twice: (value) => value * 2 }];
+                return deps.run(table[0]!.twice);
+            }
+            const makes: Array<typeof make> = [make];
+            if (makes[0]!({ run: (f) => f(undefined) }) !== 0) throw new Error("x");`,
+            /does not match the expected data function/,
+        ],
+        [
+            `interface Deps { run(f: (key: string) => number): number }
+            function make(deps: Deps): number {
+                const table: Array<{ rank(key: "low" | "high"): number }> = [{ rank: (key) => (key === "low" ? 1 : 2) }];
+                return deps.run(table[0]!.rank);
+            }
+            const makes: Array<typeof make> = [make];
+            if (makes[0]!({ run: (f) => f("other") }) !== 2) throw new Error("x");`,
+            /does not match the expected data function/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "methods-picked-by-a-runtime-key-are-called",
+    `
+    type Shape = "circle" | "square";
+    interface Costs {
+        circle(label: string, scaled: boolean): number;
+        square(label: string, scaled: boolean): number;
+    }
+    const order: string[] = [];
+    function note<T>(label: string, value: T): T { order.push(label); return value; }
+    function pricing(costs: Costs) {
+        return {
+            price(shape: Shape, label: string, scaled: boolean): { shape: Shape; cost: number } {
+                return { shape, cost: costs[note("key", shape)](note("label", label), note("scaled", scaled)) };
+            },
+        };
+    }
+    let calls = 0;
+    const made = pricing({
+        circle: (label, scaled) => { calls++; return label.length + (scaled ? 100 : 0); },
+        square: (label, scaled) => { calls++; return label.length * 2 + (scaled ? 100 : 0); },
+    });
+    if (made.price("circle", "ring", false).cost !== 4) throw new Error("circle");
+    if (made.price("square", "tile", true).cost !== 108) throw new Error("square");
+    if (calls !== 2 || order.join(",") !== "key,label,scaled,key,label,scaled") throw new Error("order " + order.join(","));
+    const stored: Array<typeof pricing> = [pricing];
+    const runtime = stored[0]!({ circle: (label) => label.length, square: (label) => -label.length });
+    if (runtime.price("square", "ab", false).cost !== -2) throw new Error("runtime record");
+`,
+);
+
+check(
+    "calling-an-absent-function-value-throws-a-type-error",
+    `
+    const handlers = new Map<string, () => number>();
+    handlers.set("one", () => 1);
+    function kindOf(run: () => void): string {
+        try {
+            run();
+            return "none";
+        } catch (error) {
+            return error instanceof TypeError ? "type" : "other";
+        }
+    }
+    if (kindOf(() => { handlers.get("one")!(); }) !== "none") throw new Error("present handler");
+    if (kindOf(() => { handlers.get("missing")!(); }) !== "type") throw new Error("absent map handler");
+    interface Hooks { done?: (value: number) => void }
+    const hooks: Hooks[] = [{}, { done: () => {} }];
+    if (kindOf(() => { hooks[0]!.done!(3); }) !== "type") throw new Error("absent optional field");
+    if (kindOf(() => { hooks[1]!.done!(3); }) !== "none") throw new Error("present optional field");
+`,
+);
+
+check(
+    "nullish-fallback-of-another-union-member-and-optional-method-calls",
+    `
+    interface Move { readonly id: number; readonly target: { readonly x: number; readonly z: number } | null }
+    interface Plan { readonly moves: readonly Move[]; commit(): void }
+    type Proposal = Plan | { readonly state: "waiting" } | { readonly state: "rejected" };
+    const planIn = (proposal: Proposal): Plan | null => ("moves" in proposal ? proposal : null);
+    const log: string[] = [];
+    let fallbackCount = 0;
+    const origin = (): "origin" => { fallbackCount++; return "origin"; };
+    function createMover(deps: { targetOf(id: number): { x: number; z: number } | null; reject(): boolean }) {
+        const seen: Array<{ x: number; z: number } | "origin"> = [];
+        const apply = (id: number, target: { x: number; z: number } | "origin"): void => {
+            seen.push(target);
+            if (target === "origin") { log.push(id + ":origin"); return; }
+            log.push(id + ":" + target.x + "," + target.z);
+        };
+        const prepare = (ids: readonly number[]): Proposal => {
+            if (deps.reject()) return { state: "rejected" };
+            const moves: Move[] = [];
+            for (const id of ids) moves.push({ id, target: deps.targetOf(id) });
+            return {
+                moves,
+                commit: () => {
+                    for (const move of moves) apply(move.id, move.target ?? origin());
+                },
+            };
+        };
+        const applyAll = (ids: readonly number[]): boolean => {
+            const plan = planIn(prepare(ids));
+            plan?.commit();
+            if (plan) {
+                const first = plan.moves[0];
+                if (first && first.target && seen[0] !== first.target) throw new Error("target identity");
+            }
+            return plan !== null;
+        };
+        return { applyAll };
+    }
+    let rejected = false;
+    const mover = createMover({ targetOf: (id) => (id % 2 ? { x: id, z: -id } : null), reject: () => rejected });
+    if (!mover.applyAll([1, 2])) throw new Error("applied");
+    rejected = true;
+    if (mover.applyAll([3])) throw new Error("rejected");
+    if (log.join(";") !== "1:1,-1;2:origin" || fallbackCount !== 1) throw new Error("log " + log.join(";") + " " + fallbackCount);
+`,
+);
+
+test("a method reading this stays refused when picked by a runtime key", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            type Shape = "circle" | "square";
+            interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
+            function pricing(costs: Costs) {
+                return { price(shape: Shape, label: string): number { return costs[shape](label); } };
+            }
+            const made = pricing({
+                scale: 10,
+                circle(label) { return this.scale * label.length; },
+                square(label) { return this.scale * 2 * label.length; },
+            });
+            if (made.price("circle", "ring") !== 40) throw new Error("x");`),
+        /reads `this`, and .* reads its function value, which could call it with another receiver/,
+    );
 });
 
 check(
@@ -10739,5 +12294,934 @@ check(
     byKey.set(2, direct);
     if (byKey.get(1)!.key !== "C1,2" || byKey.get(2)![brand] !== true) throw new Error("brand records");
     if (Object.keys(direct).join(",") !== "clips,key") throw new Error("string keys");
+`,
+);
+
+// Entry pairs a callback builds at run time are typed as the entries their
+// consumer stores: array and tuple values beside literal-union keys.
+check(
+    "collection-entries-from-callback-pairs",
+    `
+    type Job = "none" | "farmer" | "smith" | "baker";
+    interface Perk { id: string; job: Job; value: number }
+    const ORDER: readonly Exclude<Job, "none">[] = ["farmer", "smith", "baker"];
+    const GROW: Perk = Object.freeze({ id: "grow", job: "farmer", value: 2 });
+    const FORGE: Perk = Object.freeze({ id: "forge", job: "smith", value: 3 });
+    const BY_JOB = Object.freeze(Object.fromEntries(
+        ORDER.map((job) => [job, Object.freeze(job === "farmer" ? [GROW] : job === "smith" ? [FORGE, GROW] : [])]),
+    )) as Readonly<Record<Exclude<Job, "none">, readonly Perk[]>>;
+    function count(job: Exclude<Job, "none">): number { return BY_JOB[job].length; }
+    const counts: Array<typeof count> = [count];
+    if (counts[0]!("smith") !== 2 || counts[0]!("baker") !== 0 || BY_JOB.farmer[0] !== GROW || BY_JOB.smith[1] !== GROW)
+        throw new Error("perk table");
+    const KEYS: readonly string[] = ["a", "b"];
+    const lists = Object.fromEntries(KEYS.map((key) => [key, key === "a" ? [1, 2] : []]));
+    if (lists.a!.length !== 2 || lists.b!.length !== 0 || Object.keys(lists).join() !== "a,b") throw new Error("list entries");
+    type Tint = [number, number, number];
+    interface Slot { key: string; tint: Tint }
+    function changed(before: readonly Slot[], after: readonly Slot[]): string {
+        const byKey = new Map(before.map((s) => [s.key, s.tint]));
+        let out = "";
+        for (const s of after) {
+            const old = byKey.get(s.key);
+            if (!old || old[0] !== s.tint[0]) out += s.key;
+        }
+        return out;
+    }
+    const tint: Tint = [1, 0, 0];
+    if (changed([{ key: "a", tint }, { key: "c", tint }], [{ key: "a", tint: [2, 0, 0] }, { key: "b", tint }, { key: "c", tint }]) !== "ab")
+        throw new Error("tuple values");
+`,
+);
+
+// Number() is ToNumber over every representation of its operand.
+check(
+    "number-conversion-of-documents-booleans-and-optionals",
+    `
+    const texts: Array<string | undefined> = ["3", undefined, " 4 ", ""];
+    const flags: Array<boolean | null> = [true, null, false];
+    const numbers: Array<number | undefined> = [2, undefined];
+    let total = "";
+    for (const t of texts) total += Number(t) + ";";
+    for (const f of flags) total += Number(f) + ";";
+    for (const n of numbers) total += Number(n) + ";";
+    const doc = JSON.parse('{"a":"5","b":null,"c":[2],"d":{},"e":true,"f":"x","g":[1,2]}') as Record<string, unknown>;
+    for (const k of ["a", "b", "c", "d", "e", "f", "g", "h"]) total += Number(doc[k]) + ";";
+    if (total !== "3;NaN;4;0;1;0;0;2;NaN;5;0;2;NaN;1;NaN;NaN;NaN;") throw new Error(total);
+    interface Placement { bucket: number; slope: boolean }
+    const placements: Placement[] = [{ bucket: 1, slope: true }, { bucket: 0, slope: true }, { bucket: 1, slope: false }];
+    placements.sort((a, b) => a.bucket - b.bucket || Number(a.slope) - Number(b.slope));
+    if (placements.map((p) => p.bucket + (p.slope ? "t" : "f")).join() !== "0t,1f,1t") throw new Error("boolean order");
+    function levels(text: string): number[] {
+        const value = JSON.parse(text) as unknown;
+        if (!Array.isArray(value)) throw new Error("levels");
+        const out: number[] = [];
+        for (const raw of value) {
+            const { size } = raw as { size?: unknown };
+            out.push(Number(size));
+        }
+        return out;
+    }
+    const decoded = levels('[{"size":"4"},{"size":2},{"size":null},{}]');
+    if (decoded[0] !== 4 || decoded[1] !== 2 || decoded[2] !== 0 || !Number.isNaN(decoded[3])) throw new Error("fields");
+`,
+);
+
+// An array stored as an array of another element type is a copy, admitted
+// only where JavaScript could not tell it from the one array it keeps.
+check(
+    "arrays-stored-with-converted-elements",
+    `
+    const ORDER = ["deer", "rabbit", "fox"] as const;
+    type Kind = (typeof ORDER)[number];
+    interface Def { airborne?: boolean; clips?: { fly?: string[] } }
+    const TABLE: Record<Kind, Def> = { deer: {}, rabbit: { airborne: true, clips: { fly: ["a"] } }, fox: { airborne: true } };
+    function grounded(): readonly Kind[] {
+        return (Object.keys(TABLE) as Kind[]).filter((kind) => TABLE[kind].airborne === true && (TABLE[kind].clips?.fly?.length ?? 0) === 0);
+    }
+    const kinds: Array<typeof grounded> = [grounded];
+    if (kinds[0]!().join() !== "fox") throw new Error("keys as literal union");
+    type ChurchFailure = "nave" | "bell";
+    type MillFailure = "wheel" | "water";
+    interface Plate { kind: "church" | "mill"; church?: { failures: readonly ChurchFailure[] }; mill?: { failures: readonly MillFailure[] } }
+    function failures(plate: Readonly<Plate>): readonly string[] {
+        switch (plate.kind) {
+            case "church": return plate.church?.failures ?? [];
+            case "mill": return plate.mill?.failures ?? [];
+        }
+    }
+    const reports: Array<typeof failures> = [failures];
+    if (reports[0]!({ kind: "church", church: { failures: ["bell"] } }).join() !== "bell" || reports[0]!({ kind: "mill" }).length !== 0)
+        throw new Error("literal unions as strings");
+    type Mask = readonly (boolean | undefined)[];
+    function dirty(mask: Mask | null): boolean { return mask?.some(Boolean) === true; }
+    function merge(current: boolean[] | null, next: Mask): boolean[] {
+        const out = current ? current.slice() : new Array<boolean>(next.length).fill(false);
+        for (let i = 0; i < next.length; i++) if (next[i]) out[i] = true;
+        return out;
+    }
+    function run(): string {
+        let pending: boolean[] | null = null;
+        const touched: boolean[] = [false, true];
+        pending = merge(pending, touched);
+        pending = merge(pending, [true]);
+        return (dirty(pending) ? "dirty:" : "clean:") + pending.join();
+    }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!() !== "dirty:true,true") throw new Error("lent optional lanes");
+    type Ids = readonly (string | null | undefined)[];
+    function ids(wall: Ids | undefined, houses: readonly { primary: string; secondary?: string }[]): string[] {
+        const resolve = (requested: Ids | undefined) => [...new Set((requested ?? []).map((id) => id ?? "none"))];
+        const parts = (h: { primary: string; secondary?: string }): string[] => h.secondary ? [h.primary, h.secondary] : [h.primary];
+        return resolve([...(wall ?? []), ...houses.flatMap(parts)]);
+    }
+    const resolved: Array<typeof ids> = [ids];
+    if (resolved[0]!(["a", null, undefined, "a"], [{ primary: "b", secondary: "c" }]).join() !== "a,none,b,c") throw new Error("fresh optional lanes");
+    interface Sample { readonly lastMs: number; readonly maxMs: number }
+    interface Timings { record(slot: number, ms: number): void; frame(): [string, Sample][] }
+    function timings(labels: readonly string[]): Timings {
+        const last = new Float32Array(labels.length);
+        const max = new Float32Array(labels.length);
+        return {
+            record(slot, ms) { last[slot] = ms; if (ms > max[slot]!) max[slot] = ms; },
+            frame() { return labels.map((label, i) => [label, { lastMs: last[i]!, maxMs: max[i]! }]); },
+        };
+    }
+    const factories: Array<typeof timings> = [timings];
+    const t = factories[0]!(["a", "b"]);
+    t.record(1, 4);
+    const frame = t.frame();
+    if (frame[1]![0] !== "b" || frame[1]![1].maxMs !== 4 || frame[0]![1].lastMs !== 0) throw new Error("tuple record lanes");
+    const parsed = JSON.parse('["a", 1, "b", null]') as unknown;
+    const strings = new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : []);
+    if (strings.size !== 2 || !strings.has("b")) throw new Error("guarded document strings");
+`,
+);
+
+// A selection of tuples of different lengths destructured where it is
+// produced reads a converted copy nothing else holds, even though the
+// program changes number arrays elsewhere.
+check(
+    "destructured-selection-of-converted-arrays",
+    `
+    function clearPoint(x: number, z: number, margin = 0.5): [number, number] {
+        const out: [number, number] = [x, z];
+        if (x < margin) out[0] = margin;
+        return out;
+    }
+    function seatNearby(x: number, z: number, admitted: (x: number, z: number) => boolean): [number, number, boolean] | null {
+        for (let r = 1; r < 4; r++) if (admitted(x + r, z)) return [x + r, z, true];
+        return null;
+    }
+    function reseat(x: number, z: number, admitted: ((x: number, z: number) => boolean) | null): [x: number, z: number, admitted: boolean] {
+        const cleared = clearPoint(x, z);
+        const stranded = admitted !== null && !admitted(cleared[0], cleared[1]);
+        if (admitted && stranded) {
+            const seat = seatNearby(cleared[0], cleared[1], admitted);
+            if (seat) return seat;
+        }
+        return [cleared[0], cleared[1], !stranded];
+    }
+    function place(x: number, z: number, restore = false): [number, number] {
+        const admitted = (px: number, _pz: number): boolean => px > 2;
+        const [seatX, seatZ] = restore ? reseat(x, z, admitted) : clearPoint(x, z, 0.2);
+        const [, , kept = false] = (restore ? seatNearby(x, z, admitted) : null) ?? [0, 0];
+        return [seatX, kept ? seatZ : -seatZ];
+    }
+    const places: Array<typeof place> = [place];
+    const a = places[0]!(0, 1, true);
+    const b = places[0]!(0.1, 1);
+    if (a[0] !== 2.5 || a[1] !== 1 || b[0] !== 0.2 || b[1] !== -1) throw new Error("destructured selection");
+    const trail: number[] = [];
+    function note(v: number): number { trail.push(v); return trail.length; }
+    const notes: Array<typeof note> = [note];
+    if (notes[0]!(1) !== 1) throw new Error("trail");
+`,
+);
+
+test("arrays destructured with code between their reads refuse a converted copy", () => {
+    const shapes = `
+        const trail: number[] = [];
+        function note(v: number): number { trail.push(v); return v; }
+        const stored: [number, number] = [1, 2];
+        function pair(x: number): [number, number] { stored[0] = x; return stored; }
+        const seat: [number, number, boolean] = [0, 0, true];
+        function triple(x: number): [number, number, boolean] { seat[1] = x; return seat; }
+    `;
+    for (const destructuring of [
+        "const [a = note(4), b] = flag ? triple(x) : pair(x); return a + b;",
+        "let a = 0, b = 0; [a, b] = flag ? triple(x) : pair(x); return a + b;",
+        "const [a, ...rest] = flag ? triple(x) : pair(x); return a + rest.length;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${shapes} function run(x: number, flag: boolean): number { ${destructuring} } const runs: Array<typeof run> = [run]; if (runs[0]!(1, true) < 0) throw new Error('x');`,
+                ),
+            /is a copy, and the program changes the elements of such arrays/,
+        );
+});
+
+test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
+    for (const [source, message] of [
+        [
+            "type K = 'a' | 'b'; const kinds: K[] = []; function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; kinds.push('a'); if (roots[0]!().length !== 1) throw new Error('x');",
+            /is a copy, and the program changes the elements of such arrays/,
+        ],
+        [
+            "type K = 'a' | 'b'; const kinds: readonly K[] = [1, 2].map((i) => (i % 2 ? 'a' : 'b')); function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
+            /is a copy, and the program compares such arrays by identity/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+// `x || undefined` and `x && y` over optional scalars keep absence apart
+// from the falsy values the left operand selects.
+check(
+    "optional-scalar-logical-values",
+    `
+    interface Tower { id?: number; name: string; label?: string }
+    interface Input { towers: readonly Tower[]; idOf(tower: Tower, index: number): number | undefined }
+    function assemble(input: Input): string { return input.towers.map((t, i) => String(input.idOf(t, i))).join(); }
+    function live(towers: readonly Tower[]): string {
+        return assemble({ towers, idOf: (tower) => tower.id || undefined });
+    }
+    const lives: Array<typeof live> = [live];
+    if (lives[0]!([{ id: 3, name: "a" }, { name: "b" }, { id: 0, name: "c" }, { id: NaN, name: "d" }]) !== "3,undefined,undefined,undefined")
+        throw new Error("number or undefined");
+    function label(tower: Tower): string | undefined { return tower.label || undefined; }
+    const labels: Array<typeof label> = [label];
+    if (labels[0]!({ name: "a", label: "" }) !== undefined || labels[0]!({ name: "a", label: "x" }) !== "x") throw new Error("string or undefined");
+    function guarded(tower: Tower): number | undefined { return tower.id && tower.id + 1; }
+    const guards: Array<typeof guarded> = [guarded];
+    if (guards[0]!({ name: "a", id: 0 }) !== 0 || guards[0]!({ name: "a" }) !== undefined || guards[0]!({ name: "a", id: 2 }) !== 3)
+        throw new Error("number and number");
+`,
+);
+
+// A parameter defaulted to a value that may itself be undefined stays optional.
+check(
+    "defaulted-parameter-that-may-be-undefined",
+    `
+    interface Idle { day?: number; built?: number }
+    interface Fields { od?: number; os?: number }
+    function fields(idle: Idle, mutation = false, built = idle.built): Fields {
+        const out: Fields = {};
+        if (!mutation && idle.day !== undefined) out.od = idle.day;
+        if (built !== undefined) out.os = built;
+        return out;
+    }
+    const stored: Array<typeof fields> = [fields];
+    const f = stored[0]!({ day: 2, built: 1 });
+    if (f.od !== 2 || f.os !== 1) throw new Error("defaults");
+    const g = stored[0]!({}, true, 5);
+    if (g.od !== undefined || g.os !== 5) throw new Error("override");
+    if (stored[0]!({}).os !== undefined || "os" in stored[0]!({})) throw new Error("absent default");
+`,
+);
+
+// An assertion to a record type reads the record member of a union of a
+// string and one record type.
+check(
+    "asserted-record-member-of-a-string-union",
+    `
+    interface Decl { readonly name: string; readonly sampleType?: "float" | "depth" }
+    type Sampler = string | Decl;
+    function samplers(shadows: boolean): readonly Sampler[] {
+        return shadows ? [{ name: "csm", sampleType: "depth" }, { name: "stable" } as Sampler] : [{ name: "albedo" }];
+    }
+    function names(shadows: boolean): string[] { return samplers(shadows).map((sampler) => (sampler as { name: string }).name); }
+    const stored: Array<typeof names> = [names];
+    if (stored[0]!(true).join() !== "csm,stable" || stored[0]!(false).join() !== "albedo") throw new Error("names");
+    const name = (sampler: Sampler): string => (sampler as { name: string }).name;
+    if (name({ name: "x" }) !== "x") throw new Error("name");
+`,
+);
+
+// A spread copies a field only to have a later property replace it.
+check(
+    "spread-fields-a-later-property-replaces",
+    `
+    interface Span { ax: number; bx: number; banked: boolean; stepYA?: number; stepYB?: number; tint?: [number, number, number] }
+    function split(span: Span, cuts: number[]): Span[] {
+        const bounds = [0, ...cuts, 1];
+        const segs: Span[] = [];
+        for (let i = 0; i + 1 < bounds.length; i++)
+            segs.push({ ...span, ax: bounds[i]!, bx: bounds[i + 1]!, banked: i === 0 ? span.banked : false, stepYA: undefined, stepYB: undefined });
+        for (let i = 0; i + 1 < segs.length; i++) segs[i]!.stepYB = i;
+        return segs;
+    }
+    const stored: Array<typeof split> = [split];
+    const tint: [number, number, number] = [1, 2, 3];
+    const s = stored[0]!({ ax: 0, bx: 1, banked: true, stepYA: 4, tint }, [0.5]);
+    if (s.length !== 2 || s[0]!.stepYA !== undefined || s[0]!.stepYB !== 0 || s[1]!.stepYB !== undefined) throw new Error("replaced fields");
+    if (s[1]!.tint !== tint || s[1]!.banked || !s[0]!.banked || s[1]!.ax !== 0.5) throw new Error("copied fields");
+`,
+);
+
+// Collections whose type arguments name unknown hold parsed documents,
+// keyed by SameValueZero: object identity, string value, one NaN.
+check(
+    "collections-of-parsed-documents",
+    `
+    function asRecord(v: unknown): Record<string, unknown> | null {
+        return v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
+    }
+    function firstById(text: string): string {
+        const rows = JSON.parse(text) as unknown[];
+        const byId = new Map<number, Record<string, unknown>>();
+        for (const raw of rows) {
+            const row = asRecord(raw);
+            const id = row?.id;
+            if (row !== null && typeof id === "number" && !byId.has(id)) byId.set(id, row);
+        }
+        if (byId.get(1) !== asRecord(rows[0])) throw new Error("identity");
+        let out = "";
+        for (const [id, row] of byId) out += id + "=" + String(row.name) + ";";
+        return out;
+    }
+    const stored: Array<typeof firstById> = [firstById];
+    if (stored[0]!('[{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":1,"name":"c"},3]') !== "1=a;2=b;") throw new Error("first rows");
+    type Row = Record<string, unknown>;
+    function count(text: string): string {
+        const seen = new Map<Row, number>();
+        const values = new Set<unknown>();
+        const rows = JSON.parse(text) as unknown[];
+        for (const raw of rows) {
+            values.add(raw);
+            if (raw && typeof raw === "object") seen.set(raw as Row, (seen.get(raw as Row) ?? 0) + 1);
+        }
+        for (const raw of rows) if (raw && typeof raw === "object") seen.set(raw as Row, (seen.get(raw as Row) ?? 0) + 1);
+        values.add(-0);
+        return seen.size + ":" + values.size + ":" + [...seen.values()].join();
+    }
+    const counts: Array<typeof count> = [count];
+    if (counts[0]!('[{"a":1},{"a":1},"x","x",0,null,null]') !== "2:5:2,2") throw new Error("keys " + counts[0]!('[{"a":1},{"a":1},"x","x",0,null,null]'));
+`,
+);
+
+test("collections refuse type arguments without a represented storage", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const pending = new Map<string, object>(); pending.set('a', {}); if (pending.size !== 1) throw new Error('x');",
+            ),
+        /new Map requires concrete data type arguments or a contextual container type/,
+    );
+});
+
+// A parsed array read as a typed array copies its elements where the
+// source builds a new collection (a spread, a Set), and finds its own
+// elements whatever record type the source reads them as.
+check(
+    "parsed-arrays-copied-into-typed-collections",
+    `
+    interface Request { asset: string; clips: readonly string[] }
+    function fail(message: string): never { throw new Error(message); }
+    function normalize(request: Request): Request {
+        if (
+            !Array.isArray(request?.clips) ||
+            request.clips.length === 0 ||
+            request.clips.some((clip) => typeof clip !== "string" || clip.length === 0) ||
+            new Set(request.clips).size !== request.clips.length
+        )
+            fail("clips must be unique names");
+        return { asset: request.asset, clips: [...request.clips] };
+    }
+    function decode(text: string): Request {
+        const metadata = JSON.parse(text) as { request?: unknown };
+        return normalize(metadata.request as Request);
+    }
+    const decoders: Array<typeof decode> = [decode];
+    const r = decoders[0]!('{"request":{"asset":"a","clips":["x","y"]}}');
+    if (r.clips.join() !== "x,y" || r.asset !== "a" || r.clips.length !== 2) throw new Error("normalized");
+    let threw = false;
+    try { decoders[0]!('{"request":{"asset":"a","clips":["x","x"]}}'); } catch { threw = true; }
+    if (!threw) throw new Error("duplicates");
+    type Usage = "walls" | "roof" | "ground";
+    function usages(m: { usages?: readonly Usage[]; usage?: Usage }): Usage[] {
+        if (m.usages && m.usages.length > 0) return [...new Set(m.usages)];
+        return m.usage ? [m.usage] : ["walls"];
+    }
+    function parse(text: string): Usage[] { return usages(JSON.parse(text) as { usages?: Usage[]; usage?: Usage }); }
+    const parsers: Array<typeof parse> = [parse];
+    if (parsers[0]!('{"usages":["roof","walls","roof"]}').join() !== "roof,walls" || parsers[0]!('{"usage":"ground"}').join() !== "ground")
+        throw new Error("literal union set");
+    interface RawNode { name?: string; mesh?: number }
+    interface RawJson { nodes?: RawNode[]; meshes?: { name?: string }[] }
+    function meshName(text: string): string {
+        const json = JSON.parse(text) as RawJson;
+        const node = (json.nodes ?? []).find((n) => n.mesh !== undefined);
+        if (!node || node.mesh === undefined) return "none";
+        if (node !== json.nodes![1]) throw new Error("found element identity");
+        return (node.name ?? "?") + ":" + (json.meshes?.[node.mesh]?.name ?? "-");
+    }
+    const names: Array<typeof meshName> = [meshName];
+    if (names[0]!('{"nodes":[{"name":"a"},{"name":"b","mesh":0}],"meshes":[{"name":"m"}]}') !== "b:m" || names[0]!('{"nodes":[{}]}') !== "none")
+        throw new Error("found node");
+`,
+);
+
+// Cancelling a timer whose identifier may be absent cancels nothing while it
+// is absent.
+checkInRealm(
+    "timer-cancellation-of-an-absent-identifier",
+    `
+    const ready = new Promise<void>((resolve) => setTimeout(resolve, 0));
+    let fired = 0;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    function end(): void { fired++; }
+    function key(): void { clearTimeout(settle); settle = setTimeout(end, 0); }
+    function cancel(): void { clearTimeout(settle); settle = undefined; }
+    const handlers: Array<() => void> = [key, cancel];
+    void (async () => {
+        await ready;
+        handlers[1]!();
+        handlers[0]!();
+        handlers[0]!();
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        if (fired !== 1) throw new Error("one settled burst " + fired);
+        handlers[0]!();
+        handlers[1]!();
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        if (fired !== 1) throw new Error("cancelled burst");
+        globalThis.close();
+    })();
+`,
+);
+
+// A record read as `Record<string, unknown>` by a run-time key reads a
+// parsed view of it; a property no prototype of a number defines reads
+// undefined, and compares strictly unequal to any string.
+check(
+    "unknown-records-read-by-runtime-keys",
+    `
+    class ParseError extends Error {
+        readonly path: string;
+        constructor(path: string, message: string) { super(path + ": " + message); this.name = "ParseError"; this.path = path; }
+    }
+    const fail = (path: string, message: string): never => { throw new ParseError(path, message); };
+    function isPlainObject(v: unknown): v is Record<string, unknown> { return typeof v === "object" && v !== null && !Array.isArray(v); }
+    function ownKeys(o: Record<string, unknown>): string[] { return Object.keys(o).filter((k) => !k.startsWith("_")); }
+    type ConstantValue = number | number[];
+    function parseConstants(raw: unknown, path: string): Record<string, ConstantValue> {
+        if (!isPlainObject(raw)) return fail(path, "constants must be an object");
+        const out: Record<string, ConstantValue> = {};
+        for (const k of ownKeys(raw)) {
+            const v = raw[k];
+            if (typeof v === "number") out[k] = v;
+            else if (Array.isArray(v)) out[k] = v.map((n) => n as number);
+            else fail(path + "." + k, "constant must be a number or an array");
+        }
+        return out;
+    }
+    const FORMAT = "behavior";
+    interface Def { kind: string; constants: Record<string, ConstantValue> }
+    function parse(raw: unknown): Def {
+        if (!isPlainObject(raw)) return fail("$", "root must be an object");
+        if (raw["format"] !== FORMAT) fail("$.format", "format");
+        if (raw["version"] !== 1) fail("$.version", "version");
+        const kind = raw["kind"];
+        if (typeof kind !== "string") return fail("$.kind", "kind");
+        return { kind, constants: parseConstants(raw["constants"] ?? {}, "$.constants") };
+    }
+    const raw: unknown = { format: "behavior", version: 1, kind: "animal", constants: { urge: 0.4, _note: "x", window: [4, 9] } };
+    const parsed = parse(raw);
+    if (parsed.kind !== "animal" || parsed.constants["urge"] !== 0.4 || (parsed.constants["window"] as number[])[1] !== 9 || "_note" in parsed.constants)
+        throw new Error("parsed");
+    let rejected = "";
+    try { parse(42); } catch (error) { rejected = error instanceof ParseError ? error.path : "other"; }
+    if (rejected !== "$") throw new Error("rejected " + rejected);
+    const n: unknown = 42;
+    const format = (n as Record<string, unknown>)["format"];
+    if (format !== undefined || (n as Record<string, unknown>)["format"] === FORMAT) throw new Error("number property");
+`,
+);
+
+// Fresh tuples of different lane types select through one conditional;
+// Array.isArray proves an optional readonly array present; a string read
+// asserted present (`map.get(k)!`) stores as a string.
+check(
+    "tuple-arms-guarded-arrays-and-asserted-strings",
+    `
+    function clear(x: number, z: number): [number, number] { return [x + 1, z]; }
+    function reseat(x: number, z: number): [x: number, z: number, admitted: boolean] {
+        const c = clear(x, z);
+        return [c[0], c[1], c[0] > 2];
+    }
+    function seat(x: number, z: number, restore: boolean): [number, number] {
+        const [sx, sz] = restore ? reseat(x, z) : clear(x, z);
+        return [sx * 2, sz];
+    }
+    const seats: Array<typeof seat> = [seat];
+    if (seats[0]!(1, 3, true).join() !== "4,3" || seats[0]!(2, 5, false).join() !== "6,5") throw new Error("seats");
+    let refunded: number[] = [];
+    const ledger = { setRefunded(ids: readonly number[]): void { refunded = ids.filter((id) => id > 0); } };
+    function restore(save: { mana?: number; refunded?: readonly number[] }): void {
+        ledger.setRefunded(Array.isArray(save.refunded) ? save.refunded : []);
+    }
+    const restores: Array<typeof restore> = [restore];
+    restores[0]!({ refunded: [3, -1, 4] });
+    if (refunded.join() !== "3,4") throw new Error("refunded " + refunded.join());
+    restores[0]!({});
+    if (refunded.length !== 0) throw new Error("empty");
+    function roots(pairs: readonly [string, string][]): string {
+        const parent = new Map<string, string>();
+        for (const [a] of pairs) parent.set(a, a);
+        const find = (k: string): string => {
+            let root = k;
+            while (parent.get(root) !== root) root = parent.get(root)!;
+            return root;
+        };
+        for (const [a, b] of pairs) if (find(a) !== find(b)) parent.set(find(b), find(a));
+        return pairs.map(([a]) => find(a)).join();
+    }
+    const finders: Array<typeof roots> = [roots];
+    if (finders[0]!([["a", "a"], ["b", "a"], ["c", "b"]]) !== "c,c,c") throw new Error("roots");
+`,
+);
+
+// A value whose type admits both null and undefined keeps which one it is:
+// a method call an optional chain skips is undefined while the method's own
+// null stays null, an argument whose type admits one absence forwards it,
+// and an element read out of a map is undefined where its key is missing.
+check(
+    "absences-kept-apart-across-chains-arguments-and-documents",
+    `
+    interface Build { bottomY(): number | null }
+    function bottomAt(entry: { floorY: number; build: Build } | undefined): number | null | undefined {
+        const bottom = entry?.build.bottomY();
+        return entry && bottom != null ? bottom + entry.floorY : bottom;
+    }
+    const bottoms: Array<typeof bottomAt> = [bottomAt];
+    const read = (entry: { floorY: number; build: Build } | undefined): string => String(bottoms[0]!(entry));
+    if (read(undefined) + "," + read({ floorY: 2, build: { bottomY: () => null } }) + "," + read({ floorY: 2, build: { bottomY: () => 3 } }) !== "undefined,null,5")
+        throw new Error("chain absences");
+    interface Control { id: number; u: number; lat?: number }
+    function find(controls: readonly Control[], u: number, controlId?: number | null): Control | undefined {
+        const byId = controlId !== undefined && controlId !== null ? controls.find((c) => c.id === controlId) : undefined;
+        if (byId?.lat !== undefined) return byId;
+        return controls.find((c) => c.u === u);
+    }
+    const finders: Array<typeof find> = [find];
+    function clear(controls: readonly Control[], u: number, controlId?: number | null): string {
+        const hit = find(controls, u, controlId);
+        return String(hit?.id ?? controlId ?? "none") + ":" + (controlId === null ? "null" : controlId === undefined ? "undefined" : "id");
+    }
+    function edit(controls: readonly Control[], u: number, controlId: number | null): string { return clear(controls, u, controlId); }
+    const edits: Array<typeof edit> = [edit];
+    const controls: Control[] = [{ id: 1, u: 0, lat: 2 }, { id: 2, u: 1 }];
+    if (edits[0]!(controls, 1, 1) !== "1:id" || edits[0]!(controls, 1, null) !== "2:null" || edits[0]!(controls, 5, null) !== "none:null" || finders[0]!(controls, 0)?.id !== 1)
+        throw new Error("forwarded absence");
+    function digest(value: unknown): string {
+        if (value === null) return "n";
+        if (value === undefined) return "u";
+        if (Array.isArray(value)) return "[" + value.map(digest).join() + "]";
+        return String(value);
+    }
+    function keys(heights: Map<string, number>, key: string): string {
+        return digest([heights.get(key), heights.has(key), [key]]);
+    }
+    const keyed: Array<typeof keys> = [keys];
+    const heights = new Map([["a", 2]]);
+    if (keyed[0]!(heights, "a") !== "[2,true,[a]]" || keyed[0]!(heights, "b") !== "[u,false,[b]]") throw new Error("digest");
+`,
+);
+
+// A Map iterator kept past its call is live over the map; searches compare
+// optional and union lanes of plain values by value.
+check(
+    "live-map-iterators-and-plain-lane-searches",
+    `
+    interface Rec { id: number; kind: string }
+    interface Store { values(): IterableIterator<Rec>; keys(): IterableIterator<number>; set(rec: Rec): void }
+    function createStore(): Store {
+        const records = new Map<number, Rec>();
+        return { values: () => records.values(), keys: () => records.keys(), set: (rec) => { records.set(rec.id, rec); } };
+    }
+    const stores: Array<typeof createStore> = [createStore];
+    const store = stores[0]!();
+    store.set({ id: 2, kind: "a" });
+    const values = store.values();
+    store.set({ id: 5, kind: "b" });
+    let out = "";
+    for (const r of values) out += r.kind;
+    for (const k of store.keys()) out += k;
+    if (out !== "ab25" || [...store.keys()].join() !== "2,5") throw new Error(out);
+    const props = new Map<number, number>([[1, 1], [2, 2], [3, 1]]);
+    const refs = { propId: (id: number): number | "ambiguous" | null => (props.get(id) ?? 0) > 1 ? "ambiguous" : props.has(id) ? id : null };
+    function resolved(ids: readonly number[]): string {
+        const found = ids.map((id) => refs.propId(id));
+        return (found.includes("ambiguous") ? "a" : "-") + (found.includes(null) ? "n" : "-") + (found.includes(3) ? "3" : "-") + found.indexOf(null);
+    }
+    const resolvers: Array<typeof resolved> = [resolved];
+    if (resolvers[0]!([1, 3]) !== "--3-1" || resolvers[0]!([2, 9]) !== "an-1") throw new Error("searches");
+`,
+);
+
+// A record type the program reads parsed documents as is stored as a
+// document: its records keep their own fields and identity, and a literal
+// of the type is an owned document.
+check(
+    "parsed-documents-stored-as-their-record-types",
+    `
+    interface Meta { description?: string; savedAt?: number }
+    interface Contents { save: string; meta?: Meta | null }
+    function decodeMeta(text: string | undefined): Meta | null {
+        if (!text) return null;
+        try {
+            const m = JSON.parse(text) as Meta;
+            return m && typeof m === "object" ? m : null;
+        } catch {
+            return null;
+        }
+    }
+    function unpack(save: string, meta: string | undefined): Contents { return { save, meta: decodeMeta(meta) }; }
+    const unpackers: Array<typeof unpack> = [unpack];
+    const contents = unpackers[0]!("save", '{"description":"d","savedAt":5,"extra":1}');
+    if (contents.meta?.description !== "d" || contents.meta.savedAt !== 5) throw new Error("fields");
+    if (JSON.stringify(contents.meta) !== '{"description":"d","savedAt":5,"extra":1}') throw new Error("kept keys");
+    if (unpackers[0]!("s", undefined).meta !== null || unpackers[0]!("s", "{").meta !== null || unpackers[0]!("s", "3").meta !== null)
+        throw new Error("absent meta");
+    const made: Meta = { description: "x" };
+    made.savedAt = 5;
+    const list: Meta[] = [made, contents.meta!];
+    list[0]!.description = "y";
+    list[1]!.savedAt = 2;
+    if (made.description !== "y" || list[0] !== made || contents.meta!.savedAt !== 2) throw new Error("identity");
+    if (JSON.stringify(list) !== '[{"description":"y","savedAt":5},{"description":"d","savedAt":2,"extra":1}]') throw new Error(JSON.stringify(list));
+    interface RawNode { name?: string; mesh?: number; children?: number[] }
+    interface RoleMesh { node: RawNode; role: string }
+    function roles(text: string): string {
+        const nodes = (JSON.parse(text) as { nodes?: RawNode[] }).nodes ?? [];
+        const out: RoleMesh[] = [];
+        const gather = (index: number, role: string): void => {
+            const n = nodes[index]!;
+            if (n.mesh !== undefined) out.push({ node: n, role });
+            for (const c of n.children ?? []) gather(c, n.name === "shutter" ? "shutter" : role);
+        };
+        gather(0, "leaf");
+        return out.map((r) => (r.node === nodes[r.node.mesh!] ? "" : "!") + r.role + r.node.mesh).join();
+    }
+    const gatherers: Array<typeof roles> = [roles];
+    if (gatherers[0]!('{"nodes":[{"children":[1,2]},{"name":"shutter","mesh":1,"children":[2]},{"mesh":2}]}') !== "leaf1,shutter2,leaf2")
+        throw new Error("nodes");
+`,
+);
+
+// A numeric index view with a length writes through any numeric array; a
+// literal union assigned to a string local spells its string.
+check(
+    "numeric-index-views-and-literal-union-strings",
+    `
+    const LANE = { a: 3, b: 15 } as const;
+    function stamp(matrix: { [index: number]: number; readonly length: number }, id: number, offset = 0, lane: "a" | "b" = "a"): void {
+        const at = offset + LANE[lane];
+        if (offset < 0 || at >= matrix.length) throw new RangeError("offset out of range");
+        matrix[at] = lane === "b" ? id * 2 : id;
+    }
+    const stamps: Array<typeof stamp> = [stamp];
+    const floats = new Float32Array(32);
+    stamps[0]!(floats, 7, 16);
+    const numbers: number[] = new Array<number>(16).fill(0);
+    stamps[0]!(numbers, 5, 0, "b");
+    if (floats[19] !== 7 || numbers[15] !== 10) throw new Error("stamp");
+    let threw = false;
+    try { stamps[0]!(numbers, 1, 8, "b"); } catch (error) { threw = error instanceof RangeError; }
+    if (!threw) throw new Error("range");
+    type Kind = "deer" | "fox";
+    let animal = "";
+    const spawn: Array<(kind: Kind) => void> = [(kind) => { animal = kind; }];
+    spawn[0]!("fox");
+    if (animal !== "fox") throw new Error("spelled kind");
+`,
+);
+
+test("a parsed document read as a record type with stored functions refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "interface Handler { name: string; run(): number } function load(text: string): Handler { return JSON.parse(text) as Handler; } const loaders: Array<typeof load> = [load]; const handler: Handler = { name: 'a', run: () => 1 }; if (loaders.length !== 1 || handler.run() !== 1) throw new Error('x');",
+            ),
+        /Expression does not produce the expected data \{"kind":"struct","name":"Handler"\} value; received data \{"kind":"json"\}/,
+    );
+});
+
+// instanceof Map, Set, WeakMap and WeakSet answer from the storage holding
+// the value; a dictionary or parsed document is none of them.
+check(
+    "collection-instanceof-over-unknown-values",
+    `
+    const m: unknown = new Map();
+    const s: unknown = new Set<number>([1]);
+    const ws = new WeakSet<{ id: number }>();
+    const wm = new WeakMap<object, number>();
+    const record: Record<string, number> = { a: 1 };
+    const parsed: unknown = JSON.parse('{"a":1}');
+    function kinds(value: unknown): string {
+        return (value instanceof Map ? "M" : "") + (value instanceof Set ? "S" : "") + (value instanceof WeakSet ? "w" : "") + (value instanceof WeakMap ? "W" : "");
+    }
+    let out = "";
+    out += (m instanceof Map ? "M" : "-") + (m instanceof Set ? "S" : "-");
+    out += (s instanceof Set ? "S" : "-") + (s instanceof Map ? "M" : "-");
+    out += (ws instanceof WeakSet ? "w" : "-") + ((ws as unknown) instanceof Set ? "S" : "-");
+    out += (wm instanceof WeakMap ? "W" : "-") + ((wm as unknown) instanceof Map ? "M" : "-");
+    out += ((record as unknown) instanceof Map ? "M" : "-") + (parsed instanceof Map ? "M" : "-");
+    const maybe: Map<string, number> | Set<string> | null = out.length > 3 ? new Set(["x"]) : null;
+    out += (maybe instanceof Set ? "S" : "-") + (maybe instanceof Map ? "M" : "-");
+    out += kinds(new Map<string, string>());
+    if (out !== "M-S-w-W---S-M") throw new Error(out);
+`,
+);
+
+// A record initializing a local declared as a closed Record of its keys is
+// that record.
+check(
+    "closed-record-locals-initialized-from-records",
+    `
+    interface Line { comfort: "inert" | "warm"; days: number }
+    interface Board { food: Line; fuel: Line }
+    interface Stats { comfort: Board }
+    let god = true;
+    function readStats(): Stats { return { comfort: { food: { comfort: "warm", days: 2 }, fuel: { comfort: "inert", days: 0 } } }; }
+    function render(): string {
+        const lines: Record<"food" | "fuel", Line> | null = god ? readStats().comfort : null;
+        const active = lines !== null && (lines.food.comfort !== "inert" || lines.fuel.comfort !== "inert");
+        return active ? lines!.food.days + ":" + lines!.fuel.comfort : "hidden";
+    }
+    const roots: Array<typeof render> = [render];
+    if (roots[0]!() !== "2:inert") throw new Error("render");
+    god = false;
+    if (roots[0]!() !== "hidden") throw new Error("hidden");
+`,
+);
+
+// Array.from results read through Object.freeze take the frozen array's
+// own context, readonly included.
+check(
+    "array-from-results-typed-through-freeze",
+    `
+    const SLOT_COUNT = 4;
+    interface Timing { readonly seconds: number; readonly frameCount: number; readonly contactPhase?: number }
+    type Profile = readonly (Timing | null)[];
+    function normalize(input: Profile): Profile {
+        if (!Array.isArray(input) || input.length > SLOT_COUNT) throw new Error("Invalid profile");
+        return Object.freeze(Array.from({ length: SLOT_COUNT }, (_, slot) => {
+            const row = input[slot];
+            if (row == null) return null;
+            if (!Number.isFinite(row.seconds) || row.frameCount < 1) throw new Error("Invalid timing " + slot);
+            return Object.freeze({ seconds: row.seconds, frameCount: row.frameCount, ...(row.contactPhase === undefined ? {} : { contactPhase: row.contactPhase }) });
+        }));
+    }
+    const roots: Array<typeof normalize> = [normalize];
+    const p = roots[0]!([{ seconds: 1, frameCount: 2 }, null, { seconds: 2, frameCount: 3, contactPhase: 0.5 }]);
+    if (p.length !== 4 || p[1] !== null || p[3] !== null || p[2]!.contactPhase !== 0.5 || p[0]!.contactPhase !== undefined || p[0]!.frameCount !== 2) throw new Error("profile");
+`,
+);
+
+// Unary plus and minus of a field a shared record layout may hold absent
+// apply ToNumber to the slot.
+check(
+    "unary-numbers-of-fields-a-shared-layout-may-lack",
+    `
+    interface Small { halfW: number }
+    interface Spec { yaw: number; halfW: number; flat?: boolean }
+    const smalls: Small[] = [{ halfW: 5 }];
+    function keep(spec: Spec): void { smalls.push(spec); }
+    function turn(spec: Spec & { flat: true }): number { keep(spec); smalls[1]!.halfW = 4; return -spec.yaw + +spec.yaw * 2 + spec.halfW; }
+    const turns: Array<typeof turn> = [turn];
+    if (turns[0]!({ yaw: 2, halfW: 1, flat: true }) !== 6) throw new Error("turn");
+    if (smalls.length !== 2 || smalls[1]!.halfW !== 4) throw new Error("kept");
+`,
+);
+
+// A string an imported module binding holds from generation reaches a
+// string sink, here a nullish fallback's.
+test("an imported generation-time string feeds a string sink", async (t) => {
+    const directory = resolve("artifacts/imported-generation-string");
+    mkdirSync(directory, { recursive: true });
+    const module = `export const GENERATIONS = ["legacy", "new"] as const;
+        export type Generation = typeof GENERATIONS[number];
+        export function forSearch(search: string): Generation { return new URLSearchParams(search).get("v") === "new" ? "new" : "legacy"; }
+        export const ACTIVE = forSearch(typeof location === "undefined" ? "" : location.search);`;
+    writeFileSync(join(directory, "generation.ts"), module);
+    const entry = `import { ACTIVE, type Generation } from "./generation.js";
+        interface Deps { modelGeneration?: Generation; count: number }
+        function spawn(deps: Deps): string { const generation = deps.modelGeneration ?? ACTIVE; return generation + deps.count; }
+        const spawners: Array<typeof spawn> = [spawn];
+        if (spawners[0]!({ count: 1 }) !== "legacy1" || spawners[0]!({ count: 2, modelGeneration: "new" }) !== "new2") throw new Error("generation");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    runInNewContext(
+        "const exports = {};" +
+            commonJs(module) +
+            ";const required = exports; (function (exports, require) {" +
+            commonJs(entry) +
+            "})({}, () => required);",
+        { URLSearchParams },
+    );
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(
+        t,
+        "imported-generation-string",
+        result.cpp,
+    );
+});
+
+// A closed Record is written by JSON.stringify keys in its union's order,
+// which every record of the union in the program is created in.
+check(
+    "closed-records-written-as-json",
+    `
+    type Scheme = "wasd" | "classic";
+    type Action = "run" | "jump";
+    interface Prefs { scheme: Scheme; shortcuts: Record<Scheme, Record<Action, string>>; note?: Record<Action, number> }
+    function save(prefs: Prefs): string { return JSON.stringify(prefs); }
+    const savers: Array<typeof save> = [save];
+    const first: Prefs = { scheme: "wasd", shortcuts: { classic: { jump: "j", run: "r" }, wasd: { jump: "space", run: "shift" } } };
+    const text = savers[0]!(first);
+    if (text !== '{"scheme":"wasd","shortcuts":{"classic":{"jump":"j","run":"r"},"wasd":{"jump":"space","run":"shift"}}}') throw new Error(text);
+    const second: Prefs = { scheme: "classic", shortcuts: { classic: { jump: "j", run: "r" }, wasd: { jump: "space", run: "shift" } } };
+    second.note = { jump: 1, run: 2 };
+    second.shortcuts.wasd.run = "ctrl";
+    const pretty = JSON.stringify(second.shortcuts.wasd, null, 1);
+    if (pretty !== '{\\n "jump": "space",\\n "run": "ctrl"\\n}') throw new Error(pretty);
+    const again = savers[0]!(second);
+    if (again !== '{"scheme":"classic","shortcuts":{"classic":{"jump":"j","run":"r"},"wasd":{"jump":"space","run":"ctrl"}},"note":{"jump":1,"run":2}}') throw new Error(again);
+`,
+);
+
+test("a closed Record created in another key order than JSON writes refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "type Action = 'run' | 'jump'; interface Prefs { keys: Record<Action, string> } function save(prefs: Prefs): string { return JSON.stringify(prefs); } const savers: Array<typeof save> = [save]; if (savers[0]!({ keys: { run: 'r', jump: 'j' } }) !== '{\"keys\":{\"run\":\"r\",\"jump\":\"j\"}}') throw new Error('order');",
+            ),
+        /JSON\.stringify writes a closed Record's keys in its union's order; this record creates them in another order\./,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "type Action = 'run' | 'jump'; function save(rows: Array<Record<Action, number>>): string { return JSON.stringify(rows); } const savers: Array<typeof save> = [save]; if (savers[0]!([{ jump: 1, run: 2 }]) !== '[{\"jump\":1,\"run\":2}]') throw new Error('rows');",
+            ),
+        /JSON\.stringify writes a closed Record where the stringified value, a record field or another closed Record holds it\./,
+    );
+});
+
+// A number asserted from a slot that may be absent, or that an unknown type
+// hides, reads as ToNumber reads the slot: NaN for undefined.
+check(
+    "numbers-asserted-from-optional-slots",
+    `
+    interface Saved { e?: number; n?: number }
+    function epoch(record: Saved): number | undefined {
+        return Number.isFinite(record.e) && (record.e as number) >= 0 ? Math.trunc(record.e as number) : undefined;
+    }
+    const reads: Array<typeof epoch> = [epoch];
+    if (reads[0]!({ e: 3.7 }) !== 3 || reads[0]!({}) !== undefined || reads[0]!({ e: -1 }) !== undefined) throw new Error("epoch");
+    const loose = (record: Saved): number => (record.n as number) + 1;
+    const looses: Array<typeof loose> = [loose];
+    if (!Number.isNaN(looses[0]!({})) || looses[0]!({ n: 1 }) !== 2) throw new Error("loose");
+    interface Home { i: number; e?: number }
+    function epochOf(item: Home): number {
+        const record = item as { i?: unknown; e?: unknown };
+        return Number.isFinite(record.e) && (record.e as number) >= 0 ? Math.trunc(record.e as number) : -1;
+    }
+    const homeReads: Array<typeof epochOf> = [epochOf];
+    const homes: Home[] = [{ i: 1, e: 3.5 }, { i: 2 }, { i: 3, e: -1 }];
+    if (homes.map((home) => homeReads[0]!(home)).join() !== "3,-1,-1") throw new Error("unknown slots");
+`,
+);
+
+// Nested numeric literals whose rows differ in length are arrays, not a
+// static table.
+check(
+    "jagged-numeric-literal-tables",
+    `
+    const LAYOUTS: readonly (readonly [number, number, number])[][] = [
+        [[2, 0.5, 0.52]],
+        [[1, 0.5, 0.48], [3, 0.5, 0.58]],
+        [[1, 0.5, 0.48], [2, 0.5, 0.58], [3, 0.5, 0.48]],
+    ];
+    interface Window { side: number; fraction: number; height: number }
+    function windows(count: number): Window[] {
+        return LAYOUTS[count - 1]!.map(([side, fraction, heightFraction]) => ({ side, fraction, height: heightFraction * 2 }));
+    }
+    const recipes: Array<typeof windows> = [windows];
+    const w = recipes[0]!(2);
+    if (w.length !== 2 || w[1]!.side !== 3 || w[0]!.height !== 0.96 || recipes[0]!(3).length !== 3) throw new Error("windows");
+`,
+);
+
+check(
+    "tagged-union-arms-hold-symbol-fields",
+    `
+    type Outcome = { kind: "hit"; token: symbol } | { kind: "miss" };
+    const hitToken = Symbol("hit");
+    function outcome(hit: boolean): Outcome {
+        return hit ? { kind: "hit", token: hitToken } : { kind: "miss" };
+    }
+    const first = outcome(Date.now() > 0);
+    if (first.kind !== "hit" || first.token !== hitToken || first.token.description !== "hit") throw new Error("symbol arm");
+    if (outcome(false).kind !== "miss") throw new Error("miss arm");
+`,
+);
+
+check(
+    "typed-arrays-view-shared-array-buffers",
+    `
+    const shared = new SharedArrayBuffer(16);
+    const values = new Float32Array(shared);
+    values[0] = 1.5;
+    const again = new Float32Array(shared);
+    if (again[0] !== 1.5 || values.buffer !== shared || !(values.buffer instanceof SharedArrayBuffer)) throw new Error("shared view");
 `,
 );
