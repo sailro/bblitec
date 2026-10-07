@@ -10,6 +10,7 @@ import type { Value } from "./types.js";
 
 type SymbolContext = Pick<
     LoweringServices,
+    | "absenceTags"
     | "checker"
     | "compileValue"
     | "cppString"
