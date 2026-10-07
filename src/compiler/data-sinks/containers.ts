@@ -422,11 +422,14 @@ function convertedElementsCopy(
                       checker.getTypeAtLocation(array),
                       target,
                   );
-        if (observed !== undefined)
+        if (observed !== undefined) {
+            // An array of ArrayLike slots takes the kind of its elements.
+            lowerer.requireNumericSlot(value, dataType, node);
             lowerer.context.fail(
                 node,
                 `An array stored as an array of another element type is a copy, and ${observed}; JavaScript keeps one array.`,
             );
+        }
     }
     lowerer.context.reachJsData();
     const source = lowerer.context.allocateTemporaryCppName("convert_source");

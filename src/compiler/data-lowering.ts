@@ -64,6 +64,7 @@ import {
     NumericSlotStorageRequired,
     numericSlotDeclaration,
     numericSlotKind,
+    type SlotStep,
 } from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
@@ -10079,25 +10080,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * A numeric array stored in a declared `ArrayLike<number>` slot whose
-     * storage cannot hold its kind (`sink`): the slot takes storage for
-     * every kind stored in it. A borrowed view has no array to keep, and
-     * refuses; returns where no slot can, so the caller refuses.
+     * storage cannot hold its kind (`sink`), or an array of them stored in
+     * an array of such slots: the slot takes storage for every kind stored
+     * in it. A borrowed view has no array to keep, and refuses; returns where
+     * no slot can, so the caller refuses.
      */
-    private requireNumericSlot(
+    public requireNumericSlot(
         value: Value | undefined,
         sink: DataType,
         node: ts.Node,
     ): void {
-        const declaration = numericSlotDeclaration(this.context.checker, node);
-        if (!declaration) return;
-        const stored =
-            value?.dataType?.kind === "optional"
-                ? value.dataType.inner
-                : value?.dataType;
+        const present = (type: DataType | undefined): DataType | undefined =>
+            type?.kind === "optional" ? type.inner : type;
+        let stored = present(value?.dataType);
+        let target: DataType | undefined = present(sink);
+        const within: SlotStep[] = [];
         if (
-            stored?.kind === "span" &&
-            (sink.kind === "optional" ? sink.inner : sink).kind !== "span"
-        )
+            (stored?.kind === "vector" || stored?.kind === "span") &&
+            numericSlotKind(stored.element) !== undefined &&
+            (target?.kind === "vector" || target?.kind === "span")
+        ) {
+            stored = present(stored.element);
+            target = present(target.element);
+            within.push("element");
+        }
+        const declaration = numericSlotDeclaration(
+            this.context.checker,
+            this.convertedExpression(node) ?? node,
+            within,
+        );
+        if (!declaration || !target) return;
+        if (stored?.kind === "span" && target.kind !== "span")
             this.context.fail(
                 node,
                 "A borrowed array view cannot retain JavaScript array identity in owning storage.",
@@ -10105,7 +10118,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const kind = numericSlotKind(stored);
         if (!kind) return;
         const kinds = this.context.dataTypes.numericSlotKinds(declaration);
-        if (kinds ? kinds.has(kind) : numericSlotKind(sink) === kind) return;
+        if (kinds ? kinds.has(kind) : numericSlotKind(target) === kind) return;
         throw new NumericSlotStorageRequired(declaration, kind);
     }
 

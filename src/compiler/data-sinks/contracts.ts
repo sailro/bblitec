@@ -35,6 +35,7 @@ export type DataSinkHost = Pick<
     | "invalidateEscapingCollection"
     | "knownValueFitsSink"
     | "noteArgumentsPastSignature"
+    | "requireNumericSlot"
 >;
 
 /** Every data kind declares expression and already-evaluated value conversion. */

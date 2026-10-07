@@ -107,7 +107,7 @@ function arrayElement(
 }
 
 /** One step from a slot's declared type to the position a value is stored in. */
-type SlotStep = "result" | "element";
+export type SlotStep = "result" | "element";
 
 /**
  * The `ArrayLike<number>` position `steps` reach from a declared type
@@ -216,15 +216,16 @@ function storageDeclaration(
 
 /**
  * The declared storage a value written at `node` lands in when that storage
- * has an `ArrayLike<number>` position there: a record property or a
- * binding, a function stored in one returning it, or an element of an
- * array literal stored or returned that way.
+ * has an `ArrayLike<number>` position there, `within` the value: a record
+ * property or a binding, a function stored in one returning it, or an
+ * element of an array literal stored or returned that way.
  */
 export function numericSlotDeclaration(
     checker: ts.TypeChecker,
     node: ts.Node,
+    within: readonly SlotStep[] = [],
 ): NumericSlotDeclaration | undefined {
-    const steps: SlotStep[] = [];
+    const steps: SlotStep[] = [...within];
     let current = climb(node);
     if (current.parent && ts.isArrayLiteralExpression(current.parent)) {
         steps.unshift("element");

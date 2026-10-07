@@ -1894,6 +1894,13 @@ check(
     let lanes = 0;
     for (const entry of ops.list()) lanes += entry.length;
     if (lanes !== 5 || ops.list()[1]![2] !== 6) throw new Error("result elements");
+    interface Query { obstacles: readonly ArrayLike<number>[]; }
+    const widened: Ops<State> = { ...ops, list: () => [...ops.list(), stepX] };
+    const query = (source: Ops<State>): Query => ({ obstacles: source.list() });
+    extra = new Float32Array(1);
+    let circles = 0;
+    for (const entry of query(widened).obstacles) circles += entry.length;
+    if (circles !== 2 + 1 + 3) throw new Error("arrays of ArrayLike results");
 
     function invert(scale: number): Float32Array | null { return scale === 0 ? null : new Float32Array([1 / scale]); }
     let prepared: ArrayLike<number> | null = null;
