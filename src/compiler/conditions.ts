@@ -699,12 +699,12 @@ export class ConditionLowerer {
                     unwrapped,
                     "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
                 );
-            // A numeric view is the array it views: the two are one object
-            // when they name one array.
+            // A numeric view is the array it views: it is another numeric
+            // array when the two name one array (two views compare as such).
             if (
                 equality &&
-                (leftValue.dataType?.kind === "numberindex" ||
-                    rightValue.dataType?.kind === "numberindex")
+                (leftValue.dataType?.kind === "numberindex") !==
+                    (rightValue.dataType?.kind === "numberindex")
             ) {
                 const present = (value: Value): boolean =>
                     value.dataType?.kind !== "optional" &&
