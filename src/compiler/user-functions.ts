@@ -5668,10 +5668,12 @@ export class UserFunctionLowerer {
                 : undefined;
         const declaredRecord =
             settled && context.dataTypes.fromTsType(settled, expression);
+        // A compile-time record keeps the engine values its fields name (an
+        // imported model's root stays that root): only a native struct of
+        // another type converts.
         if (
             declaredRecord?.kind === "struct" &&
-            (returned.kind === "record" ||
-                returned.dataType?.kind === "struct") &&
+            returned.dataType?.kind === "struct" &&
             // Resolution reads a custom thenable's `then` before settling;
             // the async lowering owns that refusal.
             !isCustomThenable(context.dataTypes, returned, expression) &&
