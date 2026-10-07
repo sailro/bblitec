@@ -102,7 +102,7 @@ import {
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { propertyNameText, unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
-import { optionalPresentCpp } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
@@ -3066,6 +3066,77 @@ export class DataTypeRegistry {
                 "Recursive stored generic functions require an already represented signature.",
             );
         throw new GenericFunctionStorageRequired(demand, call);
+    }
+
+    /**
+     * The signature of a stored generic function an operation calls with
+     * values it supplies (a promise rejection handed to `catch(handler)`):
+     * each unknown or callable parameter takes its value's type, as a
+     * source call's argument types do. A generic signature with type
+     * parameters has no types to infer here.
+     */
+    public genericFunctionValueCall(
+        name: string,
+        supplied: readonly (ts.Type | undefined)[],
+        node: ts.Node,
+    ): { name: string; type: DataType<"function"> } {
+        const generic = this.genericFunctions.get(name)!;
+        if (generic.signature.typeParameters?.length)
+            this.fail(
+                node,
+                "Stored generic callbacks require a source call with concrete type arguments.",
+            );
+        const parameters = generic.signature
+            .getParameters()
+            .map((parameter, index) => {
+                const declared = this.checker.getTypeOfSymbol(parameter);
+                if (
+                    (declared.flags & ts.TypeFlags.Unknown) === 0 &&
+                    !this.checker.getNonNullableType(declared).getCallSignatures()
+                        .length
+                )
+                    return undefined;
+                return (
+                    supplied[index] ??
+                    this.fail(
+                        node,
+                        "A stored generic callback requires a represented type for each value an operation supplies.",
+                    )
+                );
+            });
+        const demand: GenericFunctionDemand = {
+            family: generic.family,
+            arguments: [],
+            parameters,
+            frames: this.typeArgumentFrames(),
+            ancestors: this.genericFunctionAncestors,
+        };
+        const field = generic.fields.find((field) =>
+            sameGenericFunctionSignature(field.demand, demand),
+        );
+        if (field) return field;
+        if (this.genericFunctionAncestors.includes(generic.family))
+            this.fail(
+                node,
+                "Recursive stored generic functions require an already represented signature.",
+            );
+        throw new GenericFunctionStorageRequired(demand, node);
+    }
+
+    /** The checker type of a value an operation supplies, where its storage names one. */
+    public suppliedValueType(value: Value, node: ts.Node): ts.Type | undefined {
+        const kind = value.dataType?.kind ?? value.kind;
+        if (kind === "number") return this.checker.getNumberType();
+        if (kind === "string") return this.checker.getStringType();
+        if (kind === "boolean") return this.checker.getBooleanType();
+        if (kind !== "error") return undefined;
+        const error = this.checker
+            .getSymbolsInScope(node, ts.SymbolFlags.Interface)
+            .find(
+                (symbol) =>
+                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
+            );
+        return error && this.checker.getDeclaredTypeOfSymbol(error);
     }
 
     /**

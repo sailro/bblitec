@@ -121,7 +121,11 @@ function independentGenericCall(
         : declaration && ts.isIdentifier(declaration.name)
           ? declaration.initializer
           : undefined;
-    if (!expression || unwrapExpression(expression) !== error.call)
+    if (
+        !expression ||
+        !ts.isCallExpression(error.call) ||
+        unwrapExpression(expression) !== error.call
+    )
         return false;
     const callee = unwrapExpression(error.call.expression);
     if (!ts.isIdentifier(callee)) {

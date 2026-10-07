@@ -113,7 +113,8 @@ export class GenericFunctionStorage {
 export class GenericFunctionStorageRequired extends Error {
     constructor(
         readonly demand: GenericFunctionDemand,
-        readonly call: ts.CallExpression,
+        /** The source call, or the operation supplying the call's values. */
+        readonly call: ts.Node,
     ) {
         super("A stored generic function requires a concrete signature.");
     }

@@ -353,3 +353,23 @@ test("value-or-promise unions await either arm in an asynchronous realm", (t) =>
 `,
         true,
     ));
+
+test("stored unknown-parameter methods handle values an operation supplies", (t) =>
+    nativeCheck(
+        t,
+        "generic-callback-values",
+        `
+    interface Hooks{failed(error:unknown):void;settled():void}
+    let seen="";
+    const hooks:Hooks[]=[{failed:(error)=>{seen+=error instanceof Error?error.message:"?";},settled:()=>{}}];
+    function watch(task:Promise<void>,owner:Hooks):Promise<void>{return task.catch(owner.failed).finally(owner.settled);}
+    const watches:Array<typeof watch>=[watch];
+    void(async()=>{
+        await watches[0]!(Promise.reject(new Error("first")),hooks[0]!);
+        await watches[0]!(Promise.resolve(),hooks[0]!);
+        if(seen!=="first")throw new Error("generic catch handler "+seen);
+        globalThis.close();
+    })();
+`,
+        true,
+    ));

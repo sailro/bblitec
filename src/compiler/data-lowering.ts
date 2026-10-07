@@ -1104,20 +1104,28 @@ export class DataLowerer {
         values: readonly Value[],
         node: ts.Node,
     ): Value {
-        const type = callback.dataType;
+        let type = callback.dataType;
         if (type?.kind !== "function")
             this.context.fail(
                 node,
                 "Callback requires a native function signature.",
             );
-        if (type.generic)
-            this.context.fail(
+        let callable = callback.cpp;
+        if (type.generic) {
+            // The values select the concrete signature a source call would.
+            const field = this.context.dataTypes.genericFunctionValueCall(
+                type.generic,
+                values.map((value) =>
+                    this.context.dataTypes.suppliedValueType(value, node),
+                ),
                 node,
-                "Stored generic callbacks require a source call with concrete type arguments.",
             );
+            callable = `(${callable}).select(&bblscene::${type.generic}Data::${field.name})`;
+            type = field.type;
+        }
         this.context.useNativeValue(callback);
         const argumentsCpp = this.functionValueArguments(type, values, node);
-        const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
+        const cpp = `${callable}(${argumentsCpp.join(", ")})`;
         return type.result
             ? { ...this.leafValue(cpp, type.result), impure: true }
             : { kind: "void", cpp };
