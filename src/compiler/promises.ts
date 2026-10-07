@@ -364,3 +364,20 @@ function emitValue(context: PromiseLoweringContext, value: Value): void {
         context.emit({ kind: "expression", code: `${value.cpp};` });
     }
 }
+
+/**
+ * Whether a promise of `type` only rejects: it settles `never`, the bottom
+ * type, so it joins any settlement type.
+ */
+export function settlesNever(
+    checker: ts.TypeChecker,
+    type: ts.Type | undefined,
+): boolean {
+    const awaited = type && checker.getAwaitedType(type);
+    return ((awaited?.flags ?? 0) & ts.TypeFlags.Never) !== 0;
+}
+
+/** A promise that only rejects, viewed as a promise settling `cppType`. */
+export function rejectionOnlyPromiseCpp(cpp: string, cppType: string): string {
+    return `bbl::js::Promise<${cppType}>::view(${cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
+}

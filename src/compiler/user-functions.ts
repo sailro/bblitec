@@ -32,6 +32,7 @@ import {
     storedSignatureParameter,
 } from "./absence-tag-storage.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
+import { settlesNever } from "./promises.js";
 import {
     functionBodyPrologue,
     type RecentStringsParameter,
@@ -5608,12 +5609,11 @@ export class UserFunctionLowerer {
      */
     private returnedArrayProjection(
         context: UserFunctionContext,
-        expression: ts.Expression,
         ir: UserFunctionIr,
         resultType: ts.Type | undefined,
+        expression: ts.Expression,
         sinkResult: DataType | undefined,
     ): Value | undefined {
-        const source = context.unwrap(expression);
         const declared =
             resultType &&
             ir.declaration.type &&
@@ -5621,14 +5621,15 @@ export class UserFunctionLowerer {
                 ? context.dataTypes.fromTsType(resultType, ir.declaration)
                 : undefined;
         const owned = declared && context.dataTypes.ownReturnedArray(declared);
-        if (
+        const source = context.unwrap(expression);
         if (!ts.isCallExpression(source)) return undefined;
         const mapped =
             owned?.kind === "vector"
                 ? context.dataLowerer.compileArrayFrom(source, owned)
                 : undefined;
-            sinkResult?.kind !== "vector" ||
+        if (
             mapped ||
+            sinkResult?.kind !== "vector" ||
             !ts.isPropertyAccessExpression(source.expression) ||
             context.dataTypes.returnsArray(
                 context.dataLowerer.dataTypeAt(source),
@@ -5675,6 +5676,28 @@ export class UserFunctionLowerer {
                 : undefined;
         const declaredRecord =
             settled && context.dataTypes.fromTsType(settled, expression);
+        // A returned promise that only rejects settles as the declared result.
+        if (
+            declaredRecord &&
+            returned.kind === "promise" &&
+            settlesNever(
+                context.checker,
+                context.checker.getTypeAtLocation(expression),
+            )
+        ) {
+            const promise: DataType = {
+                kind: "promise",
+                result: declaredRecord,
+            };
+            returned = context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    returned,
+                    promise,
+                    expression,
+                ),
+                promise,
+            );
+        }
         // A compile-time record keeps the engine values its fields name (an
         // imported model's root stays that root): only a native struct of
         // another type converts.

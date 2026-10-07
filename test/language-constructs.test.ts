@@ -4077,6 +4077,32 @@ test("promise combinator literal spreads refuse mixed settlement types", () => {
         );
 });
 
+checkInRealm(
+    "promises-that-only-reject-join-any-settlement-type",
+    `
+    const conditional = new Error("conditional"), spread = new Error("spread"), returned = new Error("returned");
+    async function fail(reason: Error): Promise<never> { await Promise.resolve(); throw reason; }
+    async function num(value: number): Promise<number> { await Promise.resolve(); return value; }
+    async function relay(reason: Error): Promise<number> { return fail(reason); }
+    let flip = 0;
+    void (async () => {
+        const reasons: string[] = [];
+        const picked: Promise<number> = flip > 0 ? fail(conditional) : num(4);
+        if ((await picked) !== 4) throw new Error("fulfilled arm");
+        flip = 1;
+        const rejected: Promise<number> = flip > 0 ? fail(conditional) : num(4);
+        try { await rejected; } catch (error) { reasons.push(error === conditional ? "conditional" : "other"); }
+        const pending = [num(1), num(2)];
+        try { await Promise.all([fail(spread), ...pending]); } catch (error) { reasons.push(error === spread ? "spread" : "other"); }
+        const settled = await Promise.allSettled([fail(spread), ...pending]);
+        const first = settled[0]!, last = settled[2]!;
+        if (settled.length !== 3 || first.status !== "rejected" || first.reason !== spread || last.status !== "fulfilled" || last.value !== 2) throw new Error("settled");
+        try { await relay(returned); } catch (error) { reasons.push(error === returned ? "returned" : "other"); }
+        if (reasons.join() !== "conditional,spread,returned") throw new Error(reasons.join());
+        globalThis.close();
+    })();
+`,
+);
 
 checkInRealm(
     "reactions-adopt-a-value-or-promise-result",
