@@ -3741,6 +3741,37 @@ check(
 `,
 );
 
+check(
+    "typed-array-bytes-per-element",
+    `
+    const sizes = [Int8Array.BYTES_PER_ELEMENT, Uint8Array.BYTES_PER_ELEMENT, Uint8ClampedArray.BYTES_PER_ELEMENT, Int16Array.BYTES_PER_ELEMENT, Uint16Array.BYTES_PER_ELEMENT, Int32Array.BYTES_PER_ELEMENT, Uint32Array.BYTES_PER_ELEMENT, Float32Array.BYTES_PER_ELEMENT, Float64Array.BYTES_PER_ELEMENT, BigInt64Array.BYTES_PER_ELEMENT, BigUint64Array.BYTES_PER_ELEMENT];
+    if (sizes.join() !== "1,1,1,2,2,4,4,4,8,8,8") throw new Error("class constants " + sizes.join());
+    function floatsAt(section: Uint8Array, floats: number): Float32Array {
+        return section.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
+            ? new Float32Array(section.buffer, section.byteOffset, floats)
+            : new Float32Array(Uint8Array.from(section).buffer, 0, floats);
+    }
+    const buffer = new ArrayBuffer(16);
+    const whole = new Float32Array(buffer);
+    whole[1] = 2.5;
+    const aligned = floatsAt(new Uint8Array(buffer, 4, 8), 2);
+    const copied = floatsAt(new Uint8Array(buffer, 2, 8), 2);
+    if (aligned.buffer !== buffer || aligned[0] !== 2.5 || copied.buffer === buffer || copied.byteOffset !== 0) throw new Error("aligned view or copy");
+    const words = new Uint32Array(3);
+    if (words.BYTES_PER_ELEMENT * words.length !== words.byteLength || new BigInt64Array(1).BYTES_PER_ELEMENT !== 8) throw new Error("instance constants");
+    const Kind = Int16Array;
+    const ofView = words.constructor as Uint32ArrayConstructor;
+    if (Kind.BYTES_PER_ELEMENT !== 2 || ofView.BYTES_PER_ELEMENT !== 4) throw new Error("class values");
+    function pick(wide: boolean): Float64Array | Uint8Array { return wide ? new Float64Array(1) : new Uint8Array(1); }
+    if (pick(true).BYTES_PER_ELEMENT !== 8 || pick(false).BYTES_PER_ELEMENT !== 1) throw new Error("union members");
+    const order: string[] = [];
+    function make(): Int8Array { order.push("make"); return new Int8Array(2); }
+    function mark(step: string): number { order.push(step); return 0; }
+    if (mark("left") + make().BYTES_PER_ELEMENT + mark("right") !== 1) throw new Error("owner constant");
+    if (order.join() !== "left,make,right") throw new Error("owner evaluated once, in order " + order.join());
+`,
+);
+
 test("typed-array unions and views refuse what they do not represent", () => {
     const pick =
         "function pick(text: boolean): Float32Array | string { return text ? 'ab' : new Float32Array(2); }";

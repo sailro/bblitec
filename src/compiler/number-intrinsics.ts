@@ -1,6 +1,7 @@
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
+import { typedArrayClassBytesPerElement } from "./data-types/typed-arrays.js";
 import type { ExpressionContext } from "./expressions.js";
 import type { LibraryGlobal } from "./symbols.js";
 import {
@@ -21,13 +22,16 @@ const constants: ReadonlyMap<string, number> = new EmissionMap([
     ["NaN", NaN],
 ]);
 
+/** A library class's numeric constant: `Number.EPSILON`, `Float32Array.BYTES_PER_ELEMENT`. */
 export function numberConstant(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
 ): number | undefined {
-    return ts.isPropertyAccessExpression(expression) &&
-        libraryGlobal(expression.expression) === "Number"
-        ? constants.get(expression.name.text)
+    if (!ts.isPropertyAccessExpression(expression)) return undefined;
+    const owner = libraryGlobal(expression.expression);
+    if (owner === "Number") return constants.get(expression.name.text);
+    return owner !== undefined && expression.name.text === "BYTES_PER_ELEMENT"
+        ? typedArrayClassBytesPerElement(owner)
         : undefined;
 }
 

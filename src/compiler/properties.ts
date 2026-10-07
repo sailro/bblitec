@@ -47,6 +47,7 @@ import { renderClosure } from "./closure-captures.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
+    typedArrayBytesPerElement,
     type DataType,
 } from "./data-types.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
@@ -3456,6 +3457,16 @@ export class PropertyAccessLowerer {
             // (notably `boolean | undefined`), just as a plain record does.
             return staticProperty;
         }
+        // A typed-array class however it was named (`view.constructor`, an
+        // alias): its one numeric constant.
+        if (
+            owner.kind === "typed-array-constructor" &&
+            owner.typedArrayConstructor &&
+            expression.name.text === "BYTES_PER_ELEMENT"
+        )
+            return numberConstantValue(
+                typedArrayBytesPerElement(owner.typedArrayConstructor),
+            );
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[expression.name.text];
             if (accessor) {
