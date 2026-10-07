@@ -16084,7 +16084,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) {
                 return chained.cpp;
             }
-            const mapped = this.context.compileValue(unwrapped);
+            // A method call that lowered (its callbacks already emitted, as
+            // for the lanes `[a, b].map(f)` yields) is converted, never
+            // lowered a second time.
+            const mapped = chained ?? this.context.compileValue(unwrapped);
             if (mapped.kind === "tuple" || mapped.kind === "data") {
                 return this.compileKnownValueForSink(
                     mapped,
