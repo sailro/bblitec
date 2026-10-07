@@ -4117,6 +4117,16 @@ export class UserFunctionLowerer {
                 "Stored function declares more parameters than its native data signature.",
             );
         }
+        // Its optional parameters past the signature read their defaults.
+        if (
+            dataType.restParameter === undefined &&
+            runtimeParameters.length > dataType.parameters.length
+        )
+            context.dataLowerer.noteArgumentsPastSignature(
+                dataType,
+                "reads",
+                declaration,
+            );
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
         const parameters = dataType.parameters.map((type, index) => ({

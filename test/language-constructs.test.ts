@@ -8887,3 +8887,81 @@ check(
     if (failed) throw new Error(failed);
 `,
 );
+
+check(
+    "stored-function-extra-arguments-are-read-and-ignored",
+    `
+    function inner(
+        count: number,
+        canConnect: (ax: number, az: number, bx: number, bz: number, member: number, next: number) => boolean,
+    ): number {
+        let hits = 0;
+        for (let member = 0; member < count; member++)
+            if (canConnect(member, member + 1, member * 2, member * 3, member, member + 1)) hits++;
+        return hits;
+    }
+    function outer(count: number, canSee: (ax: number, az: number, bx: number, bz: number) => boolean): number {
+        return inner(count, canSee);
+    }
+    const outers: Array<typeof outer> = [outer];
+    if (outers[0]!(3, (a, b, c, d) => a + b + c + d > 4) !== 2) throw new Error("narrow callback through a wider parameter");
+    const order: string[] = [];
+    function note(label: string, value: number): number { order.push(label); return value; }
+    function callWide(f: (a: number, b: number, c: number) => number): number {
+        return f(note("a", 1), note("b", 2), note("c", 3));
+    }
+    function callNarrow(g: (a: number) => number): number { return callWide(g); }
+    const narrows: Array<typeof callNarrow> = [callNarrow];
+    if (narrows[0]!((a) => a * 2) !== 2) throw new Error("extra arguments reach no parameter");
+    if (order.join(",") !== "a,b,c") throw new Error("extra arguments evaluated once, in order: " + order.join(","));
+    let counter = 0;
+    const bump = (): number => ++counter;
+    function callTwice(f: (a: number, b: number) => number): number { return f(bump(), bump()); }
+    function callOnce(g: (a: number) => number): number { return callTwice(g); }
+    const onces: Array<typeof callOnce> = [callOnce];
+    if (onces[0]!((a) => a * 10 + counter) !== 12 || counter !== 2) throw new Error("extra argument effects " + counter);
+`,
+);
+
+test("stored function storage refuses values reading arguments it drops", () => {
+    for (const source of [
+        `const stores: Array<(a: number) => number> = [(a, b = 7) => a + b];
+        const wide: Array<(a: number, b: number) => number> = [stores[0]!];
+        if (wide[0]!(1, 2) !== 3) throw new Error("x");`,
+        `function callWide(f: (a: number, b: number) => number): number { return f(1, 2); }
+        const narrow: Array<(a: number) => number> = [(a) => a];
+        const first = callWide(narrow[0]!);
+        const later: Array<(a: number) => number> = [(a, b = 7) => a + b];
+        if (first + later[0]!(1) !== 9) throw new Error("x");`,
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /reading arguments past its storage signature cannot share that signature with calls passing more arguments/,
+        );
+});
+
+check(
+    "stored-function-spread-of-an-optional-lane-tuple",
+    `
+    type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number];
+    interface Batch { shiftKey(key: number, dx: number, dy: number, dz: number, yaw?: number, pivotX?: number): void }
+    function reapply(batch: Pick<Batch, "shiftKey">, seqs: readonly number[], read: (seq: number) => Pose): number {
+        let applied = 0;
+        for (const seq of seqs) {
+            const delta = read(seq);
+            batch.shiftKey(seq, ...delta);
+            applied++;
+        }
+        return applied;
+    }
+    const reapplies: Array<typeof reapply> = [reapply];
+    const log: string[] = [];
+    const batch: Batch = {
+        shiftKey: (key, dx, dy, dz, yaw = 0, pivotX?: number) => {
+            log.push(key + ":" + (dx + dy + dz) + ":" + yaw + ":" + (pivotX === undefined ? "none" : pivotX));
+        },
+    };
+    const count = reapplies[0]!(batch, [1, 2], (seq) => (seq === 1 ? [1, 2, 3] : [4, 5, 6, 0.5, 7]));
+    if (count !== 2 || log.join(",") !== "1:6:0:none,2:15:0.5:7") throw new Error("tuple lanes " + log.join(","));
+`,
+);

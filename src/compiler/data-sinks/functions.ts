@@ -243,7 +243,16 @@ function valueFunction(
                 "Stored generic function conversion requires matching concrete signature families.",
             );
         const adapted = adaptedArguments(lowerer, stored, dataType);
-        if (adapted)
+        if (adapted) {
+            // Parameters the sink does not declare read only what it passes;
+            // arguments the value does not declare are dropped.
+            if (
+                stored.restParameter !== undefined ||
+                stored.parameters.length > dataType.parameters.length
+            )
+                lowerer.noteArgumentsPastSignature(dataType, "reads", node);
+            else if (stored.parameters.length < dataType.parameters.length)
+                lowerer.noteArgumentsPastSignature(stored, "passes", node);
             return renderSignatureAdapter(
                 lowerer,
                 value.cpp,
@@ -251,6 +260,7 @@ function valueFunction(
                 adapted.named,
                 adapted.arguments_,
             );
+        }
     }
     if (value.kind === "callback" && value.callbackDeclaration) {
         const nativeType = lowerer.dataTypeAt(value.callbackDeclaration);
