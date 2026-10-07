@@ -559,7 +559,8 @@ function binaryLibraryClass(type: ts.Type): boolean {
         declaredInDefaultLibrary(type.symbol) &&
         (BUFFER_VIEW_KINDS.has(name) ||
             TYPED_ARRAY_KINDS.has(name) ||
-            name === "ArrayBufferView")
+            name === "ArrayBufferView" ||
+            name === "SharedArrayBuffer")
     );
 }
 
@@ -2097,7 +2098,12 @@ export class DataTypeRegistry {
         // Every name below is the library's own type only when the library
         // declares it: a program's `interface DataView` is its own record.
         const library = declaredInDefaultLibrary(type.symbol);
-        if (library && type.symbol.name === "ArrayBuffer") {
+        // A SharedArrayBuffer is the same storage branded shared.
+        if (
+            library &&
+            (type.symbol.name === "ArrayBuffer" ||
+                type.symbol.name === "SharedArrayBuffer")
+        ) {
             return { kind: "arraybuffer" };
         }
         if (library && type.symbol.name === "DataView") {

@@ -7978,12 +7978,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** `new ArrayBuffer(byteLength)`: zero-filled shared bytes. */
+    /**
+     * `new ArrayBuffer(byteLength)`: zero-filled shared bytes. A
+     * `SharedArrayBuffer` is the same storage branded shared
+     * (`ArrayBuffer::shared_bytes`), which `instanceof` and cloning read.
+     */
     private compileArrayBufferNew(
         expression: ts.NewExpression,
     ): Value | undefined {
+        const constructor = this.context.libraryGlobal(expression.expression);
         if (
-            this.context.libraryGlobal(expression.expression) !== "ArrayBuffer"
+            constructor !== "ArrayBuffer" &&
+            constructor !== "SharedArrayBuffer"
         ) {
             return undefined;
         }
@@ -7991,14 +7997,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (arguments_.length !== 1) {
             this.context.fail(
                 expression,
-                "new ArrayBuffer takes one byte length.",
+                `new ${constructor} takes one byte length.`,
             );
         }
         this.context.reachJsData();
         const length = this.context.compileNumber(arguments_[0]!, "double");
         return {
             kind: "data",
-            cpp: `bbl::js::ArrayBuffer(std::vector<std::uint8_t>(bbl::js::array_index(${length})))`,
+            cpp:
+                constructor === "ArrayBuffer"
+                    ? `bbl::js::ArrayBuffer(std::vector<std::uint8_t>(bbl::js::array_index(${length})))`
+                    : `bbl::js::ArrayBuffer::shared_bytes(std::vector<std::uint8_t>(bbl::js::buffer_view_index(${length})))`,
             dataType: { kind: "arraybuffer" },
         };
     }

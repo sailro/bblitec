@@ -64,6 +64,7 @@ function uncloneablePosition(
     path: string,
     node: ts.Node,
     seen: Set<string>,
+    functions: "refuse" | "throw" = "refuse",
 ): string | undefined {
     const refuse = (name: string): string =>
         `'${path}' is ${name}, which has no native structured-clone codec`;
@@ -87,7 +88,14 @@ function uncloneablePosition(
         case "f64array":
             return undefined;
         case "optional":
-            return uncloneablePosition(context, type.inner, path, node, seen);
+            return uncloneablePosition(
+                context,
+                type.inner,
+                path,
+                node,
+                seen,
+                functions,
+            );
         case "vector":
             return uncloneablePosition(
                 context,
@@ -95,6 +103,7 @@ function uncloneablePosition(
                 `${path}[]`,
                 node,
                 seen,
+                functions,
             );
         case "set":
             return uncloneablePosition(
@@ -103,6 +112,7 @@ function uncloneablePosition(
                 `${path}.values()`,
                 node,
                 seen,
+                functions,
             );
         case "map":
             return type.dictionary
@@ -112,6 +122,7 @@ function uncloneablePosition(
                       `${path}[key]`,
                       node,
                       seen,
+                      functions,
                   )
                 : (uncloneablePosition(
                       context,
@@ -119,6 +130,7 @@ function uncloneablePosition(
                       `${path}.keys()`,
                       node,
                       seen,
+                      functions,
                   ) ??
                       uncloneablePosition(
                           context,
@@ -126,6 +138,7 @@ function uncloneablePosition(
                           `${path}.values()`,
                           node,
                           seen,
+                          functions,
                       ));
         case "struct": {
             const instance = context.dataTypes.classStruct(type.name);
@@ -147,6 +160,7 @@ function uncloneablePosition(
                     `${path}.${field.sourceName}`,
                     node,
                     seen,
+                    functions,
                 );
                 if (found) return found;
             }
@@ -189,7 +203,8 @@ function uncloneablePosition(
         case "borrowed-platform-event":
             return refuse("a platform event");
         case "function":
-            return refuse("a function");
+            // structuredClone throws DataCloneError where it meets one.
+            return functions === "throw" ? undefined : refuse("a function");
         case "json":
             return refuse("a dynamic JSON value");
         case "union":
@@ -222,6 +237,45 @@ function requireCloneable(
         new Set<string>(),
     );
     if (position) context.fail(node, `Worker message value ${position}.`);
+}
+
+/**
+ * `structuredClone(value)`: a deep copy through the message codecs, which
+ * keep aliases and cycles; a function met on the way throws DataCloneError,
+ * as it does in JavaScript. Shapes a message refuses refuse here too.
+ */
+function compileStructuredClone(
+    context: WorkerLoweringContext,
+    call: ts.CallExpression,
+): Value {
+    if (call.arguments.length !== 1)
+        return context.fail(
+            call,
+            "structuredClone takes one value; transfer options are not lowered.",
+        );
+    const argument = argumentAt(call, 0);
+    const type = messageDataType(context, argument);
+    if (!type)
+        return context.fail(
+            argument,
+            "structuredClone requires a supported structured-clone data shape.",
+        );
+    const position = uncloneablePosition(
+        context,
+        type,
+        "value",
+        argument,
+        new Set<string>(),
+        "throw",
+    );
+    if (position) return context.fail(argument, `structuredClone ${position}.`);
+    return {
+        ...context.dataLowerer.leafValue(
+            `bbl::js::structured_clone(${context.dataLowerer.compileForSink(argument, type)})`,
+            type,
+        ),
+        freshData: true,
+    };
 }
 
 /**
@@ -639,6 +693,8 @@ export function compileWorkerValue(
             cpp: `${loop}.clear_timer(static_cast<bbl::pal::EventLoop::TimerId>(${context.compileNumber(argumentAt(node, 0), "double")}))`,
         };
     }
+    if (global && member === "structuredClone")
+        return compileStructuredClone(context, node);
     if ((global || workerScope) && member === "queueMicrotask") {
         if (node.arguments.length !== 1)
             return context.fail(node, "queueMicrotask requires one callback.");

@@ -287,6 +287,7 @@ export function removedIndexGuard(
 const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
     "at",
     "concat",
+    "keys",
     "lastIndexOf",
     "flatMap",
     "slice",

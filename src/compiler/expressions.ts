@@ -105,6 +105,7 @@ import { compileWindowServiceCall } from "./window-events.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
+import { compileAtomicsCall } from "./atomics.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathConstantAccess,
@@ -177,12 +178,14 @@ export const PURE_NUMBER_FORMATTERS = new EmissionSet([
     "toExponential",
 ]);
 
-/** The global URI codecs, each a runtime function of its argument's ToString. */
+/** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["encodeURIComponent", "encode_uri_component"],
     ["encodeURI", "encode_uri"],
     ["decodeURIComponent", "decode_uri_component"],
     ["decodeURI", "decode_uri"],
+    ["btoa", "string_to_base64"],
+    ["atob", "string_from_base64"],
 ]);
 
 /**
@@ -3090,6 +3093,15 @@ export class ExpressionLowerer {
             };
         }
         const callee = this.context.unwrap(call.expression);
+        // A microtask runs after the current task: the realm's event loop.
+        // Structured cloning uses the realm's message codecs.
+        const realmGlobal = this.context.libraryGlobal(callee);
+        if (
+            !this.context.options.workers &&
+            (realmGlobal === "queueMicrotask" ||
+                realmGlobal === "structuredClone")
+        )
+            throw new ApplicationRealmRequired();
         if (
             ts.isIdentifier(callee) &&
             this.context.libraryGlobal(callee) === "createImageBitmap"
@@ -5859,6 +5871,8 @@ export class ExpressionLowerer {
         if (objectStatic) {
             return objectStatic(this.context, call);
         }
+        if (staticOwner === "Atomics")
+            return compileAtomicsCall(this.context, call, callee.name.text);
         if (staticOwner === "String" && callee.name.text === "fromCharCode") {
             this.context.reachJsData();
             // Spread arguments pack, in order with the others, into one list.

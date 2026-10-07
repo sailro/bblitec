@@ -351,9 +351,13 @@ export class ConditionLowerer {
                 if (classInstance !== undefined) return classInstance;
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
-                const expected: string | undefined =
-                    BUFFER_VIEW_KINDS.get(global) ??
-                    TYPED_ARRAY_KINDS.get(global);
+                // A SharedArrayBuffer is a buffer branded shared; the brand
+                // tells it from an ArrayBuffer at run time.
+                const shared = global === "SharedArrayBuffer";
+                const expected: string | undefined = shared
+                    ? "arraybuffer"
+                    : (BUFFER_VIEW_KINDS.get(global) ??
+                      TYPED_ARRAY_KINDS.get(global));
                 if (expected) {
                     const value = this.context.compileValue(unwrapped.left);
                     // The member a value holds answers the test: a union by
@@ -377,12 +381,21 @@ export class ConditionLowerer {
                     const index = members.findIndex(
                         (member) => member.kind === expected,
                     );
+                    const brand =
+                        expected === "arraybuffer"
+                            ? (buffer: string): string =>
+                                  `${shared ? "" : "!"}${buffer}.shared()`
+                            : undefined;
                     if (members.length)
                         return index < 0
                             ? "false"
                             : union
-                              ? `((${value.cpp}).index() == ${index})`
-                              : "true";
+                              ? brand
+                                  ? `([](const auto& candidate) { return candidate.index() == ${index} && ${brand(`std::get<${index}>(candidate)`)}; }(${value.cpp}))`
+                                  : `((${value.cpp}).index() == ${index})`
+                              : brand
+                                ? brand(`(${value.cpp})`)
+                                : "true";
                 }
             }
             // Engine-handle identity first: `group === sadPose` is

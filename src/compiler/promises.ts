@@ -81,6 +81,13 @@ export function compileImmediatePromise(
             throw new ApplicationRealmRequired();
         return value;
     }
+    // The other combinators settle in later microtasks: the realm's queue.
+    if (
+        ts.isPropertyAccessExpression(call.expression) &&
+        context.libraryGlobal(call.expression.expression) === "Promise" &&
+        ["race", "allSettled", "any"].includes(call.expression.name.text)
+    )
+        throw new ApplicationRealmRequired();
     if (
         ts.isPropertyAccessExpression(call.expression) &&
         context.libraryGlobal(call.expression.expression) === "Promise" &&

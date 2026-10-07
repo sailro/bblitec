@@ -33,7 +33,7 @@ import {
 } from "./canvas-instrumentation.js";
 import { staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { declaredInDomLibrary, ecmascriptGlobalTypeof } from "./symbols.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
@@ -1700,6 +1700,11 @@ export class BrowserErasure {
             );
             if (windowInterface)
                 return { kind: "string", value: windowInterface };
+            const intrinsic = ecmascriptGlobalTypeof(
+                this.context.checker,
+                unwrapped.expression,
+            );
+            if (intrinsic) return { kind: "string", value: intrinsic };
             if (
                 global &&
                 [

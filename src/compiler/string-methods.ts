@@ -14,7 +14,14 @@ export function compileStringValueMethod(
     const locale = compileLocaleStringMethod(lowerer, call, method, owner);
     if (locale) return locale;
     if (
-        !["substring", "repeat", "concat", "at", "codePointAt"].includes(method)
+        ![
+            "substring",
+            "substr",
+            "repeat",
+            "concat",
+            "at",
+            "codePointAt",
+        ].includes(method)
     )
         return undefined;
     const source = lowerer.context.allocateTemporaryCppName("string_receiver");
@@ -45,9 +52,33 @@ export function compileStringValueMethod(
             stringType,
         );
     }
-    if (call.arguments.length > (method === "substring" ? 2 : 1))
+    if (
+        call.arguments.length >
+        (method === "substring" || method === "substr" ? 2 : 1)
+    )
         lowerer.context.fail(call, `String.${method} has too many arguments.`);
     const start = number(0, "0.0");
+    if (method === "substr") {
+        // An absent or undefined length takes the rest of the string.
+        const lengthArgument = call.arguments[1];
+        let length = "std::numeric_limits<double>::infinity()";
+        if (lengthArgument) {
+            length = lowerer.context.allocateTemporaryCppName("substr_length");
+            lowerer.context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: length,
+                initializer: lowerer.compileDefaultedNumberArgument(
+                    lengthArgument,
+                    Infinity,
+                ),
+            });
+        }
+        return lowerer.leafValue(
+            `bbl::js::string_substr(${source}, ${start}, ${length})`,
+            stringType,
+        );
+    }
     if (method === "substring") {
         const end = number(1, "std::numeric_limits<double>::infinity()");
         return lowerer.leafValue(

@@ -108,6 +108,37 @@ export function declaredIn(
     );
 }
 
+/**
+ * `typeof` of a global only the ECMAScript library declares. Every realm has
+ * the language's intrinsics, so the answer is the declared value's kind:
+ * a callable or constructible value is a function, a number a number, a
+ * namespace or any other value an object.
+ */
+export function ecmascriptGlobalTypeof(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): "function" | "number" | "object" | undefined {
+    const node = unwrapExpression(expression);
+    if (!ts.isIdentifier(node)) return undefined;
+    const symbol = resolvedSymbol(checker, node);
+    const declarations = symbol?.declarations ?? [];
+    if (
+        declarations.length === 0 ||
+        declarations.some(
+            (declaration) => declarationOrigin(declaration) !== "default-lib",
+        ) ||
+        (symbol!.flags &
+            (ts.SymbolFlags.Value | ts.SymbolFlags.ValueModule)) ===
+            0
+    )
+        return undefined;
+    if ((symbol!.flags & ts.SymbolFlags.Variable) === 0) return "object";
+    const type = checker.getTypeOfSymbolAtLocation(symbol!, node);
+    if (type.getCallSignatures().length || type.getConstructSignatures().length)
+        return "function";
+    return type.flags & ts.TypeFlags.NumberLike ? "number" : "object";
+}
+
 /** Whether a symbol is declared by the browser document's library files. */
 export function declaredInDomLibrary(symbol: ts.Symbol | undefined): boolean {
     return declaredIn(symbol, "dom");

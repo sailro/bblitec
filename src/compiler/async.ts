@@ -289,9 +289,9 @@ export class AsyncLowerer {
         if (
             ts.isPropertyAccessExpression(callee) &&
             context.libraryGlobal(callee.expression) === "Promise" &&
-            callee.name.text === "race"
+            (callee.name.text === "race" || callee.name.text === "any")
         )
-            return this.compileRace(node);
+            return this.compileRace(node, callee.name.text);
         if (this.isPromiseMethod(callee)) {
             const rejection = callee.name.text === "catch";
             const cleanup = callee.name.text === "finally";
@@ -905,12 +905,20 @@ export class AsyncLowerer {
         };
     }
 
-    private compileRace(call: ts.CallExpression): Value {
+    /**
+     * `Promise.race`, and `Promise.any`, which settles with the first
+     * fulfillment instead and rejects with an AggregateError of every
+     * reason, in input order, once all inputs reject.
+     */
+    private compileRace(
+        call: ts.CallExpression,
+        operation: "race" | "any",
+    ): Value {
         const context = this.context;
         if (call.arguments.length !== 1)
             context.fail(
                 call,
-                "Promise.race requires one represented iterable.",
+                `Promise.${operation} requires one represented iterable.`,
             );
         const argument = unwrapExpression(argumentAt(call, 0));
         const pin = (value: Value, source: ts.Node = call): Value =>
@@ -920,12 +928,20 @@ export class AsyncLowerer {
                 source,
             );
         let promises: Value[];
+        // An input typed Promise<never> only rejects, so it joins any
+        // settlement type: the others name the result.
+        const argumentType = context.checker.getTypeAtLocation(argument);
+        const onlyRejects = (index: number): boolean => {
+            const type = this.elementType(argumentType, index);
+            const awaited = type && context.checker.getAwaitedType(type);
+            return ((awaited?.flags ?? 0) & ts.TypeFlags.Never) !== 0;
+        };
         if (ts.isArrayLiteralExpression(argument))
             promises = argument.elements.map((element) => {
                 if (ts.isSpreadElement(element))
                     return context.fail(
                         element,
-                        "Promise.race literal spreads require a represented array first.",
+                        `Promise.${operation} literal spreads require a represented array first.`,
                     );
                 return pin(
                     ts.isOmittedExpression(element)
@@ -944,11 +960,11 @@ export class AsyncLowerer {
                 if (value.dataType?.kind !== "vector")
                     return context.fail(
                         argument,
-                        "Promise.race requires an array or a represented tuple.",
+                        `Promise.${operation} requires an array or a represented tuple.`,
                     );
                 const element = value.dataType.element;
                 return context.dataLowerer.leafValue(
-                    `bbl::js::promise_race(${value.cpp})`,
+                    `bbl::js::promise_${operation}(${value.cpp})`,
                     element.kind === "promise"
                         ? element
                         : { kind: "promise", result: element },
@@ -956,17 +972,22 @@ export class AsyncLowerer {
             }
         }
         const output = this.withoutConstants(
-            promises[0]?.promiseResult ?? { kind: "void", cpp: "" },
+            promises.find((_, index) => !onlyRejects(index))?.promiseResult ??
+                promises[0]?.promiseResult ?? { kind: "void", cpp: "" },
         );
         const cppType = this.cppType(output, call);
-        if (promises.some((promise) => promise.promiseType !== cppType))
-            return context.fail(
-                call,
-                "Promise.race inputs require a common represented settlement type.",
-            );
+        const inputs = promises.map((promise, index) => {
+            if (promise.promiseType === cppType) return promise.cpp;
+            if (!onlyRejects(index))
+                return context.fail(
+                    call,
+                    `Promise.${operation} inputs require a common represented settlement type.`,
+                );
+            return `bbl::js::Promise<${cppType}>::view(${promise.cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
+        });
         return {
             kind: "promise",
-            cpp: `bbl::js::promise_race_tuple<${cppType}>(std::tuple{${promises.map((value) => value.cpp).join(", ")}})`,
+            cpp: `bbl::js::promise_${operation}_tuple<${cppType}>(std::tuple{${inputs.join(", ")}})`,
             promiseType: cppType,
             promiseResult: output,
             nativeCaptures: promises.flatMap(

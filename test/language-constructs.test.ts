@@ -2143,6 +2143,8 @@ function check(
                 TextDecoder,
                 TextEncoder,
                 WeakRef,
+                atob,
+                btoa,
             },
         );
         const result = compileSource(source, {
@@ -3098,6 +3100,171 @@ test("typed-array callbacks refuse the array parameter", () => {
                 "const f = new Float32Array(2); f.forEach((v, i, a) => { a[i] = v + 1; });",
             ),
         /typed array's forEach callback takes no array parameter/,
+    );
+});
+
+check(
+    "atomics-access-integer-typed-arrays",
+    `
+    const HDR_SEQ = 0, HDR_FRONT = 1;
+    if (typeof SharedArrayBuffer !== "function" || typeof Atomics !== "object") throw new Error("typeof");
+    const sab = new SharedArrayBuffer(16);
+    const header = new Int32Array(sab, 0, 4);
+    const buffers: [Float32Array, Float32Array] = [new Float32Array(2), new Float32Array(2)];
+    buffers[1][0] = 7;
+    function copyStable(view: Int32Array | null): number {
+        if (!view) return -1;
+        const s0 = Atomics.load(view, HDR_SEQ);
+        const value = buffers[Atomics.load(view, HDR_FRONT)]![0]!;
+        return Atomics.load(view, HDR_SEQ) === s0 ? value : -2;
+    }
+    if (Atomics.store(header, HDR_FRONT, 1.9) !== 1 || copyStable(header) !== 7 || copyStable(null) !== -1) throw new Error("load and store");
+    if (!Object.is(Atomics.store(header, 2, -0.5), 0) || Atomics.store(header, 2, Infinity) !== Infinity || header[2] !== 0) throw new Error("store result");
+    const bytes = new Uint8Array(4);
+    if (Atomics.add(bytes, 0, 250) !== 0 || Atomics.add(bytes, 0, 10) !== 250 || bytes[0] !== 4) throw new Error("add wraps");
+    if (Atomics.sub(bytes, 1, 1) !== 0 || bytes[1] !== 255) throw new Error("sub wraps");
+    const words = new Int16Array([0x0f0f]);
+    if (Atomics.and(words, 0, 0x00ff) !== 0x0f0f || Atomics.or(words, 0, 0x7000) !== 0x000f) throw new Error("and, or");
+    if (Atomics.xor(words, 0, -1) !== 0x700f || words[0] !== ~0x700f) throw new Error("xor");
+    if (Atomics.exchange(words, 0, 70000) !== ~0x700f || words[0] !== 4464) throw new Error("exchange converts");
+    const unsigned = new Uint32Array([5]);
+    if (Atomics.compareExchange(unsigned, 0, 4, 9) !== 5 || unsigned[0] !== 5) throw new Error("compareExchange miss");
+    if (Atomics.compareExchange(unsigned, 0, 5 + 2 ** 32, -1) !== 5 || unsigned[0] !== 4294967295) throw new Error("compareExchange converts");
+    if (Atomics.load(new Int8Array([-3]), 0.9) !== -3 || Atomics.load(header, NaN) !== 0) throw new Error("index conversion");
+    if (Atomics.notify(header, 0) !== 0 || Atomics.notify(header, 0, 3) !== 0) throw new Error("notify");
+    const sizes = [1, 2, 3, 4, 8];
+    let lockFree = "";
+    for (const size of sizes) lockFree += Atomics.isLockFree(size) ? "t" : "f";
+    if (lockFree !== "ttftt" || !Atomics.isLockFree(4)) throw new Error("isLockFree " + lockFree);
+    let ranges = "";
+    for (const index of [4, -1, Infinity, 2 ** 53]) {
+        try { Atomics.load(header, index); ranges += "none;"; }
+        catch (error) { ranges += error instanceof RangeError ? "r" : "other;"; }
+    }
+    let order = "";
+    function at(index: number): number { order += "i"; return index; }
+    function value(v: number): number { order += "v"; return v; }
+    try { Atomics.store(header, at(9), value(1)); } catch (error) { order += error instanceof RangeError ? "r" : "x"; }
+    if (ranges !== "rrrr" || order !== "ivr") throw new Error("range " + ranges + order);
+    const plain = new Int32Array(new ArrayBuffer(8));
+    Atomics.store(plain, 1, 3);
+    if (plain[1] !== 3 || plain.buffer instanceof SharedArrayBuffer || !(header.buffer instanceof SharedArrayBuffer)) throw new Error("brand");
+    const buffers2: ArrayBufferLike[] = [sab, plain.buffer, sab.slice(4)];
+    let brands = "";
+    for (const buffer of buffers2) brands += (buffer instanceof SharedArrayBuffer ? "s" : "") + (buffer instanceof ArrayBuffer ? "a" : "");
+    if (brands !== "sas" || sab.slice(4).byteLength !== 12) throw new Error("brands " + brands);
+`,
+);
+
+test("Atomics refuse forms one realm cannot represent", () => {
+    for (const [source, message] of [
+        [
+            "const v = new Int32Array(new SharedArrayBuffer(8)); Atomics.wait(v, 0, 0);",
+            /Atomics\.wait suspends an agent until another agent notifies it/,
+        ],
+        [
+            "function f(a: Int32Array | Uint8Array) { return Atomics.load(a, 0); } f(new Uint8Array(2));",
+            /Atomics\.load takes one integer typed-array kind/,
+        ],
+        [
+            "const b = new SharedArrayBuffer(8, { maxByteLength: 16 });",
+            /new SharedArrayBuffer takes one byte length/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "string-substr-and-base64",
+    `
+    const s = ["abcdef", "a\u{1F600}b"];
+    const text = s[0]!;
+    function sub(start: number, length?: number): string { return text.substr(start, length); }
+    const starts = [1, -3, -10, 4, 2, 2, NaN, 6, Infinity];
+    const lengths = [2, 2, 2, 10, 0, -1, 2, 1, 1];
+    const expected = ["bc", "de", "ab", "ef", "", "", "ab", "", ""];
+    for (let index = 0; index < starts.length; index++)
+        if (sub(starts[index]!, lengths[index]!) !== expected[index]) throw new Error("substr " + index);
+    if (sub(2) !== "cdef" || sub(2, undefined) !== "cdef") throw new Error("absent length");
+    if (text.substr(3) !== "def" || s[1]!.substr(1, 2) !== "\u{1F600}" || s[1]!.substr(2, 1) !== "\\ude00") throw new Error("substr units");
+    const plain = ["ab", "", "f", "fo", "foo", "\\u00ff\\u0000"];
+    for (const value of plain)
+        if (btoa(value) !== ["YWI=", "", "Zg==", "Zm8=", "Zm9v", "/wA="][plain.indexOf(value)] || atob(btoa(value)) !== value) throw new Error("base64 " + value);
+    if (atob(" Zm 9v\\n") !== "foo" || atob("Zg") !== "f" || atob("Zm8") !== "fo" || atob("") !== "") throw new Error("forgiving decode");
+    if (btoa(String(12)) !== "MTI=") throw new Error("ToString");
+    let invalid = "";
+    for (const value of ["Zm9v=", "Z", "Zm9v!", "Zg=a", "Z===", "Zm=="])
+        try { atob(value); invalid += "ok;"; } catch (error) { invalid += (error as Error).name === "InvalidCharacterError" ? "e" : "other;"; }
+    try { btoa("Ā"); invalid += "ok;"; } catch (error) { invalid += (error as Error).name === "InvalidCharacterError" ? "e" : "other;"; }
+    if (invalid !== "eeeeeok;e") throw new Error("invalid " + invalid);
+    const pair = [5, 6];
+    const keys = [...pair.keys()];
+    if (keys.length !== 2 || keys[1] !== 1) throw new Error("tuple keys");
+`,
+);
+
+checkInRealm(
+    "promise-combinators-and-microtasks-without-engine",
+    `
+    let log = "";
+    queueMicrotask(() => { log += "m"; });
+    log += "s";
+    void (async () => {
+        await Promise.resolve();
+        if (log !== "sm") throw new Error("microtask order " + log);
+        const raced = await Promise.race([Promise.resolve(1), new Promise<number>(() => {})]);
+        const first = await Promise.any([Promise.reject(new Error("x")), Promise.resolve(2)]);
+        const settled = await Promise.allSettled([Promise.resolve(1), Promise.reject(new Error("y"))]);
+        if (raced !== 1 || first !== 2 || settled[1]!.status !== "rejected") throw new Error("combinators");
+        const reasons: string[] = [];
+        try {
+            await Promise.any([Promise.reject(new Error("a")), Promise.reject(new Error("b"))]);
+        } catch (error) {
+            if (!(error instanceof AggregateError)) throw new Error("not aggregate");
+            reasons.push(error.message);
+        }
+        try { await Promise.any([] as Promise<number>[]); } catch (error) { reasons.push(String(error instanceof AggregateError)); }
+        if (reasons.join("|") !== "All promises were rejected|true") throw new Error("aggregate " + reasons.join("|"));
+        const stored: Promise<number>[] = [Promise.reject(new Error("c")), Promise.resolve(4)];
+        if ((await Promise.any(stored)) !== 4) throw new Error("stored any");
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
+    "structured-clone-copies-data",
+    `
+    interface Row { a: number[]; name: string; when?: Date }
+    const shared = [1, 2];
+    const r: { left: Row; right: Row; map: Map<string, number>; bytes: Uint8Array } = {
+        left: { a: shared, name: "l" }, right: { a: shared, name: "r", when: new Date(5) },
+        map: new Map([["k", 1]]), bytes: new Uint8Array([1, 2, 3]),
+    };
+    const c = structuredClone(r);
+    c.left.a.push(3);
+    if (r.left.a.length !== 2 || c.right.a.length !== 3 || c.left.a !== c.right.a) throw new Error("aliases");
+    if (c.right.when!.getTime() !== 5 || c.right.when === r.right.when || c.map.get("k") !== 1 || c.map === r.map) throw new Error("copies");
+    c.bytes[0] = 9;
+    if (r.bytes[0] !== 1 || c.bytes.length !== 3) throw new Error("bytes");
+    let failed = "";
+    interface Holder { f?: () => number; n: number }
+    const holder: Holder = { n: 1, f: () => 2 };
+    try { structuredClone(holder); failed += "no-throw;"; } catch (error) { if ((error as Error).name !== "DataCloneError") failed += "name;"; }
+    const plain: Holder = { n: 3 };
+    if (structuredClone(plain).n !== 3) failed += "absent function;";
+    if (failed) throw new Error(failed);
+    globalThis.close();
+`,
+);
+
+test("structuredClone refuses shapes without a clone codec", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "class K { n = 1; } const k = structuredClone(new K()); const n = k.n;",
+            ),
+        /structuredClone 'value' is an instance of class K/,
     );
 });
 
@@ -6677,7 +6844,12 @@ function checkInRealm(name: string, source: string): void {
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { close: () => (closed = true), setTimeout },
+            {
+                close: () => (closed = true),
+                setTimeout,
+                queueMicrotask,
+                structuredClone,
+            },
         );
         // A realm may close from a timer callback as well as a reaction.
         for (let turn = 0; turn < 20 && !closed; turn++)

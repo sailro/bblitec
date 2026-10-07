@@ -144,6 +144,73 @@ inline std::string decode_uri(std::string_view input) {
     return uri_detail::decode(input, uri_detail::reserved);
 }
 
+/** `btoa(data)`: base64 of each UTF-16 unit as one byte; a unit above 0xFF is an InvalidCharacterError. */
+inline std::string string_to_base64(const std::string& input) {
+    constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const auto units = string_code_units(input);
+    std::string output;
+    output.reserve((units.size() + 2) / 3 * 4);
+    for (std::size_t index = 0; index < units.size(); index += 3) {
+        const std::size_t count = std::min<std::size_t>(3, units.size() - index);
+        std::uint32_t chunk = 0;
+        for (std::size_t offset = 0; offset < 3; ++offset) {
+            const char16_t unit = offset < count ? units[index + offset] : char16_t{0};
+            if (unit > 0xFF)
+                throw NamedError(
+                    "InvalidCharacterError",
+                    "The string to be encoded contains characters outside of the Latin1 range.");
+            chunk = (chunk << 8) | unit;
+        }
+        for (std::size_t digit = 0; digit < 4; ++digit)
+            output.push_back(digit <= count ? alphabet[(chunk >> (18 - 6 * digit)) & 63] : '=');
+    }
+    return output;
+}
+
+/** `atob(data)`: forgiving-base64 decode, each byte one UTF-16 unit, or an InvalidCharacterError. */
+inline std::string string_from_base64(const std::string& input) {
+    const auto invalid = [] {
+        return NamedError("InvalidCharacterError",
+                          "The string to be decoded is not correctly encoded.");
+    };
+    std::u16string data;
+    for (const char16_t unit : string_code_units(input))
+        if (unit != 0x09 && unit != 0x0A && unit != 0x0C && unit != 0x0D && unit != 0x20)
+            data.push_back(unit);
+    if (data.size() % 4 == 0 && !data.empty() && data.back() == u'=') {
+        data.pop_back();
+        if (data.back() == u'=')
+            data.pop_back();
+    }
+    if (data.size() % 4 == 1)
+        throw invalid();
+    std::u16string output;
+    std::uint32_t buffer = 0;
+    int bits = 0;
+    for (const char16_t unit : data) {
+        std::uint32_t value = 0;
+        if (unit >= u'A' && unit <= u'Z')
+            value = unit - u'A';
+        else if (unit >= u'a' && unit <= u'z')
+            value = unit - u'a' + 26;
+        else if (unit >= u'0' && unit <= u'9')
+            value = unit - u'0' + 52;
+        else if (unit == u'+')
+            value = 62;
+        else if (unit == u'/')
+            value = 63;
+        else
+            throw invalid();
+        buffer = ((buffer << 6) | value) & 0xFFFFFFu;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            output.push_back(static_cast<char16_t>((buffer >> bits) & 0xFFu));
+        }
+    }
+    return string_from_code_units(output);
+}
+
 /** String-initialized URLSearchParams retain the ordered query list across aliases. */
 class SearchParams {
     using Entries = std::vector<std::pair<std::string, std::string>>;

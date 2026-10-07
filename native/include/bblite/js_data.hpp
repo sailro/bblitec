@@ -103,6 +103,12 @@ template <typename... T> [[nodiscard]] bool union_truthy(const std::variant<T...
         value);
 }
 
+/** ToIntegerOrInfinity: NaN and both zeros read as +0. */
+[[nodiscard]] inline double to_integer_or_infinity(double value) {
+    const double integer = std::trunc(value);
+    return std::isnan(integer) || integer == 0.0 ? 0.0 : integer;
+}
+
 template <typename T> class TypedArray;
 template <typename Values, typename Owner = Values> class TypedArraySlot;
 template <typename T> [[nodiscard]] T numeric_store_value(double value);
@@ -158,6 +164,12 @@ public:
         : bytes_(std::make_shared<std::vector<std::uint8_t>>(std::move(bytes))) {}
     explicit ArrayBuffer(std::shared_ptr<std::vector<std::uint8_t>> bytes)
         : bytes_(std::move(bytes)) {}
+    /** A SharedArrayBuffer: bytes no agent but this realm's reaches. */
+    [[nodiscard]] static ArrayBuffer shared_bytes(std::vector<std::uint8_t> bytes) {
+        ArrayBuffer buffer(std::move(bytes));
+        buffer.shared_ = true;
+        return buffer;
+    }
     template <typename T>
         requires std::is_trivially_copyable_v<T>
     explicit ArrayBuffer(const TypedArray<T>& values) : ArrayBuffer(values.buffer()) {}
@@ -198,6 +210,8 @@ public:
         return bytes_;
     }
     [[nodiscard]] bool retains_storage() const { return bytes_ || external_owner_; }
+    /** Whether the buffer is a SharedArrayBuffer rather than an ArrayBuffer. */
+    [[nodiscard]] bool shared() const { return shared_; }
     [[nodiscard]] const void* identity() const {
         return bytes_ ? static_cast<const void*>(bytes_.get()) : external_owner_.get();
     }
@@ -213,6 +227,7 @@ private:
     std::shared_ptr<void> external_owner_;
     std::uint8_t* external_data_ = nullptr;
     std::size_t external_length_ = 0;
+    bool shared_ = false;
 };
 
 /** ToIndex for numeric buffer-view arguments; validate after truncation. */
@@ -3833,6 +3848,21 @@ string_ends_with(const std::string& value, const std::string& suffix,
     return string_from_code_units(units.substr(first, last - first));
 }
 
+/** `String.prototype.substr(start, length)`, over UTF-16 units. */
+[[nodiscard]] inline std::string string_substr(const std::string& value, double start,
+                                               double length) {
+    const auto units = string_code_units(value);
+    const double size = static_cast<double>(units.size());
+    double first = to_integer_or_infinity(start);
+    first = first < 0.0 ? std::max(size + first, 0.0) : std::min(first, size);
+    const double last =
+        std::min(first + std::clamp(to_integer_or_infinity(length), 0.0, size), size);
+    if (first >= last)
+        return {};
+    return string_from_code_units(
+        units.substr(static_cast<std::size_t>(first), static_cast<std::size_t>(last - first)));
+}
+
 [[nodiscard]] inline std::string string_repeat(const std::string& value, double count) {
     count = std::isnan(count) ? 0.0 : std::trunc(count);
     if (!std::isfinite(count) || count < 0.0)
@@ -4249,11 +4279,13 @@ template <typename Values> inline Values typed_array_reverse(Values values) {
     return values;
 }
 
-/** `ArrayBuffer.prototype.slice`: a new buffer holding a copy of the relative byte range. */
+/** `ArrayBuffer`/`SharedArrayBuffer.prototype.slice`: a new buffer of the same class holding a copy of the relative byte range. */
 [[nodiscard]] inline ArrayBuffer array_buffer_slice(const ArrayBuffer& buffer, double begin_value,
                                                     double end_value) {
     const auto [begin, end] = relative_slice_bounds(buffer.byte_length(), begin_value, end_value);
-    return ArrayBuffer(std::vector<std::uint8_t>(buffer.data() + begin, buffer.data() + end));
+    std::vector<std::uint8_t> bytes(buffer.data() + begin, buffer.data() + end);
+    return buffer.shared() ? ArrayBuffer::shared_bytes(std::move(bytes))
+                           : ArrayBuffer(std::move(bytes));
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
@@ -5059,6 +5091,88 @@ struct NumberArgument {
         return numeric_store_value<T>(value);
     }
 };
+
+/**
+ * ValidateAtomicAccess: the element ToIndex reads, inside the view's length,
+ * or a RangeError. One realm owns its memory (no agent shares it), so each
+ * Atomics operation is the plain element access it is on a non-shared buffer.
+ */
+template <typename Values>
+[[nodiscard]] std::size_t atomic_index(const Values& values, double index) {
+    static_assert(std::is_integral_v<typename Values::value_type>,
+                  "Atomics operate on integer typed arrays.");
+    const double integer = to_integer_or_infinity(index);
+    if (integer < 0.0 || integer >= static_cast<double>(values.size()))
+        throw NamedError("RangeError", "Invalid atomic access index");
+    return static_cast<std::size_t>(integer);
+}
+
+/** `Atomics.load(typedArray, index)`. */
+template <typename Values> [[nodiscard]] double atomics_load(const Values& values, double index) {
+    return static_cast<double>(values.load(atomic_index(values, index)));
+}
+
+/** `Atomics.store`: stores the element and returns ToIntegerOrInfinity(value). */
+template <typename Values> double atomics_store(Values values, double index, double value) {
+    const std::size_t element = atomic_index(values, index);
+    const double integer = to_integer_or_infinity(value);
+    values.store(element, numeric_store_value<typename Values::value_type>(integer));
+    return integer;
+}
+
+enum class AtomicOperation { add, sub, bit_and, bit_or, bit_xor, exchange };
+
+/** The read-modify-write operations: wrapping element arithmetic, the old element returned. */
+template <AtomicOperation Operation, typename Values>
+double atomics_modify(Values values, double index, double value) {
+    using T = typename Values::value_type;
+    using Bits = std::make_unsigned_t<T>;
+    const std::size_t element = atomic_index(values, index);
+    const auto operand = static_cast<Bits>(numeric_store_value<T>(to_integer_or_infinity(value)));
+    const T previous = values.load(element);
+    const auto old = static_cast<Bits>(previous);
+    Bits result = operand;
+    if constexpr (Operation == AtomicOperation::add)
+        result = static_cast<Bits>(old + operand);
+    else if constexpr (Operation == AtomicOperation::sub)
+        result = static_cast<Bits>(old - operand);
+    else if constexpr (Operation == AtomicOperation::bit_and)
+        result = static_cast<Bits>(old & operand);
+    else if constexpr (Operation == AtomicOperation::bit_or)
+        result = static_cast<Bits>(old | operand);
+    else if constexpr (Operation == AtomicOperation::bit_xor)
+        result = static_cast<Bits>(old ^ operand);
+    values.store(element, static_cast<T>(result));
+    return static_cast<double>(previous);
+}
+
+/** `Atomics.compareExchange`: both operands compare and store as element values. */
+template <typename Values>
+double atomics_compare_exchange(Values values, double index, double expected, double replacement) {
+    using T = typename Values::value_type;
+    const std::size_t element = atomic_index(values, index);
+    const T expected_element = numeric_store_value<T>(to_integer_or_infinity(expected));
+    const T replacement_element = numeric_store_value<T>(to_integer_or_infinity(replacement));
+    const T previous = values.load(element);
+    if (previous == expected_element)
+        values.store(element, replacement_element);
+    return static_cast<double>(previous);
+}
+
+/** `Atomics.notify` on an Int32Array: no agent of this realm can wait, so none wakes. */
+[[nodiscard]] inline double atomics_notify(const TypedArray<std::int32_t>& values, double index,
+                                           std::optional<double> count) {
+    static_cast<void>(atomic_index(values, index));
+    if (count)
+        static_cast<void>(to_integer_or_infinity(*count));
+    return 0.0;
+}
+
+/** `Atomics.isLockFree(size)`: element sizes 1, 2, 4 and 8, as V8 answers on 64-bit hosts. */
+[[nodiscard]] inline bool atomics_is_lock_free(double size) {
+    const double integer = to_integer_or_infinity(size);
+    return integer == 1.0 || integer == 2.0 || integer == 4.0 || integer == 8.0;
+}
 
 [[nodiscard]] inline U8Array u8_array_sized(double count) {
     return U8Array(static_cast<std::size_t>(count));
