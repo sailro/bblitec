@@ -9022,6 +9022,120 @@ check(
 );
 
 check(
+    "strict-equality-tells-null-from-undefined-across-optionals",
+    `
+    const gate = new Float32Array([0, 1]);
+    const off = gate[0]! > 0;
+    const log: string[] = [];
+    const n: number | null = off ? 1 : null;
+    const u: number | undefined = off ? 1 : undefined;
+    const n2: number | null = off ? 2 : null;
+    const u2: number | undefined = off ? 2 : undefined;
+    log.push(String(n === u), String(n !== u), String(n === n2), String(u === u2));
+    const s: string | null = off ? "x" : null;
+    const t: string | undefined = off ? "x" : undefined;
+    const b: boolean | null = off ? true : null;
+    const c: boolean | undefined = off ? true : undefined;
+    log.push(String(s === t), String(b === c), String(t !== s));
+    const one: number | null = gate[1]! > 0 ? gate[1]! : null;
+    const alsoOne: number | undefined = gate[1]! > 0 ? gate[1]! : undefined;
+    log.push(String(one === alsoOne), String(one === u), String(alsoOne !== n));
+    interface Cell { size?: number; weight: number | null; }
+    const cells: Cell[] = [{ weight: null }, { size: 3, weight: 3 }, { size: 4, weight: null }];
+    for (const cell of cells) log.push(String(cell.size === cell.weight));
+    interface Owner { cell: Cell | null; }
+    const owners: Owner[] = [{ cell: null }, { cell: cells[0]! }, { cell: cells[1]! }];
+    for (const owner of owners)
+        log.push(String(owner.cell?.size === n), String(owner.cell?.size === u), String(owner.cell?.weight === n), String(owner.cell?.weight === u));
+    interface Box { v: number; }
+    const box: Box = { v: 1 };
+    const nullBox: Box | null = off ? box : null;
+    const missingBox: Box | undefined = off ? box : undefined;
+    const heldBox: Box | null = gate[1]! > 0 ? box : null;
+    log.push(String(nullBox === missingBox), String(nullBox !== missingBox), String(heldBox === box), String(heldBox === missingBox));
+    if (log.join(",") !== "false,true,true,true,false,false,true,true,false,true,false,true,false,false,true,false,true,false,true,true,false,false,false,false,false,false,true,true,false") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "strict-equality-of-storage-holding-both-absent-values",
+    `
+    interface Box { v: number; }
+    interface Slots { a?: number | null; b?: number | null; s?: string | null; t?: string | null; x?: Box | null; y?: Box | null; }
+    const shared: Box = { v: 1 };
+    const all: Slots[] = [
+        {},
+        { a: null, s: null, x: null },
+        { b: null, t: null, y: null },
+        { a: null, b: null, s: null, t: null, x: null, y: null },
+        { a: 0, b: 0, s: "", t: "", x: shared, y: shared },
+        { a: 0, s: "null", x: shared },
+        { b: 0, t: "x", x: { v: 1 }, y: { v: 1 } },
+    ];
+    const bit = (flag: boolean): string => (flag ? "1" : "0");
+    const seen = all.map((slot) =>
+        bit(slot.a === slot.b) + bit(slot.s === slot.t) + bit(slot.x === slot.y) + bit(slot.a !== slot.b) + bit(slot.a === 0) + bit(slot.s === "null") + bit("" === slot.t),
+    );
+    if (seen.join(",") !== "1110000,0001000,0001000,1110000,1110101,0001110,0001000") throw new Error(seen.join(","));
+    type Reach = () => number;
+    function sameReach(f: Reach | null | undefined, g: Reach | null | undefined): boolean { return f === g; }
+    function sameNumber(p: number | null | undefined, q: number | null | undefined): boolean { return p === q; }
+    const near: Reach = () => 1;
+    const far: Reach = () => 2;
+    const reaches = [sameReach(null, undefined), sameReach(undefined, undefined), sameReach(null, null), sameReach(near, near), sameReach(near, null), sameReach(undefined, near), sameReach(near, far)];
+    const numbers = [sameNumber(null, undefined), sameNumber(undefined, undefined), sameNumber(null, null), sameNumber(0, null), sameNumber(NaN, NaN), sameNumber(-0, 0)];
+    if (reaches.map(bit).join("") !== "0111000" || numbers.map(bit).join("") !== "011001") throw new Error(reaches.map(bit).join("") + " " + numbers.map(bit).join(""));
+`,
+);
+
+check(
+    "optional-literal-unions-compare-by-spelling",
+    `
+    type Trade = "none" | "priest" | "baker" | "smith";
+    type Operator = "priest" | "baker" | "witch";
+    type Site = "church" | "mill" | "tower" | "forge";
+    interface Claimant { id: number; trade: Trade; }
+    interface Plate { site: Site; claimant: Claimant | null; }
+    const OPERATOR: Readonly<Partial<Record<Site, Operator>>> = { church: "priest", mill: "baker", tower: "witch" };
+    function claimed(plate: Plate): string {
+        const operator = OPERATOR[plate.site] ?? null;
+        return String(plate.claimant?.trade === operator) + "/" + String(plate.claimant?.trade !== operator);
+    }
+    const plates: Plate[] = [
+        { site: "church", claimant: { id: 1, trade: "priest" } },
+        { site: "mill", claimant: { id: 2, trade: "priest" } },
+        { site: "forge", claimant: null },
+        { site: "forge", claimant: { id: 3, trade: "smith" } },
+        { site: "tower", claimant: null },
+        { site: "church", claimant: { id: 4, trade: "none" } },
+    ];
+    const seen = plates.map(claimed);
+    if (seen.join(",") !== "true/false,false/true,false/true,false/true,false/true,false/true") throw new Error(seen.join(","));
+    const gate = new Float32Array([0, 1]);
+    const off = gate[0]! > 0;
+    const missingTrade: Trade | undefined = off ? "priest" : undefined;
+    const missingOperator: Operator | undefined = off ? "priest" : undefined;
+    const nullOperator: Operator | null = off ? "priest" : null;
+    const trade: Trade | null = gate[1]! > 0 ? "baker" : null;
+    const operator: Operator | undefined = gate[1]! > 0 ? "baker" : undefined;
+    const label: string | undefined = gate[1]! > 0 ? "baker" : undefined;
+    const pairs = [missingTrade === missingOperator, missingTrade === nullOperator, trade === operator, label === operator, operator !== label, label === missingOperator];
+    if (pairs.map((flag) => String(flag)).join(",") !== "true,false,true,true,false,false") throw new Error(pairs.map((flag) => String(flag)).join(","));
+`,
+);
+
+test("strict equality refuses operands that may be null or undefined without storage telling them apart", () => {
+    for (const source of [
+        "interface Box { v: number; } const boxes: Box[] = [{ v: 1 }]; function pick(i: number): Box | null | undefined { return i < 0 ? null : i > 5 ? undefined : boxes[i]; } const g = new Float32Array([0, 1]); if (pick(g[0]!) === pick(g[1]!)) throw new Error();",
+        "type Fn = () => number; const fns: Array<Fn | null | undefined> = [null, undefined]; let last: Fn | null | undefined = null; for (const f of fns) { if (f === last) throw new Error(); last = f; }",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /compared strictly with another value that may be absent only once one of them is ruled out/,
+        );
+});
+
+check(
     "tuple-spreads-into-class-method-parameters",
     `
     type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number, pivotZ?: number];

@@ -108,7 +108,9 @@ pinned body (an interface method) counts as touching everything. An object or ar
 the statement that builds it holds each member's value as it was built, and an object an engine
 function writes through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
 equality between operands of one primitive type is strict equality; across types it refuses. `=== null`
-and `=== undefined` on an absent value answer from what its type admits. A read whose slot may hold
+and `=== undefined` on an absent value answer from what its type admits; two operands that may be
+absent are equal when absent only as the same absent value, and optional strings and literal-union
+tags of different sets compare by spelling. A read whose slot may hold
 `null` -- a `Map.get`, an optional chain over a nullable field, an array index, `pop()`/`shift()` --
 knows whether the slot existed, so a missing slot (`undefined`) and a stored `null` compare and spell
 apart. Primitive unions containing both absence values retain distinct tags in dynamic storage;
