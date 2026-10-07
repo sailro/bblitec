@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
+import { mergeNativeRecordStorage } from "../src/compiler/native-record-storage.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import {
+    recordComponents,
+    recordIdentity,
+} from "../src/compiler/record-components.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -150,6 +157,57 @@ test("record union storage refuses a wider record's field stored another way", (
             if (!seen.has(end)) throw new Error('identity');
         `),
         /no one layout stores their property 'label' both ways/,
+    );
+});
+
+test("merged record demands keep each join's own source", () => {
+    const frontend = createCompilerProgram(
+        `interface A { x: number } interface B { x: number }
+         interface C { y: number } interface D { y: number }`,
+        resolve("record-demand-merge.ts"),
+    );
+    const [a, b, c, d] = frontend.sourceFile.statements.map((node) => {
+        assert.ok(ts.isInterfaceDeclaration(node));
+        return frontend.checker.getTypeAtLocation(node.name);
+    });
+    assert.ok(a && b && c && d);
+    const node = frontend.sourceFile;
+    // Members of one component demand under one key; a later member's
+    // demand must not take over an earlier member's joins.
+    const merged = mergeNativeRecordStorage(
+        {
+            identity: "component",
+            type: a,
+            node,
+            frames: [],
+            joins: [{ source: a, target: b, kind: "value" }],
+        },
+        {
+            identity: "component",
+            type: c,
+            node,
+            frames: [],
+            joins: [{ source: c, target: d, kind: "value" }],
+        },
+    );
+    const components = recordComponents(frontend.checker, merged.joins ?? []);
+    const of = (type: ts.Type) =>
+        components.get(recordIdentity(frontend.checker, type));
+    assert.ok(of(a) && of(a) === of(b));
+    assert.ok(of(c) && of(c) === of(d));
+    assert.notEqual(of(a), of(c));
+});
+
+test("records storing functions whose results are stored another way refuse one layout", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Source { readonly name: string; readonly data: (n: number) => number | string }
+            const entry = { name: "clip", data: (n: number): number => n * 2 };
+            const sources: Source[] = [entry];
+            if (sources[0] !== entry) throw new Error('identity');
+        `),
+        /'\{ name: string; data: \(n: number\) => number; \}' record stored as 'Source' would be a copy/,
     );
 });
 

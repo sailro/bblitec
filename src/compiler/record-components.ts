@@ -210,6 +210,16 @@ export interface RecordJoin {
 /** What a record component keys its members by. */
 export type RecordComponentKey = ts.Symbol | ts.Type | InstantiatedRecord;
 
+const COMPONENT_KEY = "record-component:";
+
+/**
+ * Whether a struct identity names a record component: recomputing the
+ * components as joins grow renumbers these keys.
+ */
+export function isRecordComponentKey(identity: unknown): boolean {
+    return typeof identity === "string" && identity.startsWith(COMPONENT_KEY);
+}
+
 /**
  * The record components of a program: union-find over the joins lowering
  * met. Joining two record types joins the record types their common fields
@@ -347,7 +357,7 @@ export function recordComponents(
                 declared(left) - declared(right),
         )[0]!;
         const component: RecordComponent = {
-            key: `record-component:${next++}`,
+            key: `${COMPONENT_KEY}${next++}`,
             members,
             shapes: [named, ...shapes.filter((shape) => shape !== named)],
             named,
@@ -388,7 +398,8 @@ function heldRecords(
 /**
  * Whether one layout can store both record types' common fields: each held
  * in storage of one kind (`?` and `| undefined`, string literals and
- * strings, numeric tuples and number arrays aside), records in records of
+ * strings, numeric tuples and number arrays aside; functions as their
+ * parameters and results), records in records of
  * a component joined with them; a record union's field as every arm
  * declaring it holds it.
  */
@@ -444,5 +455,33 @@ export function layoutsCompatible(
             ),
         );
     }
+    // A function of one signature is a value of the other: one field holds
+    // both where their parameters and results are held alike.
+    const [signatureA, ...overloadsA] = a.getCallSignatures();
+    const [signatureB, ...overloadsB] = b.getCallSignatures();
+    if (
+        signatureA &&
+        signatureB &&
+        overloadsA.length === 0 &&
+        overloadsB.length === 0 &&
+        signatureA.parameters.length === signatureB.parameters.length &&
+        (checker.isTypeAssignableTo(a, b) || checker.isTypeAssignableTo(b, a))
+    )
+        return (
+            signatureA.parameters.every((parameter, index) =>
+                layoutsCompatible(
+                    checker,
+                    checker.getTypeOfSymbol(parameter),
+                    checker.getTypeOfSymbol(signatureB.parameters[index]!),
+                    seen,
+                ),
+            ) &&
+            layoutsCompatible(
+                checker,
+                signatureA.getReturnType(),
+                signatureB.getReturnType(),
+                seen,
+            )
+        );
     return checker.isTypeAssignableTo(a, b) && checker.isTypeAssignableTo(b, a);
 }

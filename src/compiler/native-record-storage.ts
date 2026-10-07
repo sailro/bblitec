@@ -12,11 +12,12 @@ export interface NativeRecordStorageDemand {
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
     /**
-     * Record types a record of this type was stored as where a copy could
-     * be told apart: each joins this type's record component
-     * (`record-components.ts`), so one object keeps one identity under both.
+     * Record types a record was stored as where a copy could be told apart:
+     * each joins its source's record component (`record-components.ts`), so
+     * one object keeps one identity under both. A join names its own
+     * source, which replays merging demands of one struct keep.
      */
-    joins?: readonly Omit<RecordJoin, "source">[];
+    joins?: readonly RecordJoin[];
 }
 
 /** Replays strengthen ownership and accumulate the joins lowering met. */
@@ -30,6 +31,7 @@ export function mergeNativeRecordStorage(
             (join) =>
                 !(previous?.joins ?? []).some(
                     (known) =>
+                        known.source === join.source &&
                         known.target === join.target &&
                         known.targetInstantiation ===
                             join.targetInstantiation &&

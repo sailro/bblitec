@@ -8541,6 +8541,24 @@ check(
 );
 
 check(
+    "records-storing-a-function-of-a-narrower-signature-share-the-declared-layout",
+    `
+    interface Storage { readonly name: string; readonly vertex?: boolean; readonly data: (n: number) => number[] | null | undefined }
+    interface Part { readonly storage: readonly Storage[] }
+    function compose(parts: readonly Part[]): Storage[] { const flat: Storage[] = []; for (const part of parts) flat.push(...part.storage); return flat; }
+    function makePart(scale: number): Part {
+        const entry = { name: "clip", vertex: true as const, data: (n: number): number[] | null => (n > 0 ? [n * scale] : null) };
+        return { storage: [entry] };
+    }
+    const roots = [compose];
+    const parts: Part[] = [makePart(2)];
+    const flat = roots[0]!(parts);
+    const first = flat[0]!;
+    if (first.name !== "clip" || first.data(3)?.[0] !== 6 || first.data(0) != null || parts[0]!.storage[0] !== first || first.vertex !== true) throw new Error("storage");
+`,
+);
+
+check(
     "records-stored-as-a-tagged-union-stay-one-object",
     `
     interface A { kind: "a"; x: number }

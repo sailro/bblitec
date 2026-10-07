@@ -238,7 +238,11 @@ import {
     libraryArgumentIsReadOnly,
     parameterIsReadOnly,
 } from "./compiler/parameter-effects.js";
-import { recordComponents } from "./compiler/record-components.js";
+import {
+    isRecordComponentKey,
+    recordComponents,
+    recordIdentity,
+} from "./compiler/record-components.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
@@ -619,7 +623,12 @@ function compileSourceApplication(
             ) {
                 dynamicBindings.set(request.declaration, request.storage);
             } else if (request.kind === "record") {
-                const previous = ownedRecords.get(request.demand.identity);
+                // A record component's members demand apart: their shared
+                // key is renumbered as joins grow.
+                const key = isRecordComponentKey(request.demand.identity)
+                    ? recordIdentity(input.checker, request.demand.type)
+                    : request.demand.identity;
+                const previous = ownedRecords.get(key);
                 const merged = mergeNativeRecordStorage(
                     previous,
                     request.demand,
@@ -631,7 +640,7 @@ function compileSourceApplication(
                         (merged.joins?.length ?? 0)
                 )
                     return false;
-                ownedRecords.set(request.demand.identity, merged);
+                ownedRecords.set(key, merged);
             } else if (
                 request.kind === "generic" &&
                 genericFunctions.add(request.demand)
@@ -1229,11 +1238,8 @@ class Compiler implements LoweringServices {
         this.dataTypes.prepareRecordComponents(
             recordComponents(
                 this.checker,
-                [...this.ownedRecords.values()].flatMap((demand) =>
-                    (demand.joins ?? []).map((join) => ({
-                        ...join,
-                        source: demand.type,
-                    })),
+                [...this.ownedRecords.values()].flatMap(
+                    (demand) => demand.joins ?? [],
                 ),
             ),
             this.ownedRecords.values(),

@@ -69,6 +69,7 @@ import {
     type InstantiatedRecord,
     type RecordComponent,
     type RecordComponentKey,
+    type RecordJoin,
 } from "./record-components.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
@@ -1157,6 +1158,12 @@ export class DataTypeRegistry {
      */
     private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
         new Map();
+    /**
+     * @unjournaled Set once before lowering: the joins earlier replays
+     * demanded, by source type.
+     */
+    private demandedJoins: ReadonlyMap<ts.Type, readonly RecordJoin[]> =
+        new Map();
     /** Union layouts being resolved, so a member mapped through one maps once. */
     private readonly resolvingLayouts = new EmissionSet<ts.Type>();
 
@@ -1170,11 +1177,19 @@ export class DataTypeRegistry {
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         this.recordComponents = components;
-        for (const demand of demands)
+        const joins = new Map<ts.Type, RecordJoin[]>();
+        for (const demand of demands) {
             if (demand.proxy)
                 this.withRecordDemand(demand, () =>
                     this.proxyRecords.add(this.structIdentity(demand.type)),
                 );
+            for (const join of demand.joins ?? [])
+                joins.set(join.source, [
+                    ...(joins.get(join.source) ?? []),
+                    join,
+                ]);
+        }
+        this.demandedJoins = joins;
     }
 
     /** Whether two record types already share one record component. */
@@ -1734,11 +1749,28 @@ export class DataTypeRegistry {
                       this.instantiatedRecordOf(targetRecord),
                   )
                 : undefined;
+        const kind: RecordJoin["kind"] = sharedArray
+            ? "element"
+            : ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+              ? "assertion"
+              : "value";
+        // A join an earlier replay demanded that left the two apart refuses.
+        const demanded =
+            sourceRecord &&
+            this.demandedJoins
+                .get(sourceRecord)
+                ?.some(
+                    (join) =>
+                        join.target === targetRecord &&
+                        join.targetInstantiation === targetInstantiation &&
+                        join.kind === kind,
+                );
         if (
             source &&
             target &&
             sourceRecord &&
             targetRecord &&
+            !demanded &&
             joinable(source, sourceRecord) &&
             (targetInstantiation || joinable(target, targetRecord)) &&
             !this.withRecordDemand(target, () =>
@@ -1772,16 +1804,12 @@ export class DataTypeRegistry {
                     type: sourceRecord,
                     joins: [
                         {
+                            source: sourceRecord,
                             target: targetRecord,
                             ...(targetInstantiation
                                 ? { targetInstantiation }
                                 : {}),
-                            kind: sharedArray
-                                ? "element"
-                                : ts.isAsExpression(node) ||
-                                    ts.isTypeAssertionExpression(node)
-                                  ? "assertion"
-                                  : "value",
+                            kind,
                         },
                     ],
                 });
@@ -1994,7 +2022,9 @@ export class DataTypeRegistry {
             return;
         throw new NativeRecordStorageRequired({
             ...source,
-            joins: [{ target: target.type, kind: "spread" }],
+            joins: [
+                { source: source.type, target: target.type, kind: "spread" },
+            ],
         });
     }
 
@@ -4599,10 +4629,17 @@ export class DataTypeRegistry {
             const empty = (value: (typeof values)[number]): boolean =>
                 valued.length > 0 && nullish(value);
             // A required property every shape declares only null holds
-            // JSON's null.
+            // JSON's null; an object literal's type takes its contextual
+            // type's storage instead.
             const onlyNull =
                 valued.length === 0 &&
                 values.length > 0 &&
+                declared.every(
+                    ({ owner }) =>
+                        ((owner.symbol?.flags ?? 0) &
+                            ts.SymbolFlags.ObjectLiteral) ===
+                        0,
+                ) &&
                 values.every(
                     (value) =>
                         nullish(value) &&
