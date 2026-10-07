@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
 import { isTypeReference, presentMembers } from "./type-facts.js";
-import { unwrapExpression } from "./syntax.js";
+import { outermostWrapper, unwrapExpression } from "./syntax.js";
 import type { DataType, TypedArrayKind } from "./data-types/model.js";
 import { isTypedArrayType } from "./data-types/typed-arrays.js";
 
@@ -135,24 +135,6 @@ function arrayLikeAt(
     return current !== undefined && isNumberArrayLike(checker, current);
 }
 
-/** The outermost wrapper around an expression that keeps its value. */
-function climb(node: ts.Node): ts.Node {
-    let current = node;
-    while (
-        // A source file has no parent.
-        current.parent !== undefined &&
-        (ts.isParenthesizedExpression(current.parent) ||
-            ts.isNonNullExpression(current.parent) ||
-            ts.isAsExpression(current.parent) ||
-            ts.isTypeAssertionExpression(current.parent) ||
-            ts.isSatisfiesExpression(current.parent) ||
-            (ts.isConditionalExpression(current.parent) &&
-                current.parent.condition !== current))
-    )
-        current = current.parent;
-    return current;
-}
-
 /** A program's own declaration whose storage a demand can retype. */
 function isNumericSlotDeclaration(
     declaration: ts.Declaration | undefined,
@@ -226,10 +208,10 @@ export function numericSlotDeclaration(
     within: readonly SlotStep[] = [],
 ): NumericSlotDeclaration | undefined {
     const steps: SlotStep[] = [...within];
-    let current = climb(node);
+    let current = outermostWrapper(node, { branches: true });
     if (current.parent && ts.isArrayLiteralExpression(current.parent)) {
         steps.unshift("element");
-        current = climb(current.parent);
+        current = outermostWrapper(current.parent, { branches: true });
     }
     const parent = current.parent;
     if (parent === undefined) return undefined;
@@ -243,7 +225,7 @@ export function numericSlotDeclaration(
         if (!ts.isArrowFunction(returned) && !ts.isFunctionExpression(returned))
             return undefined;
         steps.unshift("result");
-        current = climb(returned);
+        current = outermostWrapper(returned, { branches: true });
     }
     const declaration = storageDeclaration(checker, current);
     if (!isNumericSlotDeclaration(declaration)) return undefined;

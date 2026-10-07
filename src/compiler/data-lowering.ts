@@ -181,6 +181,7 @@ import {
     argumentAt,
     identifierText,
     literalMember,
+    outermostWrapper,
     propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
@@ -10281,17 +10282,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * record: the local is stored as the record's own type.
      */
     private requireRecordBinding(node: ts.Node): void {
-        let initializer: ts.Node = node;
-        while (
-            ts.isParenthesizedExpression(initializer.parent) ||
-            ts.isConditionalExpression(initializer.parent) ||
-            ts.isAsExpression(initializer.parent) ||
-            ts.isNonNullExpression(initializer.parent) ||
-            (ts.isBinaryExpression(initializer.parent) &&
-                initializer.parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken)
-        )
-            initializer = initializer.parent;
+        const initializer = outermostWrapper(node, { branches: true });
         const declaration = initializer.parent;
         if (
             !ts.isVariableDeclaration(declaration) ||

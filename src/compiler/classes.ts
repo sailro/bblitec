@@ -29,7 +29,11 @@ import {
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import { firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { sourceFunctionName, unwrapExpression } from "./syntax.js";
+import {
+    isAssignmentOperator,
+    sourceFunctionName,
+    unwrapExpression,
+} from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -84,14 +88,6 @@ function superCallOf(statement: ts.Statement): ts.CallExpression | undefined {
         expression.expression.kind === ts.SyntaxKind.SuperKeyword
         ? expression
         : undefined;
-}
-
-/** The class whose body lexically contains `node`: the home of its `super`. */
-function enclosingClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
-    for (let current = node.parent; current; current = current.parent) {
-        if (ts.isClassLike(current)) return current;
-    }
-    return undefined;
 }
 
 /**
@@ -161,13 +157,6 @@ function isInertExpression(
         );
     }
     return false;
-}
-
-function isAssignmentOperator(operator: ts.SyntaxKind): boolean {
-    return (
-        operator >= ts.SyntaxKind.FirstAssignment &&
-        operator <= ts.SyntaxKind.LastAssignment
-    );
 }
 
 /**
@@ -2103,7 +2092,8 @@ export class ClassLowerer {
         receiver: Value;
         base: ClassMemberTable;
     } {
-        const home = enclosingClass(node);
+        // The class whose body lexically contains `node`: the home of its `super`.
+        const home = ts.findAncestor(node.parent, ts.isClassLike);
         const base = home ? this.table(home).base : undefined;
         if (!base) {
             this.context.fail(
