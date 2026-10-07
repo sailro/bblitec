@@ -25,6 +25,7 @@ import {
 } from "./data-types.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import {
+    demandedStorageType,
     requireOneObject,
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
@@ -210,14 +211,6 @@ export function initializerNamesBinding(
         });
     visit(initializer);
     return found;
-}
-
-/** `{}`: a fresh object with no members. */
-function isFreshEmptyObject(expression: ts.Expression): boolean {
-    return (
-        ts.isObjectLiteralExpression(expression) &&
-        expression.properties.length === 0
-    );
 }
 
 export class DeclarationLowerer {
@@ -2453,52 +2446,12 @@ export class DeclarationLowerer {
         if (this.context.dynamicBindings.has(declaration)) {
             const storage = this.context.dynamicBindings.get(declaration);
             if (storage) {
-                const source = this.context.checker.getTypeAtLocation(name);
-                const mapped =
-                    typeof storage === "object"
-                        ? this.context.dataTypes.fromStoredTsType(
-                              storage.nativeType,
-                              storage.node,
-                          )
-                        : storage === "error-array"
-                          ? undefined
-                          : (this.context.dataTypes.fromStoredTsType(
-                                source,
-                                declaration,
-                            ) ??
-                            // A fresh `{}` has no members to type: a parsed
-                            // document holds it as one object with identity.
-                            (storage === "source" &&
-                            isFreshEmptyObject(
-                                this.context.unwrap(declaration.initializer),
-                            )
-                                ? { kind: "json" as const }
-                                : undefined));
-                let type: DataType | undefined = mapped;
-                if (typeof storage === "object" && type) {
-                    const absent = nullability(source);
-                    if (absent.null || absent.undefined)
-                        type = this.context.dataTypes.nullableType(
-                            type,
-                            !absent.null,
-                        );
-                } else if (storage === "error-array") {
-                    type = { kind: "vector", element: { kind: "error" } };
-                } else if (storage === "array") {
-                    const indexed = this.context.checker.getIndexTypeOfType(
-                        source,
-                        ts.IndexKind.Number,
-                    );
-                    const element =
-                        mapped?.kind === "vector" || mapped?.kind === "span"
-                            ? mapped.element
-                            : indexed &&
-                              this.context.dataTypes.fromStoredTsType(
-                                  indexed,
-                                  declaration,
-                              );
-                    type = element ? { kind: "vector", element } : undefined;
-                }
+                let type = demandedStorageType(
+                    this.context,
+                    declaration,
+                    storage,
+                    this.context.unwrap(declaration.initializer),
+                );
                 if (!type)
                     this.context.fail(
                         declaration,

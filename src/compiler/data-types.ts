@@ -2397,15 +2397,17 @@ export class DataTypeRegistry {
                     node,
                     true,
                 );
+            // Every property any arm declares takes one storage in the
+            // joined layout, including those the union's own fields omit.
             if (
-                union !== sourceUnion ||
-                (targetInstantiation
-                    ? this.structLayoutsCompatible(sourceFields, targetFields)
+                targetInstantiation
+                    ? union !== sourceUnion ||
+                      this.structLayoutsCompatible(sourceFields, targetFields)
                     : layoutsCompatible(
                           this.checker,
                           sourceRecord,
                           targetRecord,
-                      ))
+                      )
             ) {
                 this.requireJoin({
                     ...source,

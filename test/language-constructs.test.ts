@@ -14156,6 +14156,155 @@ check(
 `,
 );
 
+check(
+    "a-local-record-stored-as-a-closed-key-record-is-that-record",
+    `
+    type Element = "a" | "b" | "c";
+    const ELEMENTS: readonly Element[] = ["a", "b", "c"];
+    interface Frozen { points: Readonly<Record<Element, number>>; total: number }
+    interface Open { points: Record<Element, number> }
+    function compute(n: number): Frozen {
+        const points = { a: 0, b: 0, c: 0 };
+        let total = 0;
+        for (const element of ELEMENTS) {
+            points[element] = n;
+            total += n;
+        }
+        return { points, total };
+    }
+    function open(): Open {
+        const points = { a: 1, b: 2, c: 3 };
+        return { points };
+    }
+    const frozen = compute(2);
+    if (frozen.points.a !== 2 || frozen.points.c !== 2 || frozen.total !== 6) throw new Error("frozen");
+    if (open().points.b !== 2) throw new Error("open");
+`,
+);
+
+check(
+    "built-in-global-static-calls-are-not-data-methods",
+    `
+    interface Deps { readonly meshesOf: Readonly<Record<string, () => readonly number[]>> }
+    interface Debug { systems(): readonly string[]; count(system: string): number }
+    function create(deps: Deps): Debug {
+        const count = (system: string): number => {
+            const meshes = deps.meshesOf[system]?.();
+            if (!meshes) return -1;
+            return meshes.length;
+        };
+        return { systems: () => Object.keys(deps.meshesOf), count: (system) => count(system) };
+    }
+    const debug = create({ meshesOf: { trees: () => [1, 2], grass: () => [3] } });
+    if (debug.systems().join() !== "trees,grass") throw new Error("keys");
+    if (debug.count("trees") !== 2 || debug.count("rocks") !== -1) throw new Error("count");
+`,
+);
+
+check(
+    "an-array-of-records-without-native-storage-keeps-its-constant",
+    `
+    interface Entry { id: number; view?: unknown }
+    const NO_ENTRIES: readonly Entry[] = Object.freeze([]);
+    function outline(entries: readonly Entry[] | null): readonly Entry[] {
+        return entries ?? NO_ENTRIES;
+    }
+    function same(a: readonly Entry[], b: readonly Entry[]): boolean {
+        return a === b;
+    }
+    const kept: Array<typeof outline | typeof same> = [outline, same];
+    if (kept.length !== 2) throw new Error("kept");
+`,
+);
+
+test("one object without one native layout refuses where it is stored or compared", () => {
+    // The constant keeps its compile-time value; a comparison needing the
+    // one object refuses at the comparison.
+    assert.throws(
+        () =>
+            compileSource(
+                `interface Entry { id: number; view?: unknown }
+                const NO_ENTRIES: readonly Entry[] = Object.freeze([]);
+                const OTHER: readonly Entry[] = Object.freeze([]);
+                if (NO_ENTRIES === OTHER) throw new Error("distinct");`,
+            ),
+        /Comparison requires represented operands, received tuple and tuple\./,
+    );
+    // A union of literals whose arm declares a field as a record, stored as
+    // a type holding that field as a dictionary, has no one layout.
+    assert.throws(
+        () =>
+            compileSource(
+                `type Kind = "hint" | "error" | "success";
+                interface StatusMessage {
+                  key: string;
+                  params?: Record<string, string>;
+                  kind: Kind;
+                }
+                function format(key: string, params?: Record<string, string>): string {
+                  let text = key;
+                  if (params) {
+                    for (const [k, v] of Object.entries(params)) text += ";" + k + "=" + v;
+                  }
+                  return text;
+                }
+                function create(): { press(mode: number, other: string): void; text(): string } {
+                  let statusMessage: StatusMessage = { key: "hint", kind: "hint" };
+                  let shown = "";
+                  const renderStatus = (): void => {
+                    shown = format(statusMessage.key, statusMessage.params) + (statusMessage.kind === "error" ? "!" : "");
+                  };
+                  const setStatus = (message: StatusMessage): void => {
+                    statusMessage = message;
+                    renderStatus();
+                  };
+                  const press = (mode: number, other: string): void => {
+                    if (mode === 0) {
+                      setStatus(
+                        other === "x"
+                          ? { key: "swap", params: { action: "a", other: format(other), key: "k" }, kind: "error" }
+                          : { key: "single", kind: "error" },
+                      );
+                      return;
+                    }
+                    if (mode === 1) {
+                      setStatus(
+                        other === "y"
+                          ? { key: "swapped", params: { action: "a", key: "k", other, otherKey: "o" }, kind: "success" }
+                          : { key: "assigned", params: { action: "a", key: "k" }, kind: "success" },
+                      );
+                      return;
+                    }
+                    if (mode === 2) {
+                      setStatus({ key: "press", params: { action: other }, kind: "hint" });
+                      return;
+                    }
+                    statusMessage.kind = "success";
+                    statusMessage = { key: "hint", kind: "hint" };
+                    renderStatus();
+                  };
+                  renderStatus();
+                  return { press, text: () => shown };
+                }
+                const c = create();
+                if (c.text() !== "hint") throw new Error("bad hint");
+                c.press(0, "x");
+                if (c.text() !== "swap;action=a;other=x;key=k!") throw new Error("bad swap");
+                c.press(0, "z");
+                if (c.text() !== "single!") throw new Error("bad single");
+                c.press(1, "y");
+                if (c.text() !== "swapped;action=a;key=k;other=y;otherKey=o") throw new Error("bad swapped");
+                c.press(1, "n");
+                if (c.text() !== "assigned;action=a;key=k") throw new Error("bad assigned");
+                c.press(2, "q");
+                if (c.text() !== "press;action=q") throw new Error("bad press");
+                c.press(3, "q");
+                if (c.text() !== "hint") throw new Error("bad reset");`,
+            ),
+        /record stored as 'StatusMessage' would be a copy of the one object JavaScript keeps, and the program writes 'kind' of such records; no shared layout holds both record types\./,
+    );
+});
+
 test("module records and tokens refuse what one object cannot represent", () => {
     const directory = resolve("artifacts/imported-module-record-refusals");
     mkdirSync(directory, { recursive: true });

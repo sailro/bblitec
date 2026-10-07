@@ -61,7 +61,7 @@ import {
     runtimeMeshValue,
     type Value,
 } from "./types.js";
-import { resolvedSymbol } from "./symbols.js";
+import { libraryGlobal, resolvedSymbol } from "./symbols.js";
 import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
@@ -344,16 +344,28 @@ export function mayCompileDataMethodCall(
     );
     // Handle methods belong to their platform adapter. Plain records may
     // contain stored callbacks and still need the data-method dispatcher.
-    // A class or namespace receiver is a static member call, not data.
-    const receiver = resolvedSymbol(checker, callee.expression);
     return (
-        ((receiver?.flags ?? 0) &
-            (ts.SymbolFlags.Class | ts.SymbolFlags.ValueModule)) ===
-            0 &&
+        !staticMemberReceiver(checker, callee.expression) &&
         !pinnedHandleKind(owner) &&
         !platformHandleKind(owner) &&
         (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
             0
+    );
+}
+
+/**
+ * A class, namespace or built-in global receiver (`Object.keys(o)`) makes a
+ * static member call: it is never data, and its own lowering owns the call.
+ */
+function staticMemberReceiver(
+    checker: ts.TypeChecker,
+    receiver: ts.Expression,
+): boolean {
+    const symbol = resolvedSymbol(checker, receiver);
+    return (
+        ((symbol?.flags ?? 0) &
+            (ts.SymbolFlags.Class | ts.SymbolFlags.ValueModule)) !==
+            0 || libraryGlobal(checker, receiver) !== undefined
     );
 }
 
@@ -378,8 +390,9 @@ export function compileDataMethodCall(
     }
     const method = callee.name.text;
     if (
-        ts.isPropertyAccessExpression(callee.expression) &&
-        callee.expression.name.text === "classList"
+        (ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "classList") ||
+        staticMemberReceiver(lowerer.context.checker, callee.expression)
     ) {
         return undefined;
     }
