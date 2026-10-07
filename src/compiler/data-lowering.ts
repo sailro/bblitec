@@ -127,6 +127,7 @@ import {
     reseatsOnAssignment,
     sharesStorageKind,
     pinnedHandleKind,
+    primitiveTraits,
     TYPED_ARRAY_KINDS,
     typedArrayBytesPerElement,
     typedArrayConstructorName,
@@ -2036,8 +2037,7 @@ export class DataLowerer {
                 // of one is rebinding that copy.
                 const shared =
                     this.sharesObjectStorage(stored) ||
-                    stored?.kind === "bigint" ||
-                    stored?.kind === "symbol";
+                    primitiveTraits(stored) !== undefined;
                 if (state === "copy" && !shared) {
                     this.context.fail(
                         unwrapped,
@@ -14711,11 +14711,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
-        // Every symbol is truthy; a BigInt is unless it is zero.
-        if (value.kind === "data" && value.dataType?.kind === "symbol")
-            return `(static_cast<void>(${value.cpp}), true)`;
-        if (value.kind === "data" && value.dataType?.kind === "bigint")
-            return `!(${value.cpp}).is_zero()`;
+        const primitive =
+            value.kind === "data" ? primitiveTraits(value.dataType) : undefined;
+        if (primitive) return primitive.truthyCpp(value.cpp);
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return (
                 objectTruthinessCpp(value) ?? `static_cast<bool>(${value.cpp})`

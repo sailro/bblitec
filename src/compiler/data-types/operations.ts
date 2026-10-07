@@ -2,6 +2,7 @@ import { containerKinds } from "./containers.js";
 import type {
     DataKindOperations,
     DataTypeCppContext,
+    PrimitiveTraits,
     StructFieldTypes,
 } from "./contracts.js";
 import type { DataKind, DataType } from "./model.js";
@@ -56,6 +57,31 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
 /** Whether native copies of this kind share storage (`sharesStorage`). */
 export function sharesStorageKind(type: DataType): boolean {
     return kinds[type.kind].sharesStorage === true;
+}
+
+/** The traits of a primitive held in a native value class (`primitive`). */
+export function primitiveTraits(
+    type: DataType | undefined,
+): PrimitiveTraits | undefined {
+    return type && kinds[type.kind].primitive;
+}
+
+/**
+ * `typeof` of a present value stored as `type`, where its kind answers:
+ * "object" for every other kind (a callable record is its caller's).
+ */
+export function typeofTag(type: DataType): string {
+    switch (type.kind) {
+        case "number":
+        case "boolean":
+        case "function":
+            return type.kind;
+        case "string":
+        case "enum":
+            return "string";
+        default:
+            return kinds[type.kind].primitive?.typeofTag ?? "object";
+    }
 }
 
 /** Whether assigning to storage of this type reseats the name (`reseats`). */

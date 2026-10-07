@@ -39,8 +39,10 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
     isUndefinedDataType,
+    primitiveTraits,
     reseatsOnAssignment,
     sharesStorageKind,
+    typeofTag,
 } from "./data-types/operations.js";
 import {
     emissionArray,

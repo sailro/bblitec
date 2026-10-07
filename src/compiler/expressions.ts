@@ -36,7 +36,9 @@ import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import {
     isHandleKind,
     isUndefinedDataType,
+    primitiveTraits,
     TYPED_ARRAY_KINDS,
+    typeofTag,
 } from "./data-types.js";
 import {
     DynamicBindingStorageRequired,
@@ -458,12 +460,13 @@ export function stringConcatPart(
     if (value.kind === "data" && value.dataType?.kind === "string") {
         return value.cpp;
     }
-    if (value.kind === "data" && value.dataType?.kind === "bigint")
-        return `(${value.cpp}).to_string(10)`;
-    if (value.kind === "data" && value.dataType?.kind === "symbol")
+    const primitive =
+        value.kind === "data" ? primitiveTraits(value.dataType) : undefined;
+    if (primitive?.implicitString) return primitive.stringCpp(value.cpp);
+    if (primitive)
         return context.fail(
             node,
-            "A symbol converts to text only through String(symbol) or its toString(); an implicit conversion throws a TypeError.",
+            `A ${primitive.typeofTag} converts to text only through String(${primitive.typeofTag}) or its toString(); an implicit conversion throws a TypeError.`,
         );
     if (value.dataType?.kind === "optional") {
         const inner = value.dataType.inner;
@@ -1566,18 +1569,7 @@ export class ExpressionLowerer {
                     : operand.dataType;
             if (unionType?.kind === "union") {
                 const names = unionType.members.map((member) =>
-                    this.context.cppString(
-                        member.kind === "number" ||
-                            member.kind === "boolean" ||
-                            member.kind === "symbol" ||
-                            member.kind === "bigint"
-                            ? member.kind
-                            : member.kind === "string" || member.kind === "enum"
-                              ? "string"
-                              : member.kind === "function"
-                                ? "function"
-                                : "object",
-                    ),
+                    this.context.cppString(typeofTag(member)),
                 );
                 const table = `std::array<const char*, ${names.length}>{${names.join(", ")}}`;
                 const absent =
@@ -1600,28 +1592,21 @@ export class ExpressionLowerer {
                     ? operand.dataType.inner
                     : operand.dataType;
             const type =
-                operand.kind === "number" || dataType?.kind === "number"
-                    ? "number"
-                    : operand.kind === "boolean" || dataType?.kind === "boolean"
-                      ? "boolean"
-                      : operand.kind === "string" ||
-                          dataType?.kind === "string" ||
-                          dataType?.kind === "enum"
-                        ? "string"
-                        : operand.kind === "callback" ||
-                            operand.builtinConstructor !== undefined ||
-                            dataType?.kind === "function" ||
-                            (dataType?.kind === "struct" &&
-                                this.context.dataTypes.structCall(
-                                    dataType.name,
-                                ) !== undefined)
-                          ? "function"
-                          : operand.kind === "void"
-                            ? "undefined"
-                            : dataType?.kind === "symbol" ||
-                                dataType?.kind === "bigint"
-                              ? dataType.kind
-                              : "object";
+                operand.kind === "number" ||
+                operand.kind === "boolean" ||
+                operand.kind === "string"
+                    ? operand.kind
+                    : operand.kind === "callback" ||
+                        operand.builtinConstructor !== undefined ||
+                        (dataType?.kind === "struct" &&
+                            this.context.dataTypes.structCall(dataType.name) !==
+                                undefined)
+                      ? "function"
+                      : operand.kind === "void"
+                        ? "undefined"
+                        : dataType
+                          ? typeofTag(dataType)
+                          : "object";
             let present = presenceCpp(operand);
             if (operand.dataType?.kind === "function") {
                 const callable = `static_cast<bool>(${operand.cpp})`;
@@ -3645,8 +3630,12 @@ export class ExpressionLowerer {
                 );
             }
             // `String(symbol)` is its description text, as `toString()`.
-            if (value.kind === "data" && value.dataType?.kind === "symbol")
-                return this.context.dataValue(`(${value.cpp}).to_string()`, {
+            const primitive =
+                value.kind === "data"
+                    ? primitiveTraits(value.dataType)
+                    : undefined;
+            if (primitive)
+                return this.context.dataValue(primitive.stringCpp(value.cpp), {
                     kind: "string",
                 });
             if (
@@ -3673,7 +3662,6 @@ export class ExpressionLowerer {
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
-                value.dataType?.kind === "bigint" ||
                 isUndefinedDataType(value.dataType) ||
                 // An absent value spells "undefined" or "null", as in a
                 // concatenation.

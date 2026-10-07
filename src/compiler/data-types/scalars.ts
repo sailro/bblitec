@@ -132,8 +132,27 @@ export const scalarKinds: DataKindOperations<
     "plural-rules": opaqueLeaf("bbl::pal::PluralRules", "pluralrules"),
     "list-format": opaqueLeaf("bbl::pal::ListFormat", "listformat"),
     number: reseatingLeaf(CPP_SCALAR.number, "n"),
-    symbol: reseatingLeaf("bbl::js::Symbol", "sym", true),
-    bigint: reseatingLeaf("bbl::js::BigInt", "big"),
+    symbol: {
+        ...reseatingLeaf("bbl::js::Symbol", "sym", true),
+        // Every symbol is truthy; its text is its description's, read only
+        // explicitly.
+        primitive: {
+            typeofTag: "symbol",
+            truthyCpp: (cpp) => `(static_cast<void>(${cpp}), true)`,
+            stringCpp: (cpp) => `(${cpp}).to_string()`,
+            implicitString: false,
+        },
+    },
+    bigint: {
+        ...reseatingLeaf("bbl::js::BigInt", "big"),
+        // A BigInt is truthy unless it is zero.
+        primitive: {
+            typeofTag: "bigint",
+            truthyCpp: (cpp) => `!(${cpp}).is_zero()`,
+            stringCpp: (cpp) => `(${cpp}).to_string(10)`,
+            implicitString: true,
+        },
+    },
     i64array: {
         ...reseatingLeaf("bbl::js::I64Array", "i64", true),
         sharesStorage: true,
