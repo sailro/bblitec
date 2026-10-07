@@ -9,7 +9,7 @@ import {
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
 import { declaredSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { expressionMayRunCode, unwrapExpression } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
 export interface RecordObservationContext {
@@ -434,6 +434,45 @@ export function argumentOnlyRead(
     argument: ts.Node,
 ): boolean {
     return readOnlyArgumentCall(checker, argument) !== undefined;
+}
+
+/**
+ * Whether the array `expression` evaluates is read element by element
+ * where it is produced, then dropped: the initializer of an array
+ * destructuring declaration, reached through wrappers and the arms of a
+ * selection (`?:`, `??`, `||`, the right of `&&`), binding names without a
+ * default that can run code. Nothing runs between taking a copy of the
+ * array and reading it, and nothing keeps the copy, so the two agree.
+ */
+export function arrayDestructuredAtOnce(expression: ts.Expression): boolean {
+    let current = climb(expression);
+    let parent = current.parent;
+    while (
+        (ts.isConditionalExpression(parent) && parent.condition !== current) ||
+        (ts.isBinaryExpression(parent) &&
+            (parent.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken ||
+                parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                (parent.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken &&
+                    parent.right === current)))
+    ) {
+        current = climb(parent);
+        parent = current.parent;
+    }
+    return (
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === current &&
+        ts.isArrayBindingPattern(parent.name) &&
+        parent.name.elements.every(
+            (element) =>
+                ts.isOmittedExpression(element) ||
+                (!element.dotDotDotToken &&
+                    ts.isIdentifier(element.name) &&
+                    (!element.initializer ||
+                        !expressionMayRunCode(element.initializer))),
+        )
+    );
 }
 
 /**

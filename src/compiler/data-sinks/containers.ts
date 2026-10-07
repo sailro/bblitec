@@ -17,6 +17,7 @@ import { ownEntries } from "../object-statics.js";
 import {
     argumentOnlyRead,
     arrayCopyObservation,
+    arrayDestructuredAtOnce,
     arrayLentForCall,
 } from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
@@ -391,9 +392,9 @@ function plainLane(type: DataType): boolean {
  * JavaScript keeps one array, so the copy is admitted only where nothing
  * can tell the two apart: nothing else holds the array (a fresh one, whose
  * elements are then judged one by one), the callee it is handed to only
- * reads it and nothing the call runs changes it, or its lanes are plain
- * values and no change or identity use in the program reaches an array
- * that may be either one.
+ * reads it and nothing the call runs changes it, a destructuring reads it
+ * where it is produced, or its lanes are plain values and no change or
+ * identity use in the program reaches an array that may be either one.
  */
 function convertedElementsCopy(
     dataType: DataType<"vector">,
@@ -407,7 +408,8 @@ function convertedElementsCopy(
     const lent =
         !unaliased &&
         array !== undefined &&
-        arrayLentForCall(lowerer.context, array);
+        (arrayLentForCall(lowerer.context, array) ||
+            arrayDestructuredAtOnce(array));
     if (!unaliased && !lent) {
         const checker = lowerer.context.checker;
         const target = array && checker.getContextualType(array);

@@ -11360,6 +11360,70 @@ check(
 `,
 );
 
+// A selection of tuples of different lengths destructured where it is
+// produced reads a converted copy nothing else holds, even though the
+// program changes number arrays elsewhere.
+check(
+    "destructured-selection-of-converted-arrays",
+    `
+    function clearPoint(x: number, z: number, margin = 0.5): [number, number] {
+        const out: [number, number] = [x, z];
+        if (x < margin) out[0] = margin;
+        return out;
+    }
+    function seatNearby(x: number, z: number, admitted: (x: number, z: number) => boolean): [number, number, boolean] | null {
+        for (let r = 1; r < 4; r++) if (admitted(x + r, z)) return [x + r, z, true];
+        return null;
+    }
+    function reseat(x: number, z: number, admitted: ((x: number, z: number) => boolean) | null): [x: number, z: number, admitted: boolean] {
+        const cleared = clearPoint(x, z);
+        const stranded = admitted !== null && !admitted(cleared[0], cleared[1]);
+        if (admitted && stranded) {
+            const seat = seatNearby(cleared[0], cleared[1], admitted);
+            if (seat) return seat;
+        }
+        return [cleared[0], cleared[1], !stranded];
+    }
+    function place(x: number, z: number, restore = false): [number, number] {
+        const admitted = (px: number, _pz: number): boolean => px > 2;
+        const [seatX, seatZ] = restore ? reseat(x, z, admitted) : clearPoint(x, z, 0.2);
+        const [, , kept = false] = (restore ? seatNearby(x, z, admitted) : null) ?? [0, 0];
+        return [seatX, kept ? seatZ : -seatZ];
+    }
+    const places: Array<typeof place> = [place];
+    const a = places[0]!(0, 1, true);
+    const b = places[0]!(0.1, 1);
+    if (a[0] !== 2.5 || a[1] !== 1 || b[0] !== 0.2 || b[1] !== -1) throw new Error("destructured selection");
+    const trail: number[] = [];
+    function note(v: number): number { trail.push(v); return trail.length; }
+    const notes: Array<typeof note> = [note];
+    if (notes[0]!(1) !== 1) throw new Error("trail");
+`,
+);
+
+test("arrays destructured with code between their reads refuse a converted copy", () => {
+    const shapes = `
+        const trail: number[] = [];
+        function note(v: number): number { trail.push(v); return v; }
+        const stored: [number, number] = [1, 2];
+        function pair(x: number): [number, number] { stored[0] = x; return stored; }
+        const seat: [number, number, boolean] = [0, 0, true];
+        function triple(x: number): [number, number, boolean] { seat[1] = x; return seat; }
+    `;
+    for (const destructuring of [
+        "const [a = note(4), b] = flag ? triple(x) : pair(x); return a + b;",
+        "let a = 0, b = 0; [a, b] = flag ? triple(x) : pair(x); return a + b;",
+        "const [a, ...rest] = flag ? triple(x) : pair(x); return a + rest.length;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${shapes} function run(x: number, flag: boolean): number { ${destructuring} } const runs: Array<typeof run> = [run]; if (runs[0]!(1, true) < 0) throw new Error('x');`,
+                ),
+            /is a copy, and the program changes the elements of such arrays/,
+        );
+});
+
 test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
     for (const [source, message] of [
         [
