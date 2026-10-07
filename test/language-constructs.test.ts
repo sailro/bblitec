@@ -9401,6 +9401,6 @@ test("a phantom brand asserted from several object types refuses", () => {
             class B { b = 2; }
             const keys: Key[] = [new A() as unknown as Key, new B() as unknown as Key];
             if (keys.length !== 2) throw new Error("x");`),
-        /A phantom brand stores the one object type the program asserts to it/,
+        /Compile-time record is missing required field '__@brand/,
     );
 });

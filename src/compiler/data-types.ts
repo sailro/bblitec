@@ -1135,8 +1135,9 @@ export class DataTypeRegistry {
      * A phantom brand stores the one object type the program asserts to it
      * (`new Key() as unknown as Brand`): the brand is that object, so it
      * keeps that object's storage and identity. Assertions from another
-     * brand value or from an unknown value decide nothing; a brand asserted
-     * from several object types has no one storage.
+     * brand value or from an unknown value (`unknown`, `object`, `{}`)
+     * decide nothing; a brand asserted from several object types has no one
+     * storage.
      */
     private brandStorage(type: ts.Type, node: ts.Node): DataType | undefined {
         const key = this.phantomBrandKey(type);
@@ -1152,13 +1153,16 @@ export class DataTypeRegistry {
                     ) !== key
                 )
                     continue;
-                const sourceType = this.checker.getTypeAtLocation(
-                    unwrapExpression(assertion.expression),
+                const sourceType = this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(
+                        unwrapExpression(assertion.expression),
+                    ),
                 );
                 if (
                     (sourceType.flags &
                         (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
                         0 ||
+                    this.isNonNullConstraint(sourceType) ||
                     this.phantomBrandKey(sourceType) === key
                 )
                     continue;
@@ -1168,12 +1172,9 @@ export class DataTypeRegistry {
             source = sources.size === 1 ? first! : null;
             this.brandSources.set(key, source);
         }
-        return source
-            ? this.fromStoredTsType(source, node)
-            : this.fail(
-                  node,
-                  `A phantom brand stores the one object type the program asserts to it; '${this.checker.typeToString(type)}' has no single such type.`,
-              );
+        // Without one asserted object type the brand keeps its record shape,
+        // which no object can be stored as.
+        return source ? this.fromStoredTsType(source, node) : undefined;
     }
 
     private registerAssertedRecord(
