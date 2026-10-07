@@ -10381,7 +10381,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             literal.properties.some(
                 (property) =>
                     ts.isSpreadAssignment(property) ||
-                    (property.name && ts.isComputedPropertyName(property.name)),
+                    (property.name &&
+                        ts.isComputedPropertyName(property.name) &&
+                        !this.namedEnumKey(property.name)),
             )
         )
             return this.writtenEnumMapLiteral(literal, dataType);
@@ -10451,6 +10453,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A computed key naming one member without effects (`[Tone.Bold]`):
+     * the literal's slots are known where it is written.
+     */
+    private namedEnumKey(name: ts.ComputedPropertyName): boolean {
+        const key = unwrapExpression(name.expression);
+        return (
+            (ts.isIdentifier(key) ||
+                ts.isPropertyAccessExpression(key) ||
+                ts.isStringLiteral(key)) &&
+            this.context.checker.getTypeAtLocation(key).isStringLiteral()
+        );
+    }
+
+    /**
      * A `Record` literal spreading another record of its key union or
      * writing a key a run-time tag selects (`{ ...byScheme, [scheme]: v }`):
      * a new record written in source order, a spread copying every slot.
@@ -10467,6 +10483,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             `${this.context.dataTypes.cppType(dataType)} ${result}{};`,
         );
         const written = new EmissionSet<string>();
+        // JavaScript's own-key order: a spread adds the slots not yet own.
+        const order: string[] = [];
+        const own = (name: string): void => {
+            if (!order.includes(name)) order.push(name);
+        };
         let spread = false;
         for (const property of literal.properties) {
             if (ts.isSpreadAssignment(property)) {
@@ -10474,6 +10495,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     kind: "expression",
                     code: `${result} = ${this.compileForSink(property.expression, dataType)};`,
                 });
+                members.forEach(own);
                 spread = true;
                 continue;
             }
@@ -10495,6 +10517,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.fail(
                     property.name,
                     `'${name}' is not a member of ${dataType.enumName}.`,
+                );
+            if (name !== undefined) own(name);
+            else if (order.length < members.length)
+                this.context.fail(
+                    property.name,
+                    "A run-time key written before every key of the record is own orders its keys at run time.",
                 );
             // The key is evaluated before the value, as JavaScript does.
             const tag = this.context.allocateTemporaryCppName("record_key");
@@ -10522,6 +10550,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 literal,
                 `Record literal is missing the '${missing}' slot.`,
             );
+        this.evaluatedLiteralKeys.set(literal, order);
+        this.context.dataTypes.observeEnumMapKeys(dataType, order, literal);
         this.registerLocal(result, "owned");
         return result;
     }
