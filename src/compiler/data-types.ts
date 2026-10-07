@@ -6245,6 +6245,16 @@ export class DataTypeRegistry {
     }
 
     private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
+        // `readonly` restricts writes in the type system only: a read-only
+        // record is the record it wraps, one object and one representation.
+        // One asserted from an open dictionary stays that dictionary's view.
+        const readonlyTarget =
+            type.aliasSymbol?.name === "Readonly" &&
+            declaredInDefaultLibrary(type.aliasSymbol)
+                ? type.aliasTypeArguments?.[0]
+                : undefined;
+        if (readonlyTarget && !this.recordViews.has(this.structIdentity(type)))
+            return this.fromRecordType(readonlyTarget, node);
         const directRecordAlias =
             type.aliasSymbol?.name === "Record" &&
             declaredInDefaultLibrary(type.aliasSymbol);

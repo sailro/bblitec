@@ -43,6 +43,13 @@ function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
     return type?.kind === "span" || type?.kind === "table";
 }
 
+/** A record keyed by a closed union is stored by value, one copy per location. */
+function isRecordTable(type: DataType | undefined): boolean {
+    return type?.kind === "optional"
+        ? isRecordTable(type.inner)
+        : type?.kind === "enummap";
+}
+
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
     extends
@@ -697,6 +704,15 @@ export class ConditionLowerer {
                 this.context.fail(
                     unwrapped,
                     "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
+                );
+            if (
+                equality &&
+                isRecordTable(leftValue.dataType) &&
+                isRecordTable(rightValue.dataType)
+            )
+                this.context.fail(
+                    unwrapped,
+                    "A record keyed by a closed union is stored by value and cannot preserve JavaScript object identity in a comparison.",
                 );
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }

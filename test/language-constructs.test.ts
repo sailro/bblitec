@@ -7049,6 +7049,46 @@ check(
 );
 
 check(
+    "readonly-records-are-their-records",
+    `
+    const LANGS = ["en", "fr"] as const;
+    type Lang = typeof LANGS[number];
+    type Dict = Record<string, string>;
+    const EN: Dict = { hello: "hello" };
+    const FR: Dict = { hello: "bonjour" };
+    const TABLES: Record<Lang, Dict> = { en: EN, fr: FR };
+    function shipped(): Readonly<Record<Lang, Readonly<Dict>>> { return TABLES; }
+    function read(tables: Readonly<Record<Lang, Dict>>, lang: Lang, key: string): string { return tables[lang][key] ?? "?"; }
+    const view = shipped();
+    if (view.fr !== FR) throw new Error("shared dictionary");
+    FR["late"] = "tard";
+    if (view.fr["late"] !== "tard" || read(TABLES, "fr", "late") !== "tard") throw new Error("shared dictionary writes");
+    if (LANGS.map((lang) => read(view, lang, "hello")).join(",") !== "hello,bonjour") throw new Error("runtime keys");
+    const stored: Array<typeof shipped> = [shipped];
+    if (stored[0]!().fr["late"] !== "tard") throw new Error("stored function result");
+    const DELTA: Readonly<Record<"n" | "s", readonly [number, number]>> = { n: [0, -1], s: [0, 1] };
+    const steps: Array<"n" | "s"> = ["s", "n", "s"];
+    if (steps.map((d) => DELTA[d][1]).join(",") !== "1,-1,1") throw new Error("read-only table");
+`,
+);
+
+test("read-only closed-key records refuse what their copies would observe", () => {
+    const table =
+        'type Lang = "en" | "fr"; const TABLES: Record<Lang, number> = { en: 1, fr: 2 }; function shipped(): Readonly<Record<Lang, number>> { return TABLES; } const view = shipped();';
+    for (const [source, message] of [
+        [
+            `${table} TABLES.fr = 3; const unused = view.fr;`,
+            /'TABLES' was copied into another data location/,
+        ],
+        [
+            `${table} if (view !== TABLES) throw new Error("identity");`,
+            /stored by value and cannot preserve JavaScript object identity/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }
