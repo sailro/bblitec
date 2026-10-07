@@ -61,6 +61,7 @@ import { compileTextCodecNew } from "./text-codecs.js";
 import { compileWeakRefNew } from "./weak-refs.js";
 import {
     DynamicBindingStorageRequired,
+    initializedVariableDeclaration,
     requireDynamicBindingStorage,
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
@@ -9944,8 +9945,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (compiled !== undefined) return compiled;
         this.requireNumericSlot(value, dataType, node);
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
-        if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
+        if (dataType.kind === "enummap" && value.dataType?.kind === "struct") {
             this.requireRecordBinding(node);
+            this.requireEnumMapBinding(node, dataType);
+        }
         this.context.fail(
             node,
             `Compile-time ${value.kind} value does not match the expected data ${dataType.kind} ` +
@@ -10302,6 +10305,41 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
+    /**
+     * The converse: a local record read where its context expects a closed
+     * `Record<Union, V>` (`return { points }` into such a field) is that
+     * record, so the local is stored as the expected record type.
+     */
+    private requireEnumMapBinding(
+        node: ts.Node,
+        dataType: DataType & { kind: "enummap" },
+    ): void {
+        if (!ts.isExpression(node)) return;
+        const name = this.context.unwrap(node);
+        if (!ts.isIdentifier(name)) return;
+        const declaration = initializedVariableDeclaration(
+            this.context.checker,
+            name,
+        );
+        const contextual = this.context.checker.getContextualType(node);
+        if (
+            !declaration ||
+            !contextual ||
+            this.context.dynamicBindings.has(declaration)
+        )
+            return;
+        const nativeType = this.context.checker.getNonNullableType(contextual);
+        const stored = this.context.dataTypes.fromStoredTsType(
+            nativeType,
+            node,
+        );
+        if (stored && dataTypesEqual(stored, dataType))
+            throw new DynamicBindingStorageRequired(declaration, {
+                nativeType,
+                node,
+            });
+    }
+
     public requireDataValue(
         expression: ts.Expression,
         dataType: DataType,
@@ -10353,6 +10391,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             };
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
+        if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
+            this.requireEnumMapBinding(expression, dataType);
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
