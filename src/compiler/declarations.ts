@@ -628,9 +628,8 @@ export class DeclarationLowerer {
                 declaration,
                 this.context.checker,
             );
-            dataType ??= this.context.dataTypes.undefinedOnlyStorage(
-                declaredType,
-            );
+            dataType ??=
+                this.context.dataTypes.undefinedOnlyStorage(declaredType);
             if (
                 !dataType &&
                 declaration.type?.kind === ts.SyntaxKind.UnknownKeyword

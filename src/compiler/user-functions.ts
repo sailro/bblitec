@@ -712,8 +712,7 @@ export function hasFixedTupleRest(
     const last = declaration.parameters.at(-1);
     return (
         last?.dotDotDotToken !== undefined &&
-        fixedTupleLength(checker, checker.getTypeAtLocation(last)) !==
-            undefined
+        fixedTupleLength(checker, checker.getTypeAtLocation(last)) !== undefined
     );
 }
 
@@ -4489,7 +4488,11 @@ export class UserFunctionLowerer {
                                 context,
                                 ir.declaration,
                                 parameter,
-                                { kind: "tuple", cpp: "", tupleElements: lanes },
+                                {
+                                    kind: "tuple",
+                                    cpp: "",
+                                    tupleElements: lanes,
+                                },
                             );
                             continue;
                         }

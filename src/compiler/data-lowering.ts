@@ -13487,7 +13487,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (value.kind === "data" && value.dataType?.kind === "enum") {
             // A string-literal union is falsy only as its empty member.
-            if (!this.context.dataTypes.enumMembers(value.dataType.name).includes(""))
+            if (
+                !this.context.dataTypes
+                    .enumMembers(value.dataType.name)
+                    .includes("")
+            )
                 return whenPresent("true");
             const empty = this.context.dataTypes.enumMemberCpp(
                 value.dataType,
