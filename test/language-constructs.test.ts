@@ -9056,3 +9056,31 @@ check(
     if (inc === add.bind(null, 1)) throw new Error("bind identity");
 `,
 );
+
+test("an imported typed array answers its methods where it is read", async (t) => {
+    const directory = resolve("artifacts/imported-typed-array-methods");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "matrix.ts"),
+        `export const IDENTITY = new Float32Array([1, 0, 0, 1]);`,
+    );
+    const result = compileSource(
+        `import { IDENTITY } from "./matrix.js";
+        class Frame {
+            point(x: number): Float32Array {
+                const matrix = IDENTITY.slice(), first = IDENTITY.indexOf(1);
+                matrix[1] = x + first;
+                return matrix;
+            }
+        }
+        const frames: Frame[] = [new Frame()];
+        const placed = frames[0]!.point(3);
+        if (placed[1] !== 3 || IDENTITY[1] !== 0 || placed === IDENTITY) throw new Error("imported typed array slice");`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    await executeGeneratedAssertions(
+        t,
+        "imported-typed-array-methods",
+        result.cpp,
+    );
+});
