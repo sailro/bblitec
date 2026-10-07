@@ -385,37 +385,6 @@ export function compileBigIntArrayNew(
     return fresh(`bbl::js::bigint_array_from<${element}>(${elements})`);
 }
 
-/** `length`, `byteLength`, `byteOffset` and `buffer` of a BigInt typed array. */
-export function bigintArrayProperty(
-    lowerer: DataLowerer,
-    owner: Value,
-    property: string,
-): Value | undefined {
-    switch (property) {
-        case "length":
-            return lowerer.leafValue(
-                `static_cast<double>((${owner.cpp}).size())`,
-                { kind: "number" },
-            );
-        case "byteLength":
-            return lowerer.leafValue(
-                `static_cast<double>((${owner.cpp}).byte_length())`,
-                { kind: "number" },
-            );
-        case "byteOffset":
-            return lowerer.leafValue(
-                `static_cast<double>((${owner.cpp}).byte_offset())`,
-                { kind: "number" },
-            );
-        case "buffer":
-            return lowerer.leafValue(`(${owner.cpp}).buffer()`, {
-                kind: "arraybuffer",
-            });
-        default:
-            return undefined;
-    }
-}
-
 /**
  * `array[index]` of a BigInt typed array: a BigInt read or a store place.
  * An index outside the array refuses at run time, as for the other typed
