@@ -839,19 +839,31 @@ export class NativeFunctionLowerer {
             // any attempt to retain it still reaches the owning-sink refusal.
             if (inner?.kind === "span" || inner?.kind === "table") return false;
         }
-        if (target.kind === "span" && target.element.kind === "number") {
+        // An ArrayLike<number> parameter, or an array of them.
+        const numericViews =
+            (target.kind === "span" && target.element.kind === "number") ||
+            ((target.kind === "span" || target.kind === "vector") &&
+                (target.element.kind === "span" ||
+                    target.element.kind === "vector") &&
+                target.element.element.kind === "number");
+        if (numericViews) {
             const actual =
                 this.context.knownValueWithoutEvaluation(argument)?.dataType ??
                 this.context.dataTypes.numericSlotReadStorage(argument) ??
                 this.context.dataLowerer.dataTypeAt(argument);
-            const inner = actual?.kind === "optional" ? actual.inner : actual;
-            // Typed arrays and numeric views require their concrete live
-            // view, not a copied double span. The shared/inlined call binds
-            // that actual owner.
-            if (
-                inner &&
-                (isTypedArrayType(inner) || inner.kind === "numberindex")
-            )
+            const present = (type: DataType | undefined) =>
+                type?.kind === "optional" ? type.inner : type;
+            const inner = present(actual);
+            const view =
+                target.element.kind === "number"
+                    ? inner
+                    : inner?.kind === "span" || inner?.kind === "vector"
+                      ? present(inner.element)
+                      : undefined;
+            // Typed arrays and numeric views, or arrays of them, require
+            // their concrete live views, not copied double spans. The
+            // shared/inlined call binds that actual owner.
+            if (view && (isTypedArrayType(view) || view.kind === "numberindex"))
                 return false;
         }
         if (

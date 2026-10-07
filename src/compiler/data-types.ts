@@ -1147,13 +1147,27 @@ export class DataTypeRegistry {
         return this.numericSlots.get(declaration);
     }
 
-    /** The storage a demand gave the `ArrayLike<number>` slot `expression` reads, if any. */
+    /**
+     * The storage of the value `expression` reads from a slot whose
+     * `ArrayLike<number>` position (or elements) a demand retyped, if any.
+     */
     public numericSlotReadStorage(
         expression: ts.Expression,
     ): DataType | undefined {
         const declaration = numericSlotRead(this.checker, expression);
         const kinds = declaration && this.numericSlots.get(declaration);
-        return kinds && numericSlotStorage(kinds);
+        if (!kinds) return undefined;
+        const type = this.checker.getTypeAtLocation(expression);
+        const mapped = this.fromTsType(type, expression);
+        return (
+            mapped &&
+            withNumericSlotStorage(
+                this.checker,
+                type,
+                mapped,
+                numericSlotStorage(kinds),
+            )
+        );
     }
 
     /**

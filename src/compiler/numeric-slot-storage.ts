@@ -253,8 +253,9 @@ export function numericSlotDeclaration(
 
 /**
  * The declared storage `expression` reads its value from, when that storage
- * has an `ArrayLike<number>` position there: a binding or record property it
- * names, or the result of a function stored in one that it calls.
+ * has an `ArrayLike<number>` position there or in its elements: a binding or
+ * record property it names, or the result of a function stored in one that
+ * it calls.
  */
 export function numericSlotRead(
     checker: ts.TypeChecker,
@@ -274,8 +275,10 @@ export function numericSlotRead(
     const declarations =
         (name && resolvedSymbol(checker, name)?.declarations) ?? [];
     const declaration = declarations.length === 1 ? declarations[0] : undefined;
-    return isNumericSlotDeclaration(declaration) &&
-        arrayLikeAt(checker, checker.getTypeAtLocation(declaration), steps)
+    if (!isNumericSlotDeclaration(declaration)) return undefined;
+    const declared = checker.getTypeAtLocation(declaration);
+    return arrayLikeAt(checker, declared, steps) ||
+        arrayLikeAt(checker, declared, [...steps, "element"])
         ? declaration
         : undefined;
 }

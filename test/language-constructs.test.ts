@@ -1901,6 +1901,27 @@ check(
     let circles = 0;
     for (const entry of query(widened).obstacles) circles += entry.length;
     if (circles !== 2 + 1 + 3) throw new Error("arrays of ArrayLike results");
+    interface Corridor { obstacles: readonly ArrayLike<number>[]; radius: number; x: number; }
+    interface Obstacles { obstacles(): readonly ArrayLike<number>[]; }
+    function segmentClear(x: number, circles: ArrayLike<number>, radius: number): boolean {
+        for (let i = 0; i + 2 < circles.length; i += 3) if (Math.abs(x - circles[i]!) < circles[i + 2]! + radius) return false;
+        return true;
+    }
+    function clears(x: number, obstacles: readonly ArrayLike<number>[], radius: number): boolean {
+        return obstacles.every((set) => segmentClear(x, set, radius));
+    }
+    function corridor(input: Corridor): boolean {
+        return clears(input.x, input.obstacles, input.radius) && clears(input.x + 10, input.obstacles, input.radius);
+    }
+    function corridorQuery(deps: Obstacles): (x: number) => boolean {
+        return (x) => corridor({ obstacles: deps.obstacles(), radius: 0.25, x });
+    }
+    let pad = new Float32Array([5, 0, 1]);
+    const queries: Array<typeof corridorQuery> = [corridorQuery];
+    const clear = queries[0]!({ obstacles: () => [new Float32Array([1, 0, 0.5]), pad] });
+    if (!clear(0)) throw new Error("clear corridor");
+    pad = new Float32Array([0.5, 0, 1]);
+    if (clear(0)) throw new Error("the corridor reads the current obstacles");
 
     function invert(scale: number): Float32Array | null { return scale === 0 ? null : new Float32Array([1 / scale]); }
     let prepared: ArrayLike<number> | null = null;
