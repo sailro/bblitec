@@ -234,6 +234,31 @@ test("asset records returned through Promise.all retain imported root identity",
     assert.match(result.cpp, /set_scene_node_position/);
 });
 
+test("an async record result keeps the imported root its field names", () => {
+    const result = compileSource(`
+        import {createEngine, loadGltf, cloneTransformNode, type EngineContext,
+            type SceneNode} from "@babylonjs/lite";
+        interface Assets { readonly template: SceneNode; dispose(): void; }
+        async function loadAssets(engine: EngineContext): Promise<Assets> {
+            const model = await loadGltf(engine, "model.glb");
+            let disposed = false;
+            return { template: model.entities[0] as SceneNode, dispose(): void { disposed = true; } };
+        }
+        function instantiate(template: SceneNode, reset = false): SceneNode {
+            const root = cloneTransformNode(template);
+            if (reset) {
+                root._localMatrix = undefined;
+                root.position.set(0, 0, 0);
+            }
+            return root;
+        }
+        const engine = await createEngine({});
+        const assets = await loadAssets(engine);
+        instantiate(assets.template, true).position.set(1, 2, 3);
+    `);
+    assert.match(result.cpp, /clone_asset_root/);
+});
+
 test("a widened cloned root is checked when projected to an asset container", () => {
     const result = compileSource(`
         import {createEngine, createSceneContext, loadGltf, cloneTransformNode,
