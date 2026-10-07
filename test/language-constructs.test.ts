@@ -7001,6 +7001,54 @@ check(
 );
 
 check(
+    "stored-unknown-parameters-take-literal-arguments",
+    `
+    function count(raw: unknown): number { return raw === undefined ? 0 : 1; }
+    const counters: Array<typeof count> = [count];
+    if (counters[0]!({ h: 1 }) !== 1) throw new Error("object literal");
+    if (counters[0]!({ h: 2 }) + counters[0]!({ w: "x", h: 3 }) + counters[0]!({ h: 4 }) !== 3) throw new Error("several object literals");
+    if (counters[0]!([1, 2]) + counters[0]!([{ a: 1 }]) !== 2) throw new Error("array literals");
+    if (counters[0]!({ n: { b: 1 }, list: [{ c: "z" }] }) !== 1) throw new Error("nested object literal");
+    let looped = 0;
+    for (let i = 0; i < 3; i++) looped += counters[0]!({ i });
+    if (looped !== 3) throw new Error("literal in a loop");
+    function wrap<T>(value: T): number { return counters[0]!({ value }); }
+    if (wrap(1) + wrap("text") !== 2) throw new Error("literal of a type parameter");
+    function size(...raw: unknown[]): number { return raw.length; }
+    const sizes: Array<typeof size> = [size];
+    if (sizes[0]!("a", { h: 1 }, [{ b: 2 }]) !== 3) throw new Error("rest literals");
+    function describe(raw: unknown): string {
+        if (raw === undefined) return "absent";
+        if (Array.isArray(raw)) return "array:" + raw.length;
+        if (typeof raw === "object" && raw !== null) return "object:" + JSON.stringify(raw);
+        return typeof raw;
+    }
+    const describers: Array<typeof describe> = [describe];
+    const text = describers[0]!({ h: 1 }) + "|" + describers[0]!([1, 2]) + "|" + describers[0]!({ n: { b: 1 } });
+    if (text !== 'object:{"h":1}|array:2|object:{"n":{"b":1}}') throw new Error("literal values " + text);
+`,
+);
+
+check(
+    "stored-unknown-methods-callbacks-and-map-values-take-literals",
+    `
+    interface Counter { count(raw: unknown): number; }
+    const counters: Counter[] = [{ count(raw: unknown): number { return raw === undefined ? 0 : 1; } }];
+    if (counters[0]!.count({ h: 1 }) + counters[0]!.count({ w: [1, 2] }) !== 2) throw new Error("stored record method");
+    const handlers: Array<(x: unknown) => number> = [(x: unknown) => (x === null ? 5 : 7)];
+    function apply(handler: (x: unknown) => number): number { return handler({ h: 1 }) + handler([{ a: 2 }]); }
+    if (apply(handlers[0]!) !== 14) throw new Error("callback parameter");
+    if (handlers[0]!({ n: { m: 1 } }) !== 7) throw new Error("stored callback");
+    const table = new Map<string, (raw: unknown) => number>();
+    table.set("count", (raw: unknown) => (raw === undefined ? 0 : 1));
+    if (table.get("count")!({ h: 1 }) + table.get("count")!({ n: { m: [1] } }) + table.get("count")!([{ k: 1 }]) !== 3) throw new Error("map value");
+    if (table.get("missing") !== undefined || table.get("count") === undefined) throw new Error("map value presence");
+    const found = table.get("count");
+    if (!found || found({ h: 1 }) !== 1) throw new Error("narrowed map value");
+`,
+);
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }

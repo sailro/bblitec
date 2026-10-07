@@ -1798,6 +1798,7 @@ namespace detail {
  */
 template <typename T> inline constinit const Ref<T> empty_ref{};
 template <typename Signature> inline const Callback<Signature> empty_callback{};
+template <typename Table> inline const GenericCallback<Table> empty_generic_callback{};
 } // namespace detail
 
 template <typename T> struct MapGetResult<Ref<T>> {
@@ -1813,6 +1814,13 @@ template <typename R, typename... Args> struct MapGetResult<Callback<R(Args...)>
 
     [[nodiscard]] static Type missing() { return detail::empty_callback<R(Args...)>; }
     [[nodiscard]] static Type found(Callback<R(Args...)>& value) { return value; }
+};
+
+template <typename Table> struct MapGetResult<GenericCallback<Table>> {
+    using Type = const GenericCallback<Table>&;
+
+    [[nodiscard]] static Type missing() { return detail::empty_generic_callback<Table>; }
+    [[nodiscard]] static Type found(GenericCallback<Table>& value) { return value; }
 };
 
 /** An unmapped arguments object owns indexed values independently of the rest array. */

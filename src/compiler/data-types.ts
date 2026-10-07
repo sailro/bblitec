@@ -112,6 +112,7 @@ import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
     GenericFunctionStorage,
+    divergentGenericFunctionDemand,
     sameGenericFunctionSignature,
     sameTypeFrames,
     type GenericFunctionDemand,
@@ -3520,7 +3521,10 @@ export class DataTypeRegistry {
                 }
                 return (
                     this.caughtErrorType(argument, holdsError) ??
-                    this.checker.getTypeAtLocation(argument)
+                    this.genericFunctionDemands.expressionType(
+                        this.checker,
+                        argument,
+                    )
                 );
             });
         const restIndex = generic.signature
@@ -3532,11 +3536,13 @@ export class DataTypeRegistry {
                 : [
                       ...new Set(
                           call.arguments.slice(restIndex).map((argument) => {
-                              const type = this.checker.getTypeAtLocation(
-                                  ts.isSpreadElement(argument)
-                                      ? argument.expression
-                                      : argument,
-                              );
+                              const type =
+                                  this.genericFunctionDemands.expressionType(
+                                      this.checker,
+                                      ts.isSpreadElement(argument)
+                                          ? argument.expression
+                                          : argument,
+                                  );
                               const element = ts.isSpreadElement(argument)
                                   ? this.checker.getIndexTypeOfType(
                                         type,
@@ -3580,17 +3586,9 @@ export class DataTypeRegistry {
             ...(restArguments ? { restArguments } : {}),
             frames: this.typeArgumentFrames(),
             ancestors: this.genericFunctionAncestors,
+            site: call,
         };
-        const field = generic.fields.find((field) =>
-            sameGenericFunctionSignature(field.demand, demand),
-        );
-        if (field) return field;
-        if (this.genericFunctionAncestors.includes(generic.family))
-            this.fail(
-                call,
-                "Recursive stored generic functions require an already represented signature.",
-            );
-        throw new GenericFunctionStorageRequired(demand, call);
+        return this.representedGenericFunctionField(generic, demand);
     }
 
     /**
@@ -3636,17 +3634,41 @@ export class DataTypeRegistry {
             parameters,
             frames: this.typeArgumentFrames(),
             ancestors: this.genericFunctionAncestors,
+            site: node,
         };
+        return this.representedGenericFunctionField(generic, demand);
+    }
+
+    /**
+     * The field holding `demand`'s signature, or the storage demand that
+     * replays emission with it. A site whose types change identity at every
+     * replay would never reach a represented field, so it refuses instead.
+     */
+    private representedGenericFunctionField(
+        generic: { family: string; fields: readonly GenericFunctionField[] },
+        demand: GenericFunctionDemand,
+    ): GenericFunctionField {
         const field = generic.fields.find((field) =>
             sameGenericFunctionSignature(field.demand, demand),
         );
         if (field) return field;
+        if (
+            divergentGenericFunctionDemand(
+                this.checker,
+                generic.fields.map((field) => field.demand),
+                demand,
+            )
+        )
+            this.fail(
+                demand.site,
+                "Stored generic function instantiation does not converge: this call's argument types change identity at every emission.",
+            );
         if (this.genericFunctionAncestors.includes(generic.family))
             this.fail(
-                node,
+                demand.site,
                 "Recursive stored generic functions require an already represented signature.",
             );
-        throw new GenericFunctionStorageRequired(demand, node);
+        throw new GenericFunctionStorageRequired(demand);
     }
 
     /** The checker type of a value an operation supplies, where its storage names one. */
