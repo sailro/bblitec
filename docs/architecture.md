@@ -57,6 +57,14 @@ declaration storage demands (absence tags, tuple and numeric slots, enum element
 rolled-back statement's written names, and past record joins, lowered as copies; it stops at ownership
 demands, untracked writes, dependencies on lost names and refusals (a survey's plan rolls these back). Its limits are checked at statement boundaries; coverage
 and surveys retain only strict attempts. Earlier aliases and initializers use the selected representation.
+A record join that only appears once an earlier join reshaped a component still costs one strict attempt:
+layouts are fixed when the compiler is built, so discovery cannot see it (one measured program: 66 of its
+73 attempts). Removing the cascade needs every join decided before lowering, by comparing each stored
+expression's record type with its contextual type over the memoized layout compatibility.
+Calls rewrite a namespace member (`N.f`) to its declaration once, in `compileCall`; reads of class statics
+and `import * as M` receivers stay with their own lowerers. A rewrite in the shared `unwrap` would also
+reach write targets, turning a refused namespace-member write into a silent one, and would rewrite library
+namespaces (`Intl.*`) that `libraryGlobal` resolves by qualified name.
 Immutable storage-demand and lexical-dependency indexes
 are shared by the checked program. Scoped collection facts use a derived alias graph that observes
 mutations and rollback. Equivalent definitions share code; invocations retain
