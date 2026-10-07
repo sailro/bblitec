@@ -1195,19 +1195,11 @@ export class DataTypeRegistry {
         expression: ts.Expression,
     ): DataType | undefined {
         const declaration = numericSlotRead(this.checker, expression);
-        const kinds = declaration && this.numericSlots.get(declaration);
-        if (!kinds) return undefined;
+        if (!declaration || !this.numericSlots.has(declaration))
+            return undefined;
         const type = this.checker.getTypeAtLocation(expression);
         const mapped = this.fromTsType(type, expression);
-        return (
-            mapped &&
-            withNumericSlotStorage(
-                this.checker,
-                type,
-                mapped,
-                numericSlotStorage(kinds),
-            )
-        );
+        return mapped && this.demandedNumericStorage(declaration, type, mapped);
     }
 
     /**
@@ -1215,25 +1207,36 @@ export class DataTypeRegistry {
      * `ArrayLike<number>` position stored as the numeric arrays a demand
      * found there (`NumericSlotStorageRequired`).
      */
-    public numericSlotStorage(
+    public withDemandedNumericSlot(
         declaration: ts.Declaration | undefined,
         type: ts.Type,
         mapped: DataType,
     ): DataType {
-        const kinds = declaration && this.numericSlots.get(declaration);
-        if (!kinds) return mapped;
+        if (!declaration) return mapped;
         return (
-            withNumericSlotStorage(
-                this.checker,
-                type,
-                mapped,
-                numericSlotStorage(kinds),
-            ) ??
+            this.demandedNumericStorage(declaration, type, mapped) ??
             this.fail(
                 declaration,
                 "A demanded ArrayLike slot no longer maps to a numeric array position.",
             )
         );
+    }
+
+    /** {@link withDemandedNumericSlot}, undefined where the slot no longer lines up. */
+    private demandedNumericStorage(
+        declaration: ts.Declaration,
+        type: ts.Type,
+        mapped: DataType,
+    ): DataType | undefined {
+        const kinds = this.numericSlots.get(declaration);
+        return kinds
+            ? withNumericSlotStorage(
+                  this.checker,
+                  type,
+                  mapped,
+                  numericSlotStorage(kinds),
+              )
+            : mapped;
     }
 
     /**
@@ -1621,11 +1624,11 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () =>
                     this.documentRecords.add(this.structIdentity(demand.type)),
                 );
-            for (const join of demand.joins ?? [])
-                joins.set(join.source, [
-                    ...(joins.get(join.source) ?? []),
-                    join,
-                ]);
+            for (const join of demand.joins ?? []) {
+                const known = joins.get(join.source);
+                if (known) known.push(join);
+                else joins.set(join.source, [join]);
+            }
         }
         this.demandedJoins = joins;
     }
@@ -2187,20 +2190,32 @@ export class DataTypeRegistry {
             mapped?.kind === "struct" &&
             !this.nativeRecordSources.has(mapped.name)
         ) {
-            this.nativeRecordSources.set(mapped.name, {
-                identity: this.structIdentity(type),
-                type,
-                node,
-                frames: this.typeArgumentFrames().map(
-                    (frame) => new Map(frame),
-                ),
-                ...(this.classDemanded ? { stored: true as const } : {}),
-                ...(this.dynamicJsonStorage
-                    ? { dynamicJsonStorage: true as const }
-                    : {}),
-            });
+            this.nativeRecordSources.set(
+                mapped.name,
+                this.recordDemand(type, node),
+            );
         }
         return mapped;
+    }
+
+    /**
+     * A demand for records of `type` met at `node`, in the generic
+     * environment and mapping mode lowering is in.
+     */
+    private recordDemand(
+        type: ts.Type,
+        node: ts.Node,
+    ): NativeRecordStorageDemand {
+        return {
+            identity: this.structIdentity(type),
+            type,
+            node,
+            frames: this.typeArgumentFrames().map((frame) => new Map(frame)),
+            ...(this.classDemanded ? { stored: true as const } : {}),
+            ...(this.dynamicJsonStorage
+                ? { dynamicJsonStorage: true as const }
+                : {}),
+        };
     }
 
     /**
@@ -2448,17 +2463,7 @@ export class DataTypeRegistry {
                 this.checker.getNonNullableType(registered.type) === record)
         )
             return registered;
-        const frames = this.typeArgumentFrames().map((frame) => new Map(frame));
-        const candidate: NativeRecordStorageDemand = {
-            identity: this.structIdentity(record),
-            type: record,
-            node,
-            frames,
-            ...(this.classDemanded ? { stored: true as const } : {}),
-            ...(this.dynamicJsonStorage
-                ? { dynamicJsonStorage: true as const }
-                : {}),
-        };
+        const candidate = this.recordDemand(record, node);
         if (!this.joinableRecord(candidate, record)) return registered;
         const mapped = this.fromTsType(record, node);
         return mapped?.kind === "struct" && mapped.name === dataType.name
@@ -5564,7 +5569,11 @@ export class DataTypeRegistry {
                 callable,
                 mapped:
                     mapped &&
-                    this.numericSlotStorage(declaration, propertyType, mapped),
+                    this.withDemandedNumericSlot(
+                        declaration,
+                        propertyType,
+                        mapped,
+                    ),
             };
         };
         for (const [name, declared] of layout.properties) {
@@ -6291,7 +6300,7 @@ export class DataTypeRegistry {
                 ) ?? this.fromClassFieldType(propertyType, member.name);
             const mapped =
                 declared &&
-                this.numericSlotStorage(member, propertyType, declared);
+                this.withDemandedNumericSlot(member, propertyType, declared);
             if (
                 !mapped &&
                 this.checker
@@ -6392,7 +6401,7 @@ export class DataTypeRegistry {
         const declared = this.fromClassFieldType(fieldType, name);
         const mapped =
             declared &&
-            this.numericSlotStorage(
+            this.withDemandedNumericSlot(
                 property.valueDeclaration,
                 fieldType,
                 declared,
