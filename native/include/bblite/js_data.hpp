@@ -4112,15 +4112,10 @@ string_ends_with(const std::string& value, const std::string& suffix,
 [[nodiscard]] inline std::string string_substr(const std::string& value, double start,
                                                double length) {
     const auto units = string_code_units(value);
-    const double size = static_cast<double>(units.size());
-    double first = to_integer_or_infinity(start);
-    first = first < 0.0 ? std::max(size + first, 0.0) : std::min(first, size);
-    const double last =
-        std::min(first + std::clamp(to_integer_or_infinity(length), 0.0, size), size);
-    if (first >= last)
-        return {};
-    return string_from_code_units(
-        units.substr(static_cast<std::size_t>(first), static_cast<std::size_t>(last - first)));
+    const auto first = relative_index(units.size(), start);
+    const double count =
+        std::clamp(to_integer_or_infinity(length), 0.0, static_cast<double>(units.size() - first));
+    return string_from_code_units(units.substr(first, static_cast<std::size_t>(count)));
 }
 
 [[nodiscard]] inline std::string string_repeat(const std::string& value, double count) {
