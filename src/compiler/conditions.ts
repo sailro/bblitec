@@ -667,8 +667,9 @@ export class ConditionLowerer {
                 this.context.expectSameEngine(leftValue, rightValue, unwrapped);
                 return `${leftValue.cpp} ${operator} ${rightValue.cpp}`;
             }
-            // A compile-time array a declaration names has no identity of
-            // its own; compared, the declaration takes one runtime array.
+            // A compile-time array or record a declaration names has no
+            // identity of its own; compared, the declaration takes one
+            // runtime array or object.
             if (equality)
                 for (const [operand, node] of [
                     [leftValue, unwrapped.left],
@@ -680,7 +681,12 @@ export class ConditionLowerer {
                                   operand,
                                   node,
                               )
-                            : undefined;
+                            : operand.kind === "record" && !operand.cpp
+                              ? this.context.bindings.recordDeclaration(
+                                    operand,
+                                    node,
+                                )
+                              : undefined;
                     if (
                         declaration &&
                         !this.context.dataLowerer.context.dynamicBindings.has(
@@ -689,7 +695,7 @@ export class ConditionLowerer {
                     )
                         throw new DynamicBindingStorageRequired(
                             declaration,
-                            "array",
+                            operand.kind === "tuple" ? "array" : "source",
                         );
                 }
             // The statement emitter supplies the condition's outer
