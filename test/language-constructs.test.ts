@@ -10302,6 +10302,54 @@ check(
 `,
 );
 
+check(
+    "nullish-fallback-of-another-union-member-and-optional-method-calls",
+    `
+    interface Move { readonly id: number; readonly target: { readonly x: number; readonly z: number } | null }
+    interface Plan { readonly moves: readonly Move[]; commit(): void }
+    type Proposal = Plan | { readonly state: "waiting" } | { readonly state: "rejected" };
+    const planIn = (proposal: Proposal): Plan | null => ("moves" in proposal ? proposal : null);
+    const log: string[] = [];
+    let fallbackCount = 0;
+    const origin = (): "origin" => { fallbackCount++; return "origin"; };
+    function createMover(deps: { targetOf(id: number): { x: number; z: number } | null; reject(): boolean }) {
+        const seen: Array<{ x: number; z: number } | "origin"> = [];
+        const apply = (id: number, target: { x: number; z: number } | "origin"): void => {
+            seen.push(target);
+            if (target === "origin") { log.push(id + ":origin"); return; }
+            log.push(id + ":" + target.x + "," + target.z);
+        };
+        const prepare = (ids: readonly number[]): Proposal => {
+            if (deps.reject()) return { state: "rejected" };
+            const moves: Move[] = [];
+            for (const id of ids) moves.push({ id, target: deps.targetOf(id) });
+            return {
+                moves,
+                commit: () => {
+                    for (const move of moves) apply(move.id, move.target ?? origin());
+                },
+            };
+        };
+        const applyAll = (ids: readonly number[]): boolean => {
+            const plan = planIn(prepare(ids));
+            plan?.commit();
+            if (plan) {
+                const first = plan.moves[0];
+                if (first && first.target && seen[0] !== first.target) throw new Error("target identity");
+            }
+            return plan !== null;
+        };
+        return { applyAll };
+    }
+    let rejected = false;
+    const mover = createMover({ targetOf: (id) => (id % 2 ? { x: id, z: -id } : null), reject: () => rejected });
+    if (!mover.applyAll([1, 2])) throw new Error("applied");
+    rejected = true;
+    if (mover.applyAll([3])) throw new Error("rejected");
+    if (log.join(";") !== "1:1,-1;2:origin" || fallbackCount !== 1) throw new Error("log " + log.join(";") + " " + fallbackCount);
+`,
+);
+
 test("a method reading this stays refused when picked by a runtime key", () => {
     assert.throws(
         () =>

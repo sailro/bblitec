@@ -94,7 +94,8 @@ variables are not loaded implicitly.
 Defaults, short-circuit operands and conditional branches evaluate once and lazily. Record-valued `||`
 supports nested `&&` guards and keeps the selected record's identity; `a && b` selects represented
 values, a left whose present values are all truthy contributing only its absence; branches of different
-types select as the conditional's type. `a ?? f()` with a never-returning `f` is `a`'s present value;
+types select as the conditional's type. `a ?? f()` with a never-returning `f` is `a`'s present value, and operands of different members of the
+operator's union type are each stored as that union;
 an awaited `??` fallback in an asynchronous realm runs as statements only when `a` is absent. A conditional
 spread (`...(c ? { a } : {})`) adds its keys only where its arm is taken. An assignment is the value it assigns, engine property targets included, its
 target evaluated once. Operands of concatenation, arithmetic,
