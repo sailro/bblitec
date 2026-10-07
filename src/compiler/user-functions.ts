@@ -2271,6 +2271,60 @@ export class UserFunctionLowerer {
         for (const [key, value] of refreshed) writable(properties)[key] = value;
     }
 
+    /**
+     * Whether a call inside a recursive group passes its root, at
+     * `index`, anything but the generation-known scalar `argument` the
+     * entry call passes: another literal, or any expression other than
+     * that parameter itself. Such a parameter keeps its runtime storage,
+     * so each invocation reads the value it was called with.
+     */
+    private recursiveArgumentVaries(
+        declarations: readonly SupportedFunction[],
+        root: SupportedFunction,
+        parameter: ts.BindingName,
+        index: number,
+        argument: Value,
+    ): boolean {
+        const own = ts.isIdentifier(parameter)
+            ? declaredSymbol(this.checker, parameter)
+            : undefined;
+        const same = (passed: ts.Expression | undefined): boolean => {
+            const expression = passed && unwrapExpression(passed);
+            if (!expression) return false;
+            if (ts.isIdentifier(expression))
+                return (
+                    own !== undefined &&
+                    declaredSymbol(this.checker, expression) === own
+                );
+            if (expression.kind === ts.SyntaxKind.TrueKeyword)
+                return argument.staticBoolean === true;
+            if (expression.kind === ts.SyntaxKind.FalseKeyword)
+                return argument.staticBoolean === false;
+            if (ts.isStringLiteralLike(expression))
+                return argument.staticString === expression.text;
+            if (ts.isNumericLiteral(expression))
+                return argument.staticNumber === Number(expression.text);
+            return false;
+        };
+        let varies = false;
+        for (const declaration of declarations) {
+            if (!declaration.body) continue;
+            forEachAnalysisNode(declaration.body, (node) => {
+                if (
+                    !varies &&
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    tryResolveFunctionDeclaration(
+                        this.checker,
+                        node.expression,
+                    ) === root
+                )
+                    varies = !same(node.arguments[index]);
+            });
+        }
+        return varies;
+    }
+
     private sameCapturedValue(left: Value, right: Value): boolean {
         return (
             left === right ||
@@ -2879,7 +2933,18 @@ export class UserFunctionLowerer {
                     (argument.staticString !== undefined ||
                         argument.staticBoolean !== undefined ||
                         argument.kind === "json-null" ||
-                        loopBound))
+                        loopBound) &&
+                    !(
+                        recursive &&
+                        rootEntry.parameterTypes[index] &&
+                        this.recursiveArgumentVaries(
+                            declarations,
+                            root.declaration,
+                            parameter.name,
+                            index,
+                            argument,
+                        )
+                    ))
             ) {
                 rootEntry.parameterTypes[index] = undefined;
                 rootEntry.captured[index] = argument;

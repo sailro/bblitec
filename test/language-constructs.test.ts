@@ -9008,3 +9008,27 @@ test("a union with several function arms refuses a function value", () => {
         /does not match the expected data union/,
     );
 });
+
+check(
+    "recursive-function-varying-literal-argument",
+    `
+    function makeLoop(limit: number): { begin(): void; log: string[] } {
+        const log: string[] = [];
+        let runs = 0;
+        function start(fadeIn: boolean): void {
+            runs++;
+            log.push(fadeIn ? "in" : "cut");
+            if (runs < limit) retry();
+        }
+        function retry(): void { start(false); }
+        return { begin: () => start(true), log };
+    }
+    const loop = makeLoop(3);
+    loop.begin();
+    if (loop.log.join(",") !== "in,cut,cut") throw new Error("recursive literal argument " + loop.log.join(","));
+    function countdown(label: string, n: number): string {
+        return n === 0 ? label : countdown(label, n - 1) + label;
+    }
+    if (countdown("x", 2) !== "xxx") throw new Error("same literal recursion");
+`,
+);
