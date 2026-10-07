@@ -126,8 +126,9 @@ dense storage. Sparse growth, named array properties and writes through erased n
 record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
 permit statements before a final return, and early returns of a represented result type.
 Finite-key record unions share compatible arm storage, including numeric tuple fields of different
-lengths. Changing a retained arm's layout refuses generic substitutions, conflicting layouts, field
-loss and incompatible mutable field storage.
+lengths. Records stored as a record union (or two), and a union's records stored as an arm or another
+record type, keep one object, nested records included; generic substitutions and fields no one storage
+holds refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree;
 a typed record whose methods name its own binding or read `this` is one shared object; a `this`-reading
 literal method whose function value is read from an object that can hold it other than as a member call's

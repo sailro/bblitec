@@ -87,21 +87,21 @@ check(
 `,
 );
 
-test("record union storage refuses dropping retained source fields", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                const original={value:1,extra:2};
-                const retained:(typeof original)[]=[original];
-                const small={value:3};
-                const table={original:retained[0],small};
-                const read:(key:keyof typeof table)=>typeof original|typeof small=key=>table[key];
-                const result=read(Date.now()>0?'original':'small');
-                if(result.value<0)throw new Error('value');
-            `),
-        /retained record union requires one shared layout preserving its original fields/,
-    );
-});
+check(
+    "record union storage keeps retained source fields",
+    `
+    const original={value:1,extra:2};
+    const retained:(typeof original)[]=[original];
+    const small={value:3};
+    const table={original:retained[0],small};
+    const read:(key:keyof typeof table)=>typeof original|typeof small=key=>table[key];
+    const result=read(Date.now()>0?'original':'small');
+    if(result!==original || read('small')!==small || result.value!==1)throw new Error('selected identities');
+    original.extra=5;
+    if(!('extra' in result) || 'extra' in small || (result as typeof original).extra!==5)throw new Error('retained field');
+    if(Object.keys(result).join()!=='value,extra' || JSON.stringify(read('small'))!=='{"value":3}')throw new Error('keys');
+`,
+);
 
 test("record union storage refuses widening a mutable scalar field", () => {
     assert.throws(
@@ -119,21 +119,37 @@ test("record union storage refuses widening a mutable scalar field", () => {
     );
 });
 
-test("retained aliases refuse conflicting shared storage layouts", () => {
+check(
+    "retained aliases share one layout across two record unions",
+    `
+    const a={tag:'a' as const,values:[1] as const};
+    const b={tag:'b' as const,values:[2,3] as const};
+    const c={tag:'c' as const,values:[4,5,6] as const};
+    const shared:(typeof a)[]=[a];
+    const first={a:shared[0],b},second={a:shared[0],c};
+    const read1:(key:keyof typeof first)=>typeof a|typeof b=key=>first[key];
+    const read2:(key:keyof typeof second)=>typeof a|typeof c=key=>second[key];
+    const result1=read1('a'),result2=read2('a');
+    if(result1!==a || result2!==a || read1('b')!==b || read2('c')!==c)throw new Error('selected identities');
+    if(result1.values!==result2.values || result1.values[0]!==1 || read1('b').values[1]!==3 || read2('c').values.length!==3)throw new Error('tuple fields');
+    if(Object.keys(read2('c')).join()!=='tag,values' || JSON.stringify(read1('b'))!=='{"tag":"b","values":[2,3]}')throw new Error('keys');
+`,
+);
+
+test("record union storage refuses a wider record's field stored another way", () => {
     assert.throws(
         () =>
             compileSource(`
-            const a={tag:'a' as const,values:[1] as const};
-            const b={tag:'b' as const,values:[2,3] as const};
-            const c={tag:'c' as const,values:[4,5,6] as const};
-            const shared:(typeof a)[]=[a];
-            const first={a:shared[0],b},second={a:shared[0],c};
-            const read1:(key:keyof typeof first)=>typeof a|typeof b=key=>first[key];
-            const read2:(key:keyof typeof second)=>typeof a|typeof c=key=>second[key];
-            const result1=read1('a'),result2=read2('a');
-            if(result1.values[0]+result2.values[0]<0)throw new Error('value');
+            interface End { x: number; label: number }
+            type Flat = { x: number };
+            type Mark = { x: number; label?: string };
+            const end: End = { x: 1, label: 2 };
+            const spots: (Flat | Mark)[] = [{ x: 3 }];
+            spots.push(end);
+            const seen = new Set<Flat | Mark>(spots);
+            if (!seen.has(end)) throw new Error('identity');
         `),
-        /conflicting shared storage layouts/,
+        /no one layout stores their property 'label' both ways/,
     );
 });
 

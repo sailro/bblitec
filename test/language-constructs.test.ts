@@ -8261,6 +8261,97 @@ check(
 );
 
 check(
+    "union-arms-keep-nested-records-of-their-own-types",
+    `
+    const archiveTypes = [{ description: "Archive", accept: { "application/zip": [".zip"] } }];
+    const plainTypes = [{ description: "Plain", accept: { "application/json": [".json"] } }];
+    const saveTypes = [...archiveTypes, ...plainTypes];
+    const openTypes = saveTypes;
+    if (saveTypes[0] !== archiveTypes[0] || openTypes[1] !== plainTypes[0]) throw new Error("spread elements keep their objects");
+    saveTypes[0]!.description = "Zip";
+    if (archiveTypes[0]!.description !== "Zip") throw new Error("write through the union");
+    const accept = saveTypes[1]!.accept;
+    if (accept !== plainTypes[0]!.accept || !("application/json" in accept) || "application/zip" in accept) throw new Error("nested record of each arm");
+    plainTypes[0]!.accept["application/json"].push(".txt");
+    if (Object.keys(saveTypes[0]!.accept).join() !== "application/zip" || Object.keys(accept).join() !== "application/json") throw new Error("nested keys");
+    if (JSON.stringify(openTypes) !== '[{"description":"Zip","accept":{"application/zip":[".zip"]}},{"description":"Plain","accept":{"application/json":[".json",".txt"]}}]') throw new Error("json " + JSON.stringify(openTypes));
+`,
+);
+
+check(
+    "records-wider-than-a-union-keep-their-fields-in-its-layout",
+    `
+    interface End { s: number; x: number; y: number; z: number }
+    type Flat = Readonly<{ x: number; z: number }>;
+    type Mark = { readonly x: number; readonly z: number };
+    const ends: End[] = [{ s: 1, x: 2, y: 3, z: 4 }];
+    const flat: Flat = { x: 5, z: 6 };
+    const mark: Mark = { x: 7, z: 8 };
+    const spots: (Flat | Mark)[] = [flat, mark];
+    spots.push(ends[0]!);
+    const seen = new Set<Flat | Mark>(spots);
+    if (!seen.has(ends[0]!) || spots[2] !== ends[0] || spots[0] !== flat) throw new Error("one object");
+    ends[0]!.x = 20;
+    if (spots[2]!.x !== 20) throw new Error("write through the wider type");
+    if (Object.keys(spots[2]!).join() !== "s,x,y,z" || JSON.stringify(spots[2]) !== '{"s":1,"x":20,"y":3,"z":4}') throw new Error("wider keys " + Object.keys(spots[2]!).join());
+    if (Object.keys(spots[0]!).join() !== "x,z" || JSON.stringify(spots[1]) !== '{"x":7,"z":8}') throw new Error("arm keys");
+    if ("s" in spots[0]! || !("s" in spots[2]!)) throw new Error("absent field");
+`,
+);
+
+check(
+    "union-records-narrowed-to-an-arm-stay-one-object",
+    `
+    interface Circle { kind: "circle"; x: number; z: number; radius: number; grow?: number }
+    interface Rect { kind: "rect"; cx: number; cz: number; half: number; grow?: number }
+    type Boundary = Circle | Rect;
+    function area(r: Rect): number { r.grow = (r.grow ?? 0) + 1; return r.half * r.half * 4; }
+    function measure(b: Boundary): number { if (b.kind === "circle") return b.radius * 3; return area(b); }
+    const shapes: Boundary[] = [{ kind: "rect", cx: 1, cz: 2, half: 3 }, { kind: "circle", x: 0, z: 0, radius: 1 }];
+    if (Object.keys(shapes[0]!).join() !== "kind,cx,cz,half" || Object.keys(shapes[1]!).join() !== "kind,x,z,radius") throw new Error("keys " + Object.keys(shapes[0]!).join());
+    if (measure(shapes[0]!) !== 36 || shapes[0]!.grow !== 1 || !("grow" in shapes[0]!) || measure(shapes[1]!) !== 3) throw new Error("write through the arm");
+    const found = shapes.find((shape): shape is Rect => shape.kind === "rect");
+    if (found === undefined || found !== shapes[0] || found.half !== 3) throw new Error("guarded find keeps the object");
+`,
+);
+
+check(
+    "conditional-arms-of-own-fields-stay-one-object",
+    `
+    interface TowerRoof { x: number; z: number; yaw: number; baseY: number; baseRadius: number }
+    type Host =
+        | { readonly kind: "cone"; readonly roof: TowerRoof; readonly radius: number }
+        | { readonly kind: "flat"; readonly x: number; readonly z: number; readonly yaw: number; readonly y: number; readonly radius: number };
+    function frameOf(host: Host) { return host.kind === "cone" ? host.roof : host; }
+    const roof: TowerRoof = { x: 1, z: 2, yaw: 0, baseY: 3, baseRadius: 4 };
+    const hosts: Host[] = [{ kind: "cone", roof, radius: 1 }, { kind: "flat", x: 5, z: 6, yaw: 0, y: 7, radius: 2 }];
+    const frames = hosts.map(frameOf);
+    if (frames[0] !== roof || frames[1] !== hosts[1]) throw new Error("selected objects");
+    roof.x = 10;
+    if (frames[0]!.x + frames[1]!.z !== 16) throw new Error("reads through the frame");
+    if (Object.keys(frames[0]!).join() !== "x,z,yaw,baseY,baseRadius" || Object.keys(frames[1]!).join() !== "kind,x,z,yaw,y,radius") throw new Error("keys");
+`,
+);
+
+check(
+    "records-of-two-unions-take-one-layout",
+    `
+    interface A { tag: "a"; v: number }
+    interface B { tag: "b"; w: number }
+    interface C { tag: "c"; v: number; w: number }
+    const a: A = { tag: "a", v: 1 };
+    const first: (A | B)[] = [a, { tag: "b", w: 2 }];
+    const second: (A | C)[] = [a, { tag: "c", v: 3, w: 4 }];
+    if (first[0] !== second[0]) throw new Error("one object in two unions");
+    const held = first[0]!;
+    if (held.tag === "a") held.v = 10;
+    const other = second[0]!;
+    if (a.v !== 10 || other.tag !== "a" || other.v !== 10) throw new Error("write through one union");
+    if (Object.keys(first[1]!).join() !== "tag,w" || JSON.stringify(second) !== '[{"tag":"a","v":10},{"tag":"c","v":3,"w":4}]') throw new Error("keys");
+`,
+);
+
+check(
     "records-stored-as-an-engine-record-type-stay-one-object",
     `
     type VatClip = import("@babylonjs/lite").VatClip;
