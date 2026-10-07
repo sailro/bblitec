@@ -279,3 +279,19 @@ export function declaredContextualType(
         ? undefined
         : checker.getContextualType(expression);
 }
+
+/**
+ * The property `name` of the type an object literal is stored as: its
+ * contextual type, absent members aside.
+ */
+export function contextualProperty(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+    name: string,
+): ts.Symbol | undefined {
+    const owner = checker.getContextualType(literal);
+    return (
+        owner &&
+        checker.getPropertyOfType(checker.getNonNullableType(owner), name)
+    );
+}

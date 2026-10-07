@@ -49,31 +49,49 @@ export interface RecordAccessorDemand {
     readonly setter: boolean;
 }
 
-/** Replays strengthen ownership and accumulate the joins and accessors lowering met. */
+/** The demand flags a replay strengthens, never weakens. */
+const RECORD_STORAGE_FLAGS = [
+    "stored",
+    "dynamicJsonStorage",
+    "proxy",
+    "document",
+    "armFields",
+    "view",
+] as const;
+
+/**
+ * Replays strengthen ownership and accumulate the joins and accessors
+ * lowering met: `previous` merged with `next`, or undefined when `next`
+ * demands nothing `previous` lacks.
+ */
 export function mergeNativeRecordStorage(
     previous: NativeRecordStorageDemand | undefined,
     next: NativeRecordStorageDemand,
-): NativeRecordStorageDemand {
-    const joins = [
-        ...(previous?.joins ?? []),
-        ...(next.joins ?? []).filter(
-            (join) =>
-                !(previous?.joins ?? []).some(
-                    (known) =>
-                        known.source === join.source &&
-                        known.target === join.target &&
-                        known.targetInstantiation ===
-                            join.targetInstantiation &&
-                        known.kind === join.kind,
-                ),
-        ),
-    ];
+): NativeRecordStorageDemand | undefined {
+    const added = (next.joins ?? []).filter(
+        (join) =>
+            !(previous?.joins ?? []).some(
+                (known) =>
+                    known.source === join.source &&
+                    known.target === join.target &&
+                    known.targetInstantiation === join.targetInstantiation &&
+                    known.kind === join.kind,
+            ),
+    );
+    const joins = [...(previous?.joins ?? []), ...added];
     const accessors = new Map<string, boolean>();
-    for (const { name, setter } of [
-        ...(previous?.accessors ?? []),
-        ...(next.accessors ?? []),
-    ])
+    for (const { name, setter } of previous?.accessors ?? [])
         accessors.set(name, setter || accessors.get(name) === true);
+    let changed =
+        previous === undefined ||
+        added.length > 0 ||
+        RECORD_STORAGE_FLAGS.some((flag) => next[flag] && !previous[flag]);
+    for (const { name, setter } of next.accessors ?? []) {
+        const known = accessors.get(name);
+        if (known === undefined || (setter && !known)) changed = true;
+        accessors.set(name, setter || known === true);
+    }
+    if (!changed) return undefined;
     return {
         ...previous,
         ...next,

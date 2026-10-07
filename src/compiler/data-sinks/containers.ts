@@ -31,10 +31,8 @@ import {
     admitsUndefined,
     storedAsReadonlyArray,
 } from "../type-facts.js";
-import {
-    refuseEitherAbsence,
-    requireTupleArraySlot,
-} from "../absence-tag-storage.js";
+import { refuseEitherAbsence } from "../absence-tag-storage.js";
+import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function expressionOptional(

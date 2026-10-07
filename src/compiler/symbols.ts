@@ -95,6 +95,35 @@ export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
 }
 
 /**
+ * A storage declaration a replay can retype: a variable or parameter named
+ * by an identifier, a record property or a method signature, in one of the
+ * program's own sources (a declaration file describes storage its producer
+ * owns).
+ */
+export type RetypableDeclaration =
+    | ts.VariableDeclaration
+    | ts.ParameterDeclaration
+    | ts.PropertySignature
+    | ts.PropertyDeclaration
+    | ts.MethodSignature;
+
+/** See {@link RetypableDeclaration}. */
+export function isRetypableDeclaration(
+    declaration: ts.Node | undefined,
+): declaration is RetypableDeclaration {
+    return (
+        declaration !== undefined &&
+        !declaration.getSourceFile().isDeclarationFile &&
+        (((ts.isVariableDeclaration(declaration) ||
+            ts.isParameter(declaration)) &&
+            ts.isIdentifier(declaration.name)) ||
+            ts.isPropertySignature(declaration) ||
+            ts.isPropertyDeclaration(declaration) ||
+            ts.isMethodSignature(declaration))
+    );
+}
+
+/**
  * Whether any declaration of a symbol has one of `origins`. Any, because a
  * program may reopen a library interface (`interface Window { ... }`) and
  * the merged symbol is still the library's.

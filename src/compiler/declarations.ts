@@ -2646,7 +2646,7 @@ export class DeclarationLowerer {
         if (annotated && this.context.sharedClosures.identifierIsRebound(name))
             annotated = this.reboundBindingStorage(annotated, declaredType);
         if (annotated)
-            annotated = this.context.dataTypes.numericSlotStorage(
+            annotated = this.context.dataTypes.withDemandedNumericSlot(
                 declaration,
                 declaredType,
                 annotated,
