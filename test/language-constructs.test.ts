@@ -4058,6 +4058,85 @@ test("callback-returned arrays without a typed collection keep their refusal", (
 });
 
 check(
+    "callback-returned-arrays-store-at-the-collection-element-type",
+    `
+    interface Desired { key: string; matrix: Float32Array }
+    interface State extends Desired { visibility: number; target: 0 | 1; pending: Desired | null; active: boolean }
+    const order: string[] = [];
+    const groups = 2 + Math.trunc(Math.random());
+    const states: State[][] = Array.from({ length: groups }, (_, group) => {
+        order.push("g" + group);
+        return Array.from({ length: 3 }, (_, slot) => {
+            order.push(group + ":" + slot);
+            return { key: "", matrix: new Float32Array(16), visibility: slot, target: 0 as const, pending: null, active: false };
+        });
+    });
+    const flat: State[][] = Array.from({ length: 2 }, () =>
+        Array.from({ length: 2 }, () => ({ key: "f", matrix: new Float32Array(4), visibility: 0, target: 0 as const, pending: null, active: false })),
+    );
+    if (order.join() !== "g0,0:0,0:1,0:2,g1,1:0,1:1,1:2") throw new Error("mapper order " + order.join());
+    if (states.length !== 2 || states[1]!.length !== 3 || states[1]![2]!.visibility !== 2) throw new Error("nested shape");
+    if (states[0]![0] === states[0]![1] || states[0] === states[1] || states[0]![0]!.matrix === states[0]![1]!.matrix) throw new Error("fresh records");
+    const parked: Desired = { key: "parked", matrix: new Float32Array(16) };
+    states[1]![2]!.pending = parked;
+    states[1]![2]!.target = 1;
+    if (states[1]![2]!.pending !== parked || states[0]![2]!.pending !== null || states[1]![1]!.target !== 0) throw new Error("nullable field");
+    if (flat[1]![1]!.key !== "f" || flat[1]![1]!.pending !== null || flat[0] === flat[1]) throw new Error("expression mappers");
+    interface Cell { key: string; pending: Desired | null; active: boolean }
+    const keys = ["x", "y"];
+    const grid: Cell[][] = keys.map((row) => keys.map((column) => ({ key: row + column, pending: null, active: row === column })));
+    const spread: Cell[][] = keys.map((row) => keys.flatMap((column) => [{ key: column + row, pending: null, active: false }]));
+    const mixed: Cell[][] = Array.from({ length: 2 }, (_, index) => keys.map((key) => ({ key: key + index, pending: null, active: true })));
+    if (grid.map((cells) => cells.map((cell) => cell.key + (cell.active ? "!" : "")).join()).join("|") !== "xx!,xy|yx,yy!") throw new Error("nested map");
+    grid[0]![1]!.pending = parked;
+    if (grid[1]![0]!.pending !== null || grid[0]![1]!.pending?.key !== "parked") throw new Error("nested map records");
+    if (spread[1]!.map((cell) => cell.key).join() !== "xy,yy" || mixed[1]![0]!.key !== "x1" || !mixed[0]![1]!.active) throw new Error("flatMap and from-map");
+`,
+);
+
+test("callback-returned arrays without a typed collection keep their refusal", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `const keys = ["x", "y"];
+                const grid = keys.map((row) => keys.map((column) => ({ key: row + column, pending: null })));
+                if (grid.length !== 2) throw new Error("grid");`,
+            ),
+        /Array\.map callback results must belong to the native data model/,
+    );
+});
+
+check(
+    "fresh-array-results-take-mutating-methods",
+    `
+    const table = { stride: 4, label: "x", offset: 1, scale: 2.5, zero: -0 };
+    const fields = Object.entries(table)
+        .filter(([name, value]) => typeof value === "number" && name !== "zero")
+        .map(([name, value]) => \`\${name}=\${value as number}\`)
+        .sort();
+    if (fields.join(";") !== "offset=1;scale=2.5;stride=4") throw new Error("entries filter map sort " + fields.join(";"));
+    const rows = [{ k: 2, id: "a" }, { k: 1, id: "b" }, { k: 2, id: "c" }, { k: 1, id: "d" }];
+    let compared = 0;
+    const byKey = rows.map((row) => ({ k: row.k, id: row.id + Math.trunc(Math.random()) })).sort((a, b) => { compared++; return a.k - b.k; });
+    if (byKey.map((row) => row.id).join() !== "b0,d0,a0,c0" || compared === 0) throw new Error("stable comparator");
+    const doubled = [3, 1, 2].map((value) => value * 2);
+    const reversed = [3, 1, 2].map((value) => value * 2).reverse();
+    if (reversed.join() !== "4,2,6" || doubled.join() !== "6,2,4") throw new Error("reverse");
+    const names = Object.keys(table).filter((name) => name.length > 5);
+    const grown = Object.keys(table).filter((name) => name.length > 5).push("extra");
+    if (grown !== 3 || names.join() !== "stride,offset") throw new Error("push " + grown + " " + names.join());
+    const weights = { b: 2, a: 0.5, c: 2.5 };
+    const numbers = Object.values(weights).sort((a, b) => b - a);
+    if (numbers.join() !== "2.5,2,0.5") throw new Error("values sort " + numbers.join());
+    // A user method named like a built-in returns the array it keeps.
+    const items = [3, 1, 2];
+    const pool = { filter(): number[] { return items; } };
+    pool.filter().sort();
+    if (items.join() !== "1,2,3") throw new Error("user method keeps its array");
+`,
+);
+
+check(
     "spread-string-literal-sets",
     `
     const labels = { first: "warm", second: "cool", duplicate: "warm" } as const;
