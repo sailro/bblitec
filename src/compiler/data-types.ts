@@ -1329,8 +1329,14 @@ export class DataTypeRegistry {
     /** Property declarations a getter, and a setter, define. */
     private readonly getterProperties = new EmissionSet<ts.Node>();
     private readonly setterProperties = new EmissionSet<ts.Node>();
-    /** The structs of closed records asserted from open string-keyed records. */
-    private readonly recordViewStructs = new EmissionSet<string>();
+    /**
+     * Property declarations a class's prototype accessor stands for (an
+     * `implements`ed or converted class getter): no own property of the
+     * instance a struct slot holds.
+     */
+    private readonly prototypeAccessors = new EmissionSet<ts.Node>();
+    /** Structs whose accessor slots may hold a class's prototype accessor. */
+    private readonly prototypeAccessorStructs = new EmissionSet<string>();
     /** Closed records asserted from open string-keyed records, by struct identity. */
     private readonly recordViews = new EmissionSet<
         ts.Symbol | ts.Type | string
@@ -1386,6 +1392,7 @@ export class DataTypeRegistry {
                     name,
                 )?.declarations ?? []) {
                     this.getterProperties.add(declaration);
+                    this.prototypeAccessors.add(declaration);
                     if (setter) this.setterProperties.add(declaration);
                 }
         }
@@ -1523,13 +1530,15 @@ export class DataTypeRegistry {
         const properties = ts.isGetAccessorDeclaration(node)
             ? this.getterProperties
             : this.setterProperties;
-        const noteImplemented = (type: ts.Type): void => {
+        const noteImplemented = (type: ts.Type, prototype = false): void => {
             for (const member of type.isUnion() ? type.types : [type])
                 for (const declaration of this.checker.getPropertyOfType(
                     member,
                     name,
-                )?.declarations ?? [])
+                )?.declarations ?? []) {
                     properties.add(declaration);
+                    if (prototype) this.prototypeAccessors.add(declaration);
+                }
         };
         if (ts.isObjectLiteralExpression(node.parent)) {
             properties.add(node);
@@ -1543,6 +1552,7 @@ export class DataTypeRegistry {
                 for (const implemented of clause.types)
                     noteImplemented(
                         this.checker.getTypeAtLocation(implemented),
+                        true,
                     );
     }
 
@@ -4043,13 +4053,15 @@ export class DataTypeRegistry {
                         (propertyType.flags & ts.TypeFlags.StringLiteral) !== 0,
                 )
             ) {
-                mapped = this.registerEnum(
-                    type,
-                    literalStrings.map(
-                        (propertyType) =>
-                            (propertyType as ts.StringLiteralType).value,
+                // Arms told apart by their fields may share tag literals.
+                mapped = this.registerEnum(type, [
+                    ...new Set(
+                        literalStrings.map(
+                            (propertyType) =>
+                                (propertyType as ts.StringLiteralType).value,
+                        ),
                     ),
-                );
+                ]);
             } else {
                 const candidates = propertyTypes.map((propertyType, index) =>
                     this.fromRecordFieldType(
@@ -4921,17 +4933,27 @@ export class DataTypeRegistry {
             presences,
             call,
         );
-        if (view) this.recordViewStructs.add(mapped.name);
+        if (
+            [...layout.properties.values()].some((declared) =>
+                declared.some(({ symbol }) =>
+                    (symbol.declarations ?? []).some((declaration) =>
+                        this.prototypeAccessors.has(declaration),
+                    ),
+                ),
+            )
+        )
+            this.prototypeAccessorStructs.add(mapped.name);
         return mapped;
     }
 
     /**
-     * Whether a struct is a closed record's view of the open record it was
-     * asserted from: its accessor slots read and write the entries, or hold
-     * a copied value as data, so each is an own enumerable property.
+     * Whether a struct's accessor slots may hold a class's prototype
+     * accessor, which is no own property; other slots (a view's entries, an
+     * object literal's accessors, values held as data) are own and
+     * enumerable.
      */
-    public isRecordViewStruct(name: string): boolean {
-        return this.recordViewStructs.has(name);
+    public holdsPrototypeAccessors(name: string): boolean {
+        return this.prototypeAccessorStructs.has(name);
     }
 
     private internMappedStruct(

@@ -2170,6 +2170,37 @@ check(
 `,
 );
 
+check(
+    "spreads-read-own-accessors-once",
+    `
+    interface Save { cx: number; cz: number; name: string; }
+    let reads = 0;
+    let live = 4;
+    const saves: Save[] = [{ cx: 1, cz: 2, name: "a" }];
+    const views: Save[] = [{ get cx() { reads++; return live; }, cz: 5, name: "v" }];
+    const copyOf = (save: Save): Save => ({ ...save });
+    const plain = copyOf(saves[0]!);
+    const snapshot = copyOf(views[0]!);
+    live = 9;
+    if (plain.cx !== 1 || snapshot.cx !== 4 || reads !== 1 || views[0]!.cx !== 9 || reads !== 2) throw new Error("spread snapshots getters");
+    if (Object.keys(snapshot).join() !== "cx,cz,name") throw new Error("keys");
+`,
+);
+
+test("a spread of a record holding a class's prototype accessor refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Flag { readonly on: boolean; }
+            class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
+            const flags: Flag[] = [{ on: false }, new Switch().view()];
+            const copies = flags.map((flag) => ({ ...flag }));
+            if (copies.length !== 2) throw new Error("copies");
+            `),
+        /Property 'on' is an accessor; this use reads and writes stored record fields only/,
+    );
+});
+
 test("a class instance stored as a record refuses copying its mutable fields", () => {
     assert.throws(
         () =>
@@ -6988,15 +7019,15 @@ check(
 `,
 );
 
-test("union arms whose tag literals overlap keep their common fields", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                'type Overlap = { kind: "a" | "b"; x: number } | { kind: "b" | "c"; y: string }; const items: Overlap[] = [{ kind: "a", x: 1 }];',
-            ),
-        /Struct literal has unknown field 'x'/,
-    );
-});
+check(
+    "union-arms-whose-tag-literals-overlap-are-told-apart-by-fields",
+    `
+    type Overlap = { kind: "a" | "b"; x: number } | { kind: "b" | "c"; y: string };
+    const items: Overlap[] = [{ kind: "a", x: 1 }, { kind: "b", y: "z" }, { kind: "b", x: 2 }];
+    const seen = items.map((item) => ("x" in item ? "x" + item.x : "y" + item.y)).join();
+    if (seen !== "x1,yz,x2" || JSON.stringify(items) !== '[{"kind":"a","x":1},{"kind":"b","y":"z"},{"kind":"b","x":2}]') throw new Error(seen);
+`,
+);
 
 check(
     "union-arm-own-keys-follow-tags",
