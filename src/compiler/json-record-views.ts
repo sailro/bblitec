@@ -53,10 +53,11 @@ export function compileJsonTupleView(
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(index);
         values.forEach((value, slot) => {
-            const cpp = lowerer.compileKnownValueForSink(
+            const cpp = lowerer.compileMemberForSink(
                 value,
                 { kind: "json" },
                 node,
+                slot,
             );
             context.emit(`if (${index} == ${slot}) return ${cpp};`);
         });
@@ -129,10 +130,11 @@ export function compileJsonRecordView(
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(key);
         for (const field of fields) {
-            const value = lowerer.compileKnownValueForSink(
+            const value = lowerer.compileMemberForSink(
                 field.value,
                 { kind: "json" },
                 node,
+                field.name,
             );
             context.emit(
                 `if (${key} == ${context.cppString(field.name)}) return ${value};`,

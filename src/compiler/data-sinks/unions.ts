@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
+import { isJsonValue } from "../json-bridge.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function unionValue(
@@ -33,7 +34,13 @@ function unionValue(
             `switch (${source}.index()) { ${arms.join(" ")} default: throw std::runtime_error("Value is outside the destination union."); } }())`
         );
     }
+    // A parsed value is stored as the member its expression's (narrowed)
+    // type names: `typeof v === "number"` selects the number member.
+    const expression = lowerer.convertedExpression(node);
     const source =
+        (isJsonValue(value) && expression
+            ? lowerer.dataTypeAt(expression)
+            : undefined) ??
         value.dataType ??
         (value.kind === "number" ||
         value.kind === "boolean" ||

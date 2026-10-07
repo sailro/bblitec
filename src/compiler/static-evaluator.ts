@@ -773,6 +773,25 @@ export class StaticEvaluator {
                 const converted = `bbl::js::number_from_string(${operand.cpp})`;
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
             }
+            // An optional number's absence reads NaN for undefined, 0 for null.
+            if (
+                operand.kind === "data" &&
+                operand.dataType?.kind === "optional" &&
+                operand.dataType.inner.kind === "number"
+            ) {
+                this.onJsData();
+                const converted =
+                    numberFromOptionalCpp(
+                        this.checker,
+                        operand,
+                        unwrapExpression(unwrapped.operand),
+                    ) ??
+                    this.fail(
+                        unwrapped.operand,
+                        "Numeric coercion requires distinguishable null and undefined storage.",
+                    );
+                return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
+            }
             // Unary plus and minus apply ToNumber, which `castNumber` is for
             // typed numeric data and dynamic JSON alike.
             if (!isNumericValue(operand))

@@ -4642,16 +4642,18 @@ export class StatementLowerer {
                 } else if (operator === "+=" && isStringValue(target)) {
                     emitStringAppend(context, target.cpp, unwrapped.right);
                 } else if (target.kind === "string" && operator === "=") {
+                    // A literal union or parsed value spells its string.
                     const value = context.compileValue(unwrapped.right);
-                    if (!isStringValue(value)) {
-                        context.fail(
-                            unwrapped.right,
-                            `String assignment requires a string, received ${value.kind}.`,
-                        );
-                    }
+                    const cpp = isStringValue(value)
+                        ? value.cpp
+                        : context.dataLowerer.compileKnownValueForSink(
+                              value,
+                              { kind: "string" },
+                              unwrapped.right,
+                          );
                     context.emit({
                         kind: "expression",
-                        code: `${target.cpp} = ${value.cpp};`,
+                        code: `${target.cpp} = ${cpp};`,
                     });
                 } else if (target.kind === "audio-node" && operator === "=") {
                     const value = context.compileValue(unwrapped.right);

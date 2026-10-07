@@ -627,6 +627,7 @@ function compileSourceApplication(
                 if (
                     previous &&
                     previous.proxy === merged.proxy &&
+                    previous.document === merged.document &&
                     (previous.joins?.length ?? 0) ===
                         (merged.joins?.length ?? 0)
                 )
@@ -1239,7 +1240,7 @@ class Compiler implements LoweringServices {
             this.ownedRecords.values(),
         );
         for (const demand of this.ownedRecords.values())
-            this.dataTypes.predeclareOwnedRecord(demand);
+            if (!demand.document) this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {
             const type = this.dataTypes.fromTsType(
                 this.checker.getTypeAtLocation(declaration.name),

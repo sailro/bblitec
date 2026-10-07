@@ -262,7 +262,18 @@ function valueVector(
         return convertedElementsCopy(
             dataType,
             lowerer,
-            value as Value & { dataType: DataType<"vector"> },
+            value,
+            value.dataType.element,
+            node,
+        );
+    // A numeric tuple stored as an array of other lanes (`[number, number]`
+    // beside `[number, number, boolean]`) converts its lanes the same way.
+    if (value.kind === "data" && value.dataType?.kind === "tuple")
+        return convertedElementsCopy(
+            dataType,
+            lowerer,
+            value,
+            { kind: "number" },
             node,
         );
     return undefined;
@@ -300,7 +311,8 @@ function plainLane(type: DataType): boolean {
 function convertedElementsCopy(
     dataType: DataType<"vector">,
     lowerer: DataSinkHost,
-    value: Value & { dataType: DataType<"vector"> },
+    value: Value,
+    element: DataType,
     node: ts.Node,
 ): string {
     const array = lowerer.convertedExpression(node);
@@ -315,7 +327,7 @@ function convertedElementsCopy(
         const observed =
             !array ||
             !target ||
-            !plainLane(value.dataType.element) ||
+            !plainLane(element) ||
             !plainLane(dataType.element)
                 ? "the array may still be reached through another reference"
                 : arrayCopyObservation(
@@ -337,7 +349,7 @@ function convertedElementsCopy(
     const lines = lowerer.context.captureEmittedLines(() => {
         converted = lowerer.compileMemberForSink(
             {
-                ...lowerer.leafValue(item, value.dataType.element),
+                ...lowerer.leafValue(item, element),
                 ...(unaliased === "elements"
                     ? { unaliased: "object" as const }
                     : {}),
@@ -559,7 +571,15 @@ const identityContainerSink = {
         lowerer: DataSinkHost,
         expression: ts.Expression,
         unwrapped: ts.Expression,
-    ) => lowerer.requireDataValue(unwrapped, type, expression).cpp,
+    ) =>
+        // A traced collection cursor is stored where any iterator is.
+        type.kind === "iterator"
+            ? lowerer.compileKnownValueForSink(
+                  lowerer.context.compileValue(unwrapped),
+                  type,
+                  unwrapped,
+              )
+            : lowerer.requireDataValue(unwrapped, type, expression).cpp,
     value: (
         type: DataType<"iterator" | "arguments">,
         _lowerer: DataSinkHost,

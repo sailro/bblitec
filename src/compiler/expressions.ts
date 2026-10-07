@@ -496,6 +496,25 @@ export function stringConcatPart(
     );
 }
 
+/** The properties Number.prototype, Boolean.prototype and Object.prototype define. */
+const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
+    "constructor",
+    "toExponential",
+    "toFixed",
+    "toPrecision",
+    "toString",
+    "toLocaleString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "__proto__",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+]);
+
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
 
@@ -4521,6 +4540,34 @@ export class ExpressionLowerer {
                 }
                 const indexedType =
                     this.context.dataLowerer.dataTypeAt(unwrapped);
+                // A record read as `Record<string, unknown>` by a key known
+                // only at run time reads a parsed view of the record: the
+                // property the key names, or undefined.
+                if (
+                    !indexedType &&
+                    (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0 &&
+                    (key.kind === "number" ||
+                        key.kind === "string" ||
+                        key.dataType?.kind === "string")
+                ) {
+                    const view =
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            owner,
+                            { kind: "json" },
+                            unwrapped.expression,
+                        );
+                    const name =
+                        key.kind === "number"
+                            ? `bbl::js::number_to_string(${this.context.castNumber(key, "double")})`
+                            : key.cpp;
+                    this.context.reachJsData();
+                    return this.context.dataLowerer.leafValue(
+                        `${view}.get(${name})`,
+                        { kind: "json" },
+                    );
+                }
                 if (!indexedType) {
                     this.context.fail(
                         unwrapped,
@@ -4733,6 +4780,21 @@ export class ExpressionLowerer {
                 );
             }
             return value;
+        }
+        // A property no prototype of a number or boolean defines reads
+        // undefined (`(42)["format"]`).
+        if (owner.kind === "number" || owner.kind === "boolean") {
+            const key = this.compileValue(unwrapped.argumentExpression);
+            const name =
+                key.staticString ??
+                (key.staticNumber !== undefined
+                    ? String(key.staticNumber)
+                    : undefined);
+            if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
+                this.context.emitDiscardedValue(owner);
+                this.context.emitDiscardedValue(key);
+                return { kind: "json-null", cpp: "std::nullopt" };
+            }
         }
         if (owner.kind !== "tuple") {
             this.context.fail(

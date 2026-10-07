@@ -2876,6 +2876,45 @@ template <typename Yield, bool Entries, typename T>
     return Iterator<Yield>(SetCursor<Yield, T, Entries>{values, {}});
 }
 
+/** Which part of each entry a Map iterator yields. */
+enum class MapPart { keys, values, entries };
+
+/** A live Map iterator, pinned to its last yielded slot as SetCursor is. */
+template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor {
+    std::optional<Map<K, V>> values;
+    std::optional<InsertionOrderedIterator<std::pair<K, V>, true>> cursor;
+    Nullable<Yield> operator()() {
+        if (!values)
+            return {};
+        const Map<K, V>& source = *values;
+        if (cursor)
+            ++*cursor;
+        else
+            cursor.emplace(source.begin());
+        if (*cursor == source.end()) {
+            cursor.reset();
+            values.reset();
+            return {};
+        }
+        const auto& entry = **cursor;
+        if constexpr (Part == MapPart::keys)
+            return entry.first;
+        else if constexpr (Part == MapPart::values)
+            return entry.second;
+        else
+            return Yield{entry.first, entry.second};
+    }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(values);
+        visitor(cursor);
+    }
+};
+
+template <typename Yield, MapPart Part, typename K, typename V>
+[[nodiscard]] Iterator<Yield> map_iterator(const Map<K, V>& values) {
+    return Iterator<Yield>(MapCursor<Yield, K, V, Part>{values, {}});
+}
+
 template <typename T> using Span = std::span<T>;
 
 /**

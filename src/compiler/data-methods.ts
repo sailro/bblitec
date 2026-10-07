@@ -3153,6 +3153,21 @@ function compileMapDataMethod(
         if (call.arguments.length !== 0) {
             lowerer.context.fail(call, `Map.${method} expects no arguments.`);
         }
+        // An iterator kept past the call (`values: () => map.values()`) is
+        // live over the map, as JavaScript's is.
+        const contextual = lowerer.context.checker.getContextualType(call);
+        if (
+            contextual &&
+            lowerer.context.dataTypes.fromTsType(contextual, call)?.kind ===
+                "iterator"
+        ) {
+            const element = method === "values" ? dataType.value : dataType.key;
+            lowerer.context.reachJsData();
+            return lowerer.leafValue(
+                `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
+                { kind: "iterator", element, traced: true },
+            );
+        }
         return {
             kind: "data",
             cpp: `bbl::js::map_${method}(${narrowed.cpp})`,

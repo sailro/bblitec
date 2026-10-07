@@ -127,10 +127,14 @@ export function recordCopyObservation(
  * booleans and their unions, which have no identity of their own), stored
  * where the program reads it as `target`, could be told apart from the one
  * array JavaScript keeps, or undefined when nothing in the program can: a
- * change of the elements or length of an array either type may hold, or an
- * identity use of an array the copy's type may hold. An array type holds
- * the array when their element types are related either way, as array
- * covariance lets one object reach both.
+ * change of the elements or length of an array that may be the original
+ * (or, when `target` is mutable, the copy), or an identity use of an array
+ * the copy's type may hold.
+ *
+ * An array of a narrower or equal element type may be the original. One
+ * of a wider element type may be too only where the program widens a
+ * mutable array of the original's element type (array covariance, or an
+ * assertion); a readonly array is never written.
  */
 export function arrayCopyObservation(
     context: RecordObservationContext,
@@ -139,7 +143,69 @@ export function arrayCopyObservation(
 ): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
-    const either = [source, target];
+    const elementOf = (type: ts.Type): ts.Type | undefined =>
+        checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    const sourceElement = elementOf(source);
+    const targetElement = elementOf(target);
+    const assignable = (from: ts.Type, to: ts.Type): boolean =>
+        checker.isTypeAssignableTo(from, to);
+    // A wider array type holds the original only where a mutable array
+    // that may be it (its elements within the original's) is widened to an
+    // element type the holder's admits, or asserted to one.
+    const widenedInto = (element: ts.Type): boolean =>
+        sourceElement === undefined ||
+        observations.widenedArrays.some(
+            ({ own, wide, evolving }) =>
+                assignable(wide, element) &&
+                // A local read as still empty may be the original only
+                // where it is read with such elements elsewhere.
+                (evolving
+                    ? (
+                          observations.arrayLocalElements.get(evolving) ?? []
+                      ).some(
+                          (read) =>
+                              (read.flags & ts.TypeFlags.Never) === 0 &&
+                              assignable(read, sourceElement),
+                      )
+                    : assignable(own, sourceElement)),
+        ) ||
+        observations.assertions.some(({ asserted, open }) => {
+            const wide =
+                checker.isArrayType(asserted) &&
+                asserted.getSymbol()?.name === "Array"
+                    ? elementOf(asserted)
+                    : undefined;
+            return (
+                wide !== undefined &&
+                assignable(wide, element) &&
+                (open || assignable(sourceElement, wide))
+            );
+        });
+    const targetMutable =
+        checker.isArrayType(target) && target.getSymbol()?.name === "Array";
+    const writtenHolder = (holder: ts.Type): boolean =>
+        holdsArray(checker, holder, [source, target], (element) => {
+            if (
+                sourceElement === undefined ||
+                assignable(element, sourceElement) ||
+                (assignable(sourceElement, element) && widenedInto(element))
+            )
+                return true;
+            return (
+                targetMutable &&
+                targetElement !== undefined &&
+                assignable(targetElement, element)
+            );
+        });
+    if (
+        writesWhere(
+            observations,
+            writtenHolder,
+            (write) => !writesNewArray(checker, write),
+            observations.arrayWrites,
+        )
+    )
+        return "the program changes the elements of such arrays";
     const copyTypes = [
         target,
         ...observations.assertions
@@ -150,47 +216,63 @@ export function arrayCopyObservation(
             .map(({ asserted }) => asserted),
     ];
     if (
-        writesWhere(
-            observations,
-            (type) => holdsArray(checker, type, either),
-            () => true,
-            observations.arrayWrites,
-        )
-    )
-        return "the program changes the elements of such arrays";
-    if (
         [...observations.identities].some((type) =>
-            holdsArray(checker, type, copyTypes),
+            holdsArray(checker, type, copyTypes, (element) =>
+                copyTypes.some((copy) => {
+                    const own = elementOf(copy);
+                    return (
+                        own === undefined ||
+                        assignable(own, element) ||
+                        assignable(element, own)
+                    );
+                }),
+            ),
         )
     )
         return "the program compares such arrays by identity";
     return undefined;
 }
 
-/** Whether a value of type `holder` can be one of the arrays typed `arrays`. */
+/**
+ * Whether a value of type `holder` can be one of the arrays typed
+ * `arrays`: an open type, a non-array object type the arrays are
+ * assignable to, or an array type whose element type `related` accepts.
+ */
 function holdsArray(
     checker: ts.TypeChecker,
     holder: ts.Type,
     arrays: readonly ts.Type[],
+    related: (element: ts.Type) => boolean,
 ): boolean {
     if (holder.isUnion() || holder.isIntersection())
         return holder.types.some((member) =>
-            holdsArray(checker, member, arrays),
+            holdsArray(checker, member, arrays, related),
         );
     const element = checker.getIndexTypeOfType(holder, ts.IndexKind.Number);
     if (element === undefined || (holder.flags & ts.TypeFlags.Object) === 0)
         return holdsRecord(checker, holder, arrays);
-    const open =
-        ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter;
-    if ((element.flags & open) !== 0) return true;
-    return arrays.some((array) => {
-        const own = checker.getIndexTypeOfType(array, ts.IndexKind.Number);
+    // A type parameter's array holds what its constraint admits.
+    if ((element.flags & ts.TypeFlags.TypeParameter) !== 0) {
+        const constraint = checker.getBaseConstraintOfType(element);
         return (
-            own === undefined ||
-            checker.isTypeAssignableTo(own, element) ||
-            checker.isTypeAssignableTo(element, own)
+            constraint === undefined ||
+            constraint === element ||
+            (constraint.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+                0 ||
+            arrays.some((array) => {
+                const own = checker.getIndexTypeOfType(
+                    array,
+                    ts.IndexKind.Number,
+                );
+                return (
+                    own === undefined ||
+                    checker.isTypeAssignableTo(own, constraint) ||
+                    checker.isTypeAssignableTo(constraint, own)
+                );
+            })
         );
-    });
+    }
+    return related(element);
 }
 
 function observed(
@@ -392,6 +474,21 @@ export function arrayLentForCall(
  * call enters (not the one it is written in) initialized with one, so
  * every activation holds its own array and none existed before the call.
  */
+/** Whether an array write's receiver is a new array (`new Array(n).fill(0)`). */
+function writesNewArray(
+    checker: ts.TypeChecker,
+    write: ObservedWrite,
+): boolean {
+    const target = ts.isCallExpression(write.node)
+        ? write.node.expression
+        : write.node;
+    return (
+        (ts.isPropertyAccessExpression(target) ||
+            ts.isElementAccessExpression(target)) &&
+        newArrayExpression(checker, unwrapExpression(target.expression))
+    );
+}
+
 function createdDuringCall(
     checker: ts.TypeChecker,
     write: ObservedWrite,
@@ -406,8 +503,8 @@ function createdDuringCall(
         !ts.isElementAccessExpression(target)
     )
         return false;
+    if (writesNewArray(checker, write)) return true;
     const receiver = unwrapExpression(target.expression);
-    if (newArrayExpression(checker, receiver)) return true;
     if (!ts.isIdentifier(receiver)) return false;
     const declaration = declaredSymbol(checker, receiver)?.valueDeclaration;
     if (

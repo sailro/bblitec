@@ -6048,6 +6048,39 @@ export class UserFunctionLowerer {
         return values;
     }
 
+    /**
+     * An optional argument bound to a parameter that admits both `null`
+     * and `undefined` (`id?: number | null`): its one absent state is the
+     * one absence the argument's own type admits, so the parameter holds it
+     * as a tagged document value later reads tell apart. Undefined when no
+     * such conversion applies.
+     */
+    private taggedAbsence(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        argument: Value,
+        source: ts.Expression | undefined,
+    ): Value | undefined {
+        if (
+            !source ||
+            argument.kind !== "data" ||
+            argument.dataType?.kind !== "optional" ||
+            context.dataTypes.fromTsType(parameter.type, parameter.declaration)
+                ?.kind !== "json"
+        )
+            return undefined;
+        const absent = nullability(this.checker.getTypeAtLocation(source));
+        if (absent.null === absent.undefined) return undefined;
+        return context.dataValue(
+            context.dataLowerer.compileKnownValueForSink(
+                argument,
+                { kind: "json" },
+                source,
+            ),
+            { kind: "json" },
+        );
+    }
+
     private parameterValue(
         context: UserFunctionContext,
         parameter: UserFunctionParameterIr,
@@ -6058,6 +6091,8 @@ export class UserFunctionLowerer {
         const initializer = parameter.declaration.initializer;
         if (!initializer)
             return (
+                (argument &&
+                    this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
                 (parameter.declaration.questionToken
                     ? { kind: "json-null", cpp: "std::nullopt" }

@@ -1138,11 +1138,47 @@ export class DataTypeRegistry {
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         this.recordComponents = components;
-        for (const demand of demands)
+        for (const demand of demands) {
             if (demand.proxy)
                 this.withRecordDemand(demand, () =>
                     this.proxyRecords.add(this.structIdentity(demand.type)),
                 );
+            if (demand.document)
+                this.withRecordDemand(demand, () =>
+                    this.documentRecords.add(this.structIdentity(demand.type)),
+                );
+        }
+    }
+
+    /**
+     * Record types whose values are parsed documents the program reads as
+     * them (`documentRecordDemand`), by record identity: each maps to
+     * document storage.
+     */
+    private readonly documentRecords = new EmissionSet<
+        ts.Symbol | ts.Type | string
+    >();
+
+    /**
+     * The demand that stores every record of struct `name` as a document,
+     * for a parsed document reaching it: a plain-data record type (no stored
+     * functions or accessors, not a class), or undefined.
+     */
+    public documentRecordDemand(
+        name: string,
+    ): NativeRecordStorageDemand | undefined {
+        const source = this.nativeRecordSources.get(name);
+        const fields = this.structsByName.get(name)?.fields;
+        if (
+            !source ||
+            !fields ||
+            this.isClassStruct(name) ||
+            fields.some(
+                (field) => field.accessor || field.type.kind === "function",
+            )
+        )
+            return undefined;
+        return { ...source, document: true };
     }
 
     /** Whether two record types already share one record component. */
@@ -3736,6 +3772,8 @@ export class DataTypeRegistry {
     }
 
     private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
+        if (this.documentRecords.has(this.structIdentity(type)))
+            return { kind: "json" };
         const declaredName = (named: ts.Type): string | undefined =>
             named.aliasSymbol?.name ??
             (named.symbol &&
@@ -5142,10 +5180,20 @@ export class DataTypeRegistry {
             stringIndex ??
             this.checker.getIndexInfoOfType(type, ts.IndexKind.Number);
         if (!index) return undefined;
+        // An array-like view (`{ [index: number]: number; length: number }`)
+        // writes through whatever numeric array it is handed.
         if (
             !stringIndex &&
             (index.type.flags & ts.TypeFlags.Number) !== 0 &&
-            this.checker.getPropertiesOfType(type).length === 0
+            this.checker
+                .getPropertiesOfType(type)
+                .every(
+                    (property) =>
+                        property.name === "length" &&
+                        (this.checker.getTypeOfSymbol(property).flags &
+                            ts.TypeFlags.Number) !==
+                            0,
+                )
         ) {
             return { kind: "numberindex" };
         }
