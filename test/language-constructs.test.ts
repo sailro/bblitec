@@ -9247,3 +9247,138 @@ check(
     if (failed) throw new Error(failed);
 `,
 );
+
+check(
+    "void-operator-and-proven-undefined-results",
+    `
+    let calls = 0;
+    function touch(): void { calls++; }
+    const v = void 0;
+    const w = void touch();
+    if (v !== undefined || w !== undefined || calls !== 1) throw new Error("void operator");
+    function apply<T>(deps: { finish(): T; commit(result: T): void }): T {
+        const result = deps.finish();
+        deps.commit(result);
+        return result;
+    }
+    let committed = 0;
+    const done = apply({
+        finish: () => undefined,
+        commit: (result) => { if (result === undefined) committed++; },
+    });
+    if (done !== undefined || committed !== 1) throw new Error("generic undefined result");
+`,
+);
+
+test("a void-typed result without a proven undefined completion refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const cb: () => void = () => 5; const r = cb(); export {};",
+            ),
+        /Expression assigned to 'r' does not produce a native value/,
+    );
+});
+
+check(
+    "static-fields-assigned-by-static-blocks",
+    `
+    class Ids {
+        static next: number;
+        static label: string;
+        static {
+            const offset = 2;
+            Ids.next = offset * 2;
+            this.label = "id";
+        }
+        static take(): string { return Ids.label + Ids.next++; }
+    }
+    if (Ids.next !== 4 || Ids.label !== "id") throw new Error("static block assignment");
+    if (Ids.take() !== "id4" || Ids.next !== 5) throw new Error("static field storage");
+`,
+);
+
+test("a static field a static block may read before assigning refuses", () => {
+    for (const source of [
+        "class C { static n: number; static { const m = [C.n]; C.n = m.length; } } export {};",
+        "class C { static n: number; static { C.n = [1].length; } } export {};",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /Static field 'n' has no initializer, so it starts undefined/,
+        );
+});
+
+check(
+    "enum-objects-reverse-and-forward-mappings",
+    `
+    enum Dir { Up, Down, Left = 10, Right }
+    enum Tone { Soft = "soft", Loud = "loud" }
+    const picked = [Dir.Down, Dir.Right][1]!;
+    if (Dir.Right !== 11 || Dir[picked] !== "Right") throw new Error("reverse mapping");
+    const down = [1][0]!;
+    if (Dir[down] !== "Down" || Dir[-0] !== "Up") throw new Error("number key");
+    const missing = Dir[down + 5];
+    if (missing !== undefined) throw new Error("missing reverse key");
+    const key = ["Left"][0] as keyof typeof Dir;
+    if (Dir[key] !== 10) throw new Error("forward mapping");
+    const toneKey = ["Loud"][0] as keyof typeof Tone;
+    if (Tone[toneKey] !== "loud") throw new Error("string member");
+    function local(index: number): string {
+        enum Local { A = 1, B }
+        return Local[index] ?? "none";
+    }
+    if (local(2) !== "B" || local(3) !== "none") throw new Error("local enum");
+`,
+);
+
+test("an enum object refuses outside member and computed-key reads", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "enum Dir { A, B } const keys = Object.keys(Dir); export {};",
+            ),
+        /Enum object 'Dir' is a value only as the receiver/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(): number { enum E { A = 'x'.length } return E.A; } const n = f(); export {};",
+            ),
+        /needs a runtime enum object/,
+    );
+});
+
+check(
+    "namespace-members-and-merging",
+    `
+    namespace Geometry {
+        export const unit = 2;
+        const hidden = unit * 3;
+        export let count = 0;
+        export function scaled(n: number): number { count++; return n * hidden; }
+        export namespace Inner { export const depth = unit + 1; }
+    }
+    namespace Geometry { export const extra = unit * 10; }
+    namespace A.B { export const deep = 7; }
+    if (Geometry.unit !== 2 || Geometry.scaled(2) !== 12 || Geometry.count !== 1) throw new Error("members");
+    if (Geometry.Inner.depth !== 3 || Geometry.extra !== 20 || A.B.deep !== 7) throw new Error("nesting and merging");
+`,
+);
+
+test("namespace objects refuse writes and value uses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "namespace G { export let c = 0; } G.c = 3; export {};",
+            ),
+        /Namespace member 'c' is written through its own name/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "namespace G { export const k = 1; } const g = G; export {};",
+            ),
+        /Namespace object 'G' is a value only as the receiver/,
+    );
+});

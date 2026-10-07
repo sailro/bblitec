@@ -199,6 +199,10 @@ import {
     planEntryModuleState,
     planImportedModuleState,
 } from "./compiler/module-initializers.js";
+import {
+    namespaceMemberName,
+    refuseNamespaceMemberWrite,
+} from "./compiler/namespace-declarations.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import {
@@ -2165,6 +2169,11 @@ class Compiler implements LoweringServices {
 
     /** `emitAssignment` once its target's keys are read. */
     private emitStore(expression: ts.BinaryExpression): void {
+        const namespaceMember = namespaceMemberName(
+            this.checker,
+            this.unwrap(expression.left),
+        );
+        if (namespaceMember) refuseNamespaceMemberWrite(this, namespaceMember);
         if (emitWindowLocationAssignment(this.dataLowerer, expression)) return;
         this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);
@@ -5278,9 +5287,17 @@ class Compiler implements LoweringServices {
     public bindUninitializedClassDataField(
         name: ts.MemberName,
         declared?: DataType,
+        assignedBeforeRead = false,
     ): Value | undefined {
         const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
-        if (dataType?.kind !== "optional" && dataType?.kind !== "vector") {
+        // A field no code can read before its first assignment needs no
+        // representation of its initial `undefined`.
+        if (
+            !dataType ||
+            (!assignedBeforeRead &&
+                dataType.kind !== "optional" &&
+                dataType.kind !== "vector")
+        ) {
             return undefined;
         }
         const sharedStorage = this.classFieldNeedsSharedStorage(name);

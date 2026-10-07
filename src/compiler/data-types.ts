@@ -3914,7 +3914,8 @@ export class DataTypeRegistry {
         return undefined;
     }
 
-    private resolveTypeParameter(type: ts.Type): ts.Type {
+    /** A type with every type parameter in force replaced by its argument. */
+    public resolveTypeParameter(type: ts.Type): ts.Type {
         const seen = new Set<ts.Type>();
         while (!seen.has(type)) {
             seen.add(type);

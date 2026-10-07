@@ -25,7 +25,7 @@ import { borrowsReferenceParameter } from "./user-functions.js";
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import { firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { sourceFunctionName } from "./syntax.js";
+import { sourceFunctionName, unwrapExpression } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -85,6 +85,171 @@ function enclosingClass(node: ts.Node): ts.ClassDeclaration | undefined {
         if (ts.isClassDeclaration(current)) return current;
     }
     return undefined;
+}
+
+/**
+ * Whether evaluating `node` can run code: only literals, primitive names,
+ * operators over them and closure creation cannot (a primitive operand calls
+ * no `valueOf`, a closure's body does not run).
+ */
+function isInertExpression(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+    classSymbol: ts.Symbol | undefined,
+): boolean {
+    const inert = (expression: ts.Expression): boolean =>
+        isInertExpression(checker, expression, classSymbol);
+    const primitive = (expression: ts.Expression): boolean =>
+        (checker.getTypeAtLocation(expression).flags &
+            (ts.TypeFlags.NumberLike |
+                ts.TypeFlags.StringLike |
+                ts.TypeFlags.BooleanLike |
+                ts.TypeFlags.BigIntLike |
+                ts.TypeFlags.Undefined |
+                ts.TypeFlags.Null)) !==
+        0;
+    const expression = unwrapExpression(node);
+    if (
+        ts.isLiteralExpression(expression) ||
+        expression.kind === ts.SyntaxKind.TrueKeyword ||
+        expression.kind === ts.SyntaxKind.FalseKeyword ||
+        expression.kind === ts.SyntaxKind.NullKeyword ||
+        ts.isArrowFunction(expression) ||
+        ts.isFunctionExpression(expression)
+    )
+        return true;
+    if (ts.isIdentifier(expression))
+        return (
+            resolvedSymbol(checker, expression) !== classSymbol &&
+            primitive(expression)
+        );
+    if (ts.isPrefixUnaryExpression(expression))
+        return (
+            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
+            expression.operator !== ts.SyntaxKind.MinusMinusToken &&
+            inert(expression.operand) &&
+            primitive(expression.operand)
+        );
+    if (ts.isTypeOfExpression(expression)) return inert(expression.expression);
+    if (ts.isConditionalExpression(expression))
+        return (
+            inert(expression.condition) &&
+            inert(expression.whenTrue) &&
+            inert(expression.whenFalse)
+        );
+    if (ts.isTemplateExpression(expression))
+        return expression.templateSpans.every(
+            (span) => inert(span.expression) && primitive(span.expression),
+        );
+    if (ts.isBinaryExpression(expression)) {
+        const operator = expression.operatorToken.kind;
+        return (
+            operator !== ts.SyntaxKind.InKeyword &&
+            operator !== ts.SyntaxKind.InstanceOfKeyword &&
+            !isAssignmentOperator(operator) &&
+            inert(expression.left) &&
+            inert(expression.right) &&
+            primitive(expression.left) &&
+            primitive(expression.right)
+        );
+    }
+    return false;
+}
+
+function isAssignmentOperator(operator: ts.SyntaxKind): boolean {
+    return (
+        operator >= ts.SyntaxKind.FirstAssignment &&
+        operator <= ts.SyntaxKind.LastAssignment
+    );
+}
+
+/**
+ * Whether a static field without an initializer is assigned by a later
+ * `static { ... }` block before anything can read it: the static fields
+ * evaluated in between and the block's statements up to the assignment
+ * (`C.x = value` or `this.x = value`) only bind locals from inert
+ * expressions, so no code can observe the field's initial `undefined`.
+ */
+function staticFieldAssignedBeforeRead(
+    checker: ts.TypeChecker,
+    table: ClassMemberTable,
+    field: ts.PropertyDeclaration & { name: ts.MemberName },
+): boolean {
+    const classSymbol = table.declaration.name
+        ? declaredSymbol(checker, table.declaration.name)
+        : undefined;
+    const fieldSymbol = declaredSymbol(checker, field.name);
+    const inert = (expression: ts.Expression): boolean =>
+        isInertExpression(checker, expression, classSymbol);
+    // `C.x = value` or `this.x = value` storing a static data field of
+    // this class: a store that runs no code of its own.
+    const staticWrite = (
+        statement: ts.Statement,
+    ): { field: ts.Symbol | undefined; value: ts.Expression } | undefined => {
+        if (!ts.isExpressionStatement(statement)) return undefined;
+        const expression = unwrapExpression(statement.expression);
+        if (
+            !ts.isBinaryExpression(expression) ||
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+        )
+            return undefined;
+        const target = unwrapExpression(expression.left);
+        if (!ts.isPropertyAccessExpression(target)) return undefined;
+        const owner = unwrapExpression(target.expression);
+        return (owner.kind === ts.SyntaxKind.ThisKeyword ||
+            (ts.isIdentifier(owner) &&
+                resolvedSymbol(checker, owner) === classSymbol)) &&
+            table.staticFields.has(target.name.text)
+            ? {
+                  field: resolvedSymbol(checker, target),
+                  value: expression.right,
+              }
+            : undefined;
+    };
+    const assignsField = (
+        statement: ts.Statement,
+    ): ts.Expression | undefined => {
+        const write = staticWrite(statement);
+        return fieldSymbol !== undefined && write?.field === fieldSymbol
+            ? write.value
+            : undefined;
+    };
+    const inertStatement = (statement: ts.Statement): boolean => {
+        const write = staticWrite(statement);
+        if (write) return inert(write.value);
+        return (
+            ts.isEmptyStatement(statement) ||
+            ts.isFunctionDeclaration(statement) ||
+            (ts.isExpressionStatement(statement) &&
+                inert(statement.expression)) ||
+            (ts.isVariableStatement(statement) &&
+                statement.declarationList.declarations.every(
+                    (declaration) =>
+                        ts.isIdentifier(declaration.name) &&
+                        (!declaration.initializer ||
+                            inert(declaration.initializer)),
+                ))
+        );
+    };
+    const elements = table.staticElements;
+    for (
+        let index = elements.indexOf(field) + 1;
+        index < elements.length;
+        index += 1
+    ) {
+        const element = elements[index]!;
+        if (!ts.isClassStaticBlockDeclaration(element)) {
+            if (element.initializer && !inert(element.initializer))
+                return false;
+            continue;
+        }
+        for (const statement of element.body.statements) {
+            const assigned = assignsField(statement);
+            if (assigned) return inert(assigned);
+            if (!inertStatement(statement)) return false;
+        }
+    }
+    return false;
 }
 
 /** The private names one class body declares. */
@@ -459,12 +624,22 @@ export class ClassLowerer {
         }
         const storage =
             this.context.bindNullableClassField(field.name) ??
-            this.context.bindUninitializedClassDataField(field.name, declared);
+            this.context.bindUninitializedClassDataField(
+                field.name,
+                declared,
+                ts.isClassDeclaration(field.parent) &&
+                    staticFieldAssignedBeforeRead(
+                        this.context.checker,
+                        this.table(field.parent),
+                        field,
+                    ),
+            );
         if (!storage) {
             this.context.fail(
                 field,
                 `Static field '${field.name.text}' has no initializer, so it ` +
-                    "starts undefined; its type needs an optional representation.",
+                    "starts undefined; its type needs an optional representation, " +
+                    "or a static block assigning it before any code can read it.",
             );
         }
         return storage;

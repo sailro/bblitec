@@ -3,6 +3,7 @@ import ts from "typescript";
 import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -132,6 +133,9 @@ export function isModuleInitializerStatement(
     if (ts.isClassDeclaration(statement)) {
         return classHasStaticState(checker, statement);
     }
+    // A namespace declaring values runs its body.
+    if (ts.isModuleDeclaration(statement))
+        return isInstantiatedNamespace(statement);
     return !(
         ts.isImportDeclaration(statement) ||
         ts.isExportDeclaration(statement) ||

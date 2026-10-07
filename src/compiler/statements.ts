@@ -70,6 +70,7 @@ import {
     staticStringValue,
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { emitNamespaceDeclaration } from "./namespace-declarations.js";
 import { isNullishLiteral } from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
 import {
@@ -192,6 +193,7 @@ interface StatementLoweringContext extends Pick<
     | "increaseIndent"
     | "decreaseIndent"
     | "allocateBlockPrefix"
+    | "emitStatement"
     | "fail"
 > {}
 
@@ -1227,6 +1229,25 @@ export class StatementLowerer {
             // declaration itself runs -- static fields and blocks -- runs
             // here.
             context.classLowerer.emitDeclaration(statement);
+            return;
+        }
+        if (ts.isModuleDeclaration(statement)) {
+            emitNamespaceDeclaration(context, statement);
+            return;
+        }
+        if (ts.isEnumDeclaration(statement)) {
+            // Member reads fold to their constants and computed-key reads
+            // look the members up; a member the checker cannot fold would
+            // need the enum object built here.
+            const computed = statement.members.find(
+                (member) =>
+                    context.checker.getConstantValue(member) === undefined,
+            );
+            if (computed)
+                context.fail(
+                    computed,
+                    "An enum member without a constant value needs a runtime enum object.",
+                );
             return;
         }
         context.fail(

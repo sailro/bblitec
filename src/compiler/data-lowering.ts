@@ -165,6 +165,10 @@ import {
     literalMember,
     unwrapExpression,
 } from "./syntax.js";
+import {
+    namespaceMemberName,
+    refuseNamespaceMemberWrite,
+} from "./namespace-declarations.js";
 import { recordAt } from "./record-access.js";
 import {
     completeLiteralSelf,
@@ -1715,6 +1719,15 @@ export class DataLowerer {
                 }
             }
             return bound;
+        }
+        const namespaceMember = namespaceMemberName(
+            this.context.checker,
+            unwrapped,
+        );
+        if (namespaceMember) {
+            if (mode === "write")
+                refuseNamespaceMemberWrite(this.context, namespaceMember);
+            return this.compileDataPath(namespaceMember, mode, throughReceiver);
         }
         if (ts.isPropertyAccessExpression(unwrapped) && mode === "write") {
             this.context.classLowerer.refuseInheritedStaticWrite(unwrapped);

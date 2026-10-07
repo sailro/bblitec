@@ -376,6 +376,7 @@ export interface LoweringServices {
     bindUninitializedClassDataField(
         name: ts.MemberName,
         declared?: DataType,
+        assignedBeforeRead?: boolean,
     ): Value | undefined;
     bindOptionalResourceValue(name: ts.Identifier): Value | undefined;
     bindClassDataField(

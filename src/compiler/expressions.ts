@@ -110,6 +110,11 @@ import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
+import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
+import {
+    namespaceMemberName,
+    namespaceSymbol,
+} from "./namespace-declarations.js";
 import { unicodeUnitPattern } from "./regexp-unicode.js";
 import {
     FORMATTED_MATH_FOLDS,
@@ -640,6 +645,17 @@ export class ExpressionLowerer {
         }
 
         if (ts.isVoidExpression(unwrapped)) {
+            // Reading a name or a literal (`void 0`) observes nothing.
+            const inert = this.context.unwrap(unwrapped.expression);
+            if (
+                ts.isIdentifier(inert) ||
+                inert.kind === ts.SyntaxKind.ThisKeyword ||
+                ts.isLiteralExpression(inert) ||
+                inert.kind === ts.SyntaxKind.TrueKeyword ||
+                inert.kind === ts.SyntaxKind.FalseKeyword ||
+                inert.kind === ts.SyntaxKind.NullKeyword
+            )
+                return { kind: "void", cpp: "" };
             const operand = this.compileValue(unwrapped.expression);
             return {
                 kind: "void",
@@ -848,9 +864,24 @@ export class ExpressionLowerer {
             }
             const namespace = this.compileModuleNamespace(unwrapped);
             if (namespace) return namespace;
+            if (enumObjectSymbol(this.context.checker, unwrapped))
+                this.context.fail(
+                    unwrapped,
+                    `Enum object '${unwrapped.text}' is a value only as the receiver of a member or computed-key read.`,
+                );
+            if (namespaceSymbol(this.context.checker, unwrapped))
+                this.context.fail(
+                    unwrapped,
+                    `Namespace object '${unwrapped.text}' is a value only as the receiver of a member read.`,
+                );
             return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const namespaceMember = namespaceMemberName(
+                this.context.checker,
+                unwrapped,
+            );
+            if (namespaceMember) return this.compileValue(namespaceMember);
             if (
                 unwrapped.name.text === "url" &&
                 ts.isMetaProperty(unwrapped.expression) &&
@@ -1089,6 +1120,18 @@ export class ExpressionLowerer {
                     this.context.cppString(text),
                 );
             if (typeof member === "number") return numberConstantValue(member);
+            const enumLookup = compileEnumElementAccess(
+                this.context,
+                unwrapped,
+            );
+            if (enumLookup)
+                return assertedNonNull
+                    ? this.context.dataLowerer.narrowOptional(
+                          enumLookup,
+                          expression,
+                          true,
+                      )
+                    : enumLookup;
             const value = this.compileIndexedValue(
                 unwrapped,
                 expression,
@@ -3105,7 +3148,12 @@ export class ExpressionLowerer {
                 staticString: moduleAsset,
             };
         }
-        const callee = this.context.unwrap(call.expression);
+        // `N.f()` calls the namespace member `f` as its body does.
+        const callee =
+            namespaceMemberName(
+                this.context.checker,
+                this.context.unwrap(call.expression),
+            ) ?? this.context.unwrap(call.expression);
         // A microtask runs after the current task: the realm's event loop.
         // Structured cloning uses the realm's message codecs.
         const realmGlobal = this.context.libraryGlobal(callee);

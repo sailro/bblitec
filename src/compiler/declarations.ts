@@ -32,6 +32,7 @@ import {
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
+import { provenUndefinedValue } from "./undefined-values.js";
 import { ownKeysKnown } from "./object-statics.js";
 import {
     staticNumberValue,
@@ -1029,6 +1030,23 @@ export class DeclarationLowerer {
             return;
         }
         if (value.kind === "void") {
+            // `void x`, or a call whose completion is proven undefined: the
+            // effects run here and the binding is `undefined`.
+            if (
+                !value.abruptCompletion &&
+                !value.coroutineResult &&
+                !this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                ) &&
+                provenUndefinedValue(this.context, declaration.initializer)
+            ) {
+                this.context.emitDiscardedValue(value);
+                this.context.bindings.defineVariable(declaration.name, {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                });
+                return;
+            }
             this.context.fail(
                 declaration.initializer,
                 `Expression assigned to '${sourceName}' does not produce a native value.`,
