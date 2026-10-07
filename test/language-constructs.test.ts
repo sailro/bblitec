@@ -9404,3 +9404,41 @@ test("a phantom brand asserted from several object types refuses", () => {
         /Compile-time record is missing required field '__@brand/,
     );
 });
+
+check(
+    "object-assign-copies-methods-without-this",
+    `
+    type Predicate = (a: number, b: number) => boolean;
+    interface Read { surfaces(): number; isClear: Predicate }
+    type Clear = Predicate & { read(): Read };
+    function create(limit: () => number): Clear {
+        const predicateFor = (offset: number): Predicate => (a, b) => a + b + offset < limit();
+        return Object.assign(predicateFor(0), {
+            read(): Read {
+                const surfaces = limit();
+                return { surfaces: () => surfaces, isClear: predicateFor(1) };
+            },
+        });
+    }
+    const creates: Array<typeof create> = [create];
+    let bound = 5;
+    const clear = creates[0]!(() => bound);
+    const read = clear.read();
+    bound = 6;
+    if (!clear(1, 2) || clear(3, 3) || !read.isClear(1, 3) || read.surfaces() !== 5 || clear.read().surfaces() !== 6)
+        throw new Error("methods copied by Object.assign");
+    const merged = Object.assign({ base: 1 }, { twice(value: number): number { return value * 2; } });
+    if (merged.twice(merged.base) !== 2) throw new Error("method copied into a record");
+`,
+);
+
+test("Object.assign refuses a source method reading this", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const target = { value: 1 };
+            const merged = Object.assign(target, { read(): number { return this.value; } });
+            if (merged.read() !== 1) throw new Error("x");`),
+        /this source's accessors or methods are not represented/,
+    );
+});

@@ -8,6 +8,7 @@ import { callMember, type DataType, type OwnPresence } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { functionUsesDynamicThis } from "./user-functions.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -705,32 +706,54 @@ function compileObjectAssign(
     const readPairs = (
         source: ts.Expression,
         value = context.compileValue(source),
+        functions = false,
     ): Array<[string, Value]> => {
-        if (value.kind === "record") {
-            if (
-                Object.keys(value.recordMethods ?? {}).length > 0 ||
-                Object.keys(value.recordGetters ?? {}).length > 0
-            ) {
-                context.fail(
-                    source,
-                    "Object.assign copies plain properties; a source with methods or accessors is not represented.",
-                );
-            }
+        // A method is an own property holding its function; one reading
+        // `this` would read whichever object it is later called on. Only a
+        // target storing functions takes it.
+        const methods = Object.entries(value.recordMethods ?? {});
+        if (
+            value.kind === "record" &&
+            (Object.keys(value.recordGetters ?? {}).length > 0 ||
+                methods.some(
+                    ([, method]) =>
+                        !functions ||
+                        (!ts.isIdentifier(method) &&
+                            functionUsesDynamicThis(method)),
+                ))
+        ) {
+            context.fail(
+                source,
+                "Object.assign copies plain properties, and methods without `this` into a target storing functions; this source's accessors or methods are not represented.",
+            );
         }
-        return (
+        const pairs =
             fixedOwnEntries(context, value, source) ??
             context.fail(
                 source,
                 "Object.assign sources are compile-time records, object literals or structs.",
-            )
-        );
+            );
+        return value.kind === "record"
+            ? [
+                  ...pairs,
+                  ...methods.map(([name, method]): [string, Value] => [
+                      name,
+                      {
+                          kind: "callback",
+                          cpp: "",
+                          callbackDeclaration: method,
+                          callbackRecordOwner: value,
+                      },
+                  ]),
+              ]
+            : pairs;
     };
     // An existing target keeps what it receives, as a field store does.
     const sourcePairs = (
         source: ts.Expression,
         value?: Value,
     ): Array<[string, Value]> => {
-        const pairs = readPairs(source, value);
+        const pairs = readPairs(source, value, true);
         if (!fresh)
             for (const [, value] of pairs)
                 context.refuseBorrowedPlatformEventEscape(
