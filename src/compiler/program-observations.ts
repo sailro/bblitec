@@ -2,7 +2,7 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
 import { yieldsNewArray } from "./fresh-records.js";
-import { declarationOrigin, libraryGlobal } from "./symbols.js";
+import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -300,7 +300,7 @@ function observe(program: ts.Program): ProgramObservations {
             const own = mutableElement(typeOf(node));
             const contextual = own && checker.getContextualType(node);
             const symbol = ts.isIdentifier(node)
-                ? checker.getSymbolAtLocation(node)
+                ? declaredSymbol(checker, node)
                 : undefined;
             if (own && symbol) {
                 const elements = arrayLocalElements.get(symbol);
