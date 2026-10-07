@@ -135,6 +135,13 @@ interface DataKinds {
     number: {
         kind: "number";
     };
+    /** An ECMAScript Symbol: a unique identity with a description. */
+    symbol: { kind: "symbol" };
+    /** An arbitrary-precision ECMAScript BigInt. */
+    bigint: { kind: "bigint" };
+    /** BigInt64Array and BigUint64Array: 64-bit elements read as BigInts. */
+    i64array: { kind: "i64array" };
+    u64array: { kind: "u64array" };
     "weak-key": { kind: "weak-key" };
     boolean: {
         kind: "boolean";

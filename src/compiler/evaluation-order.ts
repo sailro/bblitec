@@ -1457,9 +1457,14 @@ export function readScalarOperand(
                 ? "std::string"
                 : value.kind === "data" &&
                     value.dataType &&
-                    ["number", "boolean", "string", "enum"].includes(
-                        value.dataType.kind,
-                    )
+                    [
+                        "number",
+                        "boolean",
+                        "string",
+                        "enum",
+                        "bigint",
+                        "symbol",
+                    ].includes(value.dataType.kind)
                   ? context.dataTypes.cppType(value.dataType)
                   : undefined;
     if (!type) return undefined;

@@ -203,6 +203,7 @@ import {
     namespaceMemberName,
     refuseNamespaceMemberWrite,
 } from "./compiler/namespace-declarations.js";
+import { emitBigIntCompoundAssignment } from "./compiler/bigint-values.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import {
@@ -216,6 +217,7 @@ import {
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
+    symbolPropertyKey,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import {
@@ -2174,6 +2176,7 @@ class Compiler implements LoweringServices {
             this.unwrap(expression.left),
         );
         if (namespaceMember) refuseNamespaceMemberWrite(this, namespaceMember);
+        if (emitBigIntCompoundAssignment(this, expression)) return;
         if (emitWindowLocationAssignment(this.dataLowerer, expression)) return;
         this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);
@@ -3509,6 +3512,8 @@ class Compiler implements LoweringServices {
             return name.text;
         }
         if (ts.isComputedPropertyName(name)) {
+            const symbolKey = symbolPropertyKey(this.checker, name.expression);
+            if (symbolKey !== undefined) return symbolKey;
             const value = this.compileValue(name.expression);
             if (value.staticString !== undefined) return value.staticString;
             if (value.staticNumber !== undefined) {

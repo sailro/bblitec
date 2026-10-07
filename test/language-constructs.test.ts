@@ -9382,3 +9382,170 @@ test("namespace objects refuse writes and value uses", () => {
         /Namespace object 'G' is a value only as the receiver/,
     );
 });
+
+check(
+    "tagged-templates-and-string-raw",
+    `
+    function tag(strings: TemplateStringsArray, ...values: number[]): string {
+        return strings.join("|") + values.join(",");
+    }
+    const x = [1, 2];
+    if (tag\`a\${x[0]!}b\${x[1]!}c\` !== "a|b|c1,2") throw new Error("tag call");
+    const order: string[] = [];
+    function note(label: string, value: number): number { order.push(label); return value; }
+    function pair(strings: TemplateStringsArray, first: number, second: number): number {
+        order.push("call");
+        return strings.length * 100 + first * 10 + second;
+    }
+    if (pair\`<\${note("first", 1)}|\${note("second", 2)}>\` !== 312) throw new Error("fixed parameters");
+    if (order.join(",") !== "first,second,call") throw new Error("substitution order");
+    const seen: TemplateStringsArray[] = [];
+    function keep(strings: TemplateStringsArray): number {
+        seen.push(strings);
+        return strings.length;
+    }
+    for (let i = 0; i < 2; i++) keep\`x\${i}y\`;
+    keep\`x\${0}y\`;
+    if (seen[0] !== seen[1] || seen[0] === seen[2]) throw new Error("site identity");
+    if (seen[0]!.raw[0] !== "x" || seen[0]!.raw !== seen[1]!.raw) throw new Error("raw identity");
+    function rawTag(strings: TemplateStringsArray): string { return strings.raw.join("/") + strings.join("/"); }
+    if (rawTag\`a\\n\${1}b\` !== "a\\\\n/ba\\n/b") throw new Error("raw and cooked");
+    const v = String.raw\`a\\nb\${x[0]!}\`;
+    if (v.length !== 5 || v !== "a\\\\nb1") throw new Error("String.raw");
+`,
+);
+
+test("tagged templates refuse undefined cooked strings and method tags", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function tag(s: TemplateStringsArray): number { return s.length; } const v = tag`\\unicode`; export {};",
+            ),
+        /A template escape without a cooked value/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "const o = { tag(s: TemplateStringsArray): string { return s[0]!; } }; const v = o.tag`x`; export {};",
+            ),
+        /A template tag is a function named by an identifier/,
+    );
+});
+
+check(
+    "symbol-values-and-symbol-keyed-brands",
+    `
+    const s = Symbol("k");
+    const t = Symbol("k");
+    if (s.description !== "k" || s === t || typeof s !== "symbol") throw new Error("identity");
+    const alias = s;
+    if (alias !== s || !s) throw new Error("alias");
+    if (s.toString() !== "Symbol(k)" || String(t) !== "Symbol(k)") throw new Error("text");
+    const anonymous = Symbol();
+    if (anonymous.description !== undefined || anonymous.toString() !== "Symbol()") throw new Error("anonymous");
+    const registered = Symbol.for("app");
+    if (registered !== Symbol.for("app") || Symbol.keyFor(registered) !== "app" || Symbol.keyFor(s) !== undefined)
+        throw new Error("registry");
+    const symbols: symbol[] = [s, t];
+    if (symbols.indexOf(t) !== 1 || !symbols.includes(s)) throw new Error("search");
+    const brand: unique symbol = Symbol("occluder");
+    interface Occluders {
+        readonly [brand]: true;
+        readonly clips: readonly number[];
+        readonly key: string;
+    }
+    function make(clips: readonly number[]): Occluders {
+        const copy = clips.map((clip) => clip * 2);
+        return Object.freeze({ [brand]: true as const, clips: Object.freeze(copy), key: copy.join(",") });
+    }
+    const made = make([1, 2]);
+    if (made.key !== "2,4" || made.clips.length !== 2 || made[brand] !== true) throw new Error("brand fields");
+    if (Object.keys(made).join(",") !== "clips,key" || JSON.stringify(made) !== '{"clips":[2,4],"key":"2,4"}')
+        throw new Error("symbol keys are not string keys");
+`,
+);
+
+test("a symbol refuses implicit string conversion", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'const s = Symbol("x"); const t = `${s}`; export {};',
+            ),
+        /A symbol converts to text only through String\(symbol\)/,
+    );
+});
+
+check(
+    "bigint-values-exact-arithmetic",
+    `
+    const b = 10n;
+    if (b * 2n !== 20n || typeof b !== "bigint") throw new Error("literal");
+    const huge = 2n ** 100n;
+    if (huge.toString() !== "1267650600228229401496703205376" || huge.toString(16) !== "10000000000000000000000000")
+        throw new Error("power");
+    if (huge / 3n !== 422550200076076467165567735125n || huge % 7n !== 2n) throw new Error("long division");
+    let counter = 5n;
+    counter += 3n;
+    counter++;
+    counter *= -2n;
+    --counter;
+    if (counter !== -19n) throw new Error("compound and update");
+    if (-7n / 2n !== -3n || -7n % 2n !== -1n) throw new Error("truncating division");
+    if (-5n >> 1n !== -3n || 1n << 70n !== 1180591620717411303424n || 8n >> -2n !== 32n) throw new Error("shift");
+    if ((-6n & 3n) !== 2n || ~0n !== -1n || (5n ^ 3n) !== 6n || (-4n | 1n) !== -3n) throw new Error("bitwise");
+    if (BigInt(42) !== 42n || BigInt("0x10") !== 16n || BigInt(" -12 ") !== -12n || BigInt(true) !== 1n) throw new Error("conversion");
+    if (Number(huge) !== 2 ** 100 || Number(2n ** 53n + 1n) !== 2 ** 53 || String(-12n) !== "-12" || \`\${b}!\` !== "10!")
+        throw new Error("text and number");
+    if (BigInt.asIntN(8, 255n) !== -1n || BigInt.asUintN(8, -1n) !== 255n || BigInt.asIntN(64, 2n ** 63n) !== -(2n ** 63n))
+        throw new Error("wrap");
+    if (!(1n < 2) || !(3n > 2.5) || 2n < 1.5 || 2n >= Infinity || !(2n <= 2)) throw new Error("mixed comparison");
+    const order: string[] = [];
+    function step(label: string, value: bigint): bigint { order.push(label); return value; }
+    if (step("a", 2n) - step("b", 3n) !== -1n || order.join("") !== "ab") throw new Error("operand order");
+    const errors: string[] = [];
+    const zero = [0n][0]!;
+    try { if (1n / zero) errors.push("none"); } catch (error) { errors.push(error instanceof RangeError ? "range" : "other"); }
+    try { if (2n ** -zero - 1n) errors.push("ok"); } catch { errors.push("unexpected"); }
+    try { if (BigInt(1.5)) errors.push("none"); } catch (error) { errors.push(error instanceof RangeError ? "range" : "other"); }
+    try { if (BigInt("1.5")) errors.push("none"); } catch (error) { errors.push(error instanceof SyntaxError ? "syntax" : "other"); }
+    if (errors.join(",") !== "range,range,syntax") throw new Error("errors " + errors.join(","));
+    if (zero || !huge) throw new Error("truthiness");
+    const list: bigint[] = [1n, 2n, 3n];
+    if (list.indexOf(2n) !== 1 || !list.includes(3n)) throw new Error("search");
+`,
+);
+
+test("BigInt operators refuse Number operands and unrepresented conversions", () => {
+    for (const [source, message] of [
+        [
+            "const x = [1n][0]!; const y = x + (1 as unknown as bigint); export {};",
+            /A BigInt operator's operands are both BigInts/,
+        ],
+        [
+            "const x = [1n][0]!; const s = JSON.stringify({ x }); export {};",
+            /JSON\.stringify does not serialize a 'bigint' value/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "bigint-typed-arrays",
+    `
+    const a = new BigInt64Array(2);
+    if (a.length !== 2 || a[0] !== 0n || a.byteLength !== 16) throw new Error("length");
+    a[0] = -5n;
+    a[1] = 2n ** 63n;
+    if (a[0] !== -5n || a[1] !== -(2n ** 63n)) throw new Error("signed wrap");
+    a[0] += 7n;
+    if (a[0] !== 2n) throw new Error("compound element");
+    const u = new BigUint64Array([1n, -1n]);
+    if (u[1] !== 2n ** 64n - 1n) throw new Error("unsigned wrap");
+    const view = new BigUint64Array(a.buffer, 8, 1);
+    if (view[0] !== 2n ** 63n || view.byteOffset !== 8) throw new Error("buffer view");
+    view[0] = 1n;
+    if (a[1] !== 1n) throw new Error("shared bytes");
+    const copy = new BigInt64Array(u);
+    if (copy[1] !== -1n || copy.buffer === u.buffer) throw new Error("copy");
+`,
+);

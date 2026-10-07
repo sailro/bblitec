@@ -71,6 +71,10 @@ import {
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { emitNamespaceDeclaration } from "./namespace-declarations.js";
+import {
+    compileBigIntUpdate,
+    emitBigIntCompoundAssignment,
+} from "./bigint-values.js";
 import { isNullishLiteral } from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
 import {
@@ -194,6 +198,8 @@ interface StatementLoweringContext extends Pick<
     | "decreaseIndent"
     | "allocateBlockPrefix"
     | "emitStatement"
+    | "evaluationOrder"
+    | "dataValue"
     | "fail"
 > {}
 
@@ -4602,6 +4608,7 @@ export class StatementLowerer {
             ts.isBinaryExpression(unwrapped) &&
             assignmentOperator !== undefined
         ) {
+            if (emitBigIntCompoundAssignment(context, unwrapped)) return;
             if (ts.isIdentifier(unwrapped.left)) {
                 const target = context.bindings.lookup(unwrapped.left);
                 const operator = assignmentOperator;
@@ -4757,6 +4764,11 @@ export class StatementLowerer {
             return;
         }
         if (isUpdateExpression(unwrapped)) {
+            const bigint = compileBigIntUpdate(context, unwrapped);
+            if (bigint) {
+                context.emitDiscardedValue(bigint);
+                return;
+            }
             if (ts.isIdentifier(unwrapped.operand)) {
                 const target = context.bindings.lookup(unwrapped.operand);
                 context.expectKind(target, "number", unwrapped.operand);

@@ -76,8 +76,10 @@ import {
     declaredInDefaultLibrary,
     declaredInDomLibrary,
     declaredSymbol,
+    isSymbolPropertyKey,
     libraryGlobal,
     resolvedSymbol,
+    symbolFieldName,
 } from "./symbols.js";
 import {
     absentValueKind,
@@ -535,6 +537,8 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "number-format"
         | "plural-rules"
         | "list-format"
+        | "i64array"
+        | "u64array"
     ),
 ])[] = [
     ["Storage", "dom", "storage"],
@@ -551,6 +555,8 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["NumberFormat", "default", "number-format"],
     ["PluralRules", "default", "plural-rules"],
     ["ListFormat", "default", "list-format"],
+    ["BigInt64Array", "default", "i64array"],
+    ["BigUint64Array", "default", "u64array"],
 ];
 
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
@@ -1988,6 +1994,10 @@ export class DataTypeRegistry {
         ) {
             return { kind: "string" };
         }
+        if ((type.flags & ts.TypeFlags.ESSymbolLike) !== 0)
+            return { kind: "symbol" };
+        if ((type.flags & ts.TypeFlags.BigIntLike) !== 0)
+            return { kind: "bigint" };
         if ((type.flags & ts.TypeFlags.Union) !== 0) {
             const members = (type as ts.UnionType).types;
             if (
@@ -2059,6 +2069,13 @@ export class DataTypeRegistry {
                     : declaredInDefaultLibrary(type.symbol)),
         );
         if (libraryObject) return { kind: libraryObject[2] };
+        // A tagged template's frozen strings array; its `raw` array is
+        // found from its identity (`bbl::js::template_raw`).
+        if (
+            type.symbol?.name === "TemplateStringsArray" &&
+            declaredInDefaultLibrary(type.symbol)
+        )
+            return { kind: "vector", element: { kind: "string" } };
         const deferredObject =
             declaredInDomLibrary(type.symbol) &&
             DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
@@ -4311,7 +4328,9 @@ export class DataTypeRegistry {
                 );
             fields.push({
                 sourceName: name,
-                name: sanitizeIdentifier(name),
+                name: sanitizeIdentifier(
+                    isSymbolPropertyKey(name) ? symbolFieldName(name) : name,
+                ),
                 type: mapped,
                 ...(accessor ? { accessor } : {}),
                 ...(proxy ? { accessorReceiver: provisionalName } : {}),
@@ -6130,6 +6149,8 @@ export class DataTypeRegistry {
                 "    writer.begin_object();",
             );
             const fieldLines = (field: DataStructField): string[] => {
+                // JSON writes string-keyed properties only.
+                if (isSymbolPropertyKey(field.sourceName)) return [];
                 if (isUndefinedDataType(field.type))
                     return [
                         `    static_cast<void>(value.${field.name}${field.accessor ? ".get()" : ""});`,

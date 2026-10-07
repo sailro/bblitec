@@ -8,6 +8,8 @@ import {
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
+import { compileSymbolMethod } from "./symbol-values.js";
+import { compileBigIntMethod } from "./bigint-values.js";
 import {
     callbackTakesReceiver,
     mutatingArrayMethods,
@@ -494,6 +496,10 @@ export function compileDataMethodCall(
     }
     if (dynamicOwner?.dataType?.kind === "date")
         return compileDateMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "symbol")
+        return compileSymbolMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "bigint")
+        return compileBigIntMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "http-response")
         return compileHttpResponseMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "search-params")

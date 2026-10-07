@@ -7,6 +7,7 @@ import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType, OwnPresence } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
+import { isSymbolPropertyKey } from "./symbols.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import {
     compileCollectionEntries,
@@ -189,9 +190,9 @@ export function structOwnEntries(
 }
 
 /**
- * The own entries of a compile-time record or a struct, in key order;
- * undefined for another owner. A record's methods and accessors are not
- * among them.
+ * The string-keyed own entries of a compile-time record or a struct, in key
+ * order; undefined for another owner. A record's methods and accessors are
+ * not among them, nor are symbol-keyed properties.
  */
 export function ownEntries(
     context: OwnEntryContext,
@@ -199,12 +200,15 @@ export function ownEntries(
     node: ts.Node,
 ): OwnEntry[] | undefined {
     if (owner.kind === "record")
-        return Object.entries(owner.recordProperties ?? {}).map(
-            ([key, member]) =>
+        return Object.entries(owner.recordProperties ?? {})
+            .filter(([key]) => !isSymbolPropertyKey(key))
+            .map(([key, member]) =>
                 context.dataLowerer.recordMemberEntry(key, member, node),
-        );
+            );
     if (owner.kind === "data" && owner.dataType?.kind === "struct")
-        return structOwnEntries(context, owner, owner.dataType, node);
+        return structOwnEntries(context, owner, owner.dataType, node).filter(
+            (entry) => !isSymbolPropertyKey(entry.key),
+        );
     return undefined;
 }
 

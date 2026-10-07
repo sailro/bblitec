@@ -34,7 +34,7 @@ interface ConditionComparison {
 /** The one primitive type every member of `type` has, if it has one. */
 function primitiveKind(
     type: ts.Type,
-): "number" | "string" | "boolean" | undefined {
+): "number" | "string" | "boolean" | "bigint" | undefined {
     const kinds = new Set(
         (type.isUnion() ? type.types : [type]).map((member) =>
             member.flags & ts.TypeFlags.NumberLike
@@ -43,7 +43,9 @@ function primitiveKind(
                   ? "string"
                   : member.flags & ts.TypeFlags.BooleanLike
                     ? "boolean"
-                    : undefined,
+                    : member.flags & ts.TypeFlags.BigIntLike
+                      ? "bigint"
+                      : undefined,
         ),
     );
     const [kind] = kinds;
