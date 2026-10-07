@@ -5,6 +5,7 @@ import {
     type RecordObservationContext,
 } from "./record-observations.js";
 import { resolvedSymbol } from "./symbols.js";
+import { unwrapExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 
 /** Storage choices survive replay; generated type names belong to one registry. */
@@ -80,13 +81,19 @@ export function requireOneObject(
               ? "source"
               : undefined;
     const initializer = declaration.initializer;
+    // A host object already carries its identity, and a member or element
+    // read names an object its container created.
+    const read = initializer && unwrapExpression(initializer);
     if (
         !storage ||
-        !initializer ||
+        !read ||
+        value.objectIdentityCpp !== undefined ||
+        ts.isPropertyAccessExpression(read) ||
+        ts.isElementAccessExpression(read) ||
         context.dynamicBindings.has(declaration) ||
         (storage === "array"
-            ? context.bindings.tupleDeclaration(value, initializer)
-            : context.bindings.recordDeclaration(value, initializer))
+            ? context.bindings.tupleDeclaration(value, read)
+            : context.bindings.recordDeclaration(value, read))
     )
         return;
     const observed = oneObjectObservation(context, declaration);
