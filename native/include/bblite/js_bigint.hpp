@@ -421,15 +421,18 @@ private:
     [[nodiscard]] std::vector<std::uint32_t> twos_complement(std::size_t count) const {
         std::vector<std::uint32_t> limbs(count, 0);
         std::copy_n(limbs_.begin(), std::min(count, limbs_.size()), limbs.begin());
-        if (negative_) {
-            std::uint64_t carry = 1;
-            for (auto& limb : limbs) {
-                const std::uint64_t sum = std::uint64_t{static_cast<std::uint32_t>(~limb)} + carry;
-                limb = static_cast<std::uint32_t>(sum);
-                carry = sum >> 32U;
-            }
-        }
+        if (negative_)
+            negate_in_place(limbs);
         return limbs;
+    }
+    /** Two's complement negation of fixed-width limbs, modulo 2^(32 * size). */
+    static void negate_in_place(std::vector<std::uint32_t>& limbs) noexcept {
+        std::uint64_t carry = 1;
+        for (auto& limb : limbs) {
+            const std::uint64_t sum = std::uint64_t{static_cast<std::uint32_t>(~limb)} + carry;
+            limb = static_cast<std::uint32_t>(sum);
+            carry = sum >> 32U;
+        }
     }
     template <typename Operation>
     static BigInt bitwise(const BigInt& left, const BigInt& right, Operation operation) {
@@ -440,14 +443,8 @@ private:
         for (std::size_t index = 0; index < count; ++index)
             limbs[index] = operation(a[index], b[index]);
         const bool negative = (limbs.back() >> 31U) != 0;
-        if (negative) {
-            std::uint64_t carry = 1;
-            for (auto& limb : limbs) {
-                const std::uint64_t sum = std::uint64_t{static_cast<std::uint32_t>(~limb)} + carry;
-                limb = static_cast<std::uint32_t>(sum);
-                carry = sum >> 32U;
-            }
-        }
+        if (negative)
+            negate_in_place(limbs);
         return make(negative, std::move(limbs));
     }
     static int compare(const std::vector<std::uint32_t>& left,

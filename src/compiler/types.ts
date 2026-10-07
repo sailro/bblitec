@@ -3106,6 +3106,12 @@ export type Feature =
      */
     | "data:json"
     | "data:locale"
+    /** BigInt values and BigInt64/BigUint64 arrays: brings js_bigint.hpp. */
+    | "data:bigint"
+    /** Symbol values: brings js_symbol.hpp. */
+    | "data:symbol"
+    /** Tagged template string arrays: brings js_template.hpp. */
+    | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */
     | "storage:local"
     | "platform:workers"

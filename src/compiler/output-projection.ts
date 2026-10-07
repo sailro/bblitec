@@ -325,6 +325,11 @@ export const featureSources: Record<Feature, string[]> = {
     // feature brings is the parser library CMake links behind it.
     "data:json": [],
     "data:locale": ["src/pal_locale.cpp"],
+    // Header-only value families: a scene includes each header only when
+    // its lowering reaches the family.
+    "data:bigint": [],
+    "data:symbol": [],
+    "data:tagged-template": [],
     // Web Storage's platform half. `localStorage` has no Babylon
     // declaration behind it, so like the frame conductor's timers it is a
     // PAL service -- and its own translation unit, so every other
@@ -722,6 +727,15 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("data:json")
             ? "#include <bblite/js_json.hpp>\n"
+            : "") +
+        (features.includes("data:bigint")
+            ? "#include <bblite/js_bigint.hpp>\n"
+            : "") +
+        (features.includes("data:symbol")
+            ? "#include <bblite/js_symbol.hpp>\n"
+            : "") +
+        (features.includes("data:tagged-template")
+            ? "#include <bblite/js_template.hpp>\n"
             : "") +
         (features.includes("data:json") && features.includes("input:dom")
             ? "#include <bblite/pal_custom_events.hpp>\n#include <bblite/pal_synthetic_events.hpp>\n"

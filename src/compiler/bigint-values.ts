@@ -25,6 +25,7 @@ type BigIntContext = Pick<
     | "evaluationOrder"
     | "fail"
     | "libraryGlobal"
+    | "reachFeature"
     | "reachJsData"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
@@ -139,6 +140,7 @@ export function compileBigIntValue(
 ): Value | undefined {
     if (ts.isBigIntLiteral(expression)) {
         context.reachJsData();
+        context.reachFeature("data:bigint", expression);
         return context.dataValue(
             bigintLiteralCpp(context, literalValue(expression)),
             bigintType,
@@ -201,6 +203,7 @@ function compileBigIntCall(
     if (context.libraryGlobal(callee) !== "BigInt" && method === undefined)
         return undefined;
     context.reachJsData();
+    context.reachFeature("data:bigint", call);
     if (call.arguments.some(ts.isSpreadElement))
         return context.fail(
             call,
@@ -337,6 +340,7 @@ export function compileBigIntArrayNew(
     const kind = constructor ? BIGINT_ARRAY_KINDS.get(constructor) : undefined;
     if (!kind) return undefined;
     context.reachJsData();
+    context.reachFeature("data:bigint", expression);
     const type = { kind } as const;
     const cppType = context.dataTypes.cppType(type);
     const element = bigintArrayElement(kind);
@@ -383,37 +387,6 @@ export function compileBigIntArrayNew(
         element: bigintType,
     });
     return fresh(`bbl::js::bigint_array_from<${element}>(${elements})`);
-}
-
-/** `length`, `byteLength`, `byteOffset` and `buffer` of a BigInt typed array. */
-export function bigintArrayProperty(
-    lowerer: DataLowerer,
-    owner: Value,
-    property: string,
-): Value | undefined {
-    switch (property) {
-        case "length":
-            return lowerer.leafValue(
-                `static_cast<double>((${owner.cpp}).size())`,
-                { kind: "number" },
-            );
-        case "byteLength":
-            return lowerer.leafValue(
-                `static_cast<double>((${owner.cpp}).byte_length())`,
-                { kind: "number" },
-            );
-        case "byteOffset":
-            return lowerer.leafValue(
-                `static_cast<double>((${owner.cpp}).byte_offset())`,
-                { kind: "number" },
-            );
-        case "buffer":
-            return lowerer.leafValue(`(${owner.cpp}).buffer()`, {
-                kind: "arraybuffer",
-            });
-        default:
-            return undefined;
-    }
 }
 
 /**

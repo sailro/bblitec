@@ -177,6 +177,7 @@ struct DateTimeFormatOptions {
     std::optional<std::string> second;
     std::optional<bool> hour12;
     std::optional<std::string> time_zone;
+    bool operator==(const DateTimeFormatOptions&) const = default;
 };
 
 /** Which components a Date locale method requires and adds when none is given. */

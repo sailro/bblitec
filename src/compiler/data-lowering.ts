@@ -193,7 +193,6 @@ import { isTemplateStringsArray } from "./tagged-templates.js";
 import { symbolProperty } from "./symbol-values.js";
 import {
     bigintArrayElementAccess,
-    bigintArrayProperty,
     compileBigIntArrayNew,
 } from "./bigint-values.js";
 import { recordAt } from "./record-access.js";
@@ -4562,17 +4561,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   )
                 : size;
         }
-        if (dataType.kind === "i64array" || dataType.kind === "u64array")
-            return bigintArrayProperty(this, owner, property);
         if (
             dataType.kind === "vector" &&
             property === "raw" &&
             isTemplateStringsArray(this.context.checker, access.expression)
-        )
+        ) {
+            this.context.reachFeature("data:tagged-template", access);
             return this.leafValue(
                 `bbl::js::template_raw(${owner.cpp})`,
                 dataType,
             );
+        }
         if (dataType.kind === "handle") {
             // The path left the data model at a resource handle; the
             // engine's own property lowering owns everything past it.
@@ -4712,7 +4711,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             (dataType.kind === "vector" ||
                 dataType.kind === "span" ||
-                isTypedArrayType(dataType)) &&
+                isTypedArrayType(dataType) ||
+                dataType.kind === "i64array" ||
+                dataType.kind === "u64array") &&
             property === "length"
         ) {
             this.context.reachJsData();
@@ -4753,6 +4754,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (
             dataType.kind === "u8array" ||
+            dataType.kind === "i64array" ||
+            dataType.kind === "u64array" ||
             dataType.kind === "dataview" ||
             dataType.kind === "bufferview"
         ) {

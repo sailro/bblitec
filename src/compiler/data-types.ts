@@ -488,6 +488,12 @@ interface DataTableDefinition {
 }
 
 const numberType: DataType = { kind: "number" };
+/** The kinds whose storage is a BigInt (js_bigint.hpp). */
+const BIGINT_KINDS: readonly DataType["kind"][] = [
+    "bigint",
+    "i64array",
+    "u64array",
+];
 const booleanType: DataType = { kind: "boolean" };
 
 /**
@@ -960,6 +966,8 @@ export class DataTypeRegistry {
     @journaled private accessor emittedDeferredPlatformType = false;
     @journaled private accessor emittedWindowType = false;
     @journaled private accessor emittedResponseType = false;
+    @journaled private accessor emittedBigIntType = false;
+    @journaled private accessor emittedSymbolType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
     private readonly tableNames = new EmissionSet<string>();
     /**
@@ -7296,6 +7304,8 @@ export class DataTypeRegistry {
         if (["file", "blob", "file-list"].includes(dataType.kind))
             this.emittedFileType = true;
         if (dataType.kind === "json") this.emittedJsonType = true;
+        if (BIGINT_KINDS.includes(dataType.kind)) this.emittedBigIntType = true;
+        if (dataType.kind === "symbol") this.emittedSymbolType = true;
         if (dataType.kind === "http-response") this.emittedResponseType = true;
         if (dataType.kind === "deferred-platform-object")
             this.emittedDeferredPlatformType = true;
@@ -7332,6 +7342,15 @@ export class DataTypeRegistry {
     /** JSON storage can occur in a defaulted field with no JSON expression. */
     public usesJsonStorage(): boolean {
         return this.emittedJsonType || this.usesNamedKind("json");
+    }
+
+    /** BigInt and Symbol storage, like JSON's, can occur with no expression of the family. */
+    public usesBigIntStorage(): boolean {
+        return this.emittedBigIntType || this.usesNamedKind(BIGINT_KINDS);
+    }
+
+    public usesSymbolStorage(): boolean {
+        return this.emittedSymbolType || this.usesNamedKind("symbol");
     }
 
     public usesFileStorage(): boolean {

@@ -1770,6 +1770,7 @@ export class ExpressionLowerer {
                 expression.tag,
                 "A template tag is a function named by an identifier.",
             );
+        this.context.reachFeature("data:tagged-template", expression);
         let accessor = this.templateSites.get(expression);
         if (!accessor) {
             const strings = (texts: readonly string[]): string =>
@@ -6381,7 +6382,7 @@ export class ExpressionLowerer {
             if (receiver.kind !== "json-null" && !receiverType)
                 return this.context.fail(
                     call,
-                    "Function.bind requires a retained native thisArg.",
+                    "Function.bind requires a represented native thisArg.",
                 );
             const receiverCpp =
                 receiver.kind === "json-null"

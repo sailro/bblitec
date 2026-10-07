@@ -12649,6 +12649,40 @@ test("BigInt operators refuse Number operands and unrepresented conversions", ()
         assert.throws(() => compileSource(source), message);
 });
 
+test("BigInt, Symbol and tagged-template headers come only with their families", () => {
+    const headers = (source: string): string[] => {
+        const cpp = compileSource(source).cpp;
+        return ["js_bigint", "js_symbol", "js_template"].filter((header) =>
+            cpp.includes(`#include <bblite/${header}.hpp>`),
+        );
+    };
+    assert.deepEqual(
+        headers(
+            "const x = [1, 2]; x.push(3); if (x.length !== 3) throw new Error(); export {};",
+        ),
+        [],
+    );
+    assert.deepEqual(
+        headers(
+            "const x = [1n][0]!; if (x + 1n !== 2n) throw new Error(); export {};",
+        ),
+        ["js_bigint"],
+    );
+    assert.deepEqual(
+        headers(
+            'const s = Symbol("k"); if (s.description !== "k") throw new Error(); export {};',
+        ),
+        ["js_symbol"],
+    );
+    assert.deepEqual(
+        headers(
+            'function tag(strings: TemplateStringsArray): string { return strings.raw.join("|"); }\n' +
+                'if (tag`a${1}b` !== "a|b") throw new Error(); export {};',
+        ),
+        ["js_template"],
+    );
+});
+
 check(
     "bigint-typed-arrays",
     `

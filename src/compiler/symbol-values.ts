@@ -20,6 +20,7 @@ type SymbolContext = Pick<
     | "emitDiscardedValue"
     | "fail"
     | "libraryGlobal"
+    | "reachFeature"
     | "reachJsData"
     | "unwrap"
 >;
@@ -67,6 +68,7 @@ export function compileSymbolCall(
     if (context.libraryGlobal(callee) !== "Symbol" && !statics)
         return undefined;
     context.reachJsData();
+    context.reachFeature("data:symbol", call);
     const [argument, ...rest] = call.arguments;
     if (rest.length > 0 || (argument && ts.isSpreadElement(argument)))
         return context.fail(call, "Symbol functions take one argument.");
