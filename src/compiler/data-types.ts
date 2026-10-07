@@ -2522,6 +2522,24 @@ export class DataTypeRegistry {
         }
     }
 
+    /**
+     * `undefined`, `null` and an empty object literal: values a parsed
+     * document holds, which have no typed storage of their own.
+     */
+    private holdsOnlyDynamicValues(type: ts.Type): boolean {
+        return (type.isUnion() ? type.types : [type]).every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
+                    0 ||
+                ((member.flags & ts.TypeFlags.Object) !== 0 &&
+                    ((member as ts.ObjectType).objectFlags &
+                        ts.ObjectFlags.ObjectLiteral) !==
+                        0 &&
+                    this.isNonNullConstraint(member)),
+        );
+    }
+
     /** `{}` or `object`: the checker's spelling of a non-null constraint, which adds no members of its own. */
     private isNonNullConstraint(type: ts.Type): boolean {
         if ((type.flags & ts.TypeFlags.NonPrimitive) !== 0) return true;
@@ -3205,7 +3223,15 @@ export class DataTypeRegistry {
                             this.fromStoredTsType(
                                 parameterType,
                                 declaration ?? node,
-                            ));
+                            ) ??
+                            // An `unknown` parameter passed `undefined`, `null`
+                            // or `{}`, values without storage of their own,
+                            // holds them as the dynamic value it can be.
+                            (override &&
+                            (declaredType.flags & ts.TypeFlags.Unknown) !== 0 &&
+                            this.holdsOnlyDynamicValues(override)
+                                ? { kind: "json" as const }
+                                : undefined));
                 if (
                     declaration &&
                     ts.isParameter(declaration) &&
@@ -6245,6 +6271,16 @@ export class DataTypeRegistry {
     }
 
     private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
+        // `readonly` restricts writes in the type system only: a read-only
+        // record is the record it wraps, one object and one representation.
+        // One asserted from an open dictionary stays that dictionary's view.
+        const readonlyTarget =
+            type.aliasSymbol?.name === "Readonly" &&
+            declaredInDefaultLibrary(type.aliasSymbol)
+                ? type.aliasTypeArguments?.[0]
+                : undefined;
+        if (readonlyTarget && !this.recordViews.has(this.structIdentity(type)))
+            return this.fromRecordType(readonlyTarget, node);
         const directRecordAlias =
             type.aliasSymbol?.name === "Record" &&
             declaredInDefaultLibrary(type.aliasSymbol);

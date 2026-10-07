@@ -7049,6 +7049,110 @@ check(
 );
 
 check(
+    "stored-unknown-parameters-take-absent-values-and-empty-objects",
+    `
+    function classify(x: unknown): string {
+        if (x === undefined) return "u";
+        if (x === null) return "n";
+        if (typeof x === "object") return "o" + Object.keys(x).length;
+        return typeof x;
+    }
+    const classifiers: Array<(x: unknown) => string> = [classify];
+    const text = classifiers[0]!(undefined) + classifiers[0]!(null) + classifiers[0]!({}) + classifiers[0]!(5) + classifiers[0]!({ a: 1 });
+    if (text !== "uno0numbero1") throw new Error("absent values and empty objects " + text);
+    let looped = "";
+    for (let i = 0; i < 2; i++) looped += classifiers[0]!(i === 0 ? null : undefined);
+    if (looped !== "nu") throw new Error("absent union argument " + looped);
+`,
+);
+
+test("stored unknown parameters refuse a non-literal value typed {}", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'function f(x: unknown): number { return x === null ? 1 : 0; } const fs: Array<(x: unknown) => number> = [f]; function pick(flag: boolean): {} { return flag ? 1 : "a"; } const unused = fs[0]!(pick(true));',
+            ),
+        /Stored generic function instantiation requires a fully represented native signature/,
+    );
+});
+
+check(
+    "readonly-records-are-their-records",
+    `
+    const LANGS = ["en", "fr"] as const;
+    type Lang = typeof LANGS[number];
+    type Dict = Record<string, string>;
+    const EN: Dict = { hello: "hello" };
+    const FR: Dict = { hello: "bonjour" };
+    const TABLES: Record<Lang, Dict> = { en: EN, fr: FR };
+    function shipped(): Readonly<Record<Lang, Readonly<Dict>>> { return TABLES; }
+    function read(tables: Readonly<Record<Lang, Dict>>, lang: Lang, key: string): string { return tables[lang][key] ?? "?"; }
+    const view = shipped();
+    if (view.fr !== FR) throw new Error("shared dictionary");
+    FR["late"] = "tard";
+    if (view.fr["late"] !== "tard" || read(TABLES, "fr", "late") !== "tard") throw new Error("shared dictionary writes");
+    if (LANGS.map((lang) => read(view, lang, "hello")).join(",") !== "hello,bonjour") throw new Error("runtime keys");
+    const stored: Array<typeof shipped> = [shipped];
+    if (stored[0]!().fr["late"] !== "tard") throw new Error("stored function result");
+    const DELTA: Readonly<Record<"n" | "s", readonly [number, number]>> = { n: [0, -1], s: [0, 1] };
+    const steps: Array<"n" | "s"> = ["s", "n", "s"];
+    if (steps.map((d) => DELTA[d][1]).join(",") !== "1,-1,1") throw new Error("read-only table");
+`,
+);
+
+test("read-only closed-key records refuse what their copies would observe", () => {
+    const table =
+        'type Lang = "en" | "fr"; const TABLES: Record<Lang, number> = { en: 1, fr: 2 }; function shipped(): Readonly<Record<Lang, number>> { return TABLES; } const view = shipped();';
+    for (const [source, message] of [
+        [
+            `${table} TABLES.fr = 3; const unused = view.fr;`,
+            /'TABLES' was copied into another data location/,
+        ],
+        [
+            `${table} if (view !== TABLES) throw new Error("identity");`,
+            /stored by value and cannot preserve JavaScript object identity/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "dictionaries-of-one-arm-pass-as-union-dictionaries",
+    `
+    type Slots = Readonly<Record<string, string | readonly string[]>>;
+    function word(slots: Slots, name: string): string {
+        const value = slots[name];
+        if (value === undefined) return "-";
+        return typeof value === "string" ? value.toUpperCase() : value.map((part) => part.toUpperCase()).join("+");
+    }
+    function guarded(slots: Slots, name: string): string {
+        const value = slots[name];
+        try {
+            return typeof value === "string" ? value : value.map((part) => part).join("+");
+        } catch (error) {
+            return error instanceof TypeError ? "type" : "other";
+        }
+    }
+    interface Row { key: string; nouns?: Record<string, string> }
+    const rows: Row[] = [{ key: "a", nouns: { a: "potter" } }, { key: "b" }, { key: "c", nouns: { a: "x" } }];
+    const words = rows.map((row) => (row.nouns ? word(row.nouns, row.key) + guarded(row.nouns, row.key) : "none"));
+    if (words.join(",") !== "POTTERpotter,none,-type") throw new Error("one-arm dictionaries " + words.join(","));
+    const lists: Slots = { a: ["p", "q"], b: "r" };
+    if (rows.map((row) => word(lists, row.key)).join(",") !== "P+Q,R,-") throw new Error("union dictionary");
+`,
+);
+
+test("a missing primitive method refuses effectful arguments", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'let calls = 0; function next(): number { calls++; return calls; } type Slots = Readonly<Record<string, string | number[]>>; function word(slots: Slots, name: string): string { const value = slots[name]; if (value === undefined) return "-"; return typeof value === "string" ? value : value.fill(next()).length + ""; } interface Row { key: string; nouns?: Record<string, string> } const rows: Row[] = [{ key: "a", nouns: { a: "potter" } }]; const words = rows.map((row) => (row.nouns ? word(row.nouns, row.key) : "none")); if (words.join() !== "potter") throw new Error("w");',
+            ),
+        /Unsupported call target 'value.fill' on data:optional/,
+    );
+});
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }
