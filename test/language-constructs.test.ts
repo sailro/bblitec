@@ -7338,6 +7338,42 @@ check(
 `,
 );
 
+// A readonly array a conditional spread builds is the record's own array,
+// stored and serialized as the one array JavaScript keeps.
+check(
+    "conditional-spread-readonly-array-member",
+    `
+    interface HerdOptions { file: string; capacity: number; anchors?: readonly number[]; bones?: readonly number[]; shadow?: boolean }
+    interface Prototype { file: string; bone?: number }
+    function herdOptions(options: Prototype): HerdOptions {
+        return { file: options.file, capacity: 1, ...(options.bone === undefined ? {} : { bones: [options.bone, options.bone + 1] }) };
+    }
+    function cacheKey(opts: HerdOptions): string {
+        return JSON.stringify({ file: opts.file, anchors: opts.anchors ?? null, bones: opts.bones ?? null });
+    }
+    const prepared = new Map<string, number>();
+    function create(file: string, shell: { bone: number } | null, shadow: boolean): string {
+        const opts: HerdOptions = { ...herdOptions({ file, ...(shell ? { bone: shell.bone } : {}) }), shadow };
+        const key = cacheKey(opts);
+        if (!prepared.has(key)) prepared.set(key, prepared.size);
+        return key + "#" + prepared.get(key) + ":" + (opts.bones === opts.bones) + ":" + (opts.shadow === true);
+    }
+    const creates: Array<typeof create> = [create];
+    if (creates[0]!("t", { bone: 3 }, true) !== '{"file":"t","anchors":null,"bones":[3,4]}#0:true:true') throw new Error("present");
+    if (creates[0]!("t", null, false) !== '{"file":"t","anchors":null,"bones":null}#1:true:false') throw new Error("absent");
+    if (creates[0]!("t", { bone: 3 }, false) !== '{"file":"t","anchors":null,"bones":[3,4]}#0:true:false') throw new Error("cached");
+    interface Track { name: string; points?: readonly number[] }
+    function track(name: string, from: number | null): Track {
+        return { name, ...(from === null ? {} : { points: [from, from * 2] }) };
+    }
+    const tracks: Array<typeof track> = [track];
+    const t = tracks[0]!("a", 2);
+    const points = t.points;
+    if (points !== t.points || points?.length !== 2 || points[1] !== 4 || tracks[0]!("b", null).points !== undefined)
+        throw new Error("one member array");
+`,
+);
+
 check(
     "conditional-spread-own-keys",
     `
