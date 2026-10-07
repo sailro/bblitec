@@ -4686,6 +4686,242 @@ check(
 );
 
 check(
+    "callback-returned-arrays-store-at-the-collection-element-type",
+    `
+    interface Desired { key: string; matrix: Float32Array }
+    interface State extends Desired { visibility: number; target: 0 | 1; pending: Desired | null; active: boolean }
+    const order: string[] = [];
+    const groups = 2 + Math.trunc(Math.random());
+    const states: State[][] = Array.from({ length: groups }, (_, group) => {
+        order.push("g" + group);
+        return Array.from({ length: 3 }, (_, slot) => {
+            order.push(group + ":" + slot);
+            return { key: "", matrix: new Float32Array(16), visibility: slot, target: 0 as const, pending: null, active: false };
+        });
+    });
+    const flat: State[][] = Array.from({ length: 2 }, () =>
+        Array.from({ length: 2 }, () => ({ key: "f", matrix: new Float32Array(4), visibility: 0, target: 0 as const, pending: null, active: false })),
+    );
+    if (order.join() !== "g0,0:0,0:1,0:2,g1,1:0,1:1,1:2") throw new Error("mapper order " + order.join());
+    if (states.length !== 2 || states[1]!.length !== 3 || states[1]![2]!.visibility !== 2) throw new Error("nested shape");
+    if (states[0]![0] === states[0]![1] || states[0] === states[1] || states[0]![0]!.matrix === states[0]![1]!.matrix) throw new Error("fresh records");
+    const parked: Desired = { key: "parked", matrix: new Float32Array(16) };
+    states[1]![2]!.pending = parked;
+    states[1]![2]!.target = 1;
+    if (states[1]![2]!.pending !== parked || states[0]![2]!.pending !== null || states[1]![1]!.target !== 0) throw new Error("nullable field");
+    if (flat[1]![1]!.key !== "f" || flat[1]![1]!.pending !== null || flat[0] === flat[1]) throw new Error("expression mappers");
+    interface Cell { key: string; pending: Desired | null; active: boolean }
+    const keys = ["x", "y"];
+    const grid: Cell[][] = keys.map((row) => keys.map((column) => ({ key: row + column, pending: null, active: row === column })));
+    const spread: Cell[][] = keys.map((row) => keys.flatMap((column) => [{ key: column + row, pending: null, active: false }]));
+    const mixed: Cell[][] = Array.from({ length: 2 }, (_, index) => keys.map((key) => ({ key: key + index, pending: null, active: true })));
+    if (grid.map((cells) => cells.map((cell) => cell.key + (cell.active ? "!" : "")).join()).join("|") !== "xx!,xy|yx,yy!") throw new Error("nested map");
+    grid[0]![1]!.pending = parked;
+    if (grid[1]![0]!.pending !== null || grid[0]![1]!.pending?.key !== "parked") throw new Error("nested map records");
+    if (spread[1]!.map((cell) => cell.key).join() !== "xy,yy" || mixed[1]![0]!.key !== "x1" || !mixed[0]![1]!.active) throw new Error("flatMap and from-map");
+`,
+);
+
+test("callback-returned arrays without a typed collection keep their refusal", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `const keys = ["x", "y"];
+                const grid = keys.map((row) => keys.map((column) => ({ key: row + column, pending: null })));
+                if (grid.length !== 2) throw new Error("grid");`,
+            ),
+        /Array\.map callback results must belong to the native data model/,
+    );
+});
+
+check(
+    "fresh-array-results-take-mutating-methods",
+    `
+    const table = { stride: 4, label: "x", offset: 1, scale: 2.5, zero: -0 };
+    const fields = Object.entries(table)
+        .filter(([name, value]) => typeof value === "number" && name !== "zero")
+        .map(([name, value]) => \`\${name}=\${value as number}\`)
+        .sort();
+    if (fields.join(";") !== "offset=1;scale=2.5;stride=4") throw new Error("entries filter map sort " + fields.join(";"));
+    const rows = [{ k: 2, id: "a" }, { k: 1, id: "b" }, { k: 2, id: "c" }, { k: 1, id: "d" }];
+    let compared = 0;
+    const byKey = rows.map((row) => ({ k: row.k, id: row.id + Math.trunc(Math.random()) })).sort((a, b) => { compared++; return a.k - b.k; });
+    if (byKey.map((row) => row.id).join() !== "b0,d0,a0,c0" || compared === 0) throw new Error("stable comparator");
+    const doubled = [3, 1, 2].map((value) => value * 2);
+    const reversed = [3, 1, 2].map((value) => value * 2).reverse();
+    if (reversed.join() !== "4,2,6" || doubled.join() !== "6,2,4") throw new Error("reverse");
+    const names = Object.keys(table).filter((name) => name.length > 5);
+    const grown = Object.keys(table).filter((name) => name.length > 5).push("extra");
+    if (grown !== 3 || names.join() !== "stride,offset") throw new Error("push " + grown + " " + names.join());
+    const weights = { b: 2, a: 0.5, c: 2.5 };
+    const numbers = Object.values(weights).sort((a, b) => b - a);
+    if (numbers.join() !== "2.5,2,0.5") throw new Error("values sort " + numbers.join());
+    // A user method named like a built-in returns the array it keeps.
+    const items = [3, 1, 2];
+    const pool = { filter(): number[] { return items; } };
+    pool.filter().sort();
+    if (items.join() !== "1,2,3") throw new Error("user method keeps its array");
+`,
+);
+
+test("module namespace entries fold computed constants and re-exports", async (t) => {
+    const directory = resolve("artifacts/namespace-entry-digest");
+    mkdirSync(directory, { recursive: true });
+    const layout = `
+        export const HEADER_INTS = 6;
+        export const HEADER_BYTES = HEADER_INTS * 4;
+        export const STRIDE = 3;
+        export const NAME = "layout";
+        export function pack(value: number): number { return value * STRIDE; }`;
+    const wider = `
+        export * from "./layout.js";
+        export const EXTRA = 7;`;
+    const mutable = `
+        export const STRIDE = 3;
+        export let counter = 1;
+        export function bump(): void { counter++; }`;
+    writeFileSync(join(directory, "layout.ts"), layout);
+    writeFileSync(join(directory, "wider.ts"), wider);
+    writeFileSync(join(directory, "mutable.ts"), mutable);
+    writeFileSync(
+        join(directory, "mutable-wider.ts"),
+        `export * from "./mutable.js"; export const EXTRA = 7;`,
+    );
+    const digest = `
+        function digest(table: Readonly<Record<string, unknown>>, excluding?: Readonly<Record<string, unknown>>): string {
+            return Object.entries(table)
+                .filter(([name, value]) => typeof value === "number" && (!excluding || excluding[name] !== value))
+                .map(([name, value]) => \`\${name}=\${value as number}\`)
+                .sort()
+                .join(";");
+        }`;
+    const entry = `
+        import * as layout from "./layout.js";
+        import * as wider from "./wider.js";
+        ${digest}
+        function parts(): string { return digest(layout) + "|" + digest(wider, layout); }
+        const stored: Array<typeof parts> = [parts];
+        if (stored[0]!() !== "HEADER_BYTES=24;HEADER_INTS=6;STRIDE=3|EXTRA=7") throw new Error("namespace digest " + stored[0]!());
+        if (layout.HEADER_BYTES !== wider.HEADER_BYTES || layout.pack(2) !== 6) throw new Error("namespace members");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    const layoutExports: Record<string, unknown> = {};
+    runInNewContext(commonJs(layout), { exports: layoutExports });
+    const widerExports: Record<string, unknown> = {};
+    runInNewContext(commonJs(wider), {
+        exports: widerExports,
+        require: () => layoutExports,
+    });
+    runInNewContext(commonJs(entry), {
+        exports: {},
+        require: (name: string) =>
+            name === "./layout.js" ? layoutExports : widerExports,
+    });
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "namespace-entry-digest", result.cpp);
+    // A live `let` export has no generation-time value to compare.
+    assert.throws(
+        () =>
+            compileSource(
+                `import * as base from "./mutable.js";
+                import * as wider from "./mutable-wider.js";
+                ${digest}
+                base.bump();
+                if (digest(wider, base) !== "EXTRA=7") throw new Error("digest");`,
+                { fileName: join(directory, "mutable-entry.ts") },
+            ),
+        /Unsupported call target 'Object\.entries\(table\)\s*\.filter'/,
+    );
+});
+
+test("imported functions read numeric tuples through nullable lanes", async (t) => {
+    const directory = resolve("artifacts/tuple-nullable-lanes");
+    mkdirSync(directory, { recursive: true });
+    const routes = `
+        export const EPSILON = 1e-4;
+        export function topsMatch(a: readonly [number, number | null, number], b: readonly [number, number | null, number]): boolean {
+            return Math.abs(a[0] - b[0]) <= EPSILON
+                && (a[1] === null || b[1] === null ? a[1] === b[1] : Math.abs(a[1] - b[1]) <= EPSILON)
+                && Math.abs(a[2] - b[2]) <= EPSILON;
+        }
+        export function clear(a: [number, number | null, number]): void { a[1] = null; }
+        export const held: Array<readonly [number, number | null, number]> = [];
+        export function keep(a: readonly [number, number | null, number]): void { held.push(a); }`;
+    writeFileSync(join(directory, "routes.ts"), routes);
+    const entry = `
+        import { topsMatch } from "./routes.js";
+        const scratch: [number, number, number] = [0, 0, 0];
+        const target: [number, number, number] = [0, 0, 0];
+        function pointAt(packed: Float32Array, index: number, out: [number, number, number]): void {
+            out[0] = packed[index * 3]!;
+            out[1] = packed[index * 3 + 1]!;
+            out[2] = packed[index * 3 + 2]!;
+        }
+        function find(packed: Float32Array, x: number, y: number, z: number): number {
+            for (let slot = 0; slot < packed.length / 3; slot++) {
+                pointAt(packed, slot, scratch);
+                target[0] = x;
+                target[1] = y;
+                target[2] = z;
+                if (topsMatch(scratch, target)) return slot;
+            }
+            return -1;
+        }
+        const finders: Array<typeof find> = [find];
+        const packed = new Float32Array([1, 2, 3, 4, 5, 6]);
+        if (finders[0]!(packed, 4, 5, 6) !== 1 || find(packed, 1, 2, 3.5) !== -1) throw new Error("tuple tops");
+        if (scratch.join() !== "4,5,6" || target[2] !== 3.5) throw new Error("scratch tuples keep their storage");
+        if (!topsMatch([5, null, 7], [5, null, 7]) || topsMatch([5, null, 7], scratch)) throw new Error("null lane");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    const exported: Record<string, unknown> = {};
+    runInNewContext(commonJs(routes), { exports: exported });
+    runInNewContext(commonJs(entry), { exports: {}, require: () => exported });
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "tuple-nullable-lanes", result.cpp);
+    // The copy into nullable lanes is the callee's only when nothing can
+    // tell it from the caller's array.
+    assert.throws(
+        () =>
+            compileSource(
+                `import { clear } from "./routes.js";
+                const lanes: [number, number, number] = [1, 2, 3];
+                function run(x: number): number { lanes[0] = x; clear(lanes); return lanes[1]; }
+                const runs: Array<typeof run> = [run];
+                if (runs[0]!(Math.random()) !== null) throw new Error("cleared");`,
+                { fileName: join(directory, "writes.ts") },
+            ),
+        /By-reference data arguments require a matching addressable local or path/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `import { keep, held } from "./routes.js";
+                const lanes: [number, number, number] = [1, 2, 3];
+                function run(x: number): number { lanes[0] = x; keep(lanes); lanes[2] = 9; return held[0]![2]; }
+                const runs: Array<typeof run> = [run];
+                if (runs[0]!(Math.random()) !== 9) throw new Error("kept");`,
+                { fileName: join(directory, "retains.ts") },
+            ),
+        /An array stored as an array of another element type is a copy/,
+    );
+});
+
+check(
     "spread-string-literal-sets",
     `
     const labels = { first: "warm", second: "cool", duplicate: "warm" } as const;

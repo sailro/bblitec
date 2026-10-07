@@ -7954,6 +7954,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             element: string,
             index: string,
         ) => void,
+        /** The element type a collecting method stores each result as. */
+        resultType?: DataType,
     ): void {
         if (call.arguments.length !== 1) {
             this.context.fail(
@@ -8130,6 +8132,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               callbackArguments,
                               call,
                               method === "forEach",
+                              resultType ? { resultType } : undefined,
                           );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
@@ -17383,12 +17386,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.isElementAccessExpression(unwrapped)
         ) {
             const known = this.context.compileValue(unwrapped);
+            // A numeric tuple shares its storage with a number array and
+            // is copied into nullable lanes only where no one can tell.
             if (
                 (isJsonValue(known) && dataType.element.kind === "json") ||
                 known.kind === "tuple" ||
                 (known.kind === "data" &&
                     known.dataType?.kind === "tuple" &&
-                    dataType.element.kind === "number") ||
+                    (dataType.element.kind === "number" ||
+                        (dataType.element.kind === "optional" &&
+                            dataType.element.inner.kind === "number"))) ||
                 (known.kind === "data" &&
                     known.dataType?.kind === "span" &&
                     dataTypesEqual(known.dataType.element, dataType.element))

@@ -5288,7 +5288,12 @@ export class UserFunctionLowerer {
                 }
                 const specialized = context.probeEmission(
                     () =>
-                        this.lowerStaticReturnPath(context, ir, discardReturn),
+                        this.lowerStaticReturnPath(
+                            context,
+                            ir,
+                            discardReturn,
+                            body?.resultType,
+                        ),
                     (value) => value !== undefined,
                 );
                 if (specialized) return specialized;
@@ -5353,7 +5358,12 @@ export class UserFunctionLowerer {
                 context.emitExpressionAsStatement(ir.returnExpression);
                 return { kind: "void", cpp: "" };
             }
-            return this.lowerReturnedValue(context, ir, ir.returnExpression);
+            return this.lowerReturnedValue(
+                context,
+                ir,
+                ir.returnExpression,
+                body?.resultType,
+            );
         } finally {
             context.bindings.popScope();
             if (site) this.activeCallSites.delete(callNode);
@@ -5522,6 +5532,7 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         ir: UserFunctionIr,
         discardReturn: boolean,
+        sinkResult: DataType | undefined,
     ): Value | undefined {
         type Outcome =
             | { kind: "returned"; value: Value }
@@ -5544,6 +5555,7 @@ export class UserFunctionLowerer {
                             context,
                             ir,
                             statement.expression,
+                            sinkResult,
                         ),
                     };
                 }
@@ -5586,10 +5598,36 @@ export class UserFunctionLowerer {
         return outcome.kind === "returned" ? outcome.value : undefined;
     }
 
+    /**
+     * A callback returning `Array.from(...)`, `.map(...)` or `.flatMap(...)`
+     * whose own array type has no native representation (a record literal
+     * with a `null` field infers `pending: null`) builds the array at the
+     * element type its invoking collection stores, as a spread does.
+     */
+    private sinkTypedArray(
+        context: UserFunctionContext,
+        expression: ts.Expression,
+        sinkResult: DataType | undefined,
+    ): Value | undefined {
+        const source = context.unwrap(expression);
+        if (
+            sinkResult?.kind !== "vector" ||
+            !ts.isCallExpression(source) ||
+            !ts.isPropertyAccessExpression(source.expression)
+        )
+            return undefined;
+        const own = context.dataLowerer.dataTypeAt(source);
+        if (context.dataTypes.returnsArray(own)) return undefined;
+        return ["map", "flatMap"].includes(source.expression.name.text)
+            ? context.dataLowerer.compileDataMethodCall(source, sinkResult)
+            : context.dataLowerer.compileArrayFrom(source, sinkResult);
+    }
+
     private lowerReturnedValue(
         context: UserFunctionContext,
         ir: UserFunctionIr,
         expression: ts.Expression,
+        sinkResult?: DataType,
     ): Value {
         // Mutable arrays in returned records retain their declared storage,
         // including empty arrays and tuple fields written through aliases.
@@ -5617,7 +5655,10 @@ export class UserFunctionLowerer {
             ts.isCallExpression(source)
                 ? context.dataLowerer.compileArrayFrom(source, ownedResult)
                 : undefined;
-        let returned = mappedArray ?? context.compileValue(expression);
+        let returned =
+            mappedArray ??
+            this.sinkTypedArray(context, expression, sinkResult) ??
+            context.compileValue(expression);
         // An async function's promise settles as its declared result: a
         // record returned as another record type is stored as that type.
         const settled =
