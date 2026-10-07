@@ -58,10 +58,15 @@ import {
     type RecordObservationContext,
 } from "./record-observations.js";
 import {
+    instantiatedRecord,
     isPlainRecord,
+    isRecordUnion,
     layoutsCompatible,
     recordIdentity,
+    type InstantiatedRecord,
     type RecordComponent,
+    type RecordComponentKey,
+    type RecordJoin,
 } from "./record-components.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
@@ -846,6 +851,24 @@ function fieldPresence(
     };
 }
 
+/** The storage a field holds its values in: its present type, literal tags as strings. */
+function fieldStorage(type: DataType): DataType {
+    return type.kind === "optional"
+        ? fieldStorage(type.inner)
+        : type.kind === "enum"
+          ? { kind: "string" }
+          : type;
+}
+
+/** Whether field storage holds records, directly or in an array. */
+function holdsRecordStorage(type: DataType): boolean {
+    return (
+        type.kind === "struct" ||
+        ((type.kind === "vector" || type.kind === "span") &&
+            holdsRecordStorage(fieldStorage(type.element)))
+    );
+}
+
 /** One fact two shapes give: shapes that disagree leave `conflict`. */
 function mergedFact<T>(
     previous: T | undefined,
@@ -867,7 +890,19 @@ function unionPresence(
         (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
     );
     if (optional.every((flag) => !flag)) return "own";
-    if (!optional.every(Boolean)) return "ambiguous";
+    // A required property no empty value holds fills its slot, and an
+    // optional one holding undefined is absent: the slot alone says whether
+    // the key is own. An optional undefined-only property keeps its own
+    // presence, which no slot of the required one's storage holds.
+    if (
+        optional.some((flag) => !flag) &&
+        !optional.every((flag, index) =>
+            flag
+                ? presentMembers(types[index]!).length > 0
+                : valueAbsence([types[index]!]) === undefined,
+        )
+    )
+        return "ambiguous";
     return storedPresence(
         mapped,
         types.some((type) => nullability(type).null),
@@ -1291,10 +1326,14 @@ export class DataTypeRegistry {
      * record joins into one object, by record identity
      * (`record-components.ts`).
      */
-    private recordComponents: ReadonlyMap<
-        ts.Symbol | ts.Type,
-        RecordComponent
-    > = new Map();
+    private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
+        new Map();
+    /**
+     * @unjournaled Set once before lowering: the joins earlier replays
+     * demanded, by source type.
+     */
+    private demandedJoins: ReadonlyMap<ts.Type, readonly RecordJoin[]> =
+        new Map();
     /** Union layouts being resolved, so a member mapped through one maps once. */
     private readonly resolvingLayouts = new EmissionSet<ts.Type>();
 
@@ -1304,15 +1343,23 @@ export class DataTypeRegistry {
      * slots, the joins lowering met).
      */
     public prepareRecordComponents(
-        components: ReadonlyMap<ts.Symbol | ts.Type, RecordComponent>,
+        components: ReadonlyMap<RecordComponentKey, RecordComponent>,
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         this.recordComponents = components;
-        for (const demand of demands)
+        const joins = new Map<ts.Type, RecordJoin[]>();
+        for (const demand of demands) {
             if (demand.proxy)
                 this.withRecordDemand(demand, () =>
                     this.proxyRecords.add(this.structIdentity(demand.type)),
                 );
+            for (const join of demand.joins ?? [])
+                joins.set(join.source, [
+                    ...(joins.get(join.source) ?? []),
+                    join,
+                ]);
+        }
+        this.demandedJoins = joins;
     }
 
     /** Whether two record types already share one record component. */
@@ -1338,11 +1385,103 @@ export class DataTypeRegistry {
         );
     }
 
-    /** The component a record type's records share their layout with. */
+    /**
+     * The component a record type's records share their layout with; a
+     * generic record type's under the instantiation in force.
+     */
     private recordComponentOf(type: ts.Type): RecordComponent | undefined {
-        return this.recordComponents.size
-            ? this.recordComponents.get(recordIdentity(this.checker, type))
+        if (!this.recordComponents.size) return undefined;
+        const instantiation = this.instantiatedRecordOf(type);
+        return this.recordComponents.get(
+            instantiation ?? recordIdentity(this.checker, type),
+        );
+    }
+
+    /**
+     * A generic record type naming type parameters the instantiations in
+     * force substitute, as that one instantiation: its generic interface,
+     * class or alias with each argument resolved (a generic argument as its
+     * own instantiation). Undefined for a type no instantiation reaches,
+     * and for one an argument of which does not resolve.
+     */
+    private instantiatedRecordOf(
+        type: ts.Type,
+    ): InstantiatedRecord | undefined {
+        if (!this.mentionsSubstitution(type)) return undefined;
+        const object = type as ts.ObjectType;
+        const [generic, arguments_] =
+            type.aliasSymbol && type.aliasTypeArguments?.length
+                ? [type.aliasSymbol, type.aliasTypeArguments]
+                : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
+                  ? [
+                        (type as ts.TypeReference).target,
+                        this.checker.getTypeArguments(type as ts.TypeReference),
+                    ]
+                  : [undefined, []];
+        if (!generic) return undefined;
+        const resolved = arguments_.map((argument) => {
+            const concrete = this.resolveTypeParameter(argument);
+            return this.mentionsSubstitution(concrete)
+                ? this.instantiatedRecordOf(concrete)
+                : concrete;
+        });
+        return resolved.every((argument) => argument !== undefined)
+            ? instantiatedRecord(generic, resolved)
             : undefined;
+    }
+
+    /**
+     * @unjournaled A pure function of the checked program and of the
+     * components fixed before lowering: each component's `layoutUnion`
+     * answer, by component key.
+     */
+    private readonly unionLayouts = new Map<string, ts.UnionType | null>();
+
+    /**
+     * The record union whose own layout a record type's component takes:
+     * its one union, where that layout stores a field of every name the
+     * component's shapes declare -- every arm's fields when literal tags
+     * tell the arms apart (`unionArmTags`), else those every arm declares.
+     * Otherwise the component's layout is the union of its shapes' fields
+     * (`layoutProperties`), the unions' arms included.
+     */
+    private layoutUnion(
+        type: ts.Type,
+        node: ts.Node,
+    ): ts.UnionType | undefined {
+        const component = this.recordComponentOf(type);
+        if (component?.unions.length !== 1) return undefined;
+        let layout = this.unionLayouts.get(component.key);
+        if (layout === undefined) {
+            const union = component.unions[0]!;
+            const arms = union.types.map((arm) =>
+                this.checker.getPropertiesOfType(arm),
+            );
+            const tagged = this.unionArmTags(union, node) !== undefined;
+            const held = new Set(
+                arms
+                    .flat()
+                    .filter(
+                        ({ name }) =>
+                            tagged ||
+                            arms.every((properties) =>
+                                properties.some(
+                                    (property) => property.name === name,
+                                ),
+                            ),
+                    )
+                    .map(({ name }) => name),
+            );
+            layout = component.shapes.every((shape) =>
+                this.checker
+                    .getPropertiesOfType(shape)
+                    .every(({ name }) => held.has(name)),
+            )
+                ? union
+                : null;
+            this.unionLayouts.set(component.key, layout);
+        }
+        return layout ?? undefined;
     }
 
     /** A proxy and its target retain one field layout but distinct object identities. */
@@ -1605,7 +1744,9 @@ export class DataTypeRegistry {
     /** Resolve ownership demands before any earlier initializer or alias is emitted. */
     public predeclareOwnedRecord(demand: NativeRecordStorageDemand): void {
         this.withRecordDemand(demand, () => {
-            const type = this.fromTsType(demand.type, demand.node);
+            const type = this.withClassDemand(demand.stored === true, () =>
+                this.fromTsType(demand.type, demand.node),
+            );
             if (type?.kind !== "struct")
                 this.fail(
                     demand.node,
@@ -1615,6 +1756,7 @@ export class DataTypeRegistry {
         });
     }
 
+    /** Map in the generic frames and storage mode a record was demanded in. */
     private withRecordDemand<T>(
         demand: NativeRecordStorageDemand,
         work: () => T,
@@ -1627,7 +1769,10 @@ export class DataTypeRegistry {
             }
             return work();
         };
-        return apply(0);
+        return this.withDynamicJsonTypes(
+            demand.dynamicJsonStorage === true,
+            () => apply(0),
+        );
     }
 
     /** Map a checker type and retain its source for a later ownership demand. */
@@ -1637,7 +1782,7 @@ export class DataTypeRegistry {
             (type.flags & RECORD_TYPE_FLAGS) !== 0
         ) {
             // A record of a component holding a union takes the union's layout.
-            const layout = this.recordComponentOf(type)?.union;
+            const layout = this.layoutUnion(type, node);
             if (
                 layout &&
                 layout !== type &&
@@ -1666,6 +1811,10 @@ export class DataTypeRegistry {
                 frames: this.typeArgumentFrames().map(
                     (frame) => new Map(frame),
                 ),
+                ...(this.classDemanded ? { stored: true as const } : {}),
+                ...(this.dynamicJsonStorage
+                    ? { dynamicJsonStorage: true as const }
+                    : {}),
             });
         }
         return mapped;
@@ -1678,7 +1827,8 @@ export class DataTypeRegistry {
      * (`recordCopyObservation`): records read out of a shared array
      * (`sharedArray`) never are, except for a call lending a copy to a
      * callee that only reads it (`lentForCall`); a copy handed to a call as
-     * `argument` needs only the call's writes. Otherwise the two types join
+     * `argument` needs only the call's writes. The `stored` expression's own
+     * and contextual types name the two records. Otherwise the two types join
      * one record component (`record-components.ts`) through a storage
      * replay, after which both map to one struct and no conversion is left;
      * types no one layout holds (`layoutsCompatible`; a union's layout,
@@ -1694,14 +1844,29 @@ export class DataTypeRegistry {
             sharedArray = false,
             lentForCall = false,
             argument,
+            stored,
         }: {
             sharedArray?: boolean;
             lentForCall?: boolean;
             argument?: ts.Node | undefined;
+            stored?: ts.Expression | undefined;
         } = {},
     ): void {
-        const source = this.nativeRecordSources.get(sourceType.name);
-        const target = this.nativeRecordSources.get(targetType.name);
+        // The stored expression's own and contextual types name the stored
+        // records (`storedRecordSource`).
+        const expression =
+            stored ??
+            (argument && ts.isExpression(argument) ? argument : undefined);
+        const source = this.storedRecordSource(
+            sourceType,
+            expression && this.checker.getTypeAtLocation(expression),
+            expression,
+        );
+        const target = this.storedRecordSource(
+            targetType,
+            expression && this.checker.getContextualType(expression),
+            expression,
+        );
         const sourceFields = this.structFields(
             sourceType.name,
             node,
@@ -1712,7 +1877,12 @@ export class DataTypeRegistry {
             node,
             "accessors",
         );
-        const union = target?.type.isUnion() === true;
+        // A nullable record type stores the records of its present type.
+        const sourceRecord =
+            source && this.checker.getNonNullableType(source.type);
+        const targetRecord =
+            target && this.checker.getNonNullableType(target.type);
+        const union = targetRecord?.isUnion() === true;
         // A union view of a stored record always shares its layout.
         const observed =
             !source || !target
@@ -1738,52 +1908,179 @@ export class DataTypeRegistry {
                       );
         // A copy lent to a callee that only reads it lives for the call.
         if (observed === undefined || lentForCall) return;
-        const joinable = (demand: NativeRecordStorageDemand): boolean =>
-            !demand.frames.length &&
-            (isPlainRecord(this.checker, demand.type) ||
-                demand.type.isUnion()) &&
+        // A record type a generic call's instantiation does not reach is
+        // one type under every instantiation.
+        const joinable = (
+            demand: NativeRecordStorageDemand,
+            record: ts.Type,
+        ): boolean =>
+            this.joinableRecord(demand, record) &&
             !this.isClassStruct(
                 demand === source ? sourceType.name : targetType.name,
             );
+        // A generic target names the one instantiation in force, which
+        // joins the source's component alone.
+        const targetInstantiation =
+            target &&
+            targetRecord &&
+            !joinable(target, targetRecord) &&
+            (isPlainRecord(this.checker, targetRecord) ||
+                isRecordUnion(this.checker, targetRecord)) &&
+            !this.isClassStruct(targetType.name)
+                ? this.withRecordDemand(target, () =>
+                      this.instantiatedRecordOf(targetRecord),
+                  )
+                : undefined;
+        const kind: RecordJoin["kind"] = sharedArray
+            ? "element"
+            : ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+              ? "assertion"
+              : "value";
+        // A join an earlier replay demanded that left the two apart refuses.
+        const demanded =
+            sourceRecord &&
+            this.demandedJoins
+                .get(sourceRecord)
+                ?.some(
+                    (join) =>
+                        join.target === targetRecord &&
+                        join.targetInstantiation === targetInstantiation &&
+                        join.kind === kind,
+                );
         if (
             source &&
             target &&
-            joinable(source) &&
-            joinable(target) &&
-            // A union's layout holds a record stored as it; a union stored
-            // as one of its arms' types would give that arm two layouts.
-            !source.type.isUnion() &&
-            (union ||
-                layoutsCompatible(this.checker, source.type, target.type)) &&
-            !this.joined(source.type, target.type)
+            sourceRecord &&
+            targetRecord &&
+            !demanded &&
+            joinable(source, sourceRecord) &&
+            (targetInstantiation || joinable(target, targetRecord)) &&
+            !this.withRecordDemand(target, () =>
+                this.joined(sourceRecord, targetRecord),
+            )
         ) {
-            // A record a union stores keeps its fields in the union's layout.
-            if (union) this.requireUnionHolds(targetType, source.type, node);
-            throw new NativeRecordStorageRequired({
-                ...source,
-                joins: [
-                    {
-                        target: target.type,
-                        kind: sharedArray
-                            ? "element"
-                            : ts.isAsExpression(node) ||
-                                ts.isTypeAssertionExpression(node)
-                              ? "assertion"
-                              : "value",
-                    },
-                ],
-            });
+            // A record stored as a union, or a union's record stored as
+            // another record type, keeps its fields in the union's layout
+            // (or in one the union shares with it); two unions, or two
+            // records, take one layout of all their shapes.
+            const sourceUnion = sourceRecord.isUnion();
+            if (union !== sourceUnion)
+                this.requireUnionHolds(
+                    union ? targetType : sourceType,
+                    union ? sourceRecord : targetRecord,
+                    node,
+                    true,
+                );
+            if (
+                union !== sourceUnion ||
+                (targetInstantiation
+                    ? this.structLayoutsCompatible(sourceFields, targetFields)
+                    : layoutsCompatible(
+                          this.checker,
+                          sourceRecord,
+                          targetRecord,
+                      ))
+            )
+                throw new NativeRecordStorageRequired({
+                    ...source,
+                    type: sourceRecord,
+                    joins: [
+                        {
+                            source: sourceRecord,
+                            target: targetRecord,
+                            ...(targetInstantiation
+                                ? { targetInstantiation }
+                                : {}),
+                            kind,
+                        },
+                    ],
+                });
         }
-        // One object cannot take the layouts of two record unions.
-        if (source?.type.isUnion() && target && union)
-            this.fail(
-                node,
-                `A retained record has conflicting shared storage layouts: record unions '${this.checker.typeToString(source.type)}' and '${this.checker.typeToString(target.type)}' would hold one object.`,
-            );
         return this.fail(
             node,
             `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
         );
+    }
+
+    /**
+     * Whether one layout can store two structs' common fields, each in one
+     * storage (`joinedStorage`; `?` and `| undefined` aside), records in
+     * records of a component joined with them.
+     */
+    private structLayoutsCompatible(
+        left: readonly DataStructField[],
+        right: readonly DataStructField[],
+    ): boolean {
+        return right.every((field) => {
+            const held = left.find(
+                (candidate) => candidate.sourceName === field.sourceName,
+            );
+            if (!held) return true;
+            const a = fieldStorage(held.type);
+            const b = fieldStorage(field.type);
+            return (
+                (holdsRecordStorage(a) && holdsRecordStorage(b)) ||
+                this.joinedStorage(a, b) !== undefined
+            );
+        });
+    }
+
+    /**
+     * Whether a record type can join a record component: a plain record or
+     * a union of them that no generic instantiation in force reaches, so it
+     * is one type under every instantiation.
+     */
+    private joinableRecord(
+        demand: NativeRecordStorageDemand,
+        record: ts.Type,
+    ): boolean {
+        return (
+            (!demand.frames.length ||
+                !this.withRecordDemand(demand, () =>
+                    this.mentionsSubstitution(record),
+                )) &&
+            (isPlainRecord(this.checker, record) ||
+                isRecordUnion(this.checker, record))
+        );
+    }
+
+    /**
+     * The checked source of a stored struct: `actual` -- the type the
+     * stored expression has or is stored as -- when it maps to the struct
+     * and can join a component, else the registered one (the first type
+     * mapped to the struct, which records of another type with the same
+     * layout share).
+     */
+    private storedRecordSource(
+        dataType: DataType<"struct">,
+        actual: ts.Type | undefined,
+        node: ts.Expression | undefined,
+    ): NativeRecordStorageDemand | undefined {
+        const registered = this.nativeRecordSources.get(dataType.name);
+        const record = actual && this.checker.getNonNullableType(actual);
+        if (
+            !record ||
+            !node ||
+            (registered &&
+                this.checker.getNonNullableType(registered.type) === record)
+        )
+            return registered;
+        const frames = this.typeArgumentFrames().map((frame) => new Map(frame));
+        const candidate: NativeRecordStorageDemand = {
+            identity: this.structIdentity(record),
+            type: record,
+            node,
+            frames,
+            ...(this.classDemanded ? { stored: true as const } : {}),
+            ...(this.dynamicJsonStorage
+                ? { dynamicJsonStorage: true as const }
+                : {}),
+        };
+        if (!this.joinableRecord(candidate, record)) return registered;
+        const mapped = this.fromTsType(record, node);
+        return mapped?.kind === "struct" && mapped.name === dataType.name
+            ? candidate
+            : registered;
     }
 
     /**
@@ -1821,41 +2118,65 @@ export class DataTypeRegistry {
 
     /**
      * A record taking a union's layout keeps every field it declares, in
-     * storage holding its own (`joinedStorage`; `?` and `| undefined` aside).
+     * storage holding its own (`joinedStorage`; `?` and `| undefined`
+     * aside). `beforeJoin`, a field the union's layout lacks is one the
+     * joined layout adds (`layoutUnion`), and records a field holds are
+     * joined with the union's (`record-components.ts`).
      */
     private requireUnionHolds(
         union: DataType<"struct">,
         member: ts.Type,
         node: ts.Node,
+        beforeJoin = false,
     ): void {
         const fields = this.structFields(union.name, node, "accessors");
-        const storage = (type: DataType): DataType =>
-            type.kind === "optional"
-                ? storage(type.inner)
-                : type.kind === "enum"
-                  ? { kind: "string" }
-                  : type;
         for (const property of this.structProperties(member)) {
             const field = fields.find(
                 (candidate) => candidate.sourceName === property.name,
             );
+            if (!field && beforeJoin) continue;
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
+            const propertyType = this.checker.getTypeOfSymbolAtLocation(
+                property,
+                declaration ?? node,
+            );
+            // A stored function maps as a layout stores it; the joined
+            // layout decides whether one storage holds both signatures.
+            const callable = this.checker.getNonNullableType(propertyType);
+            if (callable.getCallSignatures().length > 0 && beforeJoin) continue;
+            // A property only null or undefined is the field's empty state.
+            if (
+                (field?.type.kind === "optional" ||
+                    field?.type.kind === "undefined") &&
+                presentMembers(propertyType).length === 0
+            )
+                continue;
             const own =
                 field &&
-                this.fromRecordFieldType(
-                    this.checker.getTypeOfSymbolAtLocation(
-                        property,
-                        declaration ?? node,
-                    ),
-                    declaration ?? node,
-                    property,
-                );
-            const held = field && storage(field.type);
+                (callable.getCallSignatures().length > 0
+                    ? this.fromFunctionType(callable, declaration ?? node)
+                    : this.fromRecordFieldType(
+                          propertyType,
+                          declaration ?? node,
+                          property,
+                      ));
+            const held = field && fieldStorage(field.type);
             const joined =
                 held &&
                 own &&
-                this.joinedStorage(storage(markIdentityFunctions(own)), held);
+                this.joinedStorage(
+                    fieldStorage(markIdentityFunctions(own)),
+                    held,
+                );
+            if (
+                held &&
+                own &&
+                beforeJoin &&
+                holdsRecordStorage(held) &&
+                holdsRecordStorage(fieldStorage(own))
+            )
+                continue;
             if (!held || !joined || !dataTypesEqual(joined, held))
                 this.fail(
                     node,
@@ -1886,7 +2207,9 @@ export class DataTypeRegistry {
             return;
         throw new NativeRecordStorageRequired({
             ...source,
-            joins: [{ target: target.type, kind: "spread" }],
+            joins: [
+                { source: source.type, target: target.type, kind: "spread" },
+            ],
         });
     }
 
@@ -1898,7 +2221,7 @@ export class DataTypeRegistry {
             this.checker.getTypeAtLocation(node);
         const component = this.recordComponentOf(type);
         return component
-            ? ` '${this.checker.typeToString(type)}' records share the '${this.checker.typeToString(component.union ?? component.named)}' layout, since a record converted between their types stays one object.`
+            ? ` '${this.checker.typeToString(type)}' records share the '${this.checker.typeToString(this.layoutUnion(type, node) ?? component.named)}' layout, since a record converted between their types stays one object.`
             : "";
     }
 
@@ -3360,6 +3683,10 @@ export class DataTypeRegistry {
         // selects; a common-field record would drop `buffer` and the elements.
         if (type.types.every(binaryLibraryClass))
             return this.fromMixedUnion(type, node);
+        // A record union whose component stores shapes its own layout does
+        // not hold takes the component's layout (`layoutUnion`).
+        if (this.recordComponentOf(type) && !this.layoutUnion(type, node))
+            return this.fromStructType(type, node);
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
@@ -3725,17 +4052,24 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A closed object union as one native struct: the tag is an enum and fields
-     * which exist only in one arm receive an inert default in the other arms.
-     * TypeScript's discriminant narrowing guarantees those inactive fields are
-     * never observed by valid source code.
+     * How literal tags tell a union's object arms apart: `distinguish(index,
+     * others, exclude)` gives the tag alternatives, each a conjunction of
+     * tag literals, selecting arm `index` among `others` (`exclude` names a
+     * tag not to use); undefined when a tag tells no arm apart from another.
      */
-    /** `null` when the union is tagged but an arm's field has no representation. */
-    private fromDiscriminatedObjectUnion(
+    private unionArmTags(
         type: ts.UnionType,
         node: ts.Node,
-        name: string,
-    ): DataType | undefined | null {
+    ):
+        | {
+              readonly propertiesByMember: readonly (readonly ts.Symbol[])[];
+              readonly distinguish: (
+                  index: number,
+                  others: number[],
+                  exclude?: string,
+              ) => DataStructField["presentForTags"];
+          }
+        | undefined {
         if (
             type.types.length < 2 ||
             type.types.some(
@@ -3840,7 +4174,25 @@ export class DataTypeRegistry {
             )
         )
             return undefined;
+        return { propertiesByMember, distinguish };
+    }
 
+    /**
+     * A closed object union as one native struct: the tag is an enum and fields
+     * which exist only in one arm receive an inert default in the other arms.
+     * TypeScript's discriminant narrowing guarantees those inactive fields are
+     * never observed by valid source code.
+     */
+    /** `null` when the union is tagged but an arm's field has no representation. */
+    private fromDiscriminatedObjectUnion(
+        type: ts.UnionType,
+        node: ts.Node,
+        name: string,
+    ): DataType | undefined | null {
+        const arms = this.unionArmTags(type, node);
+        if (!arms) return undefined;
+        const { propertiesByMember, distinguish } = arms;
+        const indices = type.types.map((_member, index) => index);
         const propertyNames: string[] = [];
         for (const properties of propertiesByMember) {
             for (const property of properties) {
@@ -4394,6 +4746,11 @@ export class DataTypeRegistry {
         // A generic alias inside its own body still names the same checker
         // type under different substitutions; resolve that distinction first.
         if (this.mentionsSubstitution(type)) {
+            // An instantiation a record joined is its component's struct.
+            const instantiation = this.instantiatedRecordOf(type);
+            const component =
+                instantiation && this.recordComponents.get(instantiation);
+            if (component) return component.key;
             const frames = this.typeArgumentFrames();
             const identities = this.substitutedStructIdentities.get(type) ?? [];
             const existing = identities.find((identity) =>
@@ -4527,9 +4884,9 @@ export class DataTypeRegistry {
     /**
      * The properties a record type's struct holds, each with every
      * declaration of it the struct stores: the type's own, or, for a member
-     * of a record component, the union of its members' properties in the
-     * widest member's order, a property some member lacks held absent in
-     * that member's records.
+     * of a record component, the union of its shapes' properties (its
+     * members', a record union's arms') in the widest shape's order, a
+     * property some shape lacks held absent in that shape's records.
      */
     private layoutProperties(type: ts.Type): {
         readonly shapes: number;
@@ -4538,16 +4895,7 @@ export class DataTypeRegistry {
             readonly { readonly owner: ts.Type; readonly symbol: ts.Symbol }[]
         >;
     } {
-        const component = this.recordComponentOf(type);
-        const shapes = component
-            ? [
-                  component.named,
-                  ...component.members.filter(
-                      (member) =>
-                          member !== component.named && !member.isUnion(),
-                  ),
-              ]
-            : [type];
+        const shapes = this.recordComponentOf(type)?.shapes ?? [type];
         const properties = new Map<
             string,
             { owner: ts.Type; symbol: ts.Symbol }[]
@@ -4561,6 +4909,45 @@ export class DataTypeRegistry {
         return { shapes: shapes.length, properties };
     }
 
+    /**
+     * The storage a record union stores its property `name` in, where it
+     * holds the storage of every shape declaring it (`values`): numeric
+     * tuples of several lengths in a number array, a value and null in a
+     * nullable slot. Undefined when no union of `unions` declares it in
+     * every arm or holds them all.
+     */
+    private unionFieldStorage(
+        unions: readonly ts.UnionType[],
+        name: string,
+        values: readonly { type: ts.Type; mapped: DataType | undefined }[],
+        node: ts.Node,
+    ): DataType | undefined {
+        const storage = (type: DataType): DataType =>
+            type.kind === "optional" ? storage(type.inner) : type;
+        for (const union of unions) {
+            const property = union.getProperty(name);
+            const mapped =
+                property &&
+                this.fromRecordFieldType(
+                    this.checker.getTypeOfSymbolAtLocation(property, node),
+                    node,
+                    property,
+                );
+            if (!mapped) continue;
+            const held = storage(mapped);
+            if (
+                values.every(({ type, mapped: own }) => {
+                    if (!own || own.kind === "undefined")
+                        return presentMembers(type).length === 0;
+                    const joined = this.joinedStorage(storage(own), held);
+                    return joined !== undefined && dataTypesEqual(joined, held);
+                })
+            )
+                return mapped;
+        }
+        return undefined;
+    }
+
     private fromStructTypeInner(
         type: ts.Type,
         node: ts.Node,
@@ -4570,11 +4957,6 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         if (isDomEventType(this.checker, type)) return undefined;
         const component = this.recordComponentOf(type);
-        if (component?.conflict)
-            this.fail(
-                node,
-                `A retained record has conflicting shared storage layouts: ${component.conflict} would hold one object.`,
-            );
         const layout = this.layoutProperties(type);
         if (layout.properties.size === 0) {
             return undefined;
@@ -4650,26 +5032,73 @@ export class DataTypeRegistry {
                 mapped: DataType | undefined;
                 callable: boolean;
             }): boolean => mapped !== undefined || !callable;
-            const mappedValue = values.find(storing)?.mapped;
+            // A shape declaring the property only null or undefined holds
+            // it in the empty state of the storage the others give it.
+            const nullish = ({
+                type,
+                mapped,
+            }: (typeof values)[number]): boolean =>
+                (mapped === undefined || mapped.kind === "undefined") &&
+                presentMembers(type).length === 0;
+            const valued = values.filter(
+                (value) => storing(value) && !nullish(value),
+            );
+            const empty = (value: (typeof values)[number]): boolean =>
+                valued.length > 0 && nullish(value);
+            // A required property every shape declares only null holds
+            // JSON's null; an object literal's type takes its contextual
+            // type's storage instead.
+            const onlyNull =
+                valued.length === 0 &&
+                values.length > 0 &&
+                declared.every(
+                    ({ owner }) =>
+                        ((owner.symbol?.flags ?? 0) &
+                            ts.SymbolFlags.ObjectLiteral) ===
+                        0,
+                ) &&
+                values.every(
+                    (value) =>
+                        nullish(value) &&
+                        nullability(value.type).null &&
+                        !nullability(value.type).undefined,
+                );
+            const mappedValue: DataType | undefined = onlyNull
+                ? { kind: "json" }
+                : (valued[0] ?? values.find(storing))?.mapped;
             if (!mappedValue) {
                 return undefined;
             }
             // One layout stores the property once: every member declaring it
-            // must store it one way (`joinedStorage`).
+            // must store it one way (`joinedStorage`) -- or, where they are
+            // arms of a record union the component holds, the way that
+            // union stores it (`unionFieldStorage`).
             const storage = (mapped: DataType): DataType =>
                 mapped.kind === "optional" ? mapped.inner : mapped;
             let stored: DataType = storage(mappedValue);
+            let unionField: DataType | undefined;
             for (const [index, value] of values.entries()) {
-                if (!storing(value)) continue;
+                if (!storing(value) || empty(value) || onlyNull) continue;
                 const { mapped } = value;
                 const next =
                     mapped && this.joinedStorage(stored, storage(mapped));
-                if (!next)
+                if (next) {
+                    stored = next;
+                    continue;
+                }
+                unionField = this.unionFieldStorage(
+                    component?.unions ?? [],
+                    name,
+                    values.filter(storing),
+                    node,
+                );
+                if (!unionField)
                     this.fail(
                         node,
                         `Record types '${this.checker.typeToString(declared[0]!.owner)}' and '${this.checker.typeToString(declared[index]!.owner)}' hold one object (a record of one is stored as the other), but no one layout stores their property '${name}' both ways.`,
                     );
-                stored = next;
+                stored = storage(unionField);
+                break;
             }
             // Records of a member not declaring it hold it absent.
             const absent = declared.length < layout.shapes;
@@ -4686,13 +5115,14 @@ export class DataTypeRegistry {
                 ({ mapped }) => mapped?.kind === "optional",
             )?.mapped;
             const joined: DataType =
-                declared.length === 1
+                unionField ??
+                (declared.length === 1 || onlyNull
                     ? mappedValue
                     : nullable && dataTypesEqual(storage(nullable), stored)
                       ? nullable
-                      : nullable
+                      : nullable || values.some(empty)
                         ? this.nullableType(stored)
-                        : stored;
+                        : stored);
             const declarations = declared.flatMap(
                 ({ symbol }) => symbol.declarations ?? [],
             );
@@ -4871,10 +5301,23 @@ export class DataTypeRegistry {
             if (!next) return;
             const key = `${structName}.${field.sourceName}`;
             const previous = this.fieldPresences.get(key);
+            // A shape whose field is own and never empty fills the slot a
+            // shape storing it optionally reads presence from.
+            const filled = (fact: FieldPresence | undefined): boolean =>
+                fact?.presence === "own" && fact.absence === undefined;
+            const presence =
+                (filled(previous) && next.presence === "stored") ||
+                (filled(next) && previous?.presence === "stored")
+                    ? "stored"
+                    : mergedFact(
+                          previous?.presence,
+                          next.presence,
+                          "ambiguous",
+                      );
             this.fieldPresences.set(
                 key,
                 fieldPresence(
-                    mergedFact(previous?.presence, next.presence, "ambiguous"),
+                    presence,
                     mergedFact(previous?.absence, next.absence, "either"),
                     mergedFact(
                         previous?.armPresence,

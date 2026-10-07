@@ -160,6 +160,40 @@ test("lazy modules retain activation order, live state, cycles and cached failur
     });
 });
 
+test("lazy module bindings of deployment constants hold their folded values", (t) => {
+    const directory = resolve("artifacts/dynamic-module-deployment");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "env.d.ts"),
+        `interface ImportMetaEnv { readonly VITE_ENDPOINT?: string } interface ImportMeta { readonly env: ImportMetaEnv }`,
+    );
+    writeFileSync(
+        join(directory, "base.ts"),
+        `/// <reference path="./env.d.ts" />
+        const BASE = import.meta.env.BASE_URL;
+        const PRODUCTION = import.meta.env.PROD;
+        export const appUrl = (path: string): string => BASE + path;
+        export const mode = (): string => (PRODUCTION ? "prod" : "dev");`,
+    );
+    const result = compileSource(
+        `/// <reference path="./env.d.ts" />
+        async function run(){
+            const base=await import("./base");
+            if(base.appUrl("x")!=="/x"||base.mode()!=="prod") throw new Error("deployment constants");
+        }
+        run().then(()=>globalThis.close());`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "dynamic-module-deployment-native", result.cpp, {
+        defines: ["BBLITE_WORKERS=1"],
+    });
+});
+
 test("namespace exports refuse writes while their object contents stay mutable", (t) => {
     const directory = resolve("artifacts/dynamic-module-write-refusals");
     mkdirSync(directory, { recursive: true });

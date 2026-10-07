@@ -467,7 +467,10 @@ function valueStruct(
                 dataType,
                 node,
                 lowerer.context,
-                { argument: recordExpression(lowerer, value, node) },
+                {
+                    argument: recordExpression(lowerer, value, node),
+                    stored: lowerer.convertedExpression(node),
+                },
             );
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes

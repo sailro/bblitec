@@ -7146,6 +7146,32 @@ checkInRealm(
 `,
 );
 checkInRealm(
+    "async-results-of-another-record-type-settle-as-the-declared-type",
+    `
+    interface Info { name: string; icon: string | null; tint: [number, number, number] | null }
+    const cache = new Map<string, Promise<Info>>();
+    function delay(value: number): Promise<number> { return new Promise((resolve) => setTimeout(() => resolve(value), 0)); }
+    async function readUncached(url: string): Promise<Info> {
+        const size = await delay(url.length);
+        return { name: url, icon: size > 3 ? "icon" : null, tint: size > 100 ? [1, 2, 3] : null };
+    }
+    function readInfo(url: string): Promise<Info> {
+        let p = cache.get(url);
+        if (!p) {
+            p = readUncached(url);
+            cache.set(url, p);
+        }
+        return p;
+    }
+    const first = readInfo("abcd");
+    if (first !== readInfo("abcd")) throw new Error("cached promise");
+    void first.then((info) => {
+        if (info.icon !== "icon" || info.name !== "abcd" || info.tint !== null) throw new Error("settled record");
+        globalThis.close();
+    });
+`,
+);
+checkInRealm(
     "stored-promise-then-finally",
     `
     interface Deps { spawn(x: number): Promise<boolean>; despawn(): void }
@@ -9034,6 +9060,328 @@ check(
     if ("label" in plain || "w" in plain || Object.keys(plain).join() !== "x") throw new Error("a member's own record holds the others' fields absent");
     const seen = new Set<P>([labeled]);
     if (!seen.has(weighted) || !seen.has(p)) throw new Error("keyed identity");
+`,
+);
+
+check(
+    "union-arms-keep-nested-records-of-their-own-types",
+    `
+    const archiveTypes = [{ description: "Archive", accept: { "application/zip": [".zip"] } }];
+    const plainTypes = [{ description: "Plain", accept: { "application/json": [".json"] } }];
+    const saveTypes = [...archiveTypes, ...plainTypes];
+    const openTypes = saveTypes;
+    if (saveTypes[0] !== archiveTypes[0] || openTypes[1] !== plainTypes[0]) throw new Error("spread elements keep their objects");
+    saveTypes[0]!.description = "Zip";
+    if (archiveTypes[0]!.description !== "Zip") throw new Error("write through the union");
+    const accept = saveTypes[1]!.accept;
+    if (accept !== plainTypes[0]!.accept || !("application/json" in accept) || "application/zip" in accept) throw new Error("nested record of each arm");
+    plainTypes[0]!.accept["application/json"].push(".txt");
+    if (Object.keys(saveTypes[0]!.accept).join() !== "application/zip" || Object.keys(accept).join() !== "application/json") throw new Error("nested keys");
+    if (JSON.stringify(openTypes) !== '[{"description":"Zip","accept":{"application/zip":[".zip"]}},{"description":"Plain","accept":{"application/json":[".json",".txt"]}}]') throw new Error("json " + JSON.stringify(openTypes));
+`,
+);
+
+check(
+    "records-wider-than-a-union-keep-their-fields-in-its-layout",
+    `
+    interface End { s: number; x: number; y: number; z: number }
+    type Flat = Readonly<{ x: number; z: number }>;
+    type Mark = { readonly x: number; readonly z: number };
+    const ends: End[] = [{ s: 1, x: 2, y: 3, z: 4 }];
+    const flat: Flat = { x: 5, z: 6 };
+    const mark: Mark = { x: 7, z: 8 };
+    const spots: (Flat | Mark)[] = [flat, mark];
+    spots.push(ends[0]!);
+    const seen = new Set<Flat | Mark>(spots);
+    if (!seen.has(ends[0]!) || spots[2] !== ends[0] || spots[0] !== flat) throw new Error("one object");
+    ends[0]!.x = 20;
+    if (spots[2]!.x !== 20) throw new Error("write through the wider type");
+    if (Object.keys(spots[2]!).join() !== "s,x,y,z" || JSON.stringify(spots[2]) !== '{"s":1,"x":20,"y":3,"z":4}') throw new Error("wider keys " + Object.keys(spots[2]!).join());
+    if (Object.keys(spots[0]!).join() !== "x,z" || JSON.stringify(spots[1]) !== '{"x":7,"z":8}') throw new Error("arm keys");
+    if ("s" in spots[0]! || !("s" in spots[2]!)) throw new Error("absent field");
+`,
+);
+
+check(
+    "union-records-narrowed-to-an-arm-stay-one-object",
+    `
+    interface Circle { kind: "circle"; x: number; z: number; radius: number; grow?: number }
+    interface Rect { kind: "rect"; cx: number; cz: number; half: number; grow?: number }
+    type Boundary = Circle | Rect;
+    function area(r: Rect): number { r.grow = (r.grow ?? 0) + 1; return r.half * r.half * 4; }
+    function measure(b: Boundary): number { if (b.kind === "circle") return b.radius * 3; return area(b); }
+    const shapes: Boundary[] = [{ kind: "rect", cx: 1, cz: 2, half: 3 }, { kind: "circle", x: 0, z: 0, radius: 1 }];
+    if (Object.keys(shapes[0]!).join() !== "kind,cx,cz,half" || Object.keys(shapes[1]!).join() !== "kind,x,z,radius") throw new Error("keys " + Object.keys(shapes[0]!).join());
+    if (measure(shapes[0]!) !== 36 || shapes[0]!.grow !== 1 || !("grow" in shapes[0]!) || measure(shapes[1]!) !== 3) throw new Error("write through the arm");
+    const found = shapes.find((shape): shape is Rect => shape.kind === "rect");
+    if (found === undefined || found !== shapes[0] || found.half !== 3) throw new Error("guarded find keeps the object");
+`,
+);
+
+check(
+    "conditional-arms-of-own-fields-stay-one-object",
+    `
+    interface TowerRoof { x: number; z: number; yaw: number; baseY: number; baseRadius: number }
+    type Host =
+        | { readonly kind: "cone"; readonly roof: TowerRoof; readonly radius: number }
+        | { readonly kind: "flat"; readonly x: number; readonly z: number; readonly yaw: number; readonly y: number; readonly radius: number };
+    function frameOf(host: Host) { return host.kind === "cone" ? host.roof : host; }
+    const roof: TowerRoof = { x: 1, z: 2, yaw: 0, baseY: 3, baseRadius: 4 };
+    const hosts: Host[] = [{ kind: "cone", roof, radius: 1 }, { kind: "flat", x: 5, z: 6, yaw: 0, y: 7, radius: 2 }];
+    const frames = hosts.map(frameOf);
+    if (frames[0] !== roof || frames[1] !== hosts[1]) throw new Error("selected objects");
+    roof.x = 10;
+    if (frames[0]!.x + frames[1]!.z !== 16) throw new Error("reads through the frame");
+    if (Object.keys(frames[0]!).join() !== "x,z,yaw,baseY,baseRadius" || Object.keys(frames[1]!).join() !== "kind,x,z,yaw,y,radius") throw new Error("keys");
+`,
+);
+
+check(
+    "records-of-two-unions-take-one-layout",
+    `
+    interface A { tag: "a"; v: number }
+    interface B { tag: "b"; w: number }
+    interface C { tag: "c"; v: number; w: number }
+    const a: A = { tag: "a", v: 1 };
+    const first: (A | B)[] = [a, { tag: "b", w: 2 }];
+    const second: (A | C)[] = [a, { tag: "c", v: 3, w: 4 }];
+    if (first[0] !== second[0]) throw new Error("one object in two unions");
+    const held = first[0]!;
+    if (held.tag === "a") held.v = 10;
+    const other = second[0]!;
+    if (a.v !== 10 || other.tag !== "a" || other.v !== 10) throw new Error("write through one union");
+    if (Object.keys(first[1]!).join() !== "tag,w" || JSON.stringify(second) !== '[{"tag":"a","v":10},{"tag":"c","v":3,"w":4}]') throw new Error("keys");
+`,
+);
+
+check(
+    "records-stored-as-a-generic-instantiation-stay-one-object",
+    `
+    interface Projection<State> { readonly state: State; readonly distance: number; owns: boolean }
+    interface TowerState { tower: number }
+    interface TowerProjection extends Projection<TowerState> { readonly support: number }
+    interface AdapterOptions<State> { current(): Projection<State> }
+    interface Adapter<State> { candidate(): object; projectionOf(key: object): Projection<State> | undefined }
+    function createAdapter<State>(options: AdapterOptions<State>): Adapter<State> {
+        const byCandidate = new WeakMap<object, Projection<State>>();
+        return {
+            candidate() {
+                const projection = options.current();
+                const key = { distance: projection.distance };
+                byCandidate.set(key, projection);
+                return key;
+            },
+            projectionOf(key) { return byCandidate.get(key); },
+        };
+    }
+    const towerProjection: TowerProjection = { state: { tower: 1 }, distance: 2, owns: false, support: 3 };
+    const adapter = createAdapter<TowerState>({ current: () => towerProjection });
+    const found = adapter.projectionOf(adapter.candidate());
+    if (found !== towerProjection) throw new Error("one projection");
+    found.owns = true;
+    if (!towerProjection.owns || found.state.tower !== 1) throw new Error("write through the generic view");
+    interface Peer { key: string; x: number }
+    interface Request<P> { readonly key: string; axis0: number; readonly allow0?: boolean; readonly admit?: (peer: P) => boolean }
+    interface Session<P> { resolve(request: Request<P>): number }
+    function createSession<P extends Peer>(peers: readonly P[]): Session<P> {
+        const resolveAxis = (request: Request<P>): number => {
+            let best = request.axis0;
+            for (const peer of peers) if (request.admit === undefined || request.admit(peer)) best = Math.max(best, peer.x);
+            return best;
+        };
+        return { resolve(request) { return resolveAxis(request) + (request.allow0 === false ? 0 : 1); } };
+    }
+    const session = createSession<Peer>([{ key: "a", x: 4 }, { key: "b", x: 9 }]);
+    const request = { key: "a", axis0: 2, allow0: true, admit: (peer: Peer) => peer.key === "a" };
+    if (session.resolve(request) !== 5) throw new Error("resolve");
+    request.axis0 = 7;
+    if (session.resolve(request) !== 8) throw new Error("written request");
+    interface Box<T> { value: T }
+    interface Held<S> { readonly state: S; distance: number }
+    interface Concrete extends Held<Box<number>> { readonly extra: number }
+    function keep<T>(make: () => Held<Box<T>>): Held<Box<T>>[] {
+        const kept: Held<Box<T>>[] = [];
+        const held = make();
+        kept.push(held);
+        held.distance = 3;
+        return kept;
+    }
+    const concrete: Concrete = { state: { value: 1 }, distance: 2, extra: 4 };
+    const kept = keep<number>(() => concrete);
+    if (kept[0] !== concrete || concrete.distance !== 3 || kept[0]!.state.value !== 1) throw new Error("nested instantiation");
+`,
+);
+
+check(
+    "narrowed-union-records-returned-as-another-union-stay-one-object",
+    `
+    interface Ready { state: "ready"; pickupX: number; goalX: number }
+    interface Pending { state: "pending" }
+    interface Blocked { state: "blocked" }
+    type Rendezvous = Ready | Pending | Blocked;
+    type StandPoint = { state: "ready"; x: number; z: number } | Pending | Blocked;
+    const points: StandPoint[] = [{ state: "pending" }, { state: "ready", x: 1, z: 2 }];
+    function rendezvous(point: StandPoint): Rendezvous {
+        if (point.state !== "ready") return point;
+        return { state: "ready", pickupX: point.x, goalX: point.z };
+    }
+    const seen = new Set<Rendezvous>();
+    const first = rendezvous(points[0]!);
+    const second = rendezvous(points[1]!);
+    seen.add(first);
+    if (first !== points[0] || second === points[1] || seen.size !== 1) throw new Error("selected objects");
+    if (second.state !== "ready" || second.pickupX !== 1 || Object.keys(second).join() !== "state,pickupX,goalX") throw new Error("fresh arm");
+    if (Object.keys(first).join() !== "state" || JSON.stringify(points) !== '[{"state":"pending"},{"state":"ready","x":1,"z":2}]') throw new Error("keys");
+`,
+);
+
+check(
+    "records-holding-a-field-only-undefined-share-the-other-type-layout",
+    `
+    interface Pose { pitch?: number; pivot?: readonly [number, number, number] }
+    const upright = { pitch: 0, pivot: undefined };
+    const suspended = { pitch: Math.PI / 2, pivot: [0.5, 0.5, 0] as const };
+    function orientation(kind: string): Pose { return kind === "fish" ? suspended : upright; }
+    const fish = orientation("fish");
+    const seen = new Set<Pose>([fish, orientation("x")]);
+    if (!seen.has(suspended) || !seen.has(upright) || fish.pivot?.[1] !== 0.5 || orientation("x").pivot !== undefined) throw new Error("one object per pose");
+    fish.pitch = 1;
+    if (suspended.pitch !== 1 || JSON.stringify(orientation("x")) !== '{"pitch":0}') throw new Error("write through the declared type");
+`,
+);
+
+check(
+    "union-arms-requiring-a-field-another-arm-makes-optional-enumerate-it",
+    `
+    interface Appearance { seed?: number }
+    interface Tower extends Appearance { seed: number }
+    interface House extends Appearance { label: string }
+    function keysOf(before: Tower | House, after: Tower | House): string { return [...new Set([...Object.keys(before), ...Object.keys(after)])].sort().join(); }
+    const classify: Array<typeof keysOf> = [keysOf];
+    const tower: Tower = { seed: 3 };
+    const house: House = { label: "h" };
+    const seeded: House = { label: "s", seed: 2 };
+    if (classify[0]!(tower, tower) !== "seed" || classify[0]!(house, house) !== "label" || classify[0]!(seeded, house) !== "label,seed") throw new Error("own keys");
+`,
+);
+
+test("union arms holding an undefined field another arm makes optional refuse its own-key presence", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface Tower { seed: number | undefined }
+            interface House { seed?: number; label: string }
+            function keysOf(before: Tower | House): string { return Object.keys(before).join(); }
+            const classify: Array<typeof keysOf> = [keysOf];
+            if (classify[0]!({ seed: undefined }) !== "seed") throw new Error("own undefined key");`),
+        /Own-property presence of 'seed' is not represented/,
+    );
+});
+
+check(
+    "union-records-narrowed-to-an-arm-with-methods-stay-one-object",
+    `
+    interface Step { id: number }
+    interface ReleasePlan { readonly steps: readonly Step[]; commit(): void }
+    type ReleasePreparation = ReleasePlan | { readonly state: "pending" } | { readonly state: "refused" };
+    const planOf = (preparation: ReleasePreparation): ReleasePlan | null => ("steps" in preparation ? preparation : null);
+    const roots: Array<typeof planOf> = [planOf];
+    let committed = 0;
+    const plan: ReleasePlan = { steps: [{ id: 1 }], commit() { committed++; } };
+    const preparations: ReleasePreparation[] = [plan, { state: "pending" }];
+    const found = roots[0]!(preparations[0]!);
+    if (found !== plan || roots[0]!(preparations[1]!) !== null) throw new Error("narrowed plan");
+    found.commit();
+    if (committed !== 1 || found.steps[0]!.id !== 1) throw new Error("commit");
+`,
+);
+
+check(
+    "records-holding-a-field-only-null-keep-it",
+    `
+    interface Face { polygon: readonly number[]; houseArc: readonly number[] | null }
+    interface Ring extends Face { houseArc: null }
+    interface Enclosure extends Face { houseArc: readonly number[] }
+    function ringFrom(n: number): Ring | null {
+        if (n < 0) return null;
+        const polygon = [n, n + 1];
+        if (polygon.length > 5) return null;
+        return { polygon, houseArc: null };
+    }
+    const make: Array<typeof ringFrom> = [ringFrom];
+    const yards: (Ring | Enclosure)[] = [{ polygon: [1], houseArc: [2] }];
+    const ring = make[0]!(3);
+    if (ring) yards.push(ring);
+    if (yards.length !== 2 || yards[1] !== ring || yards[1]!.houseArc !== null || make[0]!(-1) !== null) throw new Error("ring");
+    const text = JSON.stringify(ring);
+    if (!text.includes('"houseArc":null') || !text.includes('"polygon":[3,4]') || Object.keys(ring!).sort().join() !== "houseArc,polygon") throw new Error("keys " + text);
+`,
+);
+
+check(
+    "records-storing-a-function-of-a-narrower-signature-share-the-declared-layout",
+    `
+    interface Storage { readonly name: string; readonly vertex?: boolean; readonly data: (n: number) => number[] | null | undefined }
+    interface Part { readonly storage: readonly Storage[] }
+    function compose(parts: readonly Part[]): Storage[] { const flat: Storage[] = []; for (const part of parts) flat.push(...part.storage); return flat; }
+    function makePart(scale: number): Part {
+        const entry = { name: "clip", vertex: true as const, data: (n: number): number[] | null => (n > 0 ? [n * scale] : null) };
+        return { storage: [entry] };
+    }
+    const roots = [compose];
+    const parts: Part[] = [makePart(2)];
+    const flat = roots[0]!(parts);
+    const first = flat[0]!;
+    if (first.name !== "clip" || first.data(3)?.[0] !== 6 || first.data(0) != null || parts[0]!.storage[0] !== first || first.vertex !== true) throw new Error("storage");
+`,
+);
+
+check(
+    "records-stored-as-a-tagged-union-stay-one-object",
+    `
+    interface A { kind: "a"; x: number }
+    interface B { kind: "b"; y: number }
+    const a: A = { kind: "a", x: 1 };
+    const u: A | B = a;
+    if (u.kind === "a") u.x = 5;
+    if (a.x !== 5) throw new Error("one object");
+    const w = { kind: "a" as const, x: 2, extra: 3 };
+    const v: A | B = w;
+    if (v.kind === "a") v.x = 7;
+    if (w.x !== 7 || Object.keys(v).join() !== "kind,x,extra" || "y" in v) throw new Error("wider object");
+    const b: A | B = { kind: "b", y: 4 };
+    if (b.kind !== "b" || b.y !== 4 || Object.keys(b).join() !== "kind,y") throw new Error("other arm");
+`,
+);
+
+check(
+    "records-stored-in-nullable-slots-of-another-type-stay-one-object",
+    `
+    interface Wide { a: number; b: number }
+    interface Narrow { a: number }
+    const slots: (Narrow | null)[] = [null];
+    const w: Wide = { a: 1, b: 2 };
+    slots[0] = w;
+    slots[0]!.a = 5;
+    if (w.a !== 5 || slots[0] !== w) throw new Error("one object in a nullable slot");
+    let held: Narrow | undefined;
+    held = w;
+    held.a = 7;
+    if (w.a !== 7 || Object.keys(held).join() !== "a,b") throw new Error("one object in a nullable local");
+`,
+);
+
+check(
+    "union-records-narrowed-in-generic-bodies-stay-one-object",
+    `
+    interface Circle { kind: "circle"; r: number }
+    interface Square { kind: "square"; side: number }
+    type Shape = Circle | Square;
+    function grow(s: Square): void { s.side += 1; }
+    function apply<T>(items: Shape[], tag: T): T { for (const item of items) if (item.kind === "square") grow(item); return tag; }
+    const shapes: Shape[] = [{ kind: "square", side: 1 }, { kind: "circle", r: 2 }];
+    if (apply(shapes, 3) !== 3 || apply(shapes, "x") !== "x") throw new Error("tags");
+    const first = shapes[0]!;
+    if (first.kind !== "square" || first.side !== 3) throw new Error("written through the arm in a generic body");
 `,
 );
 

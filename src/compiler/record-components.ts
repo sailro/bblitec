@@ -6,19 +6,25 @@ import { declarationOrigin, type DeclarationOrigin } from "./symbols.js";
  * JavaScript keeps one object when a record of one type is stored as
  * another; where a native copy could be told apart
  * (`recordCopyObservation`), lowering joins the two types (`RecordJoin`)
- * and every type of the component maps to one struct: the union of their
- * fields, each member type holding the fields it does not declare absent,
- * `readonly` erased -- or, where a member is a record union, that union's
- * layout. A component no one layout holds refuses, naming the types.
+ * and every type of the component maps to one struct: the union of the
+ * fields of every record shape it stores (its members, a record union's
+ * arms), each shape holding the fields it does not declare absent,
+ * `readonly` erased -- or, where one record union's own layout already
+ * stores every shape, that union's layout. A component no one layout holds
+ * refuses, naming the types.
  */
 export interface RecordComponent {
     readonly key: string;
     readonly members: readonly ts.Type[];
-    /** The member whose name the layout takes: the widest. */
+    /**
+     * The record shapes the layout stores: the members that are no union
+     * and every arm of the members that are, each type once.
+     */
+    readonly shapes: readonly ts.Type[];
+    /** The shape whose name the layout takes: the widest. */
     readonly named: ts.Type;
-    readonly union?: ts.Type;
-    /** Two record unions met: no one layout holds both. */
-    readonly conflict?: string;
+    /** The members that are record unions. */
+    readonly unions: readonly ts.UnionType[];
     /**
      * Member types whose static type can be wrong about a field: storage
      * of the type may hold a record of a member lacking it, put there
@@ -50,6 +56,44 @@ export function recordIdentity(
             (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
             (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated);
     return instantiated ? type : (type.aliasSymbol ?? type.symbol ?? type);
+}
+
+/**
+ * A generic record type as one instantiation in force -- its generic
+ * declaration (a generic interface's or class's type, an alias's symbol)
+ * and the concrete arguments it takes there -- where its checker type
+ * still names the type parameters: one identity per instantiation.
+ */
+export interface InstantiatedRecord {
+    readonly generic: ts.Symbol | ts.Type;
+    /** Each argument's concrete type, or a generic one's instantiation. */
+    readonly arguments: readonly (ts.Type | InstantiatedRecord)[];
+}
+
+/** @unjournaled Canonical identities of the checked program's types, kept across replays. */
+const instantiatedRecords = new WeakMap<
+    ts.Symbol | ts.Type,
+    InstantiatedRecord[]
+>();
+
+/** The one identity of a generic record type's instantiation. */
+export function instantiatedRecord(
+    generic: ts.Symbol | ts.Type,
+    arguments_: readonly (ts.Type | InstantiatedRecord)[],
+): InstantiatedRecord {
+    let known = instantiatedRecords.get(generic);
+    if (!known) instantiatedRecords.set(generic, (known = []));
+    const existing = known.find(
+        (candidate) =>
+            candidate.arguments.length === arguments_.length &&
+            candidate.arguments.every(
+                (argument, index) => argument === arguments_[index],
+            ),
+    );
+    if (existing) return existing;
+    const created = { generic, arguments: [...arguments_] };
+    known.push(created);
+    return created;
 }
 
 /** Libraries whose record types keep the layout their declarations give them. */
@@ -110,6 +154,41 @@ function recordProperties(
     return [...byName.values()];
 }
 
+/** Whether a type is a union of plain records (`isPlainRecord`). */
+export function isRecordUnion(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): type is ts.UnionType {
+    return (
+        type.isUnion() &&
+        type.types.every((member) => isPlainRecord(checker, member))
+    );
+}
+
+/** Whether a type is a plain record or a union of them. */
+function isRecordLike(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return isPlainRecord(checker, type) || isRecordUnion(checker, type);
+}
+
+/**
+ * The types a record type's property holds: its own; a union's, the
+ * union of its arms' where every arm declares it, else each declaring
+ * arm's.
+ */
+function propertyTypes(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    name: string,
+): readonly ts.Type[] {
+    const property = type.getProperty(name);
+    if (property || !type.isUnion())
+        return property ? [checker.getTypeOfSymbol(property)] : [];
+    return type.types.flatMap((member) => {
+        const declared = member.getProperty(name);
+        return declared ? [checker.getTypeOfSymbol(declared)] : [];
+    });
+}
+
 /**
  * Where lowering stored a record of one type as another and the copy was
  * observable: the record and the type joined into one object. `element`:
@@ -119,7 +198,26 @@ function recordProperties(
 export interface RecordJoin {
     readonly source: ts.Type;
     readonly target: ts.Type;
+    /**
+     * The instantiation of a generic `target` the record was stored as: the
+     * component holds that instantiation alone, and its records take the
+     * layout of the component's other shapes.
+     */
+    readonly targetInstantiation?: InstantiatedRecord;
     readonly kind: "value" | "element" | "assertion" | "spread";
+}
+
+/** What a record component keys its members by. */
+export type RecordComponentKey = ts.Symbol | ts.Type | InstantiatedRecord;
+
+const COMPONENT_KEY = "record-component:";
+
+/**
+ * Whether a struct identity names a record component: recomputing the
+ * components as joins grow renumbers these keys.
+ */
+export function isRecordComponentKey(identity: unknown): boolean {
+    return typeof identity === "string" && identity.startsWith(COMPONENT_KEY);
 }
 
 /**
@@ -130,10 +228,10 @@ export interface RecordJoin {
 export function recordComponents(
     checker: ts.TypeChecker,
     joins: readonly RecordJoin[],
-): ReadonlyMap<ts.Symbol | ts.Type, RecordComponent> {
-    const parent = new Map<ts.Symbol | ts.Type, ts.Symbol | ts.Type>();
-    const types = new Map<ts.Symbol | ts.Type, ts.Type>();
-    const find = (identity: ts.Symbol | ts.Type): ts.Symbol | ts.Type => {
+): ReadonlyMap<RecordComponentKey, RecordComponent> {
+    const parent = new Map<RecordComponentKey, RecordComponentKey>();
+    const types = new Map<RecordComponentKey, ts.Type>();
+    const find = (identity: RecordComponentKey): RecordComponentKey => {
         let root = identity;
         for (
             let next = parent.get(root);
@@ -144,10 +242,14 @@ export function recordComponents(
         parent.set(identity, root);
         return root;
     };
-    const joined = new Map<ts.Symbol | ts.Type, Set<ts.Symbol | ts.Type>>();
-    const join = (left: ts.Type, right: ts.Type): void => {
+    const joined = new Map<RecordComponentKey, Set<RecordComponentKey>>();
+    const join = (
+        left: ts.Type,
+        right: ts.Type,
+        instantiation?: InstantiatedRecord,
+    ): void => {
         const a = recordIdentity(checker, left);
-        const b = recordIdentity(checker, right);
+        const b = instantiation ?? recordIdentity(checker, right);
         if (!types.has(a)) {
             types.set(a, left);
             parent.set(a, a);
@@ -163,20 +265,29 @@ export function recordComponents(
         // types' fields hold are one object too.
         let targets = joined.get(a);
         if (!targets) joined.set(a, (targets = new Set()));
-        if (targets.has(b) || !isPlainRecord(checker, left)) return;
+        // An instantiation's fields name its type parameters: the records
+        // they hold join where the instantiation is concrete.
+        if (
+            targets.has(b) ||
+            instantiation ||
+            !isRecordLike(checker, left) ||
+            !isRecordLike(checker, right)
+        )
+            return;
         targets.add(b);
-        for (const property of recordProperties(checker, right)) {
-            const held = left.getProperty(property.name);
-            if (!held) continue;
-            const fieldPair = heldRecords(
-                checker,
-                checker.getTypeOfSymbol(held),
-                checker.getTypeOfSymbol(property),
-            );
-            if (fieldPair) join(fieldPair[0], fieldPair[1]);
-        }
+        for (const property of recordProperties(checker, right))
+            for (const held of propertyTypes(checker, left, property.name))
+                for (const field of propertyTypes(
+                    checker,
+                    right,
+                    property.name,
+                )) {
+                    const fieldPair = heldRecords(checker, held, field);
+                    if (fieldPair) join(fieldPair[0], fieldPair[1]);
+                }
     };
-    for (const { source, target } of joins) join(source, target);
+    for (const { source, target, targetInstantiation } of joins)
+        join(source, target, targetInstantiation);
     // Storage of a wider type holds a narrower record where an array of the
     // wider type is also held as an array of the narrower one, where an
     // assertion retypes a narrower record as the wider type, or where a
@@ -194,20 +305,44 @@ export function recordComponents(
             kind === "spread"
         )
             holdsNarrower.add(recordIdentity(checker, target));
-    const groups = new Map<ts.Symbol | ts.Type, ts.Type[]>();
+    const groups = new Map<
+        RecordComponentKey,
+        { identity: RecordComponentKey; type: ts.Type }[]
+    >();
     for (const [identity, type] of types) {
         const root = find(identity);
         const group = groups.get(root);
-        if (group) group.push(type);
-        else groups.set(root, [type]);
+        if (group) group.push({ identity, type });
+        else groups.set(root, [{ identity, type }]);
     }
-    const components = new Map<ts.Symbol | ts.Type, RecordComponent>();
+    const components = new Map<RecordComponentKey, RecordComponent>();
+    const instantiated = (identity: RecordComponentKey): boolean =>
+        "generic" in identity;
     let next = 0;
-    for (const members of groups.values()) {
-        if (members.length < 2) continue;
-        const unions = members.filter((member) => member.isUnion());
-        // The widest member names the layout and orders its fields; among
-        // equally wide members, a declared type before an object literal's.
+    for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        const members = group.map(({ type }) => type);
+        // An instantiation stands for the concrete shapes it joined.
+        const concrete = group
+            .filter(({ identity }) => !instantiated(identity))
+            .map(({ type }) => type);
+        const unions = concrete.filter((member): member is ts.UnionType =>
+            member.isUnion(),
+        );
+        // The layout stores the members that are no union and every arm of
+        // those that are, each type once.
+        const shapes = [
+            ...new Map(
+                concrete
+                    .flatMap((member) =>
+                        member.isUnion() ? member.types : [member],
+                    )
+                    .map((shape) => [recordIdentity(checker, shape), shape]),
+            ).values(),
+        ];
+        if (shapes.length === 0) continue;
+        // The widest shape names the layout and orders its fields; among
+        // equally wide shapes, a declared type before an object literal's.
         const declared = (member: ts.Type): number =>
             member.aliasSymbol ||
             (member.symbol &&
@@ -215,33 +350,29 @@ export function recordComponents(
                 member.symbol.name !== "__object")
                 ? 0
                 : 1;
-        const named = [...members]
-            .filter((member) => !member.isUnion())
-            .sort(
-                (left, right) =>
-                    checker.getPropertiesOfType(right).length -
-                        checker.getPropertiesOfType(left).length ||
-                    declared(left) - declared(right),
-            )[0]!;
+        const named = [...shapes].sort(
+            (left, right) =>
+                checker.getPropertiesOfType(right).length -
+                    checker.getPropertiesOfType(left).length ||
+                declared(left) - declared(right),
+        )[0]!;
         const component: RecordComponent = {
-            key: `record-component:${next++}`,
+            key: `${COMPONENT_KEY}${next++}`,
             members,
+            shapes: [named, ...shapes.filter((shape) => shape !== named)],
             named,
+            unions,
             holdsNarrower,
-            ...(unions.length === 1 ? { union: unions[0]! } : {}),
-            ...(unions.length > 1
-                ? {
-                      conflict: `record unions '${checker.typeToString(unions[0]!)}' and '${checker.typeToString(unions[1]!)}'`,
-                  }
-                : {}),
         };
-        for (const member of members)
-            components.set(recordIdentity(checker, member), component);
+        for (const { identity } of group) components.set(identity, component);
     }
     return components;
 }
 
-/** The record types two field types hold in the same place, if both hold plain records. */
+/**
+ * The record types two field types hold in the same place, if both hold
+ * plain records or unions of them.
+ */
 function heldRecords(
     checker: ts.TypeChecker,
     left: ts.Type,
@@ -257,8 +388,8 @@ function heldRecords(
             ? heldRecords(checker, elementA, elementB)
             : undefined;
     }
-    return isPlainRecord(checker, a) &&
-        isPlainRecord(checker, b) &&
+    return isRecordLike(checker, a) &&
+        isRecordLike(checker, b) &&
         recordIdentity(checker, a) !== recordIdentity(checker, b)
         ? [a, b]
         : undefined;
@@ -267,8 +398,10 @@ function heldRecords(
 /**
  * Whether one layout can store both record types' common fields: each held
  * in storage of one kind (`?` and `| undefined`, string literals and
- * strings, numeric tuples and number arrays aside), records in records of
- * a component joined with them.
+ * strings, numeric tuples and number arrays aside; functions as their
+ * parameters and results), records in records of
+ * a component joined with them; a record union's field as every arm
+ * declaring it holds it.
  */
 export function layoutsCompatible(
     checker: ts.TypeChecker,
@@ -278,7 +411,13 @@ export function layoutsCompatible(
 ): boolean {
     const a = checker.getNonNullableType(left);
     const b = checker.getNonNullableType(right);
-    if (a === b) return true;
+    // A field only null or undefined is the other's empty storage.
+    if (
+        a === b ||
+        (a.flags & ts.TypeFlags.Never) !== 0 ||
+        (b.flags & ts.TypeFlags.Never) !== 0
+    )
+        return true;
     let compared = seen.get(a);
     if (!compared) seen.set(a, (compared = new Set()));
     if (compared.has(b)) return true;
@@ -303,18 +442,46 @@ export function layoutsCompatible(
     const elementB = element(b);
     if (elementA && elementB)
         return layoutsCompatible(checker, elementA, elementB, seen);
-    if (isPlainRecord(checker, a) && isPlainRecord(checker, b))
-        return recordProperties(checker, b).every((property) => {
-            const held = a.getProperty(property.name);
-            return (
-                !held ||
+    if (isRecordLike(checker, a) && isRecordLike(checker, b)) {
+        const fields = (type: ts.Type, name: string): readonly ts.Type[] =>
+            type.isUnion()
+                ? type.types.flatMap((arm) => propertyTypes(checker, arm, name))
+                : propertyTypes(checker, type, name);
+        return recordProperties(checker, b).every((property) =>
+            fields(a, property.name).every((held) =>
+                fields(b, property.name).every((field) =>
+                    layoutsCompatible(checker, held, field, seen),
+                ),
+            ),
+        );
+    }
+    // A function of one signature is a value of the other: one field holds
+    // both where their parameters and results are held alike.
+    const [signatureA, ...overloadsA] = a.getCallSignatures();
+    const [signatureB, ...overloadsB] = b.getCallSignatures();
+    if (
+        signatureA &&
+        signatureB &&
+        overloadsA.length === 0 &&
+        overloadsB.length === 0 &&
+        signatureA.parameters.length === signatureB.parameters.length &&
+        (checker.isTypeAssignableTo(a, b) || checker.isTypeAssignableTo(b, a))
+    )
+        return (
+            signatureA.parameters.every((parameter, index) =>
                 layoutsCompatible(
                     checker,
-                    checker.getTypeOfSymbol(held),
-                    checker.getTypeOfSymbol(property),
+                    checker.getTypeOfSymbol(parameter),
+                    checker.getTypeOfSymbol(signatureB.parameters[index]!),
                     seen,
-                )
-            );
-        });
+                ),
+            ) &&
+            layoutsCompatible(
+                checker,
+                signatureA.getReturnType(),
+                signatureB.getReturnType(),
+                seen,
+            )
+        );
     return checker.isTypeAssignableTo(a, b) && checker.isTypeAssignableTo(b, a);
 }

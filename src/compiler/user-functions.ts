@@ -5599,6 +5599,42 @@ export class UserFunctionLowerer {
                 ? context.dataLowerer.compileArrayFrom(source, ownedResult)
                 : undefined;
         let returned = mappedArray ?? context.compileValue(expression);
+        // An async function's promise settles as its declared result: a
+        // record returned as another record type is stored as that type.
+        const settled =
+            resultType &&
+            ts.getCombinedModifierFlags(ir.declaration) & ts.ModifierFlags.Async
+                ? context.checker.getAwaitedType(resultType)
+                : undefined;
+        const declaredRecord =
+            settled && context.dataTypes.fromTsType(settled, expression);
+        if (
+            declaredRecord?.kind === "struct" &&
+            (returned.kind === "record" ||
+                returned.dataType?.kind === "struct") &&
+            !(
+                returned.dataType?.kind === "struct" &&
+                returned.dataType.name === declaredRecord.name
+            ) &&
+            // A field holding a parsed document keeps its document storage.
+            context.dataLowerer.retainedResultType(
+                returned,
+                declaredRecord,
+                expression,
+            ) === declaredRecord
+        ) {
+            // A settled record is one object every await shares.
+            const settledRecord =
+                context.dataTypes.markStoredObjectReferences(declaredRecord);
+            returned = context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    returned,
+                    settledRecord,
+                    expression,
+                ),
+                settledRecord,
+            );
+        }
         if (resultType) {
             returned = context.bindings.materializeDeclaredRecordContainers(
                 returned,
