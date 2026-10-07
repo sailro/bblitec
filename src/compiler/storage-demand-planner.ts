@@ -182,9 +182,11 @@ function independentGenericCall(
                 ? owner.dataType.inner
                 : owner?.dataType;
         if (type?.kind !== "struct") return false;
-        const field = context.dataTypes
-            .structFields(type.name, callee.name, "accessors")
-            .find((field) => field.sourceName === callee.name.text);
+        const field = context.dataTypes.findStructField(
+            type.name,
+            callee.name.text,
+            callee.name,
+        );
         if (!field || field.accessor || field.type.kind !== "function")
             return false;
     }

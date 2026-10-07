@@ -6,6 +6,7 @@ import {
     symbolPropertyKey,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
+import { unwrapExpression, wrappedParent } from "./syntax.js";
 
 /**
  * The local class a name's symbol declares: a class declaration, or a
@@ -21,24 +22,12 @@ export function localClassOfSymbol(
             ts.isVariableDeclarationList(declaration.parent) &&
             (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
             declaration.initializer
-                ? skipOuterExpressions(declaration.initializer)
+                ? unwrapExpression(declaration.initializer)
                 : undefined;
         if (initializer && ts.isClassExpression(initializer))
             return initializer;
     }
     return undefined;
-}
-
-/** Parentheses and type assertions around an expression. */
-function skipOuterExpressions(expression: ts.Expression): ts.Expression {
-    while (
-        ts.isParenthesizedExpression(expression) ||
-        ts.isAsExpression(expression) ||
-        ts.isSatisfiesExpression(expression) ||
-        ts.isTypeAssertionExpression(expression)
-    )
-        expression = expression.expression;
-    return expression;
 }
 
 /**
@@ -48,16 +37,11 @@ function skipOuterExpressions(expression: ts.Expression): ts.Expression {
 export function classBindingNames(
     declaration: ts.ClassLikeDeclaration,
 ): ts.Identifier[] {
-    let parent: ts.Node = declaration.parent;
-    while (
-        ts.isParenthesizedExpression(parent) ||
-        ts.isAsExpression(parent) ||
-        ts.isSatisfiesExpression(parent) ||
-        ts.isTypeAssertionExpression(parent)
-    )
-        parent = parent.parent;
+    const parent = ts.isClassExpression(declaration)
+        ? wrappedParent(declaration)
+        : undefined;
     const bound =
-        ts.isClassExpression(declaration) &&
+        parent &&
         ts.isVariableDeclaration(parent) &&
         ts.isIdentifier(parent.name)
             ? parent.name

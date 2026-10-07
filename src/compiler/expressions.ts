@@ -3610,8 +3610,6 @@ export class ExpressionLowerer {
             if (predicate) {
                 return predicate;
             }
-            const missing = this.compileMissingPrimitiveMethodCall(call);
-            if (missing) return missing;
             this.requireModuleReceiverStorage(callee);
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
@@ -4598,86 +4596,6 @@ export class ExpressionLowerer {
                 `Cannot read properties of ${absent.null && !absent.undefined ? "null" : "undefined"}`,
             )})`,
             type,
-        );
-    }
-
-    /**
-     * A method the receiver's primitive lacks (`text.map(...)`), called on
-     * storage holding only that primitive or nothing: JavaScript reads
-     * `undefined` (or throws reading from an absent receiver), then the
-     * call throws TypeError. A branch its storage cannot take, such as the
-     * array arm of `typeof value === "string" ? ... : value.map(...)` over a
-     * dictionary of strings, throws as JavaScript would. Arguments must be
-     * effect-free: a present receiver evaluates them before throwing.
-     */
-    private compileMissingPrimitiveMethodCall(
-        call: ts.CallExpression,
-    ): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            ts.isOptionalChain(callee) ||
-            !ts.isIdentifier(callee.name) ||
-            !call.arguments.every(
-                (argument) =>
-                    ts.isArrowFunction(argument) ||
-                    ts.isFunctionExpression(argument) ||
-                    this.context.evaluationOrder.isPureExpression(argument),
-            )
-        )
-            return undefined;
-        const checker = this.context.checker;
-        const primitiveOf = (
-            type: DataType | undefined,
-        ): ts.Type | undefined =>
-            type?.kind === "string" || type?.kind === "enum"
-                ? checker.getStringType()
-                : type?.kind === "number"
-                  ? checker.getNumberType()
-                  : type?.kind === "boolean"
-                    ? checker.getBooleanType()
-                    : undefined;
-        const name = callee.name.text;
-        const missing = this.context.probeEmission(() => {
-            try {
-                const value = this.compileValue(callee.expression);
-                const stored =
-                    value.dataType?.kind === "optional"
-                        ? value.dataType.inner
-                        : value.dataType;
-                const primitive = primitiveOf(stored);
-                const result =
-                    value.kind === "data" &&
-                    primitive &&
-                    !checker.getPropertyOfType(
-                        checker.getApparentType(primitive),
-                        name,
-                    )
-                        ? this.context.dataLowerer.dataTypeAt(call)
-                        : undefined;
-                return result ? { receiver: value, result } : undefined;
-            } catch (error) {
-                if (error instanceof CompileError) return undefined;
-                throw error;
-            }
-        });
-        if (!missing) return undefined;
-        const { receiver, result } = missing;
-        this.context.reachJsData();
-        const thrown = (message: string): string =>
-            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(result)}>(${this.context.cppString(message)})`;
-        const notCallable = thrown(`${callee.getText()} is not a function`);
-        const present = presenceCpp(receiver);
-        const absent =
-            receiver.dataType?.kind === "optional" &&
-            receiver.dataType.undefinedOnly
-                ? "undefined"
-                : "null or undefined";
-        return this.context.dataLowerer.leafValue(
-            present === undefined
-                ? `(static_cast<void>(${receiver.cpp}), ${notCallable})`
-                : `(${present} ? ${notCallable} : ${thrown(`Cannot read properties of ${absent} (reading '${name}')`)})`,
-            result,
         );
     }
 

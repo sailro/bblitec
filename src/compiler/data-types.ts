@@ -7014,6 +7014,20 @@ export class DataTypeRegistry {
         return definition.fields;
     }
 
+    /**
+     * The field storing source property `property` of a struct, if any; an
+     * accessor-backed one too (the caller tests `accessor`).
+     */
+    public findStructField(
+        name: string,
+        property: string,
+        node: ts.Node,
+    ): DataStructField | undefined {
+        return this.structFields(name, node, "accessors").find(
+            (field) => field.sourceName === property,
+        );
+    }
+
     /** One struct field; an accessor-backed one only for a use that runs accessors. */
     public structField(
         name: string,
