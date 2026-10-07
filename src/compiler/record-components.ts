@@ -58,6 +58,43 @@ export function recordIdentity(
     return instantiated ? type : (type.aliasSymbol ?? type.symbol ?? type);
 }
 
+/**
+ * A generic record type as one instantiation in force -- its generic
+ * declaration (a generic interface's or class's type, an alias's symbol)
+ * and the concrete arguments it takes there -- where its checker type
+ * still names the type parameters: one identity per instantiation.
+ */
+export interface InstantiatedRecord {
+    readonly generic: ts.Symbol | ts.Type;
+    readonly arguments: readonly ts.Type[];
+}
+
+/** @unjournaled Canonical identities of the checked program's types, kept across replays. */
+const instantiatedRecords = new WeakMap<
+    ts.Symbol | ts.Type,
+    InstantiatedRecord[]
+>();
+
+/** The one identity of a generic record type's instantiation. */
+export function instantiatedRecord(
+    generic: ts.Symbol | ts.Type,
+    arguments_: readonly ts.Type[],
+): InstantiatedRecord {
+    let known = instantiatedRecords.get(generic);
+    if (!known) instantiatedRecords.set(generic, (known = []));
+    const existing = known.find(
+        (candidate) =>
+            candidate.arguments.length === arguments_.length &&
+            candidate.arguments.every(
+                (argument, index) => argument === arguments_[index],
+            ),
+    );
+    if (existing) return existing;
+    const created = { generic, arguments: [...arguments_] };
+    known.push(created);
+    return created;
+}
+
 /** Libraries whose record types keep the layout their declarations give them. */
 const FIXED_LAYOUT_ORIGINS: ReadonlySet<DeclarationOrigin> = new Set([
     "default-lib",
@@ -160,8 +197,17 @@ function propertyTypes(
 export interface RecordJoin {
     readonly source: ts.Type;
     readonly target: ts.Type;
+    /**
+     * The instantiation of a generic `target` the record was stored as: the
+     * component holds that instantiation alone, and its records take the
+     * layout of the component's other shapes.
+     */
+    readonly targetInstantiation?: InstantiatedRecord;
     readonly kind: "value" | "element" | "assertion" | "spread";
 }
+
+/** What a record component keys its members by. */
+export type RecordComponentKey = ts.Symbol | ts.Type | InstantiatedRecord;
 
 /**
  * The record components of a program: union-find over the joins lowering
@@ -171,10 +217,10 @@ export interface RecordJoin {
 export function recordComponents(
     checker: ts.TypeChecker,
     joins: readonly RecordJoin[],
-): ReadonlyMap<ts.Symbol | ts.Type, RecordComponent> {
-    const parent = new Map<ts.Symbol | ts.Type, ts.Symbol | ts.Type>();
-    const types = new Map<ts.Symbol | ts.Type, ts.Type>();
-    const find = (identity: ts.Symbol | ts.Type): ts.Symbol | ts.Type => {
+): ReadonlyMap<RecordComponentKey, RecordComponent> {
+    const parent = new Map<RecordComponentKey, RecordComponentKey>();
+    const types = new Map<RecordComponentKey, ts.Type>();
+    const find = (identity: RecordComponentKey): RecordComponentKey => {
         let root = identity;
         for (
             let next = parent.get(root);
@@ -185,10 +231,14 @@ export function recordComponents(
         parent.set(identity, root);
         return root;
     };
-    const joined = new Map<ts.Symbol | ts.Type, Set<ts.Symbol | ts.Type>>();
-    const join = (left: ts.Type, right: ts.Type): void => {
+    const joined = new Map<RecordComponentKey, Set<RecordComponentKey>>();
+    const join = (
+        left: ts.Type,
+        right: ts.Type,
+        instantiation?: InstantiatedRecord,
+    ): void => {
         const a = recordIdentity(checker, left);
-        const b = recordIdentity(checker, right);
+        const b = instantiation ?? recordIdentity(checker, right);
         if (!types.has(a)) {
             types.set(a, left);
             parent.set(a, a);
@@ -204,8 +254,11 @@ export function recordComponents(
         // types' fields hold are one object too.
         let targets = joined.get(a);
         if (!targets) joined.set(a, (targets = new Set()));
+        // An instantiation's fields name its type parameters: the records
+        // they hold join where the instantiation is concrete.
         if (
             targets.has(b) ||
+            instantiation ||
             !isRecordLike(checker, left) ||
             !isRecordLike(checker, right)
         )
@@ -222,7 +275,8 @@ export function recordComponents(
                     if (fieldPair) join(fieldPair[0], fieldPair[1]);
                 }
     };
-    for (const { source, target } of joins) join(source, target);
+    for (const { source, target, targetInstantiation } of joins)
+        join(source, target, targetInstantiation);
     // Storage of a wider type holds a narrower record where an array of the
     // wider type is also held as an array of the narrower one, where an
     // assertion retypes a narrower record as the wider type, or where a
@@ -240,31 +294,42 @@ export function recordComponents(
             kind === "spread"
         )
             holdsNarrower.add(recordIdentity(checker, target));
-    const groups = new Map<ts.Symbol | ts.Type, ts.Type[]>();
+    const groups = new Map<
+        RecordComponentKey,
+        { identity: RecordComponentKey; type: ts.Type }[]
+    >();
     for (const [identity, type] of types) {
         const root = find(identity);
         const group = groups.get(root);
-        if (group) group.push(type);
-        else groups.set(root, [type]);
+        if (group) group.push({ identity, type });
+        else groups.set(root, [{ identity, type }]);
     }
-    const components = new Map<ts.Symbol | ts.Type, RecordComponent>();
+    const components = new Map<RecordComponentKey, RecordComponent>();
+    const instantiated = (identity: RecordComponentKey): boolean =>
+        "generic" in identity;
     let next = 0;
-    for (const members of groups.values()) {
-        if (members.length < 2) continue;
-        const unions = members.filter((member): member is ts.UnionType =>
+    for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        const members = group.map(({ type }) => type);
+        // An instantiation stands for the concrete shapes it joined.
+        const concrete = group
+            .filter(({ identity }) => !instantiated(identity))
+            .map(({ type }) => type);
+        const unions = concrete.filter((member): member is ts.UnionType =>
             member.isUnion(),
         );
         // The layout stores the members that are no union and every arm of
         // those that are, each type once.
         const shapes = [
             ...new Map(
-                members
+                concrete
                     .flatMap((member) =>
                         member.isUnion() ? member.types : [member],
                     )
                     .map((shape) => [recordIdentity(checker, shape), shape]),
             ).values(),
         ];
+        if (shapes.length === 0) continue;
         // The widest shape names the layout and orders its fields; among
         // equally wide shapes, a declared type before an object literal's.
         const declared = (member: ts.Type): number =>
@@ -288,8 +353,7 @@ export function recordComponents(
             unions,
             holdsNarrower,
         };
-        for (const member of members)
-            components.set(recordIdentity(checker, member), component);
+        for (const { identity } of group) components.set(identity, component);
     }
     return components;
 }

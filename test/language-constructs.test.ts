@@ -8378,6 +8378,51 @@ check(
 );
 
 check(
+    "records-stored-as-a-generic-instantiation-stay-one-object",
+    `
+    interface Projection<State> { readonly state: State; readonly distance: number; owns: boolean }
+    interface TowerState { tower: number }
+    interface TowerProjection extends Projection<TowerState> { readonly support: number }
+    interface AdapterOptions<State> { current(): Projection<State> }
+    interface Adapter<State> { candidate(): object; projectionOf(key: object): Projection<State> | undefined }
+    function createAdapter<State>(options: AdapterOptions<State>): Adapter<State> {
+        const byCandidate = new WeakMap<object, Projection<State>>();
+        return {
+            candidate() {
+                const projection = options.current();
+                const key = { distance: projection.distance };
+                byCandidate.set(key, projection);
+                return key;
+            },
+            projectionOf(key) { return byCandidate.get(key); },
+        };
+    }
+    const towerProjection: TowerProjection = { state: { tower: 1 }, distance: 2, owns: false, support: 3 };
+    const adapter = createAdapter<TowerState>({ current: () => towerProjection });
+    const found = adapter.projectionOf(adapter.candidate());
+    if (found !== towerProjection) throw new Error("one projection");
+    found.owns = true;
+    if (!towerProjection.owns || found.state.tower !== 1) throw new Error("write through the generic view");
+    interface Peer { key: string; x: number }
+    interface Request<P> { readonly key: string; axis0: number; readonly allow0?: boolean; readonly admit?: (peer: P) => boolean }
+    interface Session<P> { resolve(request: Request<P>): number }
+    function createSession<P extends Peer>(peers: readonly P[]): Session<P> {
+        const resolveAxis = (request: Request<P>): number => {
+            let best = request.axis0;
+            for (const peer of peers) if (request.admit === undefined || request.admit(peer)) best = Math.max(best, peer.x);
+            return best;
+        };
+        return { resolve(request) { return resolveAxis(request) + (request.allow0 === false ? 0 : 1); } };
+    }
+    const session = createSession<Peer>([{ key: "a", x: 4 }, { key: "b", x: 9 }]);
+    const request = { key: "a", axis0: 2, allow0: true, admit: (peer: Peer) => peer.key === "a" };
+    if (session.resolve(request) !== 5) throw new Error("resolve");
+    request.axis0 = 7;
+    if (session.resolve(request) !== 8) throw new Error("written request");
+`,
+);
+
+check(
     "narrowed-union-records-returned-as-another-union-stay-one-object",
     `
     interface Ready { state: "ready"; pickupX: number; goalX: number }

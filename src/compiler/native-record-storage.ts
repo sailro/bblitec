@@ -31,6 +31,8 @@ export function mergeNativeRecordStorage(
                 !(previous?.joins ?? []).some(
                     (known) =>
                         known.target === join.target &&
+                        known.targetInstantiation ===
+                            join.targetInstantiation &&
                         known.kind === join.kind,
                 ),
         ),

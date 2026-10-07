@@ -61,11 +61,14 @@ import {
     type RecordObservationContext,
 } from "./record-observations.js";
 import {
+    instantiatedRecord,
     isPlainRecord,
     isRecordUnion,
     layoutsCompatible,
     recordIdentity,
+    type InstantiatedRecord,
     type RecordComponent,
+    type RecordComponentKey,
 } from "./record-components.js";
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
@@ -1122,10 +1125,8 @@ export class DataTypeRegistry {
      * record joins into one object, by record identity
      * (`record-components.ts`).
      */
-    private recordComponents: ReadonlyMap<
-        ts.Symbol | ts.Type,
-        RecordComponent
-    > = new Map();
+    private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
+        new Map();
     /** Union layouts being resolved, so a member mapped through one maps once. */
     private readonly resolvingLayouts = new EmissionSet<ts.Type>();
 
@@ -1135,7 +1136,7 @@ export class DataTypeRegistry {
      * slots, the joins lowering met).
      */
     public prepareRecordComponents(
-        components: ReadonlyMap<ts.Symbol | ts.Type, RecordComponent>,
+        components: ReadonlyMap<RecordComponentKey, RecordComponent>,
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         this.recordComponents = components;
@@ -1169,10 +1170,47 @@ export class DataTypeRegistry {
         );
     }
 
-    /** The component a record type's records share their layout with. */
+    /**
+     * The component a record type's records share their layout with; a
+     * generic record type's under the instantiation in force.
+     */
     private recordComponentOf(type: ts.Type): RecordComponent | undefined {
-        return this.recordComponents.size
-            ? this.recordComponents.get(recordIdentity(this.checker, type))
+        if (!this.recordComponents.size) return undefined;
+        const instantiation = this.instantiatedRecordOf(type);
+        return this.recordComponents.get(
+            instantiation ?? recordIdentity(this.checker, type),
+        );
+    }
+
+    /**
+     * A generic record type naming type parameters the instantiations in
+     * force substitute, as that one instantiation: its generic interface,
+     * class or alias with each argument resolved. Undefined for a type no
+     * instantiation reaches, and for one whose arguments do not resolve to
+     * concrete types.
+     */
+    private instantiatedRecordOf(
+        type: ts.Type,
+    ): InstantiatedRecord | undefined {
+        if (!this.mentionsSubstitution(type)) return undefined;
+        const object = type as ts.ObjectType;
+        const [generic, arguments_] =
+            type.aliasSymbol && type.aliasTypeArguments?.length
+                ? [type.aliasSymbol, type.aliasTypeArguments]
+                : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
+                  ? [
+                        (type as ts.TypeReference).target,
+                        this.checker.getTypeArguments(type as ts.TypeReference),
+                    ]
+                  : [undefined, []];
+        if (!generic) return undefined;
+        const resolved = arguments_.map((argument) =>
+            this.resolveTypeParameter(argument),
+        );
+        return resolved.every(
+            (argument) => !this.mentionsSubstitution(argument),
+        )
+            ? instantiatedRecord(generic, resolved)
             : undefined;
     }
 
@@ -1648,14 +1686,29 @@ export class DataTypeRegistry {
             !this.isClassStruct(
                 demand === source ? sourceType.name : targetType.name,
             );
+        // A generic target names the one instantiation in force, which
+        // joins the source's component alone.
+        const targetInstantiation =
+            target &&
+            targetRecord &&
+            !joinable(target, targetRecord) &&
+            (isPlainRecord(this.checker, targetRecord) ||
+                isRecordUnion(this.checker, targetRecord)) &&
+            !this.isClassStruct(targetType.name)
+                ? this.withRecordDemand(target, () =>
+                      this.instantiatedRecordOf(targetRecord),
+                  )
+                : undefined;
         if (
             source &&
             target &&
             sourceRecord &&
             targetRecord &&
             joinable(source, sourceRecord) &&
-            joinable(target, targetRecord) &&
-            !this.joined(sourceRecord, targetRecord)
+            (targetInstantiation || joinable(target, targetRecord)) &&
+            !this.withRecordDemand(target, () =>
+                this.joined(sourceRecord, targetRecord),
+            )
         ) {
             // A record stored as a union, or a union's record stored as
             // another record type, keeps its fields in the union's layout
@@ -1671,7 +1724,13 @@ export class DataTypeRegistry {
                 );
             if (
                 union !== sourceUnion ||
-                layoutsCompatible(this.checker, sourceRecord, targetRecord)
+                (targetInstantiation
+                    ? this.structLayoutsCompatible(sourceFields, targetFields)
+                    : layoutsCompatible(
+                          this.checker,
+                          sourceRecord,
+                          targetRecord,
+                      ))
             )
                 throw new NativeRecordStorageRequired({
                     ...source,
@@ -1679,6 +1738,9 @@ export class DataTypeRegistry {
                     joins: [
                         {
                             target: targetRecord,
+                            ...(targetInstantiation
+                                ? { targetInstantiation }
+                                : {}),
                             kind: sharedArray
                                 ? "element"
                                 : ts.isAsExpression(node) ||
@@ -1693,6 +1755,39 @@ export class DataTypeRegistry {
             node,
             `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
         );
+    }
+
+    /**
+     * Whether one layout can store two structs' common fields, each in one
+     * storage (`joinedStorage`; `?` and `| undefined` aside), records in
+     * records of a component joined with them.
+     */
+    private structLayoutsCompatible(
+        left: readonly DataStructField[],
+        right: readonly DataStructField[],
+    ): boolean {
+        const storage = (type: DataType): DataType =>
+            type.kind === "optional"
+                ? storage(type.inner)
+                : type.kind === "enum"
+                  ? { kind: "string" }
+                  : type;
+        const holdsRecords = (type: DataType): boolean =>
+            type.kind === "struct" ||
+            ((type.kind === "vector" || type.kind === "span") &&
+                holdsRecords(storage(type.element)));
+        return right.every((field) => {
+            const held = left.find(
+                (candidate) => candidate.sourceName === field.sourceName,
+            );
+            if (!held) return true;
+            const a = storage(held.type);
+            const b = storage(field.type);
+            return (
+                (holdsRecords(a) && holdsRecords(b)) ||
+                this.joinedStorage(a, b) !== undefined
+            );
+        });
     }
 
     /**
@@ -4201,6 +4296,11 @@ export class DataTypeRegistry {
         // A generic alias inside its own body still names the same checker
         // type under different substitutions; resolve that distinction first.
         if (this.mentionsSubstitution(type)) {
+            // An instantiation a record joined is its component's struct.
+            const instantiation = this.instantiatedRecordOf(type);
+            const component =
+                instantiation && this.recordComponents.get(instantiation);
+            if (component) return component.key;
             const frames = this.typeArgumentFrames();
             const identities = this.substitutedStructIdentities.get(type) ?? [];
             const existing = identities.find((identity) =>
