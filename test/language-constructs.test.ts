@@ -9707,3 +9707,23 @@ check(
     if (homes.map((home) => homeReads[0]!(home)).join() !== "3,-1,-1") throw new Error("unknown slots");
 `,
 );
+
+// Nested numeric literals whose rows differ in length are arrays, not a
+// static table.
+check(
+    "jagged-numeric-literal-tables",
+    `
+    const LAYOUTS: readonly (readonly [number, number, number])[][] = [
+        [[2, 0.5, 0.52]],
+        [[1, 0.5, 0.48], [3, 0.5, 0.58]],
+        [[1, 0.5, 0.48], [2, 0.5, 0.58], [3, 0.5, 0.48]],
+    ];
+    interface Window { side: number; fraction: number; height: number }
+    function windows(count: number): Window[] {
+        return LAYOUTS[count - 1]!.map(([side, fraction, heightFraction]) => ({ side, fraction, height: heightFraction * 2 }));
+    }
+    const recipes: Array<typeof windows> = [windows];
+    const w = recipes[0]!(2);
+    if (w.length !== 2 || w[1]!.side !== 3 || w[0]!.height !== 0.96 || recipes[0]!(3).length !== 3) throw new Error("windows");
+`,
+);

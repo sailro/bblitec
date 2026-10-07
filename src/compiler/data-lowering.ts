@@ -6375,17 +6375,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * Whether nested array literals with numeric leaves form a static table:
+     * every row at a depth has one length. A jagged one (rows of different
+     * lengths) is ordinary array storage instead.
+     */
     public isNumericTable(literal: ts.ArrayLiteralExpression): boolean {
-        if (literal.elements.length === 0) {
-            return false;
-        }
-        return literal.elements.every((element) => {
+        return this.tableShape(literal) !== undefined;
+    }
+
+    /** A uniform numeric table's dimensions, or undefined. */
+    private tableShape(
+        literal: ts.ArrayLiteralExpression,
+    ): number[] | undefined {
+        const shapes = literal.elements.map((element) => {
             const unwrapped = this.context.unwrap(element);
-            if (ts.isArrayLiteralExpression(unwrapped)) {
-                return this.isNumericTable(unwrapped);
-            }
-            return this.isStaticLeafNumber(unwrapped);
+            if (ts.isArrayLiteralExpression(unwrapped))
+                return this.tableShape(unwrapped);
+            return this.isStaticLeafNumber(unwrapped) ? [] : undefined;
         });
+        const first = shapes[0];
+        if (
+            !first ||
+            shapes.some((shape) => !shape || shape.join() !== first.join())
+        )
+            return undefined;
+        return [literal.elements.length, ...first];
     }
 
     private isStaticLeafNumber(expression: ts.Expression): boolean {
