@@ -2516,6 +2516,10 @@ check(
     const ring = detachedRingFrom(wall, false);
     if (!ring || ring.houseArc !== null || ring.houseArc === undefined || detachedRingFrom(wall, true) !== null) throw new Error("null field");
     if (JSON.stringify(ring) !== '{"polygon":[2,4,6],"houseArc":null,"contact":{"centreline":[1,2,3],"halfThickness":0.5}}') throw new Error("null json");
+    interface Generation { targets: Float32Array | null; count: number; grid: { cells: number[] } | null; }
+    const generations: Generation[] = Array.from({ length: 2 }, () => ({ targets: null, count: 0, grid: null }));
+    generations[0]!.grid = { cells: [1] };
+    if (generations[0]!.grid?.cells[0] !== 1 || generations[1]!.grid !== null || generations[1]!.targets !== null) throw new Error("widened null literal");
     function row(label: string, options: { value: string; label?: string; labelKey?: string; hidden?: boolean }[], current: string): string {
         const shown: string[] = [];
         for (let i = 0; i < options.length; i++) {

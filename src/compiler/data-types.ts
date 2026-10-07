@@ -4584,8 +4584,20 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const resolved = this.resolveTypeParameter(type);
         const members = resolved.isUnion() ? resolved.types : [resolved];
-        // A property only null fills (`houseArc: null`) holds null.
-        if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
+        // A property a type declares only null fills (`houseArc: null`)
+        // holds null. An object literal's own `null` property is the null
+        // its position's type widens.
+        if (
+            members.every(
+                (member) => (member.flags & ts.TypeFlags.Null) !== 0,
+            ) &&
+            property?.declarations?.length &&
+            property.declarations.every(
+                (declaration) =>
+                    ts.isPropertySignature(declaration) ||
+                    ts.isPropertyDeclaration(declaration),
+            )
+        )
             return { kind: "null" };
         if (
             !members.every(
