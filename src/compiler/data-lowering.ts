@@ -9725,6 +9725,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             compiled.set(name, slot);
         }
         this.evaluatedLiteralKeys.set(literal, written);
+        this.context.dataTypes.observeEnumMapKeys(dataType, written, literal);
         const slots = members.map((member) => {
             const slot = compiled.get(member);
             if (slot === undefined) {

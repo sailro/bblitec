@@ -999,6 +999,56 @@ export class DataTypeRegistry {
     >();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
+    /**
+     * Closed `Record<Union, V>` values `JSON.stringify` reaches, by type
+     * key: each is written by its own helper, keys in the union's order.
+     */
+    private readonly jsonEnumMaps = new EmissionMap<
+        string,
+        { name: string; type: DataType<"enummap"> }
+    >();
+
+    /** The writer of an enummap type `JSON.stringify` reaches, registered once. */
+    public jsonEnumMapWriter(type: DataType<"enummap">): string {
+        const key = dataTypeKey(type);
+        const known = this.jsonEnumMaps.get(key);
+        if (known) return known.name;
+        const name = `json_write_${type.enumName}_map_${this.jsonEnumMaps.size}`;
+        this.jsonEnumMaps.set(key, { name, type });
+        return name;
+    }
+
+    /**
+     * The first creation, per closed `Record` union, whose own keys
+     * JavaScript orders apart from the union's order -- the order its
+     * slots are laid out and written in.
+     */
+    private readonly enumMapKeyOrders = new EmissionMap<string, ts.Node>();
+
+    /** Observes a closed Record created with `keys`, in creation order. */
+    public observeEnumMapKeys(
+        type: DataType<"enummap">,
+        keys: readonly string[],
+        node: ts.Node,
+    ): void {
+        if (this.enumMapKeyOrders.has(type.enumName)) return;
+        const members = this.enumMembers(type.enumName);
+        const own = Object.keys(
+            Object.fromEntries(keys.map((key) => [key, true])),
+        );
+        if (
+            own.length !== members.length ||
+            own.some((key, index) => key !== members[index])
+        )
+            this.enumMapKeyOrders.set(type.enumName, node);
+    }
+
+    /** The statement writing `cpp` of `type` as JSON through `writer`. */
+    public jsonWriteCpp(type: DataType, cpp: string): string {
+        return type.kind === "enummap"
+            ? `bblscene::${this.jsonEnumMapWriter(type)}(writer, ${cpp});`
+            : `json_write(writer, ${cpp});`;
+    }
     private readonly partialRecords = new EmissionSet<
         ts.Symbol | ts.Type | string
     >();
@@ -5902,7 +5952,14 @@ export class DataTypeRegistry {
      */
     public markJsonSerialized(dataType: DataType, node: ts.Node): void {
         const path: string[] = [];
-        const visit = (current: DataType): void => {
+        // `direct`: the writer names this value's own type (the stringified
+        // value, a record field, a closed Record's slot); `directInner`:
+        // an optional's present value is written that way too.
+        const visit = (
+            current: DataType,
+            direct = false,
+            directInner = false,
+        ): void => {
             switch (current.kind) {
                 case "enum":
                     this.enumToStringCpp(current, "value", node);
@@ -5946,16 +6003,41 @@ export class DataTypeRegistry {
                                 ".",
                                 node,
                             );
-                        visit(field.type);
+                        visit(
+                            field.type,
+                            true,
+                            field.optionalProperty === true,
+                        );
                     }
                     path.pop();
                     return;
                 }
                 case "optional":
-                    visit(current.inner);
+                    visit(current.inner, directInner);
                     return;
                 case "union":
-                    current.members.forEach(visit);
+                    current.members.forEach((member) => visit(member));
+                    return;
+                case "enummap":
+                    // Written by its own helper, which only a writer naming
+                    // the type calls.
+                    if (!direct)
+                        this.fail(
+                            node,
+                            "JSON.stringify writes a closed Record where the stringified value, a record field or another closed Record holds it.",
+                        );
+                    this.enumToStringCpp(
+                        { kind: "enum", name: current.enumName },
+                        "value",
+                        node,
+                    );
+                    this.jsonEnumMapWriter(current);
+                    visit(
+                        current.element,
+                        true,
+                        current.element.kind === "optional" &&
+                            current.element.undefinedOnly === true,
+                    );
                     return;
                 case "vector":
                 case "span":
@@ -5993,7 +6075,7 @@ export class DataTypeRegistry {
                     );
             }
         };
-        visit(dataType);
+        visit(dataType, true);
     }
 
     /** One conversion contract for dynamic sinks and reflected native fields. */
@@ -6161,7 +6243,25 @@ export class DataTypeRegistry {
         const names = [...this.jsonSerializedStructs.keys()].filter((name) =>
             used.has(name),
         );
-        if (names.length === 0) {
+        // A closed Record's writer is emitted where every record it holds is.
+        const structsOf = (type: DataType): string[] =>
+            type.kind === "struct"
+                ? [type.name]
+                : type.kind === "optional"
+                  ? structsOf(type.inner)
+                  : type.kind === "vector" ||
+                      type.kind === "span" ||
+                      type.kind === "enummap"
+                    ? structsOf(type.element)
+                    : type.kind === "union"
+                      ? type.members.flatMap(structsOf)
+                      : type.kind === "map"
+                        ? structsOf(type.value)
+                        : [];
+        const maps = [...this.jsonEnumMaps.values()].filter(({ type }) =>
+            structsOf(type).every((name) => names.includes(name)),
+        );
+        if (names.length === 0 && maps.length === 0) {
             return [];
         }
         const structName = (name: string): string =>
@@ -6170,7 +6270,40 @@ export class DataTypeRegistry {
             (name) =>
                 `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value);`,
         );
+        for (const { name, type } of maps)
+            lines.push(
+                `inline void ${name}(bbl::js::JsonWriter& writer, const ${this.cppType(type)}& value);`,
+            );
         lines.push("");
+        for (const { name, type } of maps) {
+            const created = this.enumMapKeyOrders.get(type.enumName);
+            if (created)
+                this.fail(
+                    created,
+                    "JSON.stringify writes a closed Record's keys in its union's order; this record creates them in another order.",
+                );
+            lines.push(
+                `inline void ${name}(bbl::js::JsonWriter& writer, const ${this.cppType(type)}& value) {`,
+                "    writer.begin_object();",
+            );
+            this.enumMembers(type.enumName).forEach((member, slot) => {
+                const key = stringLiteral(member);
+                const element = type.element;
+                if (element.kind === "optional" && element.undefinedOnly)
+                    lines.push(
+                        `    if (${optionalPresentCpp(`value[${slot}]`)}) {`,
+                        `        writer.key(${key});`,
+                        `        ${this.jsonWriteCpp(element.inner, `*value[${slot}]`)}`,
+                        "    }",
+                    );
+                else
+                    lines.push(
+                        `    writer.key(${key});`,
+                        `    ${this.jsonWriteCpp(element, `value[${slot}]`)}`,
+                    );
+            });
+            lines.push("    writer.end_object();", "}", "");
+        }
         for (const name of names) {
             const definition = this.structsByName.get(name);
             lines.push(
@@ -6224,7 +6357,7 @@ export class DataTypeRegistry {
                     ? [
                           `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
                           `        writer.key(${key});`,
-                          `        json_write(writer, *value.${field.name});`,
+                          `        ${this.jsonWriteCpp(field.type.kind === "optional" ? field.type.inner : field.type, `*value.${field.name}`)}`,
                           "    }",
                       ]
                     : definedCpp !== undefined
@@ -6233,13 +6366,13 @@ export class DataTypeRegistry {
                             `        const auto& member = value.${field.name}${field.accessor ? ".get()" : ""};`,
                             `        if (${definedCpp}) {`,
                             `            writer.key(${key});`,
-                            "            json_write(writer, member);",
+                            `            ${this.jsonWriteCpp(field.type, "member")}`,
                             "        }",
                             "    }",
                         ]
                       : [
                             `    writer.key(${key});`,
-                            `    json_write(writer, value.${field.name}${field.accessor ? ".get()" : ""});`,
+                            `    ${this.jsonWriteCpp(field.type, `value.${field.name}${field.accessor ? ".get()" : ""}`)}`,
                         ];
                 // A field only some union arms declare is written for them.
                 return field.presentForTags && definition

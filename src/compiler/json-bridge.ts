@@ -222,12 +222,16 @@ function compileStringify(
         dataType,
         argument,
     );
+    // A closed Record is written by its own helper, keys in its union's order.
+    const writer = indent > 0 ? `writer(${indent})` : "writer";
     return {
         kind: "data",
         cpp:
-            indent > 0
-                ? `bbl::js::json_stringify(${value}, ${indent})`
-                : `bbl::js::json_stringify(${value})`,
+            dataType.kind === "enummap"
+                ? `[](const auto& record) { bbl::js::JsonWriter ${writer}; ${context.dataTypes.jsonWriteCpp(dataType, "record")} return writer.take(); }(${value})`
+                : indent > 0
+                  ? `bbl::js::json_stringify(${value}, ${indent})`
+                  : `bbl::js::json_stringify(${value})`,
         dataType: { kind: "string" },
     };
 }

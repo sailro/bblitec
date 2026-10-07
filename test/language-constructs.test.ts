@@ -9642,3 +9642,43 @@ test("an imported generation-time string feeds a string sink", async (t) => {
         result.cpp,
     );
 });
+
+// A closed Record is written by JSON.stringify keys in its union's order,
+// which every record of the union in the program is created in.
+check(
+    "closed-records-written-as-json",
+    `
+    type Scheme = "wasd" | "classic";
+    type Action = "run" | "jump";
+    interface Prefs { scheme: Scheme; shortcuts: Record<Scheme, Record<Action, string>>; note?: Record<Action, number> }
+    function save(prefs: Prefs): string { return JSON.stringify(prefs); }
+    const savers: Array<typeof save> = [save];
+    const first: Prefs = { scheme: "wasd", shortcuts: { classic: { jump: "j", run: "r" }, wasd: { jump: "space", run: "shift" } } };
+    const text = savers[0]!(first);
+    if (text !== '{"scheme":"wasd","shortcuts":{"classic":{"jump":"j","run":"r"},"wasd":{"jump":"space","run":"shift"}}}') throw new Error(text);
+    const second: Prefs = { scheme: "classic", shortcuts: { classic: { jump: "j", run: "r" }, wasd: { jump: "space", run: "shift" } } };
+    second.note = { jump: 1, run: 2 };
+    second.shortcuts.wasd.run = "ctrl";
+    const pretty = JSON.stringify(second.shortcuts.wasd, null, 1);
+    if (pretty !== '{\\n "jump": "space",\\n "run": "ctrl"\\n}') throw new Error(pretty);
+    const again = savers[0]!(second);
+    if (again !== '{"scheme":"classic","shortcuts":{"classic":{"jump":"j","run":"r"},"wasd":{"jump":"space","run":"ctrl"}},"note":{"jump":1,"run":2}}') throw new Error(again);
+`,
+);
+
+test("a closed Record created in another key order than JSON writes refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "type Action = 'run' | 'jump'; interface Prefs { keys: Record<Action, string> } function save(prefs: Prefs): string { return JSON.stringify(prefs); } const savers: Array<typeof save> = [save]; if (savers[0]!({ keys: { run: 'r', jump: 'j' } }) !== '{\"keys\":{\"run\":\"r\",\"jump\":\"j\"}}') throw new Error('order');",
+            ),
+        /JSON\.stringify writes a closed Record's keys in its union's order; this record creates them in another order\./,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "type Action = 'run' | 'jump'; function save(rows: Array<Record<Action, number>>): string { return JSON.stringify(rows); } const savers: Array<typeof save> = [save]; if (savers[0]!([{ jump: 1, run: 2 }]) !== '[{\"jump\":1,\"run\":2}]') throw new Error('rows');",
+            ),
+        /JSON\.stringify writes a closed Record where the stringified value, a record field or another closed Record holds it\./,
+    );
+});
