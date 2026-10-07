@@ -99,7 +99,7 @@ import {
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { propertyNameText, unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
-import { optionalPresentCpp } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
@@ -432,7 +432,15 @@ interface DataStructDefinition {
     fields: DataStructField[];
     /** One struct for a class hierarchy: it stores which class each object is. */
     classTag?: true;
+    /**
+     * A function object with properties (`(() => T) & { dispose(): void }`):
+     * the record's own call, held beside its properties as `callMember`.
+     */
+    call?: DataType<"function">;
 }
+
+/** The member a callable record keeps its call in; it is not a property. */
+export const callMember = "bbl_call";
 
 /** The member a class hierarchy's shared struct keeps each object's class tag in. */
 export const classTagMember = "bbl_class_tag";
@@ -1048,10 +1056,129 @@ export class DataTypeRegistry {
                 else if (
                     ts.isAsExpression(node) ||
                     ts.isTypeAssertionExpression(node)
-                )
+                ) {
                     this.registerAssertedRecord(node);
+                    if (ts.isTypeReferenceNode(node.type))
+                        this.namedAssertions.push(node);
+                }
             });
         }
+    }
+
+    /**
+     * @unjournaled Source facts gathered once before lowering: the
+     * assertions to a named type, whose types resolve only when a phantom
+     * brand needs them.
+     */
+    private readonly namedAssertions: (ts.AsExpression | ts.TypeAssertion)[] =
+        [];
+    /** @unjournaled The object type each phantom brand's assertions brand, from source alone. */
+    private readonly brandSources = new Map<string, ts.Type | null>();
+
+    /**
+     * A phantom brand (`Readonly<{ readonly [brand]: true }>` over a
+     * `declare const brand: unique symbol`): every property is keyed by a
+     * symbol with no runtime value, so no object has one and the type adds
+     * nothing to the object asserted to it. The key names its symbols.
+     */
+    private phantomBrandKey(type: ts.Type): string | undefined {
+        const cached = this.phantomBrandKeys.get(type);
+        if (cached !== undefined) return cached ?? undefined;
+        const key = this.computePhantomBrandKey(type);
+        this.phantomBrandKeys.set(type, key ?? null);
+        return key;
+    }
+
+    /** @unjournaled Whether a checked type is a phantom brand, from source alone. */
+    private readonly phantomBrandKeys = new WeakMap<ts.Type, string | null>();
+
+    private computePhantomBrandKey(type: ts.Type): string | undefined {
+        if (
+            type.isUnionOrIntersection() ||
+            type.getCallSignatures().length > 0 ||
+            type.getConstructSignatures().length > 0 ||
+            this.checker.getIndexInfosOfType(type).length > 0
+        )
+            return undefined;
+        const properties = this.checker.getPropertiesOfType(type);
+        if (properties.length === 0) return undefined;
+        for (const property of properties) {
+            const declaration = property.declarations?.[0];
+            const name =
+                declaration && ts.isPropertySignature(declaration)
+                    ? declaration.name
+                    : undefined;
+            if (
+                !name ||
+                !ts.isComputedPropertyName(name) ||
+                !ts.isIdentifier(name.expression)
+            )
+                return undefined;
+            const key = resolvedSymbol(
+                this.checker,
+                name.expression,
+            )?.valueDeclaration;
+            if (
+                !key ||
+                !ts.isVariableDeclaration(key) ||
+                key.initializer !== undefined ||
+                key.getSourceFile().isDeclarationFile ||
+                (ts.getCombinedModifierFlags(key) &
+                    ts.ModifierFlags.Ambient) ===
+                    0
+            )
+                return undefined;
+        }
+        return properties
+            .map((property) => String(property.escapedName))
+            .sort()
+            .join(",");
+    }
+
+    /**
+     * A phantom brand stores the one object type the program asserts to it
+     * (`new Key() as unknown as Brand`): the brand is that object, so it
+     * keeps that object's storage and identity. Assertions from another
+     * brand value or from an unknown value (`unknown`, `object`, `{}`)
+     * decide nothing; a brand asserted from several object types has no one
+     * storage.
+     */
+    private brandStorage(type: ts.Type, node: ts.Node): DataType | undefined {
+        const key = this.phantomBrandKey(type);
+        if (key === undefined) return undefined;
+        let source = this.brandSources.get(key);
+        if (source === undefined) {
+            const sources = new Set<ts.Symbol | ts.Type>();
+            let first: ts.Type | undefined;
+            for (const assertion of this.namedAssertions) {
+                if (
+                    this.phantomBrandKey(
+                        this.checker.getTypeFromTypeNode(assertion.type),
+                    ) !== key
+                )
+                    continue;
+                const sourceType = this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(
+                        unwrapExpression(assertion.expression),
+                    ),
+                );
+                if (
+                    (sourceType.flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0 ||
+                    this.isNonNullConstraint(sourceType) ||
+                    this.phantomBrandKey(sourceType) === key
+                )
+                    continue;
+                first ??= sourceType;
+                sources.add(sourceType.symbol ?? sourceType);
+            }
+            source = sources.size === 1 ? first! : null;
+            this.brandSources.set(key, source);
+        }
+        // Without one asserted object type the brand keeps its record shape,
+        // which no object can be stored as.
+        return source ? this.fromStoredTsType(source, node) : undefined;
     }
 
     private registerAssertedRecord(
@@ -2040,11 +2167,16 @@ export class DataTypeRegistry {
                 )
             )
                 return this.fromTsType(primitives[0]!, node);
-            return this.fromStructType(type, node);
+            return (
+                this.fromCallableRecordType(type, node) ??
+                this.fromStructType(type, node)
+            );
         }
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
         }
+        const brand = this.brandStorage(type, node);
+        if (brand) return brand;
         if (
             type.symbol &&
             ERROR_CONSTRUCTORS.has(type.symbol.name) &&
@@ -2407,6 +2539,8 @@ export class DataTypeRegistry {
         // An open index signature is not a closed record of its named fields.
         // Leave an unrepresented entry type on the source-specialized path.
         if (dictionary !== undefined) return dictionary ?? undefined;
+        const callable = this.fromCallableRecordType(type, node);
+        if (callable) return callable;
         const functionType = this.fromFunctionType(type, node);
         if (functionType) return functionType;
         if (type.getConstructSignatures().length > 0) {
@@ -2938,6 +3072,78 @@ export class DataTypeRegistry {
     }
 
     /**
+     * The signature of a stored generic function an operation calls with
+     * values it supplies (a promise rejection handed to `catch(handler)`):
+     * each unknown or callable parameter takes its value's type, as a
+     * source call's argument types do. A generic signature with type
+     * parameters has no types to infer here.
+     */
+    public genericFunctionValueCall(
+        name: string,
+        supplied: readonly (ts.Type | undefined)[],
+        node: ts.Node,
+    ): { name: string; type: DataType<"function"> } {
+        const generic = this.genericFunctions.get(name)!;
+        if (generic.signature.typeParameters?.length)
+            this.fail(
+                node,
+                "Stored generic callbacks require a source call with concrete type arguments.",
+            );
+        const parameters = generic.signature
+            .getParameters()
+            .map((parameter, index) => {
+                const declared = this.checker.getTypeOfSymbol(parameter);
+                if (
+                    (declared.flags & ts.TypeFlags.Unknown) === 0 &&
+                    !this.checker
+                        .getNonNullableType(declared)
+                        .getCallSignatures().length
+                )
+                    return undefined;
+                return (
+                    supplied[index] ??
+                    this.fail(
+                        node,
+                        "A stored generic callback requires a represented type for each value an operation supplies.",
+                    )
+                );
+            });
+        const demand: GenericFunctionDemand = {
+            family: generic.family,
+            arguments: [],
+            parameters,
+            frames: this.typeArgumentFrames(),
+            ancestors: this.genericFunctionAncestors,
+        };
+        const field = generic.fields.find((field) =>
+            sameGenericFunctionSignature(field.demand, demand),
+        );
+        if (field) return field;
+        if (this.genericFunctionAncestors.includes(generic.family))
+            this.fail(
+                node,
+                "Recursive stored generic functions require an already represented signature.",
+            );
+        throw new GenericFunctionStorageRequired(demand, node);
+    }
+
+    /** The checker type of a value an operation supplies, where its storage names one. */
+    public suppliedValueType(value: Value, node: ts.Node): ts.Type | undefined {
+        const kind = value.dataType?.kind ?? value.kind;
+        if (kind === "number") return this.checker.getNumberType();
+        if (kind === "string") return this.checker.getStringType();
+        if (kind === "boolean") return this.checker.getBooleanType();
+        if (kind !== "error") return undefined;
+        const error = this.checker
+            .getSymbolsInScope(node, ts.SymbolFlags.Interface)
+            .find(
+                (symbol) =>
+                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
+            );
+        return error && this.checker.getDeclaredTypeOfSymbol(error);
+    }
+
+    /**
      * A binding typed `unknown` whose value is the native Error a `catch`
      * received (the catch binding, or a `const` it was copied to): an
      * argument naming one instantiates a stored function's parameter with
@@ -3006,6 +3212,8 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        const settled = this.fromValueOrPromiseUnion(type, node);
+        if (settled) return settled;
         // Tuple alternatives with different lengths still share array storage.
         // Ask the checker for their indexed element union instead of treating
         // length and the array methods as fields of a common record.
@@ -3062,6 +3270,52 @@ export class DataTypeRegistry {
             : undefined;
         if (object === null) return undefined;
         return object ?? this.fromMixedUnion(type, node);
+    }
+
+    /**
+     * `T | Promise<T>` (a result that may settle later) holds either the
+     * value or the promise, as one union of the two: awaiting it adopts the
+     * promise arm or resolves the value arm. Where a promise is stored as
+     * its value, both arms are that value.
+     */
+    private fromValueOrPromiseUnion(
+        type: ts.UnionType,
+        node: ts.Node,
+    ): DataType | undefined {
+        const promises = type.types.filter(
+            (member): member is ts.TypeReference =>
+                member.symbol?.name === "Promise" &&
+                declaredInDefaultLibrary(member.symbol) &&
+                isTypeReference(member),
+        );
+        const promise = promises[0];
+        if (!promise || promises.length > 1) return undefined;
+        const [argument] = this.checker.getTypeArguments(promise);
+        if (!argument) return undefined;
+        const settled = argument.isUnion() ? argument.types : [argument];
+        const values = type.types.filter((member) => member !== promise);
+        // Two spellings of one object literal type are distinct checker types.
+        const same = (left: ts.Type, right: ts.Type): boolean =>
+            left === right ||
+            (this.checker.isTypeAssignableTo(left, right) &&
+                this.checker.isTypeAssignableTo(right, left));
+        if (
+            values.length !== settled.length ||
+            !values.every((member) =>
+                settled.some((candidate) => same(member, candidate)),
+            )
+        )
+            return undefined;
+        const value = this.fromTsType(argument, node);
+        const promised = this.fromTsType(promise, node);
+        if (!value || !promised) return undefined;
+        // Outside an asynchronous realm a promise is stored as its value.
+        if (dataTypesEqual(promised, value)) return value;
+        return promised.kind === "promise" &&
+            promised.result &&
+            dataTypesEqual(promised.result, value)
+            ? { kind: "union", members: [value, promised] }
+            : undefined;
     }
 
     private readonly arrayUnionsInProgress = new EmissionSet<ts.Type>();
@@ -3734,7 +3988,11 @@ export class DataTypeRegistry {
         };
     }
 
-    private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
+    private fromStructType(
+        type: ts.Type,
+        node: ts.Node,
+        call?: DataType<"function">,
+    ): DataType | undefined {
         const declaredName = (named: ts.Type): string | undefined =>
             named.aliasSymbol?.name ??
             (named.symbol &&
@@ -3754,7 +4012,13 @@ export class DataTypeRegistry {
             ) === true;
         return (
             this.mapRecursiveStruct(type, preferredName, (name) =>
-                this.fromStructTypeInner(type, node, name, storesFunctions),
+                this.fromStructTypeInner(
+                    type,
+                    node,
+                    name,
+                    storesFunctions,
+                    call,
+                ),
             ) ?? undefined
         );
     }
@@ -4043,6 +4307,24 @@ export class DataTypeRegistry {
         return this.recordComponents.get(own)?.key ?? own;
     }
 
+    /**
+     * Storage for a binding whose type admits only `undefined` (`void`,
+     * `undefined`, a type parameter instantiated as either): it holds
+     * nothing but its state of having been assigned.
+     */
+    public undefinedOnlyStorage(type: ts.Type): DataType | undefined {
+        const resolved = this.resolveTypeParameter(type);
+        const members = resolved.isUnion() ? resolved.types : [resolved];
+        return members.every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                0,
+        )
+            ? { kind: "undefined" }
+            : undefined;
+    }
+
     /** Required undefined fields own a key independently of their payload. */
     private fromRecordFieldType(
         type: ts.Type,
@@ -4169,6 +4451,7 @@ export class DataTypeRegistry {
         node: ts.Node,
         provisionalName: string,
         allowStoredFunctions: boolean,
+        call?: DataType<"function">,
     ): DataType | undefined {
         if (isDomEventType(this.checker, type)) return undefined;
         const component = this.recordComponentOf(type);
@@ -4200,37 +4483,40 @@ export class DataTypeRegistry {
                 declaration ?? node,
             );
             const callableType = this.checker.getNonNullableType(propertyType);
+            // A callable record (a function with properties) is a record.
+            const callable =
+                callableType.getCallSignatures().length > 0 &&
+                !this.isCallableRecordType(callableType);
             return {
                 type: propertyType,
-                callable: callableType.getCallSignatures().length > 0,
-                mapped:
-                    callableType.getCallSignatures().length > 0
-                        ? allowStoredFunctions &&
-                          declaration !== undefined &&
-                          (ts.isPropertySignature(declaration) ||
-                              ts.isMethodSignature(declaration) ||
-                              ts.isMethodDeclaration(declaration) ||
-                              (this.classDemanded &&
-                                  (ts.isPropertyAssignment(declaration) ||
-                                      ts.isShorthandPropertyAssignment(
-                                          declaration,
-                                      ))))
-                            ? this.fromFunctionType(
-                                  callableType,
-                                  declaration ?? node,
-                              )
-                            : undefined
-                        : // A record's own field inherits the position the record is in
-                          // rather than demanding one: an interface written to carry a
-                          // scene's singletons -- a tool context holding the workspace, the
-                          // mouse and the dragger -- is a compile-time record, and giving
-                          // each of those a runtime object because a field names them would
-                          // turn every one of them into a shared allocation nothing shares.
-                          this.fromRecordFieldType(
-                              propertyType,
+                callable,
+                mapped: callable
+                    ? allowStoredFunctions &&
+                      declaration !== undefined &&
+                      (ts.isPropertySignature(declaration) ||
+                          ts.isMethodSignature(declaration) ||
+                          ts.isMethodDeclaration(declaration) ||
+                          (this.classDemanded &&
+                              (ts.isPropertyAssignment(declaration) ||
+                                  ts.isShorthandPropertyAssignment(
+                                      declaration,
+                                  ))))
+                        ? this.fromFunctionType(
+                              callableType,
                               declaration ?? node,
-                              property,
-                          ),
+                          )
+                        : undefined
+                    : // A record's own field inherits the position the record is in
+                      // rather than demanding one: an interface written to carry a
+                      // scene's singletons -- a tool context holding the workspace, the
+                      // mouse and the dragger -- is a compile-time record, and giving
+                      // each of those a runtime object because a field names them would
+                      // turn every one of them into a shared allocation nothing shares.
+                      this.fromRecordFieldType(
+                          propertyType,
+                          declaration ?? node,
+                          property,
+                      ),
             };
         };
         for (const [name, declared] of layout.properties) {
@@ -4338,8 +4624,9 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        // A component's members are one object under several types.
-        if (partial || proxy || component) {
+        // A component's members are one object under several types, and a
+        // function object is one object wherever it is passed.
+        if (partial || proxy || component || call) {
             this.referenceStructNames.add(provisionalName);
         }
         if (
@@ -4352,13 +4639,19 @@ export class DataTypeRegistry {
             // is visible to the dispatcher after the call.
             this.referenceStructNames.add(provisionalName);
         }
-        return this.internMappedStruct(provisionalName, fields, presences);
+        return this.internMappedStruct(
+            provisionalName,
+            fields,
+            presences,
+            call,
+        );
     }
 
     private internMappedStruct(
         provisionalName: string,
         fields: DataStructField[],
         presences: readonly FieldPresence[],
+        call?: DataType<"function">,
     ): DataType<"struct"> {
         // A union's stored element and a callback's declared result share an
         // object when their field layouts agree, regardless of mapping path.
@@ -4367,7 +4660,8 @@ export class DataTypeRegistry {
                 (field) =>
                     `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${field.sharedAbsent ? "shared" : field.uncheckedProperty ? "unchecked" : "checked"}:${JSON.stringify(field.presentForTags)}${accessorKey(field)}`,
             )
-            .join(",");
+            .join(",")
+            .concat(call ? `;call:${this.typeKey(call)}` : "");
         const existing = this.structsByKey.get(key);
         const name =
             existing && !this.referenceStructNames.has(provisionalName)
@@ -4375,8 +4669,46 @@ export class DataTypeRegistry {
                 : provisionalName;
         this.recordFieldPresences(name, fields, presences);
         if (name === provisionalName)
-            this.registerStructDefinition(key, { name, fields });
+            this.registerStructDefinition(key, {
+                name,
+                fields,
+                ...(call ? { call } : {}),
+            });
         return { kind: "struct", name };
+    }
+
+    /**
+     * A function object with properties: one call signature beside named
+     * properties (`(() => T) & { onResize?: ... }`, an interface declaring
+     * both). Its record stores the properties and, apart, its call.
+     */
+    private isCallableRecordType(type: ts.Type): boolean {
+        return (
+            type.getCallSignatures().length === 1 &&
+            type.getConstructSignatures().length === 0 &&
+            this.checker.getPropertiesOfType(type).length > 0
+        );
+    }
+
+    private fromCallableRecordType(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        if (!this.isCallableRecordType(type)) return undefined;
+        const signature = this.fromFunctionType(type, node);
+        if (signature?.kind !== "function" || signature.generic)
+            return undefined;
+        // The call is the function object itself: it keeps that identity.
+        const call: DataType<"function"> = { ...signature, identity: true };
+        const record = this.fromStructType(type, node, call);
+        return record?.kind === "struct" && this.structCall(record.name)
+            ? record
+            : undefined;
+    }
+
+    /** The call a callable record holds (`fromCallableRecordType`). */
+    public structCall(name: string): DataType<"function"> | undefined {
+        return this.structsByName.get(name)?.call;
     }
 
     /**
@@ -5364,9 +5696,12 @@ export class DataTypeRegistry {
      */
     public structFieldTypes(name: string): DataType[] {
         const definition = this.structsByName.get(name);
-        return (definition?.fields ?? []).flatMap((field) =>
-            field.accessor ? accessorFunctionTypes(field) : [field.type],
-        );
+        return [
+            ...(definition?.fields ?? []).flatMap((field) =>
+                field.accessor ? accessorFunctionTypes(field) : [field.type],
+            ),
+            ...(definition?.call ? [definition.call] : []),
+        ];
     }
 
     private registerStructDefinition(
@@ -6345,7 +6680,10 @@ export class DataTypeRegistry {
                 return;
             }
             emitted.add(definition.name);
-            for (const field of definition.fields) {
+            for (const field of [
+                ...definition.fields,
+                ...(definition.call ? [{ type: definition.call }] : []),
+            ]) {
                 for (const dependency of this.structDependencies(field.type)) {
                     const nested = structs.find(
                         (candidate) => candidate.name === dependency,
@@ -6407,6 +6745,9 @@ export class DataTypeRegistry {
                 ...(definition.classTag
                     ? [`    int ${classTagMember}{};`]
                     : []),
+                ...(definition.call
+                    ? [`    ${this.cppType(definition.call)} ${callMember};`]
+                    : []),
                 ...this.renderKeyedSlot(definition),
                 ...(definition.fields.some((field) => field.accessorReceiver)
                     ? [
@@ -6437,6 +6778,9 @@ export class DataTypeRegistry {
                                   ({ field, condition }) =>
                                       `        ${typeof condition === "string" ? `if constexpr (${condition}) ` : ""}visitor(record.${field.name});`,
                               ),
+                          ...(definition.call
+                              ? [`        visitor(record.${callMember});`]
+                              : []),
                           "    }",
                       ]),
                 ...(structuredClone

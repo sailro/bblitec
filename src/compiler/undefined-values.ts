@@ -82,11 +82,31 @@ export function provenUndefinedValue(
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
         if (ts.isIdentifier(callee)) {
-            const stored = context.bindings.lookupOptional(callee)?.dataType;
+            const bound = context.bindings.lookupOptional(callee);
+            const stored = bound?.dataType;
             if (stored?.kind === "function" && stored.undefinedCompletion)
                 return true;
             if (context.sharedClosures.identifierIsRebound(callee))
                 return false;
+            // A name bound at generation to one function literal or
+            // declaration (a specialized callback parameter) calls it.
+            const callback =
+                bound?.kind === "callback" && bound.callbackDeclaration
+                    ? ts.isIdentifier(bound.callbackDeclaration)
+                        ? declaredSymbol(
+                              context.checker,
+                              bound.callbackDeclaration,
+                          )?.valueDeclaration
+                        : bound.callbackDeclaration
+                    : undefined;
+            if (
+                callback &&
+                (ts.isFunctionDeclaration(callback) ||
+                    ts.isFunctionExpression(callback) ||
+                    ts.isArrowFunction(callback)) &&
+                hasUndefinedCompletion(context.checker, callback)
+            )
+                return true;
             const declaration = declaredSymbol(
                 context.checker,
                 callee,

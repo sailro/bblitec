@@ -456,11 +456,11 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.bindings.lookupOptional(ownerExpression) ??
-                // A module string or query bag without a runtime binding
-                // is its value at the use site.
+                // A module string, query bag or typed array without a
+                // runtime binding in this scope is its value at the use site.
                 (["string", "search-params"].includes(
                     lowerer.dataTypeAt(ownerExpression)?.kind ?? "",
-                )
+                ) || isTypedArrayType(lowerer.dataTypeAt(ownerExpression))
                     ? lowerer.context.compileValue(ownerExpression)
                     : lowerer.compileStaticContainer(ownerExpression)))
               : (ts.isPropertyAccessExpression(ownerExpression) ||
@@ -1013,6 +1013,68 @@ function compileKnownDataMethod(
             .structFields(recordType.name, callee.name, "accessors")
             .find((candidate) => candidate.sourceName === method);
         const functionType = field?.type;
+        if (
+            field &&
+            functionType?.kind === "union" &&
+            dataType?.kind !== "optional" &&
+            !field.accessor
+        ) {
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(recordType.name);
+            const receiver =
+                lowerer.context.allocateTemporaryCppName("callback_receiver");
+            const member = lowerer.unionFunctionMember(
+                lowerer.leafValue(
+                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    functionType,
+                ),
+                callee,
+            );
+            if (member) {
+                lowerer.context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name: receiver,
+                    initializer: narrowed.cpp,
+                });
+                return lowerer.compileStoredCall(
+                    call,
+                    member.cpp,
+                    member.dataType,
+                    referenceReceiver ? receiver : undefined,
+                );
+            }
+        }
+        if (
+            field &&
+            functionType?.kind === "struct" &&
+            dataType?.kind !== "optional" &&
+            !field.accessor &&
+            lowerer.context.dataTypes.structCall(functionType.name)
+        ) {
+            const receiver =
+                lowerer.context.allocateTemporaryCppName("callback_receiver");
+            lowerer.context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: receiver,
+                initializer: narrowed.cpp,
+            });
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(recordType.name);
+            if (referenceReceiver)
+                lowerer.context.emit({
+                    kind: "expression",
+                    code: `if (!(${receiver})) throw std::runtime_error("Cannot call a method on a nullish receiver.");`,
+                });
+            return lowerer.compileCallableRecordCall(
+                call,
+                lowerer.leafValue(
+                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    functionType,
+                ),
+            );
+        }
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);

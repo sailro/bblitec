@@ -9247,3 +9247,558 @@ check(
     if (failed) throw new Error(failed);
 `,
 );
+
+check(
+    "stored-function-extra-arguments-are-read-and-ignored",
+    `
+    function inner(
+        count: number,
+        canConnect: (ax: number, az: number, bx: number, bz: number, member: number, next: number) => boolean,
+    ): number {
+        let hits = 0;
+        for (let member = 0; member < count; member++)
+            if (canConnect(member, member + 1, member * 2, member * 3, member, member + 1)) hits++;
+        return hits;
+    }
+    function outer(count: number, canSee: (ax: number, az: number, bx: number, bz: number) => boolean): number {
+        return inner(count, canSee);
+    }
+    const outers: Array<typeof outer> = [outer];
+    if (outers[0]!(3, (a, b, c, d) => a + b + c + d > 4) !== 2) throw new Error("narrow callback through a wider parameter");
+    const order: string[] = [];
+    function note(label: string, value: number): number { order.push(label); return value; }
+    function callWide(f: (a: number, b: number, c: number) => number): number {
+        return f(note("a", 1), note("b", 2), note("c", 3));
+    }
+    function callNarrow(g: (a: number) => number): number { return callWide(g); }
+    const narrows: Array<typeof callNarrow> = [callNarrow];
+    if (narrows[0]!((a) => a * 2) !== 2) throw new Error("extra arguments reach no parameter");
+    if (order.join(",") !== "a,b,c") throw new Error("extra arguments evaluated once, in order: " + order.join(","));
+    let counter = 0;
+    const bump = (): number => ++counter;
+    function callTwice(f: (a: number, b: number) => number): number { return f(bump(), bump()); }
+    function callOnce(g: (a: number) => number): number { return callTwice(g); }
+    const onces: Array<typeof callOnce> = [callOnce];
+    if (onces[0]!((a) => a * 10 + counter) !== 12 || counter !== 2) throw new Error("extra argument effects " + counter);
+`,
+);
+
+test("stored function storage refuses values reading arguments it drops", () => {
+    for (const source of [
+        `const stores: Array<(a: number) => number> = [(a, b = 7) => a + b];
+        const wide: Array<(a: number, b: number) => number> = [stores[0]!];
+        if (wide[0]!(1, 2) !== 3) throw new Error("x");`,
+        `function callWide(f: (a: number, b: number) => number): number { return f(1, 2); }
+        const narrow: Array<(a: number) => number> = [(a) => a];
+        const first = callWide(narrow[0]!);
+        const later: Array<(a: number) => number> = [(a, b = 7) => a + b];
+        if (first + later[0]!(1) !== 9) throw new Error("x");`,
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /reading arguments past its storage signature cannot share that signature with calls passing more arguments/,
+        );
+});
+
+check(
+    "stored-function-spread-of-an-optional-lane-tuple",
+    `
+    type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number];
+    interface Batch { shiftKey(key: number, dx: number, dy: number, dz: number, yaw?: number, pivotX?: number): void }
+    function reapply(batch: Pick<Batch, "shiftKey">, seqs: readonly number[], read: (seq: number) => Pose): number {
+        let applied = 0;
+        for (const seq of seqs) {
+            const delta = read(seq);
+            batch.shiftKey(seq, ...delta);
+            applied++;
+        }
+        return applied;
+    }
+    const reapplies: Array<typeof reapply> = [reapply];
+    const log: string[] = [];
+    const batch: Batch = {
+        shiftKey: (key, dx, dy, dz, yaw = 0, pivotX?: number) => {
+            log.push(key + ":" + (dx + dy + dz) + ":" + yaw + ":" + (pivotX === undefined ? "none" : pivotX));
+        },
+    };
+    const count = reapplies[0]!(batch, [1, 2], (seq) => (seq === 1 ? [1, 2, 3] : [4, 5, 6, 0.5, 7]));
+    if (count !== 2 || log.join(",") !== "1:6:0:none,2:15:0.5:7") throw new Error("tuple lanes " + log.join(","));
+`,
+);
+
+check(
+    "function-valued-union-fields-and-parameters",
+    `
+    interface CellFillDeps { cell: number | (() => number); radius(): number; }
+    function makeStamp(deps: CellFillDeps): { stamp(cx: number): number } {
+        return {
+            stamp(cx) {
+                const cell = typeof deps.cell === "function" ? deps.cell() : deps.cell;
+                return cx * cell + deps.radius();
+            },
+        };
+    }
+    const stamps: Array<typeof makeStamp> = [makeStamp];
+    let spacing = 2;
+    const live = stamps[0]!({ cell: () => spacing, radius: () => 1 });
+    if (live.stamp(3) !== 7) throw new Error("function arm");
+    spacing = 5;
+    if (live.stamp(3) !== 16) throw new Error("function arm reads live state");
+    if (stamps[0]!({ cell: 4, radius: () => 1 }).stamp(3) !== 13) throw new Error("number arm");
+    function row(enabled: boolean | (() => boolean) = true): string {
+        const isEnabled = typeof enabled === "function" ? enabled() : enabled;
+        return String(!isEnabled);
+    }
+    const rows: Array<typeof row> = [row];
+    let gate = true;
+    if (rows[0]!() !== "false" || rows[0]!(false) !== "true" || rows[0]!(() => gate) !== "false")
+        throw new Error("boolean or getter parameter");
+    gate = false;
+    if (rows[0]!(() => gate) !== "true") throw new Error("getter parameter reads live state");
+`,
+);
+
+test("a union with several function arms refuses a function value", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Slot { pick: number | (() => number) | ((value: number) => number) }
+            const slots: Slot[] = [{ pick: () => 1 }];
+            if (slots.length !== 1) throw new Error("x");`),
+        /does not match the expected data union/,
+    );
+});
+
+check(
+    "recursive-function-varying-literal-argument",
+    `
+    function makeLoop(limit: number): { begin(): void; log: string[] } {
+        const log: string[] = [];
+        let runs = 0;
+        function start(fadeIn: boolean): void {
+            runs++;
+            log.push(fadeIn ? "in" : "cut");
+            if (runs < limit) retry();
+        }
+        function retry(): void { start(false); }
+        return { begin: () => start(true), log };
+    }
+    const loop = makeLoop(3);
+    loop.begin();
+    if (loop.log.join(",") !== "in,cut,cut") throw new Error("recursive literal argument " + loop.log.join(","));
+    function countdown(label: string, n: number): string {
+        return n === 0 ? label : countdown(label, n - 1) + label;
+    }
+    if (countdown("x", 2) !== "xxx") throw new Error("same literal recursion");
+`,
+);
+
+check(
+    "function-call-with-this-and-partial-bind",
+    `
+    function f(this: { k: number }, n: number): number { return this.k + n; }
+    if (f.call({ k: 1 }, 2) !== 3) throw new Error("call with this");
+    interface Counter { k: number }
+    function bump(this: Counter, by: number): number { this.k += by; return this.k; }
+    const counters: Counter[] = [{ k: 1 }];
+    if (bump.call(counters[0]!, 2) !== 3 || counters[0]!.k !== 3) throw new Error("call writes through this");
+    function add(a: number, b: number): number { return a + b; }
+    const inc = add.bind(null, 1);
+    if (inc(2) !== 3) throw new Error("bind partial");
+    const order: string[] = [];
+    function trace(label: string, value: number): number { order.push(label); return value; }
+    const three = (a: number, b: number, c: number): number => a * 100 + b * 10 + c;
+    const fns: Array<typeof three> = [three];
+    const bound = fns[0]!.bind(null, trace("a", 1), trace("b", 2));
+    if (order.join(",") !== "a,b") throw new Error("bound arguments read at bind");
+    if (bound(trace("c", 3)) !== 123 || bound(4) !== 124 || order.join(",") !== "a,b,c")
+        throw new Error("bound arguments read once " + order.join(","));
+    if (inc === add.bind(null, 1)) throw new Error("bind identity");
+`,
+);
+
+test("an imported typed array answers its methods where it is read", async (t) => {
+    const directory = resolve("artifacts/imported-typed-array-methods");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "matrix.ts"),
+        `export const IDENTITY = new Float32Array([1, 0, 0, 1]);`,
+    );
+    const result = compileSource(
+        `import { IDENTITY } from "./matrix.js";
+        class Frame {
+            point(x: number): Float32Array {
+                const matrix = IDENTITY.slice(), first = IDENTITY.indexOf(1);
+                matrix[1] = x + first;
+                return matrix;
+            }
+        }
+        const frames: Frame[] = [new Frame()];
+        const placed = frames[0]!.point(3);
+        if (placed[1] !== 3 || IDENTITY[1] !== 0 || placed === IDENTITY) throw new Error("imported typed array slice");`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    await executeGeneratedAssertions(
+        t,
+        "imported-typed-array-methods",
+        result.cpp,
+    );
+});
+
+checkInRealm(
+    "closures-calling-each-other-through-record-callbacks",
+    `
+    type Decision = "quit" | "cancel";
+    interface Deps {
+        decide: (decision: Decision) => void;
+        showConfirm: (opts: { onSave: () => void; onCancel: () => void }) => void;
+        save: () => Promise<boolean> | boolean;
+    }
+    interface Attempt { phase: "confirm" | "saving"; }
+    function createGate(deps: Deps): () => void {
+        let active: Attempt | null = null;
+        const showConfirm = (attempt: Attempt): void => {
+            if (active !== attempt) return;
+            attempt.phase = "confirm";
+            deps.showConfirm({
+                onSave: () => { if (active === attempt && attempt.phase === "confirm") save(attempt); },
+                onCancel: () => { if (active === attempt) { active = null; deps.decide("cancel"); } },
+            });
+        };
+        const save = (attempt: Attempt): void => {
+            attempt.phase = "saving";
+            void Promise.resolve()
+                .then(() => deps.save())
+                .then(
+                    (saved) => {
+                        if (active !== attempt) return;
+                        if (saved === true) { active = null; deps.decide("quit"); }
+                        else showConfirm(attempt);
+                    },
+                    () => showConfirm(attempt),
+                );
+        };
+        return () => {
+            if (active !== null) return;
+            const attempt: Attempt = { phase: "confirm" };
+            active = attempt;
+            showConfirm(attempt);
+        };
+    }
+    const gates: Array<typeof createGate> = [createGate];
+    const decisions: string[] = [];
+    let shown = 0;
+    let saves = 0;
+    const gate = gates[0]!({
+        decide: (decision) => {
+            decisions.push(decision);
+            if (shown !== 2 || saves !== 2 || decisions.join(",") !== "quit") throw new Error("gate " + shown + saves + decisions.join(","));
+            globalThis.close();
+        },
+        showConfirm: (opts) => { shown++; opts.onSave(); },
+        save: () => ++saves > 1,
+    });
+    gate();
+    if (shown !== 1 || saves !== 0) throw new Error("save waits for its promise");
+`,
+);
+
+check(
+    "number-as-a-callback-converts-each-value",
+    `
+    const parsed = JSON.parse('{"errors":[1,"2.5",true,null,"x"]}') as { errors: unknown };
+    if (!Array.isArray(parsed.errors)) throw new Error("array");
+    const errors = Float32Array.from(parsed.errors.map(Number));
+    if (errors[0] !== 1 || errors[1] !== 2.5 || errors[2] !== 1 || errors[3] !== 0 || !Number.isNaN(errors[4]!))
+        throw new Error("Number over parsed values");
+    const plain = ["1", "", " 4 "].map(Number);
+    if (plain.join(",") !== "1,0,4") throw new Error("Number over strings " + plain.join(","));
+`,
+);
+
+check(
+    "void-results-in-bindings-and-generic-memos",
+    `
+    let builds = 0;
+    let stamp = -1;
+    let revision = 0;
+    const memoized = <T>(build: () => T): (() => T) => {
+        let value: T;
+        return (): T => {
+            if (stamp === revision) return value;
+            value = build();
+            stamp = revision;
+            return value;
+        };
+    };
+    let tops: number[] = [];
+    const refresh = memoized((): void => {
+        builds++;
+        const out: number[] = [];
+        for (const v of [1, -2, 3]) {
+            if (v < 0) continue;
+            out.push(v * revision);
+        }
+        tops = out;
+    });
+    refresh();
+    refresh();
+    revision++;
+    refresh();
+    if (builds !== 2 || tops.join(",") !== "1,3") throw new Error("memoized void builder " + builds + ":" + tops.join(","));
+    function quiet(): void { builds += 10; }
+    let done: void;
+    done = quiet();
+    if (done !== undefined || builds !== 12) throw new Error("void binding");
+`,
+);
+
+test("a void binding refuses a result without a proven undefined completion", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const hooks: Array<() => void> = [() => {}];
+            let done: void;
+            done = hooks[0]!();
+            if (done !== undefined) throw new Error("x");`),
+        /requires a proven undefined completion/,
+    );
+});
+
+check(
+    "string-literal-union-truthiness",
+    `
+    type Status = "" | "earned" | "missing";
+    function shown(status: Status, flags: Status[]): number {
+        return flags.filter((flag) => !status || flag === status).length;
+    }
+    const counters: Array<typeof shown> = [shown];
+    if (counters[0]!("", ["earned", "missing"]) !== 2 || counters[0]!("earned", ["earned", "missing"]) !== 1)
+        throw new Error("string-literal union truthiness");
+    type Mode = "on" | "off";
+    function enabled(mode: Mode): boolean { return mode ? true : false; }
+    const modes: Array<typeof enabled> = [enabled];
+    if (!modes[0]!("off")) throw new Error("a union without an empty member is always truthy");
+`,
+);
+
+check(
+    "type-parameters-only-in-a-constraint-take-the-constraint",
+    `
+    interface Desired { key: string }
+    interface Slot<D extends Desired> { active: boolean; target: number; pending: D | null }
+    function fadeOut<D extends Desired, S extends Slot<D>>(states: readonly S[], xOf: (state: S) => number): number {
+        let faded = 0;
+        for (const state of states) if (state.active && xOf(state) > 0) { state.target = 0; state.pending = null; faded++; }
+        return faded;
+    }
+    interface Lily extends Slot<Desired> { x: number }
+    const lilies: Lily[] = [{ active: true, target: 1, pending: { key: "a" }, x: 2 }, { active: true, target: 1, pending: null, x: -1 }];
+    if (fadeOut(lilies, (lily) => lily.x) !== 1 || lilies[0]!.target !== 0 || lilies[1]!.target !== 1)
+        throw new Error("type parameter only in a constraint");
+`,
+);
+
+test("a type parameter no argument determines and no constraint fixes still refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            function first<D, S extends { value: D }>(items: readonly S[]): number { return items.length; }
+            const counted = first([{ value: 1 }]);
+            if (counted !== 1) throw new Error("x");`),
+        /Type parameter 'D' is not determined by this call's arguments/,
+    );
+});
+
+checkInRealm(
+    "value-or-promise-results-are-awaited-as-either-arm",
+    `
+    type Result = { changed: true; hostId: number } | { changed: false; reason: "stale" | "missing" };
+    type MaybeAsync<T> = T | Promise<T>;
+    function createCommand(deps: { read(id: number): { mix: number } | undefined; prepare: () => Promise<void> }) {
+        const refused = (reason: "stale" | "missing"): Result => ({ changed: false, reason });
+        const publish = (id: number, slow: boolean): MaybeAsync<Result> => {
+            if (slow)
+                return (async (): Promise<Result> => {
+                    await deps.prepare();
+                    return { changed: true, hostId: id };
+                })();
+            return { changed: true, hostId: id };
+        };
+        const pick = (id: number, slow: boolean): MaybeAsync<Result> => {
+            const record = deps.read(id);
+            if (!record) return refused("missing");
+            if (record.mix < 0) return refused("stale");
+            return publish(id, slow);
+        };
+        return {
+            preview: (id: number): MaybeAsync<Result> => pick(id, false),
+            commit: async (id: number): Promise<boolean> => (await pick(id, true)).changed,
+        };
+    }
+    const creates: Array<typeof createCommand> = [createCommand];
+    let prepared = 0;
+    const command = creates[0]!({ read: (id) => (id > 0 ? { mix: id - 2 } : undefined), prepare: async () => { prepared++; } });
+    const order: string[] = [];
+    void (async () => {
+        const quick = await command.preview(3);
+        order.push("quick:" + quick.changed);
+        const missing = await command.preview(0);
+        order.push("missing:" + (missing.changed ? "" : missing.reason));
+        const committed = await command.commit(4);
+        order.push("commit:" + committed + ":" + prepared);
+        const stale = await command.commit(1);
+        order.push("stale:" + stale);
+        if (order.join(",") !== "quick:true,missing:missing,commit:true:1,stale:false") throw new Error(order.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+check(
+    "function-objects-given-properties-are-callable-records",
+    `
+    type Source = (() => number) & { onResize?: (callback: () => void) => () => void };
+    type Binding = (() => void) & { dispose(): void };
+    function constantSource(value: number): Source {
+        return Object.assign(() => value * 2, {
+            onResize: (callback: () => void) => { callback(); return () => { value = -1; }; },
+        });
+    }
+    function bind(source: Source, log: number[]): Binding {
+        let disposed = false;
+        const refresh = (): void => { if (!disposed) log.push(source()); };
+        refresh();
+        const unsubscribe = source.onResize?.(refresh);
+        const dispose = (): void => { disposed = true; unsubscribe?.(); };
+        return Object.assign(refresh, { dispose });
+    }
+    const binds: Array<typeof bind> = [bind];
+    const log: number[] = [];
+    const source = constantSource(3);
+    const binding = binds[0]!(source, log);
+    binding();
+    if (typeof binding !== "function" || typeof source !== "function") throw new Error("typeof callable record");
+    binding.dispose();
+    binding();
+    if (log.join(",") !== "6,6,6" || source() !== -2) throw new Error("callable record calls " + log.join(","));
+    const callbacks: Array<() => void> = [binding];
+    callbacks[0]!();
+    if (log.length !== 3) throw new Error("callable record as a function value");
+    function wrap(): { binding: Binding; refresh: () => void } {
+        const refresh = (): void => {};
+        return { binding: Object.assign(refresh, { dispose: () => {} }), refresh };
+    }
+    const wrapped = wrap();
+    const other = wrap();
+    if (wrapped.binding !== wrapped.refresh || wrapped.binding === other.binding || other.refresh === wrapped.binding)
+        throw new Error("a callable record is the function it calls");
+`,
+);
+
+check(
+    "rest-parameters-of-fixed-tuples-bind-their-lanes",
+    `
+    type Vec3 = readonly [number, number, number];
+    interface Clearance { isClear(a: Vec3, b: Vec3, sag: number, label: string): boolean; }
+    function create(options: { limit: () => number }): Clearance {
+        const isClear = (limit: number, ...[a, b, sag, label]: Parameters<Clearance["isClear"]>): boolean =>
+            a[0] + b[0] + sag < limit && label.length > 0;
+        return { isClear: (...args) => isClear(options.limit(), ...args) };
+    }
+    const creates: Array<typeof create> = [create];
+    let limit = 10;
+    const clearance = creates[0]!({ limit: () => limit });
+    if (!clearance.isClear([1, 0, 0], [2, 0, 0], 3, "x")) throw new Error("tuple rest lanes");
+    limit = 5;
+    if (clearance.isClear([1, 0, 0], [2, 0, 0], 3, "x") || clearance.isClear([0, 0, 0], [0, 0, 0], 1, ""))
+        throw new Error("tuple rest lanes read live");
+`,
+);
+
+test("a rest object pattern keeps refusing", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            function count(...{ length }: number[]): number { return length; }
+            if (count(1, 2) !== 2) throw new Error("x");`),
+        /A rest parameter is the last parameter and an identifier or array pattern/,
+    );
+});
+
+check(
+    "phantom-branded-objects-keep-their-object",
+    `
+    declare const keyBrand: unique symbol;
+    type Key = Readonly<{ readonly [keyBrand]: true }>;
+    class Holder { text = ""; }
+    function issue(text: string): Key {
+        const holder = new Holder();
+        holder.text = text;
+        return holder as unknown as Key;
+    }
+    function rename(key: Key, text: string): void { (key as unknown as Holder).text = text; }
+    function read(key: Key): string { return (key as unknown as Holder).text; }
+    const issues: Array<typeof issue> = [issue];
+    const renames: Array<typeof rename> = [rename];
+    const reads: Array<typeof read> = [read];
+    const first = issues[0]!("a");
+    const second = issues[0]!("a");
+    const keys: Key[] = [first, second];
+    renames[0]!(keys[0]!, "b");
+    if (reads[0]!(first) !== "b" || reads[0]!(second) !== "a" || keys[0] !== first || first === second)
+        throw new Error("branded identity");
+`,
+);
+
+test("a phantom brand asserted from several object types refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            declare const brand: unique symbol;
+            type Key = Readonly<{ readonly [brand]: true }>;
+            class A { a = 1; }
+            class B { b = 2; }
+            const keys: Key[] = [new A() as unknown as Key, new B() as unknown as Key];
+            if (keys.length !== 2) throw new Error("x");`),
+        /Compile-time record is missing required field '__@brand/,
+    );
+});
+
+check(
+    "object-assign-copies-methods-without-this",
+    `
+    type Predicate = (a: number, b: number) => boolean;
+    interface Read { surfaces(): number; isClear: Predicate }
+    type Clear = Predicate & { read(): Read };
+    function create(limit: () => number): Clear {
+        const predicateFor = (offset: number): Predicate => (a, b) => a + b + offset < limit();
+        return Object.assign(predicateFor(0), {
+            read(): Read {
+                const surfaces = limit();
+                return { surfaces: () => surfaces, isClear: predicateFor(1) };
+            },
+        });
+    }
+    const creates: Array<typeof create> = [create];
+    let bound = 5;
+    const clear = creates[0]!(() => bound);
+    const read = clear.read();
+    bound = 6;
+    if (!clear(1, 2) || clear(3, 3) || !read.isClear(1, 3) || read.surfaces() !== 5 || clear.read().surfaces() !== 6)
+        throw new Error("methods copied by Object.assign");
+    const merged = Object.assign({ base: 1 }, { twice(value: number): number { return value * 2; } });
+    if (merged.twice(merged.base) !== 2) throw new Error("method copied into a record");
+`,
+);
+
+test("Object.assign refuses a source method reading this", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const target = { value: 1 };
+            const merged = Object.assign(target, { read(): number { return this.value; } });
+            if (merged.read() !== 1) throw new Error("x");`),
+        /this source's accessors or methods are not represented/,
+    );
+});

@@ -37,8 +37,8 @@ function nativeCheck(
     });
 }
 
-test("call and bind refuse unrepresented dynamic receivers and partial binding", () => {
-    for (const method of ["call", "bind", "apply"])
+test("bind and apply refuse dynamic receivers and arguments bound into a rest parameter", () => {
+    for (const method of ["bind", "apply"])
         assert.throws(
             () =>
                 compileSource(`
@@ -58,10 +58,12 @@ test("call and bind refuse unrepresented dynamic receivers and partial binding",
     assert.throws(
         () =>
             compileSource(`
-            const add=(a:number,b:number):number=>a+b;
-            add.bind(undefined,1);
+            const count=(...values:number[]):number=>values.length;
+            const counts=[count];
+            const bound=counts[0]!.bind(undefined,1);
+            if(bound(2)!==2)throw new Error("rest");
         `),
-        /arguments/,
+        /cannot bind arguments into a rest parameter/,
     );
 });
 
@@ -321,6 +323,70 @@ test("deferred recursive callbacks and async record methods retain independent a
         await new Promise<void>(resolve=>setTimeout(resolve,20));
         if(completed!==2||seen!==573||cancelled!==0)throw new Error("deferred cycles and cancellation");
         first.dispose();second.dispose();globalThis.close();
+    })();
+`,
+        true,
+    ));
+
+test("value-or-promise unions await either arm in an asynchronous realm", (t) =>
+    nativeCheck(
+        t,
+        "value-or-promise-realm",
+        `
+    type Result={changed:true;hostId:number}|{changed:false;reason:string};
+    type MaybeAsync<T>=T|Promise<T>;
+    let prepared=0;
+    const pick=(id:number,slow:boolean):MaybeAsync<Result>=>{
+        if(id<=0)return {changed:false,reason:"missing"};
+        if(slow)return (async():Promise<Result>=>{prepared++;return {changed:true,hostId:id};})();
+        return {changed:true,hostId:id};
+    };
+    const picks:Array<typeof pick>=[pick];
+    let pending:boolean|Promise<boolean>=true;
+    void(async()=>{
+        const quick=await picks[0]!(3,false);const slow=await picks[0]!(4,true);const missing=await picks[0]!(0,true);
+        pending=Promise.resolve(false);const settled=await Promise.resolve(pending);
+        if(!quick.changed||quick.hostId!==3||!slow.changed||slow.hostId!==4||missing.changed||prepared!==1||settled)
+            throw new Error("value or promise arms");
+        globalThis.close();
+    })();
+`,
+        true,
+    ));
+
+test("stored unknown-parameter methods handle values an operation supplies", (t) =>
+    nativeCheck(
+        t,
+        "generic-callback-values",
+        `
+    interface Hooks{failed(error:unknown):void;settled():void}
+    let seen="";
+    const hooks:Hooks[]=[{failed:(error)=>{seen+=error instanceof Error?error.message:"?";},settled:()=>{}}];
+    function watch(task:Promise<void>,owner:Hooks):Promise<void>{return task.catch(owner.failed).finally(owner.settled);}
+    const watches:Array<typeof watch>=[watch];
+    void(async()=>{
+        await watches[0]!(Promise.reject(new Error("first")),hooks[0]!);
+        await watches[0]!(Promise.resolve(),hooks[0]!);
+        if(seen!=="first")throw new Error("generic catch handler "+seen);
+        globalThis.close();
+    })();
+`,
+        true,
+    ));
+
+test("value-or-promise unions match their arms across object type spellings", (t) =>
+    nativeCheck(
+        t,
+        "value-or-promise-spellings",
+        `
+    interface Command{setAmount(id:number,amount:number):{changed:boolean}|Promise<{changed:boolean}>}
+    function control(deps:{id:number;command:Command}){return {set:async(value:number)=>(await deps.command.setAmount(deps.id,value)).changed};}
+    const controls:Array<typeof control>=[control];
+    const quick=controls[0]!({id:1,command:{setAmount:(_id,amount)=>({changed:amount>0})}});
+    const slow=controls[0]!({id:2,command:{setAmount:async(_id,amount)=>({changed:amount>1})}});
+    void(async()=>{
+        if(!await quick.set(1)||await quick.set(0)||await slow.set(1)||!await slow.set(2))throw new Error("value or promise spellings");
+        globalThis.close();
     })();
 `,
         true,

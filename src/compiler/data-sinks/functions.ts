@@ -1,8 +1,9 @@
 import ts from "typescript";
 
-import { dataTypesEqual, type DataType } from "../data-types.js";
+import { callMember, dataTypesEqual, type DataType } from "../data-types.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
+import { hasFixedTupleRest } from "../user-functions.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -45,7 +46,8 @@ function expressionFunction(
         if (
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
-            dataType.restParameter === undefined
+            dataType.restParameter === undefined &&
+            !hasFixedTupleRest(lowerer.context.checker, unwrapped)
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 unwrapped,
@@ -218,6 +220,19 @@ function valueFunction(
     if (value.kind === "json-null") {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
+    // A callable record is called as its own call.
+    const callType =
+        value.kind === "data" && value.dataType?.kind === "struct"
+            ? lowerer.context.dataTypes.structCall(value.dataType.name)
+            : undefined;
+    if (callType) {
+        lowerer.context.useNativeValue(value);
+        return lowerer.compileKnownValueForSink(
+            lowerer.leafValue(`(${value.cpp})->${callMember}`, callType),
+            dataType,
+            node,
+        );
+    }
     // A value with storage is shared as it is or adapted to the sink; its
     // identity is the storage's own, whether or not the sink compares it.
     // Only a declaration without storage, or one whose storage cannot serve
@@ -243,7 +258,16 @@ function valueFunction(
                 "Stored generic function conversion requires matching concrete signature families.",
             );
         const adapted = adaptedArguments(lowerer, stored, dataType);
-        if (adapted)
+        if (adapted) {
+            // Parameters the sink does not declare read only what it passes;
+            // arguments the value does not declare are dropped.
+            if (
+                stored.restParameter !== undefined ||
+                stored.parameters.length > dataType.parameters.length
+            )
+                lowerer.noteArgumentsPastSignature(dataType, "reads", node);
+            else if (stored.parameters.length < dataType.parameters.length)
+                lowerer.noteArgumentsPastSignature(stored, "passes", node);
             return renderSignatureAdapter(
                 lowerer,
                 value.cpp,
@@ -251,13 +275,18 @@ function valueFunction(
                 adapted.named,
                 adapted.arguments_,
             );
+        }
     }
     if (value.kind === "callback" && value.callbackDeclaration) {
         const nativeType = lowerer.dataTypeAt(value.callbackDeclaration);
         if (
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
-            dataType.restParameter === undefined
+            dataType.restParameter === undefined &&
+            !hasFixedTupleRest(
+                lowerer.context.checker,
+                value.callbackDeclaration,
+            )
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 value.callbackDeclaration,

@@ -1,11 +1,13 @@
 import {
     commonResourceValue,
+    isStringValue,
     optionalPresentCpp,
     statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
+import { isJsonValue } from "./json-bridge.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -652,13 +654,13 @@ export function resolveFunctionDeclaration(
         }
         if (
             parameter.dotDotDotToken &&
-            (!ts.isIdentifier(parameter.name) ||
+            (ts.isObjectBindingPattern(parameter.name) ||
                 parameter !==
                     declaration.parameters[declaration.parameters.length - 1])
         ) {
             fail(
                 parameter,
-                "A rest parameter is the last parameter and an identifier.",
+                "A rest parameter is the last parameter and an identifier or array pattern.",
             );
         }
         if (ts.isArrayBindingPattern(parameter.name)) {
@@ -682,6 +684,36 @@ export function resolveFunctionDeclaration(
         }
     }
     return declaration;
+}
+
+/** The length of a tuple type whose elements are all required. */
+function fixedTupleLength(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): number | undefined {
+    if (!checker.isTupleType(type)) return undefined;
+    const flags = ((type as ts.TypeReference).target as ts.TupleType)
+        .elementFlags;
+    return flags.every((flag) => (flag & ts.ElementFlags.Required) !== 0)
+        ? flags.length
+        : undefined;
+}
+
+/**
+ * Whether a function literal's final parameter is a rest parameter of a
+ * fixed tuple type: its lanes are ordinary parameters of a signature that
+ * spells them, rather than a packed array.
+ */
+export function hasFixedTupleRest(
+    checker: ts.TypeChecker,
+    declaration: ts.Node,
+): boolean {
+    if (!isSupportedFunction(declaration)) return false;
+    const last = declaration.parameters.at(-1);
+    return (
+        last?.dotDotDotToken !== undefined &&
+        fixedTupleLength(checker, checker.getTypeAtLocation(last)) !== undefined
+    );
 }
 
 /**
@@ -2271,6 +2303,60 @@ export class UserFunctionLowerer {
         for (const [key, value] of refreshed) writable(properties)[key] = value;
     }
 
+    /**
+     * Whether a call inside a recursive group passes its root, at
+     * `index`, anything but the generation-known scalar `argument` the
+     * entry call passes: another literal, or any expression other than
+     * that parameter itself. Such a parameter keeps its runtime storage,
+     * so each invocation reads the value it was called with.
+     */
+    private recursiveArgumentVaries(
+        declarations: readonly SupportedFunction[],
+        root: SupportedFunction,
+        parameter: ts.BindingName,
+        index: number,
+        argument: Value,
+    ): boolean {
+        const own = ts.isIdentifier(parameter)
+            ? declaredSymbol(this.checker, parameter)
+            : undefined;
+        const same = (passed: ts.Expression | undefined): boolean => {
+            const expression = passed && unwrapExpression(passed);
+            if (!expression) return false;
+            if (ts.isIdentifier(expression))
+                return (
+                    own !== undefined &&
+                    declaredSymbol(this.checker, expression) === own
+                );
+            if (expression.kind === ts.SyntaxKind.TrueKeyword)
+                return argument.staticBoolean === true;
+            if (expression.kind === ts.SyntaxKind.FalseKeyword)
+                return argument.staticBoolean === false;
+            if (ts.isStringLiteralLike(expression))
+                return argument.staticString === expression.text;
+            if (ts.isNumericLiteral(expression))
+                return argument.staticNumber === Number(expression.text);
+            return false;
+        };
+        let varies = false;
+        for (const declaration of declarations) {
+            if (!declaration.body) continue;
+            forEachAnalysisNode(declaration.body, (node) => {
+                if (
+                    !varies &&
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    tryResolveFunctionDeclaration(
+                        this.checker,
+                        node.expression,
+                    ) === root
+                )
+                    varies = !same(node.arguments[index]);
+            });
+        }
+        return varies;
+    }
+
     private sameCapturedValue(left: Value, right: Value): boolean {
         return (
             left === right ||
@@ -2355,8 +2441,14 @@ export class UserFunctionLowerer {
                 (node) => {
                     if (ts.isCallExpression(node)) {
                         // Callback arguments can call back into this function,
-                        // including through an anonymous scheduler body.
-                        for (const argument of node.arguments) {
+                        // including through an anonymous scheduler body or a
+                        // function literal in a record or array the callee
+                        // keeps. A named function in such a literal is a
+                        // value it passes, not a call.
+                        const visitArgument = (
+                            argument: ts.Expression,
+                            nested: boolean,
+                        ): void => {
                             const value = unwrapExpression(argument);
                             if (
                                 ts.isArrowFunction(value) ||
@@ -2365,14 +2457,38 @@ export class UserFunctionLowerer {
                                 for (const called of this.directCalls(value))
                                     callees.add(called);
                             }
-                            const callback = ts.isIdentifier(value)
-                                ? tryResolveFunctionDeclaration(
-                                      this.checker,
-                                      value,
-                                  )
-                                : undefined;
+                            const callback =
+                                !nested && ts.isIdentifier(value)
+                                    ? tryResolveFunctionDeclaration(
+                                          this.checker,
+                                          value,
+                                      )
+                                    : undefined;
                             if (callback) callees.add(callback);
-                        }
+                            if (ts.isArrayLiteralExpression(value))
+                                for (const element of value.elements)
+                                    visitArgument(
+                                        ts.isSpreadElement(element)
+                                            ? element.expression
+                                            : element,
+                                        true,
+                                    );
+                            if (ts.isObjectLiteralExpression(value))
+                                for (const property of value.properties) {
+                                    if (ts.isPropertyAssignment(property))
+                                        visitArgument(
+                                            property.initializer,
+                                            true,
+                                        );
+                                    else if (ts.isMethodDeclaration(property))
+                                        for (const called of this.directCalls(
+                                            property,
+                                        ))
+                                            callees.add(called);
+                                }
+                        };
+                        for (const argument of node.arguments)
+                            visitArgument(argument, false);
                     }
                     if (
                         ts.isCallExpression(node) &&
@@ -2879,7 +2995,18 @@ export class UserFunctionLowerer {
                     (argument.staticString !== undefined ||
                         argument.staticBoolean !== undefined ||
                         argument.kind === "json-null" ||
-                        loopBound))
+                        loopBound) &&
+                    !(
+                        recursive &&
+                        rootEntry.parameterTypes[index] &&
+                        this.recursiveArgumentVaries(
+                            declarations,
+                            root.declaration,
+                            parameter.name,
+                            index,
+                            argument,
+                        )
+                    ))
             ) {
                 rootEntry.parameterTypes[index] = undefined;
                 rootEntry.captured[index] = argument;
@@ -3756,6 +3883,10 @@ export class UserFunctionLowerer {
             : cpp;
     }
 
+    private fixedTupleLength(type: ts.Type): number | undefined {
+        return fixedTupleLength(this.checker, type);
+    }
+
     private nativeParameterValue(
         context: UserFunctionContext,
         parameter: ts.BindingName,
@@ -3832,6 +3963,55 @@ export class UserFunctionLowerer {
         };
     }
 
+    /**
+     * The global `Number` passed as a callback (`values.map(Number)`):
+     * ToNumber of its first argument, `0` without one.
+     */
+    private numberCallback(
+        context: UserFunctionContext,
+        declaration: ts.Node,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(declaration) ||
+            context.bindings.lookupOptional(declaration) !== undefined ||
+            libraryGlobal(this.checker, declaration) !== "Number"
+        )
+            return undefined;
+        const argument = arguments_[0];
+        if (!argument) return { kind: "number", cpp: "0.0", staticNumber: 0 };
+        const number = { kind: "number" } as const;
+        if (argument.kind === "number" || argument.dataType?.kind === "number")
+            return argument;
+        context.reachJsData();
+        if (isStringValue(argument))
+            return {
+                kind: "number",
+                cpp: `bbl::js::number_from_string(${argument.cpp})`,
+                dataType: number,
+            };
+        if (
+            argument.kind === "boolean" ||
+            argument.dataType?.kind === "boolean"
+        )
+            return {
+                kind: "number",
+                cpp: `(${argument.cpp} ? 1.0 : 0.0)`,
+                dataType: number,
+            };
+        if (isJsonValue(argument))
+            return {
+                kind: "number",
+                cpp: `${argument.cpp}.to_number()`,
+                dataType: number,
+            };
+        return context.fail(
+            callNode,
+            `Number as a callback supports number, string, boolean and parsed values, received ${argument.kind}.`,
+        );
+    }
+
     /** Invokes a callback over values supplied by a lowering operation. */
     public compileCallbackWithValues(
         context: UserFunctionContext,
@@ -3845,12 +4025,9 @@ export class UserFunctionLowerer {
         discardReturn = false,
         body?: CallbackInvocationOptions,
     ): Value {
-        const truth = this.booleanCallback(
-            context,
-            declaration,
-            arguments_,
-            callNode,
-        );
+        const truth =
+            this.booleanCallback(context, declaration, arguments_, callNode) ??
+            this.numberCallback(context, declaration, arguments_, callNode);
         if (truth) return truth;
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
@@ -4117,6 +4294,30 @@ export class UserFunctionLowerer {
                 "Stored function declares more parameters than its native data signature.",
             );
         }
+        // Its optional parameters past the signature read their defaults.
+        if (
+            dataType.restParameter === undefined &&
+            runtimeParameters.length > dataType.parameters.length
+        )
+            context.dataLowerer.noteArgumentsPastSignature(
+                dataType,
+                "reads",
+                declaration,
+            );
+        // A rest parameter of a fixed tuple type is the signature's
+        // trailing parameters, one lane each.
+        const restParameter = runtimeParameters.at(-1);
+        const restLanes =
+            dataType.restParameter === undefined &&
+            restParameter?.declaration.dotDotDotToken
+                ? this.fixedTupleLength(restParameter.type)
+                : undefined;
+        const tupleRest =
+            restLanes !== undefined &&
+            dataType.parameters.length ===
+                runtimeParameters.length - 1 + restLanes
+                ? restParameter
+                : undefined;
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
         const parameters = dataType.parameters.map((type, index) => ({
@@ -4135,8 +4336,19 @@ export class UserFunctionLowerer {
             dataType.result?.kind === "optional"
                 ? dataType.result.inner
                 : dataType.result;
+        // An async function stored where a value-or-promise union is
+        // expected returns its promise arm.
+        const settledPromise =
+            asynchronous &&
+            resultType?.kind === "union" &&
+            resultType.members.length === 2
+                ? resultType.members.find(
+                      (member): member is DataType<"promise"> =>
+                          member.kind === "promise",
+                  )
+                : undefined;
         const promiseType =
-            resultType?.kind === "promise" ? resultType : undefined;
+            resultType?.kind === "promise" ? resultType : settledPromise;
         const generator =
             "asteriskToken" in declaration && declaration.asteriskToken
                 ? resultType?.kind === "iterator"
@@ -4269,6 +4481,30 @@ export class UserFunctionLowerer {
                                     context.compileValue(initializer);
                                 context.emitDiscardedValue(evaluated);
                             }
+                            continue;
+                        }
+                        if (parameter === tupleRest) {
+                            const lanes = parameters
+                                .slice(runtimeIndex)
+                                .map(({ type, cppName: lane }) => {
+                                    context.registerNativeConstBinding(lane);
+                                    context.registerNativeBindingType(
+                                        lane,
+                                        context.dataTypes.cppType(type),
+                                    );
+                                    return context.dataValue(lane, type);
+                                });
+                            runtimeIndex = parameters.length;
+                            this.bindSpecializedParameter(
+                                context,
+                                ir.declaration,
+                                parameter,
+                                {
+                                    kind: "tuple",
+                                    cpp: "",
+                                    tupleElements: lanes,
+                                },
+                            );
                             continue;
                         }
                         const supplied = parameters[runtimeIndex++];
@@ -4504,12 +4740,9 @@ export class UserFunctionLowerer {
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
             : undefined;
-        const truth = this.booleanCallback(
-            context,
-            declaration,
-            arguments_,
-            callNode,
-        );
+        const truth =
+            this.booleanCallback(context, declaration, arguments_, callNode) ??
+            this.numberCallback(context, declaration, arguments_, callNode);
         if (truth) return truth;
         if (
             bound?.kind === "callback" ||
@@ -5352,15 +5585,20 @@ export class UserFunctionLowerer {
         if (cached) {
             return cached;
         }
-        const parameters = declaration.parameters.map(
-            (parameter): UserFunctionParameterIr => {
+        // A `this` parameter types the receiver; it takes no argument.
+        const parameters = declaration.parameters
+            .filter(
+                (parameter) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.name.text !== "this",
+            )
+            .map((parameter): UserFunctionParameterIr => {
                 return {
                     declaration: parameter,
                     name: parameter.name,
                     type: this.checker.getTypeAtLocation(parameter),
                 };
-            },
-        );
+            });
         const body = declaration.body;
         if (!body) {
             fail(declaration, "Reached user functions require a body.");

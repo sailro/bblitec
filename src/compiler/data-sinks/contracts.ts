@@ -34,6 +34,7 @@ export type DataSinkHost = Pick<
     | "spanCompatible"
     | "invalidateEscapingCollection"
     | "knownValueFitsSink"
+    | "noteArgumentsPastSignature"
 >;
 
 /** Every data kind declares expression and already-evaluated value conversion. */

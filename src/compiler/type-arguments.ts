@@ -50,7 +50,21 @@ export function callTypeArguments(
         unify.unify(declared.getReturnType(), resolved.getReturnType());
     }
     parameters.forEach((parameter, index) => {
-        if (!bindings.has(parameterSymbols[index]!)) {
+        const symbol = parameterSymbols[index]!;
+        // No argument infers it: TypeScript instantiates a constrained
+        // parameter that `unknown` cannot satisfy as its constraint.
+        const constraint =
+            parameter.constraint && !parameter.default
+                ? checker.getTypeAtLocation(parameter.constraint)
+                : undefined;
+        if (
+            !bindings.has(symbol) &&
+            constraint &&
+            !mentionsTypeParameter(checker, constraint) &&
+            !checker.isTypeAssignableTo(checker.getUnknownType(), constraint)
+        )
+            bindings.set(symbol, constraint);
+        if (!bindings.has(symbol)) {
             fail(
                 call,
                 `Type parameter '${parameter.name.text}' is not determined by this call's arguments; spell it explicitly.`,

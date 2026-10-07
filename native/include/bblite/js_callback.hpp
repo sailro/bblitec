@@ -1,15 +1,18 @@
 #pragma once
 
+#include <bblite/js_error.hpp>
 #include <bblite/js_gc.hpp>
 #include <bblite/js_realm_state.hpp>
 
 #include <cstddef>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace bbl::js {
 
@@ -222,6 +225,30 @@ template <typename R, typename... Args, typename Receiver>
 [[nodiscard]] Callback<R(Args...)> bind_callback(std::function<R(Args...)> target,
                                                  Receiver receiver) {
     return bind_callback(Callback<R(Args...)>(std::move(target)), std::move(receiver));
+}
+
+/** A bound function with leading arguments: fresh identity, the target, thisArg and
+ * the bound arguments as they were when `bind` ran, then the call's own arguments. */
+template <typename Target, typename Function, typename Receiver, typename... Bound>
+[[nodiscard]] Target bind_callback_arguments(Function target, Receiver receiver, Bound... bound) {
+    return make_closure(std::tuple{std::move(target), std::move(receiver), std::move(bound)...},
+                        [](auto& captures, auto&&... arguments) {
+                            return std::apply(
+                                [&](auto& function, auto&, auto&... leading) {
+                                    return function(leading...,
+                                                    std::forward<decltype(arguments)>(arguments)...);
+                                },
+                                captures);
+                        });
+}
+
+/** The function arm a call reads from a union slot; any other arm is not callable. */
+template <std::size_t Index, typename... Members>
+[[nodiscard]] const std::variant_alternative_t<Index, std::variant<Members...>>&
+function_member(const std::variant<Members...>& slot) {
+    if (slot.index() != Index)
+        std::rethrow_exception(make_error("TypeError", "Value is not a function"));
+    return std::get<Index>(slot);
 }
 
 template <typename Function> class NativeInvocation {

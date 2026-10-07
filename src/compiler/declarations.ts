@@ -628,6 +628,8 @@ export class DeclarationLowerer {
                 declaration,
                 this.context.checker,
             );
+            dataType ??=
+                this.context.dataTypes.undefinedOnlyStorage(declaredType);
             if (
                 !dataType &&
                 declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
@@ -1712,10 +1714,14 @@ export class DeclarationLowerer {
             // source callback declaration returned by an inlined builder.
             return undefined;
         }
-        const signatures = this.context.checker
-            .getTypeAtLocation(name)
-            .getCallSignatures();
-        if (signatures.length !== 1) return undefined;
+        const declaredType = this.context.checker.getTypeAtLocation(name);
+        const signatures = declaredType.getCallSignatures();
+        // A function object with properties is a callable record.
+        if (
+            signatures.length !== 1 ||
+            this.context.checker.getPropertiesOfType(declaredType).length > 0
+        )
+            return undefined;
         const signature = signatures[0]!;
         const returnType =
             this.context.checker.getReturnTypeOfSignature(signature);
@@ -1819,11 +1825,15 @@ export class DeclarationLowerer {
         const compiled = this.context.captureManagedClosureLines(() => {
             for (const name of forward.parameterNames)
                 this.context.registerNativeBinding(name);
+            // The slot is a void function: the callback's result, typed
+            // `void` (a generic result instantiated as `void` included),
+            // is discarded.
             const compile = () =>
                 this.context.compileCallbackWithValues(
                     value.callbackDeclaration!,
                     arguments_,
                     declaration.initializer!,
+                    true,
                 );
             const result = value.callbackRecordOwner
                 ? this.context.withRecordScopes(

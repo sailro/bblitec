@@ -120,6 +120,7 @@ import {
     type DataStructField,
     type DataType,
     type TypedArrayKind,
+    callMember,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
 import {
@@ -1104,20 +1105,28 @@ export class DataLowerer {
         values: readonly Value[],
         node: ts.Node,
     ): Value {
-        const type = callback.dataType;
+        let type = callback.dataType;
         if (type?.kind !== "function")
             this.context.fail(
                 node,
                 "Callback requires a native function signature.",
             );
-        if (type.generic)
-            this.context.fail(
+        let callable = callback.cpp;
+        if (type.generic) {
+            // The values select the concrete signature a source call would.
+            const field = this.context.dataTypes.genericFunctionValueCall(
+                type.generic,
+                values.map((value) =>
+                    this.context.dataTypes.suppliedValueType(value, node),
+                ),
                 node,
-                "Stored generic callbacks require a source call with concrete type arguments.",
             );
+            callable = `(${callable}).select(&bblscene::${type.generic}Data::${field.name})`;
+            type = field.type;
+        }
         this.context.useNativeValue(callback);
         const argumentsCpp = this.functionValueArguments(type, values, node);
-        const cpp = `${callback.cpp}(${argumentsCpp.join(", ")})`;
+        const cpp = `${callable}(${argumentsCpp.join(", ")})`;
         return type.result
             ? { ...this.leafValue(cpp, type.result), impure: true }
             : { kind: "void", cpp };
@@ -1129,6 +1138,11 @@ export class DataLowerer {
         node: ts.Node,
     ): string[] {
         const erased = new Set(type.erasedParameters ?? []);
+        if (
+            type.restParameter === undefined &&
+            values.length > type.parameters.length + erased.size
+        )
+            this.noteArgumentsPastSignature(type, "passes", node);
         const argumentsCpp: string[] = [];
         let runtimeIndex = 0;
         for (
@@ -1231,40 +1245,15 @@ export class DataLowerer {
                     argument,
                     "Function.apply with an array requires represented parameter lanes.",
                 );
-            return type.parameters.map((parameter, index) => {
-                if (index === type.restParameter)
-                    return this.compileKnownValueForSink(
-                        this.arrayRestValue(owner, index, argument),
-                        parameter,
-                        argument,
-                    );
-                const optional =
-                    parameter.kind === "optional" ||
-                    type.optionalParameters?.includes(index);
-                if (!optional)
-                    this.context.emit(
-                        `if (${source}.size() <= ${index}) throw std::runtime_error("Function.apply is missing a required represented argument.");`,
-                    );
-                const selected = optional
-                    ? this.guardableElementRead(
-                          owner,
-                          ts.factory.createElementAccessExpression(
-                              argument,
-                              ts.factory.createNumericLiteral(index),
-                          ),
-                      )
-                    : this.leafValue(`${source}[${index}]`, storage.element);
-                if (!selected)
-                    this.context.fail(
-                        argument,
-                        "Function.apply requires a represented optional array lane.",
-                    );
-                return this.compileKnownValueForSink(
-                    selected,
-                    parameter,
-                    argument,
-                );
-            });
+            return this.arrayLaneArguments(
+                type,
+                0,
+                owner,
+                storage,
+                argument,
+                call,
+                "Function.apply",
+            );
         }
         const count =
             storage.kind === "tuple" ? storage.arity : storage.elements.length;
@@ -1275,6 +1264,76 @@ export class DataLowerer {
             ),
             call,
         );
+    }
+
+    /**
+     * The parameters from `first` on, read from an owned array of argument
+     * lanes (an `apply` list, a call's trailing array spread): lane zero
+     * is parameter `first`, a lane past the array's end is an omitted
+     * argument, a rest parameter takes the remaining lanes and lanes past
+     * the parameters are passed and ignored.
+     */
+    private arrayLaneArguments(
+        type: DataType<"function">,
+        first: number,
+        owner: Value,
+        storage: DataType<"vector">,
+        argument: ts.Expression,
+        call: ts.Node,
+        label: string,
+    ): string[] {
+        if (
+            type.restParameter === undefined &&
+            first + this.maximumTupleLength(argument) > type.parameters.length
+        )
+            this.noteArgumentsPastSignature(type, "passes", call);
+        return type.parameters.slice(first).map((parameter, offset) => {
+            const index = first + offset;
+            if (index === type.restParameter)
+                return this.compileKnownValueForSink(
+                    this.arrayRestValue(owner, offset, argument),
+                    parameter,
+                    argument,
+                );
+            const optional =
+                parameter.kind === "optional" ||
+                type.optionalParameters?.includes(index);
+            if (!optional)
+                this.context.emit(
+                    `if (${owner.cpp}.size() <= ${offset}) throw std::runtime_error("${label} is missing a required represented argument.");`,
+                );
+            const selected = optional
+                ? this.guardableElementRead(
+                      owner,
+                      ts.factory.createElementAccessExpression(
+                          argument,
+                          ts.factory.createNumericLiteral(offset),
+                      ),
+                  )
+                : this.leafValue(`${owner.cpp}[${offset}]`, storage.element);
+            if (!selected)
+                this.context.fail(
+                    argument,
+                    `${label} requires a represented optional array lane.`,
+                );
+            return this.compileKnownValueForSink(selected, parameter, argument);
+        });
+    }
+
+    /** How many lanes the array `expression` can hold: a fixed tuple's own. */
+    private maximumTupleLength(expression: ts.Expression): number {
+        const type = this.context.checker.getTypeAtLocation(expression);
+        if (!this.context.checker.isTupleType(type))
+            return Number.POSITIVE_INFINITY;
+        const flags = ((type as ts.TypeReference).target as ts.TupleType)
+            .elementFlags;
+        return flags.some(
+            (flag) =>
+                (flag & (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !==
+                0,
+        )
+            ? Number.POSITIVE_INFINITY
+            : flags.length;
     }
 
     /** Arguments for a stored std::function, including omitted TS optionals. */
@@ -1295,14 +1354,62 @@ export class DataLowerer {
         const erased = new EmissionSet(functionType.erasedParameters ?? []);
         const sourceParameterCount =
             functionType.parameters.length + erased.size;
-        if (
+        // `f(a, ...lanes)` with lanes an array (a tuple with optional
+        // lanes): the leading arguments in order, then the array's lanes.
+        const tail = arguments_.at(-1);
+        const tailStorage =
+            tail &&
+            ts.isSpreadElement(tail) &&
             functionType.restParameter === undefined &&
-            arguments_.length > sourceParameterCount
+            erased.size === 0 &&
+            !arguments_.slice(0, -1).some(ts.isSpreadElement)
+                ? this.dataTypeAt(tail.expression)
+                : undefined;
+        if (
+            tail &&
+            ts.isSpreadElement(tail) &&
+            tailStorage?.kind === "vector"
         ) {
-            this.context.fail(
-                call,
-                `${label} expects at most ${sourceParameterCount} arguments.`,
-            );
+            const leading = arguments_.slice(0, -1);
+            if (leading.length > functionType.parameters.length)
+                this.context.fail(
+                    tail,
+                    `${label} spread lanes past its parameters require a numeric tuple.`,
+                );
+            const argumentsCpp = leading.map((argument, index) => {
+                const name =
+                    this.context.allocateTemporaryCppName("call_argument");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name,
+                    initializer: this.compileForSink(
+                        argument,
+                        functionType.parameters[index]!,
+                    ),
+                });
+                return name;
+            });
+            const lanes =
+                this.context.allocateTemporaryCppName("spread_arguments");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: lanes,
+                initializer: this.compileForSink(tail.expression, tailStorage),
+            });
+            return [
+                ...argumentsCpp,
+                ...this.arrayLaneArguments(
+                    functionType,
+                    leading.length,
+                    this.leafValue(lanes, tailStorage),
+                    tailStorage,
+                    tail.expression,
+                    call,
+                    label,
+                ),
+            ];
         }
         // `f(...lanes)` against fixed parameters: every argument in order,
         // each numeric tuple spread expanded into its lanes.
@@ -1312,11 +1419,18 @@ export class DataLowerer {
             arguments_.some(ts.isSpreadElement)
                 ? this.spreadArgumentValues(arguments_, label)
                 : undefined;
-        if (spreadSlots && spreadSlots.length > sourceParameterCount)
-            this.context.fail(
-                call,
-                `${label} expects at most ${sourceParameterCount} arguments.`,
-            );
+        // JavaScript evaluates arguments past the parameters, in order, and
+        // the function ignores them: the signature's values read none. A
+        // spread's lanes were each read once already.
+        if (
+            functionType.restParameter === undefined &&
+            (spreadSlots ?? arguments_).length > sourceParameterCount
+        )
+            this.noteArgumentsPastSignature(functionType, "passes", call);
+        const extraArguments =
+            functionType.restParameter === undefined && !spreadSlots
+                ? arguments_.slice(sourceParameterCount)
+                : [];
         const argumentsCpp: string[] = [];
         let runtimeIndex = 0;
         for (
@@ -1418,7 +1532,51 @@ export class DataLowerer {
             this.context.reachJsData();
             argumentsCpp.push(this.context.dataTypes.absentValue(parameter));
         }
+        // Earlier arguments an extra one could change or observe are pinned
+        // above (`ordered`).
+        for (const argument of extraArguments) {
+            if (ts.isSpreadElement(argument))
+                this.context.fail(
+                    argument,
+                    `${label} spread arguments past its parameters require a numeric tuple.`,
+                );
+            this.context.emitDiscardedValue(
+                this.context.compileValue(argument),
+            );
+        }
         return argumentsCpp;
+    }
+
+    /**
+     * Native function storage signatures, by C++ type, whose stored values
+     * may read arguments past the signature's parameters (a value declaring
+     * more optional, defaulted or rest parameters than the signature), and
+     * those some call or adaptation passes more arguments than the
+     * signature declares. JavaScript hands the value those extra arguments;
+     * its native storage drops them, so one signature cannot be both.
+     */
+    private readonly argumentsPastSignature = {
+        reads: new EmissionSet<string>(),
+        passes: new EmissionSet<string>(),
+    };
+
+    public noteArgumentsPastSignature(
+        type: DataType<"function">,
+        use: "reads" | "passes",
+        node: ts.Node,
+    ): void {
+        if (type.generic) return;
+        const key = this.context.dataTypes.cppType(type);
+        if (
+            this.argumentsPastSignature[
+                use === "reads" ? "passes" : "reads"
+            ].has(key)
+        )
+            this.context.fail(
+                node,
+                "A stored function value reading arguments past its storage signature cannot share that signature with calls passing more arguments than it declares.",
+            );
+        this.argumentsPastSignature[use].add(key);
     }
 
     /**
@@ -3086,6 +3244,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             value,
             optionalValueCpp(value.cpp),
             inner,
+        );
+    }
+
+    /**
+     * The function a call reads from a union slot TypeScript narrowed to
+     * its one function arm (`typeof f === "function" ? f() : f`). The call
+     * checks the arm it reads: any other is not callable (a TypeError).
+     */
+    public unionFunctionMember(
+        value: Value,
+        callee: ts.Expression,
+    ): (Value & { dataType: DataType<"function"> }) | undefined {
+        const type = value.dataType;
+        if (type?.kind !== "union") return undefined;
+        const arms = type.members.flatMap((member, index) =>
+            member.kind === "function" ? [{ member, index }] : [],
+        );
+        const arm = arms[0];
+        if (
+            !arm ||
+            arms.length > 1 ||
+            this.context.checker.getTypeAtLocation(callee).getCallSignatures()
+                .length === 0
+        )
+            return undefined;
+        this.context.reachJsData();
+        return {
+            ...this.projectedNativeValue(
+                value,
+                `bbl::js::function_member<${arm.index}>(${value.cpp})`,
+                arm.member,
+            ),
+            dataType: arm.member,
+        };
+    }
+
+    /**
+     * A call of a callable record (`binding()`, a function object given
+     * properties by `Object.assign`): its own call, read through the record
+     * once its reference is read.
+     */
+    public compileCallableRecordCall(
+        call: ts.CallExpression,
+        value: Value,
+    ): Value | undefined {
+        const type = value.dataType;
+        const callType =
+            value.kind === "data" && type?.kind === "struct"
+                ? this.context.dataTypes.structCall(type.name)
+                : undefined;
+        if (!callType) return undefined;
+        this.context.useNativeValue(value);
+        const record = this.context.allocateTemporaryCppName("callable_record");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: record,
+            initializer: value.cpp,
+        });
+        return this.compileStoredCall(
+            call,
+            `${record}->${callMember}`,
+            callType,
+            record,
         );
     }
 
@@ -13294,6 +13516,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : `!${value.cpp}.empty()`,
             );
         }
+        if (value.kind === "data" && value.dataType?.kind === "enum") {
+            // A string-literal union is falsy only as its empty member.
+            if (
+                !this.context.dataTypes
+                    .enumMembers(value.dataType.name)
+                    .includes("")
+            )
+                return whenPresent("true");
+            const empty = this.context.dataTypes.enumMemberCpp(
+                value.dataType,
+                "",
+                this.context.sourceFile,
+            );
+            return whenPresent(`(${value.cpp} != ${empty})`);
+        }
         if (value.kind === "file") {
             // FileList index zero uses an empty opaque handle for absence.
             // A selected File is an object and therefore truthy regardless of
@@ -13701,6 +13938,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     second!.typedArrayConstructor;
                 return equal !== negated ? "true" : "false";
             }
+        }
+        // A callable record is one object with the function it calls: two
+        // compare by that call's identity, as a function compares.
+        const callableRecord = (operand: ts.Expression): boolean => {
+            const type = this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(operand),
+            );
+            return (
+                type.getCallSignatures().length === 1 &&
+                this.context.checker.getPropertiesOfType(type).length > 0
+            );
+        };
+        if (!loose && (callableRecord(left) || callableRecord(right))) {
+            const identity = this.context.probeEmission(() => {
+                const sides = [left, right].map((operand) => {
+                    const value = this.context.bindings.pinValueToTemporary(
+                        this.context.compileValue(operand),
+                        "compared_function",
+                        operand,
+                    );
+                    const type = value.dataType;
+                    if (
+                        value.kind === "data" &&
+                        type?.kind === "struct" &&
+                        this.context.dataTypes.structCall(type.name)
+                    )
+                        return `${value.cpp}->${callMember}`;
+                    return value.kind === "data" && type?.kind === "function"
+                        ? value.cpp
+                        : undefined;
+                });
+                return sides[0] !== undefined && sides[1] !== undefined
+                    ? `${sides[0]} ${negated ? "!=" : "=="} ${sides[1]}`
+                    : undefined;
+            });
+            if (identity) return identity;
         }
         const isNullish = (candidate: ts.Expression): boolean =>
             isNullishLiteral(this.context.checker, candidate) ||

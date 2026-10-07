@@ -55,6 +55,17 @@ function unionValue(
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
+    // A function is the union's one function arm, lowered into its storage.
+    if (
+        memberIndex < 0 &&
+        ((value.kind === "callback" && value.callbackDeclaration) ||
+            value.dataType?.kind === "function")
+    ) {
+        const functions = type.members.flatMap((member, index) =>
+            member.kind === "function" ? [index] : [],
+        );
+        if (functions.length === 1) memberIndex = functions[0]!;
+    }
     if (memberIndex < 0) return undefined;
     const cpp = lowerer.compileKnownValueForSink(
         value,

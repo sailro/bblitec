@@ -4,10 +4,11 @@ import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt, expressionMayRunCode } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
-import type { DataType, OwnPresence } from "./data-types.js";
+import { callMember, type DataType, type OwnPresence } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { functionUsesDynamicThis } from "./user-functions.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -658,41 +659,101 @@ function compileObjectAssign(
     const targetExpression = context.unwrap(argumentAt(call, 0));
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
-    const target =
+    let target =
         context.probeEmission(() =>
             context.resolveRecordValue(targetExpression),
         ) ?? context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
+    // A function given properties is a callable record: a fresh record
+    // whose call is that function, filled below as a struct target is. It
+    // is built as the callable type its result is stored as, when it has
+    // one, so the record needs no conversion there.
+    const contextual = context.checker.getContextualType(call);
+    const callable = context.dataTypes.fromStoredTsType(
+        contextual &&
+            context.checker.getNonNullableType(contextual).getCallSignatures()
+                .length === 1
+            ? context.checker.getNonNullableType(contextual)
+            : context.checker.getTypeAtLocation(call),
+        call,
+    );
+    const callType =
+        callable?.kind === "struct"
+            ? context.dataTypes.structCall(callable.name)
+            : undefined;
+    if (
+        callable?.kind === "struct" &&
+        callType &&
+        (target.kind === "callback" || target.dataType?.kind === "function")
+    ) {
+        const record = context.allocateTemporaryCppName("callable_record");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: record,
+            initializer: `bbl::js::make_ref<bblscene::${callable.name}Data>()`,
+        });
+        context.emit({
+            kind: "expression",
+            code: `${record}->${callMember} = ${context.dataLowerer.compileKnownValueForSink(target, callType, targetExpression)};`,
+        });
+        target = {
+            ...context.dataLowerer.leafValue(record, callable),
+            freshData: true,
+        };
+    }
     const fresh = ts.isObjectLiteralExpression(targetExpression);
     const readPairs = (
         source: ts.Expression,
         value = context.compileValue(source),
+        functions = false,
     ): Array<[string, Value]> => {
-        if (value.kind === "record") {
-            if (
-                Object.keys(value.recordMethods ?? {}).length > 0 ||
-                Object.keys(value.recordGetters ?? {}).length > 0
-            ) {
-                context.fail(
-                    source,
-                    "Object.assign copies plain properties; a source with methods or accessors is not represented.",
-                );
-            }
+        // A method is an own property holding its function; one reading
+        // `this` would read whichever object it is later called on. Only a
+        // target storing functions takes it.
+        const methods = Object.entries(value.recordMethods ?? {});
+        if (
+            value.kind === "record" &&
+            (Object.keys(value.recordGetters ?? {}).length > 0 ||
+                methods.some(
+                    ([, method]) =>
+                        !functions ||
+                        (!ts.isIdentifier(method) &&
+                            functionUsesDynamicThis(method)),
+                ))
+        ) {
+            context.fail(
+                source,
+                "Object.assign copies plain properties, and methods without `this` into a target storing functions; this source's accessors or methods are not represented.",
+            );
         }
-        return (
+        const pairs =
             fixedOwnEntries(context, value, source) ??
             context.fail(
                 source,
                 "Object.assign sources are compile-time records, object literals or structs.",
-            )
-        );
+            );
+        return value.kind === "record"
+            ? [
+                  ...pairs,
+                  ...methods.map(([name, method]): [string, Value] => [
+                      name,
+                      {
+                          kind: "callback",
+                          cpp: "",
+                          callbackDeclaration: method,
+                          callbackRecordOwner: value,
+                      },
+                  ]),
+              ]
+            : pairs;
     };
     // An existing target keeps what it receives, as a field store does.
     const sourcePairs = (
         source: ts.Expression,
         value?: Value,
     ): Array<[string, Value]> => {
-        const pairs = readPairs(source, value);
+        const pairs = readPairs(source, value, true);
         if (!fresh)
             for (const [, value] of pairs)
                 context.refuseBorrowedPlatformEventEscape(

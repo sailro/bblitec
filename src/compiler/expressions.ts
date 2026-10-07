@@ -254,6 +254,7 @@ export interface ExpressionContext
             | "expectKind"
             | "expectSameEngine"
             | "activeThis"
+            | "defineThis"
             | "resolveThisField"
             | "resolveStaticExpression"
             | "canvasSizeValue"
@@ -1519,7 +1520,11 @@ export class ExpressionLowerer {
                         ? "string"
                         : operand.kind === "callback" ||
                             operand.builtinConstructor !== undefined ||
-                            dataType?.kind === "function"
+                            dataType?.kind === "function" ||
+                            (dataType?.kind === "struct" &&
+                                this.context.dataTypes.structCall(
+                                    dataType.name,
+                                ) !== undefined)
                           ? "function"
                           : operand.kind === "void"
                             ? "undefined"
@@ -3492,6 +3497,25 @@ export class ExpressionLowerer {
                 bound.dataType,
             );
         }
+        const unionMember =
+            bound?.kind === "data"
+                ? this.context.dataLowerer.unionFunctionMember(bound, callee)
+                : undefined;
+        if (unionMember) {
+            return this.context.dataLowerer.compileStoredCall(
+                call,
+                unionMember.cpp,
+                unionMember.dataType,
+            );
+        }
+        const callableRecord =
+            bound?.kind === "data"
+                ? this.context.dataLowerer.compileCallableRecordCall(
+                      call,
+                      bound,
+                  )
+                : undefined;
+        if (callableRecord) return callableRecord;
         if (!bound) {
             const aliased = this.compileConstAliasCall(call, callee);
             if (aliased) return aliased;
@@ -3693,7 +3717,10 @@ export class ExpressionLowerer {
                 callable.cpp,
                 callable.dataType,
             );
-        return undefined;
+        return this.context.dataLowerer.compileCallableRecordCall(
+            call,
+            callable,
+        );
     }
 
     /**
@@ -5704,6 +5731,152 @@ export class ExpressionLowerer {
             : record;
     }
 
+    /**
+     * `f.bind(thisArg, a, b)`: a fresh function of the parameters after the
+     * bound ones. The bound arguments are read once, in order after the
+     * target and thisArg, when `bind` runs; each call passes them before its
+     * own arguments. Bound arguments past the parameters are read and
+     * ignored, as the target ignores them.
+     */
+    private compilePartialBind(
+        call: ts.CallExpression,
+        target: string,
+        type: DataType<"function">,
+        receiverCpp: string,
+    ): Value {
+        const bound = call.arguments.slice(1);
+        if (type.erasedParameters?.length || type.generic)
+            this.context.fail(
+                call,
+                "Function.bind with arguments requires represented parameter lanes.",
+            );
+        if (
+            type.restParameter !== undefined &&
+            bound.length > type.restParameter
+        )
+            this.context.fail(
+                call,
+                "Function.bind cannot bind arguments into a rest parameter.",
+            );
+        const spread = bound.find(ts.isSpreadElement);
+        if (spread)
+            this.context.fail(
+                spread,
+                "Function.bind takes its bound arguments separately.",
+            );
+        if (bound.length > type.parameters.length)
+            this.context.dataLowerer.noteArgumentsPastSignature(
+                type,
+                "passes",
+                call,
+            );
+        const receiver =
+            this.context.allocateTemporaryCppName("bound_receiver");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: receiver,
+            initializer: receiverCpp,
+        });
+        const boundCpp: string[] = [];
+        bound.forEach((argument, index) => {
+            const parameter = type.parameters[index];
+            if (!parameter) {
+                this.context.emitDiscardedValue(this.compileValue(argument));
+                return;
+            }
+            const name =
+                this.context.allocateTemporaryCppName("bound_argument");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name,
+                initializer: this.context.dataLowerer.compileForSink(
+                    argument,
+                    parameter,
+                ),
+            });
+            boundCpp.push(name);
+        });
+        const count = Math.min(bound.length, type.parameters.length);
+        const optionalParameters = (type.optionalParameters ?? [])
+            .filter((index) => index >= count)
+            .map((index) => index - count);
+        const { optionalParameters: _optional, restParameter, ...rest } = type;
+        void _optional;
+        const result: DataType<"function"> = {
+            ...rest,
+            parameters: type.parameters.slice(count),
+            identity: true,
+            ...(restParameter === undefined
+                ? {}
+                : { restParameter: restParameter - count }),
+            ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
+        };
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            dataType: result,
+            freshData: true,
+            cpp: `bbl::js::bind_callback_arguments<${this.context.dataTypes.cppType(result)}>(${[target, receiver, ...boundCpp].join(", ")})`,
+        };
+    }
+
+    /**
+     * `f.call(thisArg, ...args)` on a named function that declares or reads
+     * its `this`: the function runs with `this` bound to thisArg, which is
+     * read before the arguments, as each argument is read before the next.
+     */
+    private compileReceiverCall(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const target = this.context.unwrap(callee.expression);
+        if (
+            !ts.isIdentifier(target) ||
+            this.context.bindings.lookupOptional(target) !== undefined
+        )
+            return undefined;
+        const declaration = tryResolveFunctionDeclaration(
+            this.context.checker,
+            target,
+        );
+        if (
+            !declaration ||
+            !(
+                ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration)
+            ) ||
+            !(
+                functionUsesDynamicThis(declaration) ||
+                this.context.checker.getSignatureFromDeclaration(declaration)
+                    ?.thisParameter
+            ) ||
+            call.arguments.length === 0 ||
+            call.arguments.some(ts.isSpreadElement)
+        )
+            return undefined;
+        const pins = this.context.evaluationOrder.operandsToPin(call.arguments);
+        const values = call.arguments.map((argument, index) => {
+            const value = this.compileValue(argument);
+            return pins[index]
+                ? pinOperand(this.context, value, argument, "call_argument")
+                : value;
+        });
+        const previous = this.context.activeThis();
+        this.context.defineThis(values[0]);
+        try {
+            return this.context.userFunctions.compileCallbackWithValues(
+                this.context,
+                target,
+                values.slice(1),
+                call,
+            );
+        } finally {
+            this.context.defineThis(previous);
+        }
+    }
+
     /** Function call adapters consume the function object before their arguments run. */
     private compileFunctionObject(expression: ts.Expression): Value {
         if (
@@ -5798,7 +5971,8 @@ export class ExpressionLowerer {
                 callee.expression,
             );
             if (collection) return collection;
-            this.context.expectArgumentCount(call, 1, 1);
+            if (call.arguments.length === 0)
+                this.context.expectArgumentCount(call, 1, 1);
             const callable = this.compileFunctionObject(callee.expression);
             if (
                 callable.dataType?.kind === "function" &&
@@ -5837,6 +6011,21 @@ export class ExpressionLowerer {
                     call,
                     "Function.bind requires a retained native thisArg.",
                 );
+            const receiverCpp =
+                receiver.kind === "json-null"
+                    ? "std::monostate{}"
+                    : this.context.dataLowerer.compileKnownValueForSink(
+                          receiver,
+                          receiverType!,
+                          argumentAt(call, 0),
+                      );
+            if (call.arguments.length > 1)
+                return this.compilePartialBind(
+                    call,
+                    target,
+                    callable.dataType,
+                    receiverCpp,
+                );
             const type: DataType<"function"> = {
                 ...callable.dataType,
                 identity: true,
@@ -5845,7 +6034,7 @@ export class ExpressionLowerer {
                 kind: "data",
                 dataType: type,
                 freshData: true,
-                cpp: `bbl::js::bind_callback(${target}, ${receiver.kind === "json-null" ? "std::monostate{}" : this.context.dataLowerer.compileKnownValueForSink(receiver, receiverType!, argumentAt(call, 0))})`,
+                cpp: `bbl::js::bind_callback(${target}, ${receiverCpp})`,
             };
         }
         // `renderer._beforeUpdate.push(hook)`: sprite-renderer.ts keeps
@@ -5879,6 +6068,10 @@ export class ExpressionLowerer {
                     `${this.context.callbacks.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
+        }
+        if (callee.name.text === "call") {
+            const receiverCall = this.compileReceiverCall(call, callee);
+            if (receiverCall) return receiverCall;
         }
         if (callee.name.text === "call" || callee.name.text === "apply") {
             const functionCall = this.context.probeEmission(() => {
