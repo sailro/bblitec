@@ -4164,6 +4164,86 @@ test("module namespace entries fold computed constants and re-exports", async (t
     );
 });
 
+test("imported functions read numeric tuples through nullable lanes", async (t) => {
+    const directory = resolve("artifacts/tuple-nullable-lanes");
+    mkdirSync(directory, { recursive: true });
+    const routes = `
+        export const EPSILON = 1e-4;
+        export function topsMatch(a: readonly [number, number | null, number], b: readonly [number, number | null, number]): boolean {
+            return Math.abs(a[0] - b[0]) <= EPSILON
+                && (a[1] === null || b[1] === null ? a[1] === b[1] : Math.abs(a[1] - b[1]) <= EPSILON)
+                && Math.abs(a[2] - b[2]) <= EPSILON;
+        }
+        export function clear(a: [number, number | null, number]): void { a[1] = null; }
+        export const held: Array<readonly [number, number | null, number]> = [];
+        export function keep(a: readonly [number, number | null, number]): void { held.push(a); }`;
+    writeFileSync(join(directory, "routes.ts"), routes);
+    const entry = `
+        import { topsMatch } from "./routes.js";
+        const scratch: [number, number, number] = [0, 0, 0];
+        const target: [number, number, number] = [0, 0, 0];
+        function pointAt(packed: Float32Array, index: number, out: [number, number, number]): void {
+            out[0] = packed[index * 3]!;
+            out[1] = packed[index * 3 + 1]!;
+            out[2] = packed[index * 3 + 2]!;
+        }
+        function find(packed: Float32Array, x: number, y: number, z: number): number {
+            for (let slot = 0; slot < packed.length / 3; slot++) {
+                pointAt(packed, slot, scratch);
+                target[0] = x;
+                target[1] = y;
+                target[2] = z;
+                if (topsMatch(scratch, target)) return slot;
+            }
+            return -1;
+        }
+        const finders: Array<typeof find> = [find];
+        const packed = new Float32Array([1, 2, 3, 4, 5, 6]);
+        if (finders[0]!(packed, 4, 5, 6) !== 1 || find(packed, 1, 2, 3.5) !== -1) throw new Error("tuple tops");
+        if (scratch.join() !== "4,5,6" || target[2] !== 3.5) throw new Error("scratch tuples keep their storage");
+        if (!topsMatch([5, null, 7], [5, null, 7]) || topsMatch([5, null, 7], scratch)) throw new Error("null lane");`;
+    const commonJs = (source: string): string =>
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText;
+    const exported: Record<string, unknown> = {};
+    runInNewContext(commonJs(routes), { exports: exported });
+    runInNewContext(commonJs(entry), { exports: {}, require: () => exported });
+    const result = compileSource(entry, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "tuple-nullable-lanes", result.cpp);
+    // The copy into nullable lanes is the callee's only when nothing can
+    // tell it from the caller's array.
+    assert.throws(
+        () =>
+            compileSource(
+                `import { clear } from "./routes.js";
+                const lanes: [number, number, number] = [1, 2, 3];
+                function run(x: number): number { lanes[0] = x; clear(lanes); return lanes[1]; }
+                const runs: Array<typeof run> = [run];
+                if (runs[0]!(Math.random()) !== null) throw new Error("cleared");`,
+                { fileName: join(directory, "writes.ts") },
+            ),
+        /By-reference data arguments require a matching addressable local or path/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `import { keep, held } from "./routes.js";
+                const lanes: [number, number, number] = [1, 2, 3];
+                function run(x: number): number { lanes[0] = x; keep(lanes); lanes[2] = 9; return held[0]![2]; }
+                const runs: Array<typeof run> = [run];
+                if (runs[0]!(Math.random()) !== 9) throw new Error("kept");`,
+                { fileName: join(directory, "retains.ts") },
+            ),
+        /An array stored as an array of another element type is a copy/,
+    );
+});
+
 check(
     "spread-string-literal-sets",
     `
