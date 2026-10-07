@@ -10272,6 +10272,56 @@ test("stored function adapters refuse lanes the value does not hold", () => {
 });
 
 check(
+    "methods-picked-by-a-runtime-key-are-called",
+    `
+    type Shape = "circle" | "square";
+    interface Costs {
+        circle(label: string, scaled: boolean): number;
+        square(label: string, scaled: boolean): number;
+    }
+    const order: string[] = [];
+    function note<T>(label: string, value: T): T { order.push(label); return value; }
+    function pricing(costs: Costs) {
+        return {
+            price(shape: Shape, label: string, scaled: boolean): { shape: Shape; cost: number } {
+                return { shape, cost: costs[note("key", shape)](note("label", label), note("scaled", scaled)) };
+            },
+        };
+    }
+    let calls = 0;
+    const made = pricing({
+        circle: (label, scaled) => { calls++; return label.length + (scaled ? 100 : 0); },
+        square: (label, scaled) => { calls++; return label.length * 2 + (scaled ? 100 : 0); },
+    });
+    if (made.price("circle", "ring", false).cost !== 4) throw new Error("circle");
+    if (made.price("square", "tile", true).cost !== 108) throw new Error("square");
+    if (calls !== 2 || order.join(",") !== "key,label,scaled,key,label,scaled") throw new Error("order " + order.join(","));
+    const stored: Array<typeof pricing> = [pricing];
+    const runtime = stored[0]!({ circle: (label) => label.length, square: (label) => -label.length });
+    if (runtime.price("square", "ab", false).cost !== -2) throw new Error("runtime record");
+`,
+);
+
+test("a method reading this stays refused when picked by a runtime key", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            type Shape = "circle" | "square";
+            interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
+            function pricing(costs: Costs) {
+                return { price(shape: Shape, label: string): number { return costs[shape](label); } };
+            }
+            const made = pricing({
+                scale: 10,
+                circle(label) { return this.scale * label.length; },
+                square(label) { return this.scale * 2 * label.length; },
+            });
+            if (made.price("circle", "ring") !== 40) throw new Error("x");`),
+        /reads `this`, and .* reads its function value, which could call it with another receiver/,
+    );
+});
+
+check(
     "stored-function-spread-of-an-optional-lane-tuple",
     `
     type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number];
