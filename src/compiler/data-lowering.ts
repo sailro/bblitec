@@ -1585,10 +1585,8 @@ export class DataLowerer {
      * signature declares. JavaScript hands the value those extra arguments;
      * its native storage drops them, so one signature cannot be both.
      */
-    private readonly argumentsPastSignature = {
-        reads: new EmissionSet<string>(),
-        passes: new EmissionSet<string>(),
-    };
+    private readonly signaturesReadPast = new EmissionSet<string>();
+    private readonly signaturesPassedPast = new EmissionSet<string>();
 
     public noteArgumentsPastSignature(
         type: DataType<"function">,
@@ -1597,16 +1595,16 @@ export class DataLowerer {
     ): void {
         if (type.generic) return;
         const key = this.context.dataTypes.cppType(type);
-        if (
-            this.argumentsPastSignature[
-                use === "reads" ? "passes" : "reads"
-            ].has(key)
-        )
+        const [noted, conflicting] =
+            use === "reads"
+                ? [this.signaturesReadPast, this.signaturesPassedPast]
+                : [this.signaturesPassedPast, this.signaturesReadPast];
+        if (conflicting.has(key))
             this.context.fail(
                 node,
                 "A stored function value reading arguments past its storage signature cannot share that signature with calls passing more arguments than it declares.",
             );
-        this.argumentsPastSignature[use].add(key);
+        noted.add(key);
     }
 
     /**
