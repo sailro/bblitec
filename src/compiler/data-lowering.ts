@@ -13453,6 +13453,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : `!${value.cpp}.empty()`,
             );
         }
+        if (value.kind === "data" && value.dataType?.kind === "enum") {
+            // A string-literal union is falsy only as its empty member.
+            if (!this.context.dataTypes.enumMembers(value.dataType.name).includes(""))
+                return whenPresent("true");
+            const empty = this.context.dataTypes.enumMemberCpp(
+                value.dataType,
+                "",
+                this.context.sourceFile,
+            );
+            return whenPresent(`(${value.cpp} != ${empty})`);
+        }
         if (value.kind === "file") {
             // FileList index zero uses an empty opaque handle for absence.
             // A selected File is an object and therefore truthy regardless of

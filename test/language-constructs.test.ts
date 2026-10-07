@@ -9204,3 +9204,20 @@ test("a void binding refuses a result without a proven undefined completion", ()
         /requires a proven undefined completion/,
     );
 });
+
+check(
+    "string-literal-union-truthiness",
+    `
+    type Status = "" | "earned" | "missing";
+    function shown(status: Status, flags: Status[]): number {
+        return flags.filter((flag) => !status || flag === status).length;
+    }
+    const counters: Array<typeof shown> = [shown];
+    if (counters[0]!("", ["earned", "missing"]) !== 2 || counters[0]!("earned", ["earned", "missing"]) !== 1)
+        throw new Error("string-literal union truthiness");
+    type Mode = "on" | "off";
+    function enabled(mode: Mode): boolean { return mode ? true : false; }
+    const modes: Array<typeof enabled> = [enabled];
+    if (!modes[0]!("off")) throw new Error("a union without an empty member is always truthy");
+`,
+);
