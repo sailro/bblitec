@@ -7049,6 +7049,34 @@ check(
 );
 
 check(
+    "stored-unknown-parameters-take-absent-values-and-empty-objects",
+    `
+    function classify(x: unknown): string {
+        if (x === undefined) return "u";
+        if (x === null) return "n";
+        if (typeof x === "object") return "o" + Object.keys(x).length;
+        return typeof x;
+    }
+    const classifiers: Array<(x: unknown) => string> = [classify];
+    const text = classifiers[0]!(undefined) + classifiers[0]!(null) + classifiers[0]!({}) + classifiers[0]!(5) + classifiers[0]!({ a: 1 });
+    if (text !== "uno0numbero1") throw new Error("absent values and empty objects " + text);
+    let looped = "";
+    for (let i = 0; i < 2; i++) looped += classifiers[0]!(i === 0 ? null : undefined);
+    if (looped !== "nu") throw new Error("absent union argument " + looped);
+`,
+);
+
+test("stored unknown parameters refuse a non-literal value typed {}", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'function f(x: unknown): number { return x === null ? 1 : 0; } const fs: Array<(x: unknown) => number> = [f]; function pick(flag: boolean): {} { return flag ? 1 : "a"; } const unused = fs[0]!(pick(true));',
+            ),
+        /Stored generic function instantiation requires a fully represented native signature/,
+    );
+});
+
+check(
     "readonly-records-are-their-records",
     `
     const LANGS = ["en", "fr"] as const;
