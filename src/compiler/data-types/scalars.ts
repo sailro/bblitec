@@ -162,4 +162,5 @@ export const scalarKinds: DataKindOperations<
     i16array: typedArray("i16array"),
     u32array: typedArray("u32array"),
     i32array: typedArray("i32array"),
+    u8clampedarray: typedArray("u8clampedarray"),
 };

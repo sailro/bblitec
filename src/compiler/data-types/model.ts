@@ -92,7 +92,8 @@ export type TypedArrayKind =
     | "u16array"
     | "i16array"
     | "u32array"
-    | "i32array";
+    | "i32array"
+    | "u8clampedarray";
 export const DEFERRED_DOM_OBJECTS = [
     "Headers",
     "AbortController",
@@ -274,6 +275,9 @@ interface DataKinds {
     };
     u32array: {
         kind: "u32array";
+    };
+    u8clampedarray: {
+        kind: "u8clampedarray";
     };
     i32array: {
         kind: "i32array";

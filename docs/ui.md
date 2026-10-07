@@ -42,7 +42,7 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
 - Stored Document queries and element construction use their selected owner; optional receivers skip argument evaluation when absent.
 - Document queries activate the Window owner before element construction; missing lookups retain runtime null checks. Stored style-element writes use the same stylesheet admission as constructed styles.
-- Source-declared optional Window properties start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion. Statement `??=`, `||=` and `&&=` evaluate the receiver once and the right operand lazily.
+- Source-declared optional Window properties (also read through `globalThis`, `self` or a `const` view of them, which makes the program a Window application) start undefined and retain typed values on their Window, including stored receivers; records and callbacks preserve identity across reads, replacement and deletion. Statement `??=`, `||=` and `&&=` evaluate the receiver once and the right operand lazily.
 - RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.

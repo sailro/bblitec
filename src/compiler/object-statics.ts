@@ -1,7 +1,7 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, expressionMayRunCode } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType, OwnPresence } from "./data-types.js";
@@ -15,6 +15,7 @@ import {
 
 type ObjectStaticContext = Pick<
     LoweringServices,
+    | "checker"
     | "compileValue"
     | "moduleNamespaces"
     | "captureEmittedLines"
@@ -854,6 +855,121 @@ function compileObjectAssign(
 }
 
 /**
+ * `Object.create(null)` where a dictionary is expected: a dictionary has no
+ * prototype chain in its representation, so it is exactly an object with a
+ * null prototype. Any other prototype refuses.
+ */
+function compileObjectCreate(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const prototype = context.unwrap(argumentAt(call, 0));
+    if (prototype.kind !== ts.SyntaxKind.NullKeyword)
+        return context.fail(
+            call,
+            "Object.create lowers with a null prototype only; other prototypes are not represented.",
+        );
+    const contextual = context.checker.getContextualType(call);
+    const type = contextual
+        ? context.dataTypes.fromTsType(contextual, call)
+        : undefined;
+    if (type?.kind !== "map" || !type.dictionary)
+        return context.fail(
+            call,
+            "Object.create(null) needs a contextual string-keyed dictionary type.",
+        );
+    context.reachJsData();
+    return {
+        kind: "data",
+        cpp: `${context.dataTypes.cppType(type)}{}`,
+        dataType: type,
+        recordProperties: {},
+    };
+}
+
+/**
+ * `Object.defineProperty(object, key, descriptor)` with a writable,
+ * enumerable and configurable data descriptor: the own data property an
+ * assignment creates, stored in a struct's field. Other attributes,
+ * accessors and targets are not represented.
+ */
+function compileObjectDefineProperty(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 3);
+    const descriptor = context.unwrap(argumentAt(call, 2));
+    const refuse = (message: string): never =>
+        context.fail(call, `Object.defineProperty ${message}`);
+    if (!ts.isObjectLiteralExpression(descriptor))
+        return refuse("needs a literal data descriptor.");
+    let valueNode: ts.Expression | undefined;
+    const attributes = new Set<string>();
+    for (const property of descriptor.properties) {
+        if (
+            !ts.isPropertyAssignment(property) ||
+            !ts.isIdentifier(property.name)
+        )
+            return refuse("needs a literal data descriptor.");
+        const name = property.name.text;
+        if (name === "value") valueNode = property.initializer;
+        else if (
+            ["writable", "enumerable", "configurable"].includes(name) &&
+            property.initializer.kind === ts.SyntaxKind.TrueKeyword
+        )
+            attributes.add(name);
+        else
+            return refuse(
+                `represents writable, enumerable and configurable data properties only, not '${name}: ${property.initializer.getText()}'.`,
+            );
+    }
+    if (!valueNode || attributes.size !== 3)
+        return refuse(
+            "represents a value with writable, enumerable and configurable all true only.",
+        );
+    const keyNode = argumentAt(call, 1);
+    const key = context.compileValue(keyNode).staticString;
+    if (key === undefined)
+        return refuse("needs a property key known at generation.");
+    const targetNode = argumentAt(call, 0);
+    const target = context.compileValue(targetNode);
+    if (target.kind !== "data" || target.dataType?.kind !== "struct")
+        return refuse(
+            `writes a struct's field; a ${target.kind} target is not represented.`,
+        );
+    const structType = target.dataType;
+    // A shared object is held while the value runs; a value struct is written
+    // where it is stored, which a value that runs code could replace first.
+    const reference = context.dataTypes.isReferenceStruct(structType.name);
+    if (!reference && expressionMayRunCode(valueNode))
+        return refuse(
+            "with a value that runs code writes a struct that value could replace.",
+        );
+    const owner = reference
+        ? context.bindings.pinValueToTemporary(
+              target,
+              "defined_object",
+              targetNode,
+          )
+        : target;
+    const field = context.dataTypes.structField(structType.name, key, keyNode);
+    const stored = context.dataLowerer.compileForSink(valueNode, field.type);
+    const access = reference ? "->" : ".";
+    context.emit({
+        kind: "expression",
+        code: `${owner.cpp}${access}${field.name} = ${stored};`,
+    });
+    context.bindings.invalidateRecordProperties(target);
+    const targetName = context.unwrap(targetNode);
+    const bound = ts.isIdentifier(targetName)
+        ? context.bindings.lookupOptional(targetName)
+        : undefined;
+    if (bound) context.bindings.invalidateRecordProperties(bound);
+    return owner;
+}
+
+/**
  * The `Object` statics lowered here, beside `Object.keys`/`values` (the
  * expression lowerer's projection) and `Object.freeze`/`seal` (identities
  * the static evaluator sees through).
@@ -863,6 +979,8 @@ export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
     (context: ObjectStaticContext, call: ts.CallExpression) => Value
 > = new Map([
     ["assign", compileObjectAssign],
+    ["create", compileObjectCreate],
+    ["defineProperty", compileObjectDefineProperty],
     ["entries", compileObjectEntries],
     ["fromEntries", compileObjectFromEntries],
     ["hasOwn", compileObjectHasOwn],

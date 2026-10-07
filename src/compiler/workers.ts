@@ -84,6 +84,7 @@ function uncloneablePosition(
         case "i16array":
         case "u32array":
         case "i32array":
+        case "u8clampedarray":
         case "f32array":
         case "f64array":
             return undefined;

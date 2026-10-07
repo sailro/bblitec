@@ -364,4 +364,8 @@ export const resourcesSinks: DataSinkOperations<
     i16array: { expression: expressionTypedArray, value: valueResource },
     u32array: { expression: expressionTypedArray, value: valueResource },
     i32array: { expression: expressionTypedArray, value: valueResource },
+    u8clampedarray: {
+        expression: expressionTypedArray,
+        value: valueResource,
+    },
 };

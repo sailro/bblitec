@@ -66,6 +66,7 @@ enum class CloneViewKind : std::uint8_t {
     uint32,
     float32,
     float64,
+    uint8_clamped,
     data_view
 };
 /** A typed array or DataView; every view of one buffer names the same buffer node. */

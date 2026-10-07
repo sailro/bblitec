@@ -74,6 +74,15 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         store: (value) => `bbl::js::to_uint32(${value})`,
         storeLiteral: (value) => `${Uint32Array.of(value)[0]!}u`,
     },
+    u8clampedarray: {
+        constructor: "Uint8ClampedArray",
+        stem: "u8c",
+        cppType: "bbl::js::U8CArray",
+        elementCppType: "bbl::js::ClampedByte",
+        store: (value) => `bbl::js::to_uint8_clamp(${value})`,
+        storeLiteral: (value) =>
+            `bbl::js::ClampedByte{${Uint8ClampedArray.of(value)[0]!}u}`,
+    },
     i32array: {
         constructor: "Int32Array",
         stem: "i32",

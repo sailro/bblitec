@@ -109,6 +109,29 @@ template <typename... T> [[nodiscard]] bool union_truthy(const std::variant<T...
     return std::isnan(integer) || integer == 0.0 ? 0.0 : integer;
 }
 
+/** A Uint8ClampedArray element: a byte whose stores clamp and round half to even. */
+struct ClampedByte {
+    std::uint8_t value = 0;
+    constexpr ClampedByte() = default;
+    constexpr explicit ClampedByte(std::uint8_t byte) : value(byte) {}
+    constexpr operator std::uint8_t() const { return value; }
+};
+
+/** ToUint8Clamp. */
+[[nodiscard]] inline ClampedByte to_uint8_clamp(double value) {
+    if (!(value > 0.0))
+        return ClampedByte{0};
+    if (value >= 255.0)
+        return ClampedByte{255};
+    const double floor = std::floor(value);
+    const double half = floor + 0.5;
+    const double rounded = half < value                   ? floor + 1.0
+                           : value < half                 ? floor
+                           : std::fmod(floor, 2.0) == 0.0 ? floor
+                                                          : floor + 1.0;
+    return ClampedByte(static_cast<std::uint8_t>(rounded));
+}
+
 template <typename T> class TypedArray;
 template <typename Values, typename Owner = Values> class TypedArraySlot;
 template <typename T> [[nodiscard]] T numeric_store_value(double value);
@@ -1223,8 +1246,8 @@ throw_nullish_access(const char* message = "Cannot read properties of null or un
     throw NamedError("TypeError", message);
 }
 
-template <typename T> struct IsRef : std::false_type {};
-template <typename T> struct IsRef<Ref<T>> : std::true_type {};
+template <typename T> inline constexpr bool is_ref_v = false;
+template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
 
 template <typename T> class Nullable {
 public:
@@ -1317,7 +1340,7 @@ public:
 
 private:
     static bool present([[maybe_unused]] const T& value) {
-        if constexpr (IsRef<T>::value)
+        if constexpr (is_ref_v<T>)
             return static_cast<bool>(value);
         else
             return true;
@@ -1929,9 +1952,6 @@ private:
     BaseIterator current_;
     BaseIterator end_;
 };
-
-template <typename T> inline constexpr bool is_ref_v = false;
-template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
 
 // Insertion-ordered JavaScript Map and Set containers.
 namespace detail {
@@ -5017,6 +5037,7 @@ template <typename T> [[nodiscard]] bool nullable_truthy(const Nullable<T>& valu
 }
 
 // JavaScript typed arrays reached by the compiled subset.
+using U8CArray = TypedArray<ClampedByte>;
 using F64Array = TypedArray<double>;
 using F32Array = TypedArray<float>;
 using U16Array = TypedArray<std::uint16_t>;
@@ -5222,6 +5243,8 @@ template <typename Left, typename Right>
 template <typename T> [[nodiscard]] T numeric_store_value(double value) {
     if constexpr (std::is_floating_point_v<T>)
         return static_cast<T>(value);
+    else if constexpr (std::is_same_v<T, ClampedByte>)
+        return to_uint8_clamp(value);
     else if constexpr (std::is_same_v<T, std::uint8_t>)
         return to_uint8(value);
     else if constexpr (std::is_same_v<T, std::int8_t>)
@@ -5374,6 +5397,10 @@ template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Valu
     return I32Array(static_cast<std::size_t>(count), 0);
 }
 
+[[nodiscard]] inline U8CArray u8c_array_sized(double count) {
+    return U8CArray(static_cast<std::size_t>(count), ClampedByte{});
+}
+
 template <typename Output, typename Values, typename Convert>
 [[nodiscard]] inline Output typed_array_from_values(const Values& values, Convert convert) {
     Output result;
@@ -5411,6 +5438,10 @@ template <typename Values> [[nodiscard]] inline U32Array u32_array_from(const Va
 
 template <typename Values> [[nodiscard]] inline I32Array i32_array_from(const Values& values) {
     return typed_array_from_values<I32Array>(values, to_int32);
+}
+
+template <typename Values> [[nodiscard]] inline U8CArray u8c_array_from(const Values& values) {
+    return typed_array_from_values<U8CArray>(values, to_uint8_clamp);
 }
 
 /**

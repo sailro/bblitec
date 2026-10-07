@@ -41,6 +41,7 @@ import {
     absenceKind,
     admitsUndefined,
     arrayElementType,
+    isNullable,
     nullability,
     presentValuesTruthy,
     slotHoldsOnlyNull,
@@ -13562,6 +13563,71 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * `Object.getPrototypeOf(value) === C.prototype` for a class C no class
+     * extends: the value is exactly a C, which `instanceof C` decides. A
+     * class with subclasses, or any other prototype, refuses.
+     */
+    private prototypeComparison(
+        left: ts.Expression,
+        right: ts.Expression,
+    ): string | undefined {
+        const instanceOf = (node: ts.Expression): ts.Expression | undefined =>
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "getPrototypeOf" &&
+            this.context.libraryGlobal(node.expression.expression) ===
+                "Object" &&
+            node.arguments.length === 1
+                ? node.arguments[0]
+                : undefined;
+        const [call, prototype] = instanceOf(left)
+            ? [left, right]
+            : instanceOf(right)
+              ? [right, left]
+              : [];
+        if (!call || !prototype) return undefined;
+        const instance = instanceOf(call)!;
+        const owner = this.context.unwrap(prototype);
+        const declaration =
+            ts.isPropertyAccessExpression(owner) &&
+            owner.name.text === "prototype" &&
+            ts.isIdentifier(owner.expression)
+                ? resolvedSymbol(this.context.checker, owner.expression)
+                      ?.valueDeclaration
+                : undefined;
+        if (!declaration || !ts.isClassDeclaration(declaration))
+            return this.context.fail(
+                call,
+                "Object.getPrototypeOf is lowered in a comparison with a class's prototype only.",
+            );
+        if (
+            this.context.dataTypes.classHierarchy.subclasses(declaration)
+                .length > 0
+        )
+            return this.context.fail(
+                call,
+                "Object.getPrototypeOf compared with the prototype of a class other classes extend is not represented.",
+            );
+        if (isNullable(this.context.checker.getTypeAtLocation(instance)))
+            return this.context.fail(
+                instance,
+                "Object.getPrototypeOf needs a value that cannot be null or undefined.",
+            );
+        const value = this.context.compileValue(instance);
+        return (
+            this.context.classLowerer.instanceOf(
+                value,
+                declaration,
+                instance,
+            ) ??
+            this.context.fail(
+                instance,
+                "Object.getPrototypeOf compares the class of a represented class instance only.",
+            )
+        );
+    }
+
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
@@ -13600,6 +13666,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return equal !== negated ? "true" : "false";
             }
         }
+        const prototypeTest = this.prototypeComparison(left, right);
+        if (prototypeTest !== undefined)
+            return negated ? `!(${prototypeTest})` : prototypeTest;
         // Typed-array classes are generation-time values: one per kind.
         const constructorOperand = (node: ts.Expression): boolean =>
             ts.isIdentifier(node) ||

@@ -635,6 +635,13 @@ public:
         set_entry(*object_, key, std::move(value));
     }
 
+    /** Deletes an owned object's own property. */
+    void remove(std::string_view key) const {
+        if (kind_ != Kind::object || native_)
+            throw std::runtime_error("Dynamic property deletion requires an owned object.");
+        std::erase_if(*object_, [&](const Entry& entry) { return entry.first == key; });
+    }
+
     [[nodiscard]] JsonArrayView elements() const;
 
     /** Own enumerable properties: index keys precede other keys in insertion order. */
@@ -1136,6 +1143,46 @@ public:
     JsonValueParser parser;
     nlohmann::json::sax_parse(text, &parser);
     return parser.take_result();
+}
+
+/**
+ * `JSON.parse(text, reviver)`: InternalizeJSONProperty over the parsed
+ * document, each value's members revived before the value, the root under
+ * the key "". An undefined result deletes an object member; deleting an
+ * array element would leave a hole, which is not represented.
+ */
+template <typename Reviver>
+[[nodiscard]] JsonValue json_parse_revived(const std::string& text, const Reviver& reviver) {
+    const auto internalize = [&reviver](const auto& self, const JsonValue& holder) -> void {
+        const auto revive = [&](const std::string& key) {
+            const JsonValue value = holder.get(key);
+            self(self, value);
+            return reviver(key, value);
+        };
+        if (holder.is_array()) {
+            const auto count = static_cast<std::size_t>(holder.length());
+            for (std::size_t index = 0; index < count; ++index) {
+                const auto key = std::to_string(index);
+                JsonValue revived = revive(key);
+                if (revived.is_undefined())
+                    throw std::runtime_error(
+                        "A JSON.parse reviver deleting an array element leaves a hole, which is "
+                        "not represented.");
+                holder.set(key, std::move(revived));
+            }
+        } else if (holder.is_object()) {
+            for (const auto& key : holder.own_keys()) {
+                JsonValue revived = revive(key);
+                if (revived.is_undefined())
+                    holder.remove(key);
+                else
+                    holder.set(key, std::move(revived));
+            }
+        }
+    };
+    const JsonValue root = json_parse(text);
+    internalize(internalize, root);
+    return reviver(std::string{}, root);
 }
 
 /**

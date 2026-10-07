@@ -33,7 +33,11 @@ import {
 } from "./canvas-instrumentation.js";
 import { staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
-import { declaredInDomLibrary, ecmascriptGlobalTypeof } from "./symbols.js";
+import {
+    declaredIn,
+    declaredInDomLibrary,
+    ecmascriptGlobalTypeof,
+} from "./symbols.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
@@ -2192,6 +2196,46 @@ export class BrowserErasure {
                   );
         }
         return undefined;
+    }
+
+    /**
+     * A member the program itself gives the global object: one read off
+     * `globalThis`, `window` or `self` (or a `const` view of them) that no
+     * library declares on the global. An application realm stores it.
+     */
+    public isGlobalObjectExtension(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            ABSENT_GLOBAL_MEMBERS.has(unwrapped.name.text) ||
+            !this.isGlobalObject(unwrapped.expression)
+        )
+            return false;
+        const name = unwrapped.name.text;
+        const checker = this.context.checker;
+        const window = checker.resolveName(
+            "Window",
+            undefined,
+            ts.SymbolFlags.Type,
+            false,
+        );
+        const member =
+            window &&
+            checker.getPropertyOfType(
+                checker.getDeclaredTypeOfSymbol(window),
+                name,
+            );
+        const global = checker.resolveName(
+            name,
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        );
+        return (
+            !declaredInDomLibrary(member) &&
+            !declaredInDomLibrary(global) &&
+            !declaredIn(global, "default-lib")
+        );
     }
 
     /** A read of an {@link ABSENT_GLOBAL_MEMBERS} member off the global object. */

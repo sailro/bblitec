@@ -25,6 +25,7 @@ import {
 } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isStringValue, sameCompiledValue, type Value } from "./types.js";
@@ -307,6 +308,19 @@ export class ConditionLowerer {
                       ),
                   )
                 : [];
+            // A member the program gives the global object is realm state.
+            if (
+                !this.context.options.workers &&
+                someAnalysisNode(
+                    unwrapped,
+                    (node) =>
+                        ts.isPropertyAccessExpression(node) &&
+                        this.context.browserErasure.isGlobalObjectExtension(
+                            node,
+                        ),
+                )
+            )
+                throw new ApplicationRealmRequired();
             this.context.fail(
                 unwrapped,
                 "Browser-dependent condition cannot be determined for native AOT lowering " +

@@ -321,6 +321,9 @@ template <> struct CloneElement<float> {
 template <> struct CloneElement<double> {
     static constexpr auto kind = pal::CloneViewKind::float64;
 };
+template <> struct CloneElement<ClampedByte> {
+    static constexpr auto kind = pal::CloneViewKind::uint8_clamped;
+};
 
 /** A view copies its whole buffer once per message, as HTML serializes [[ViewedArrayBuffer]]. */
 template <typename View>

@@ -3330,6 +3330,98 @@ check(
 `,
 );
 
+check(
+    "uint8-clamped-arrays-clamp-and-round-half-to-even",
+    `
+    const a = new Uint8ClampedArray([300, -5, 1.5, 2.5, 0.5, 254.5, 253.5, NaN, Infinity, -Infinity, 127.4999]);
+    const expected = [255, 0, 2, 2, 0, 254, 254, 0, 255, 0, 127];
+    for (let index = 0; index < expected.length; index++)
+        if (a[index] !== expected[index]) throw new Error("clamp " + index);
+    a[0] = 3.5;
+    a[1] = -1;
+    if (a[0] !== 4 || a[1] !== 0) throw new Error("store");
+    const sized = new Uint8ClampedArray(3);
+    sized.set([1000, 2.5], 1);
+    if (sized[0] !== 0 || sized[1] !== 255 || sized[2] !== 2) throw new Error("set");
+    const view = new Uint8ClampedArray(new Uint8Array([7, 8, 9]).buffer, 1, 2);
+    if (view[0] !== 8 || view.length !== 2 || !(view instanceof Uint8ClampedArray) || view.constructor !== Uint8ClampedArray) throw new Error("view");
+    const doubled = view.map((value) => value * 100);
+    if (doubled[0] !== 255 || doubled[1] !== 255) throw new Error("map keeps the kind");
+    if (a.join() !== "4,0,2,2,0,254,254,0,255,0,127" || a.indexOf(254) !== 5 || !a.includes(127)) throw new Error("search");
+    if (Uint8ClampedArray.from([-1, 256, 3.5]).join("|") !== "0|255|4") throw new Error("from");
+`,
+);
+
+check(
+    "json-parse-revivers-rewrite-members-before-holders",
+    `
+    const s = JSON.parse('{"a":1}', (_k, v) => v) as { a: number };
+    if (s.a !== 1) throw new Error("identity reviver");
+    const keys: string[] = [];
+    const doubled = JSON.parse('{"x":1,"y":{"z":2},"list":[3,4],"drop":5}', (key: string, value: unknown) => {
+        keys.push(key);
+        if (key === "drop") return undefined;
+        return typeof value === "number" ? value * 2 : value;
+    }) as { x: number; y: { z: number }; list: number[]; drop?: number };
+    if (doubled.x !== 2 || doubled.y.z !== 4 || doubled.list[1] !== 8 || "drop" in doubled) throw new Error("revived");
+    if (keys.join(",") !== "x,z,y,0,1,list,drop,") throw new Error("order " + keys.join(","));
+    const root = JSON.parse("7", (_k: string, v: unknown) => (typeof v === "number" ? v + 1 : v)) as number;
+    if (root !== 8) throw new Error("root");
+`,
+);
+
+check(
+    "object-create-define-property-and-prototype-tests",
+    `
+    const o: { x?: number; y: string } = { y: "a" };
+    Object.defineProperty(o, "x", { value: 3, writable: true, enumerable: true, configurable: true });
+    if (o.x !== 3 || o.y !== "a" || !("x" in o)) throw new Error("defineProperty");
+    const counts: Record<string, number> = Object.create(null);
+    counts["a"] = 1;
+    counts["toString"] = 2;
+    if (counts["a"] !== 1 || Object.keys(counts).join() !== "a,toString" || !("toString" in counts) || "valueOf" in counts) throw new Error("create(null)");
+    class A { n = 1; }
+    class B { n = 2; }
+    const a = new A();
+    const values: A[] = [a];
+    if (Object.getPrototypeOf(a) !== A.prototype || Object.getPrototypeOf(values[0]!) !== A.prototype || Object.getPrototypeOf(new B()) === A.prototype) throw new Error("getPrototypeOf");
+`,
+);
+
+test("a global-object member the program adds is window realm state", () => {
+    const result = compileSource(
+        `const g = globalThis as { __count?: number };
+        if (!(g.__count === undefined)) throw new Error("absent member");`,
+    );
+    assert.match(result.cpp, /bbl::dom_window_property</);
+});
+
+test("Object.create, defineProperty and getPrototypeOf refuse unrepresented forms", () => {
+    for (const [source, message] of [
+        [
+            "const p = { a: 1 }; const o: Record<string, number> = Object.create(p);",
+            /Object\.create lowers with a null prototype only/,
+        ],
+        [
+            "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { value: 3 });",
+            /Object\.defineProperty represents a value with writable, enumerable and configurable all true only/,
+        ],
+        [
+            "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
+            /Object\.defineProperty represents writable, enumerable and configurable data properties only/,
+        ],
+        [
+            "class A {} class B extends A {} const a = new A(); const r = Object.getPrototypeOf(a) === A.prototype;",
+            /a class other classes extend is not represented/,
+        ],
+        [
+            "const p = Object.getPrototypeOf({ a: 1 }); const r = p === null;",
+            /Unsupported call target 'Object\.getPrototypeOf'/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
 test("u-flag RegExp forms the runtime engine cannot express refuse", () => {
     for (const [source, message] of [
         [
