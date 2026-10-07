@@ -9,6 +9,8 @@ export interface NativeRecordStorageDemand {
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
     /** Mapped where the record is stored, its declared functions too (`fromStoredTsType`). */
     stored?: true;
+    /** Mapped where `unknown` values are stored as JSON (`withDynamicJsonTypes`). */
+    dynamicJsonStorage?: true;
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
     /**

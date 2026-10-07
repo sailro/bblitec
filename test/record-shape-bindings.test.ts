@@ -4,6 +4,8 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
+import { ClassHierarchy } from "../src/compiler/class-members.js";
+import { DataTypeRegistry } from "../src/compiler/data-types.js";
 import { mergeNativeRecordStorage } from "../src/compiler/native-record-storage.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import {
@@ -196,6 +198,37 @@ test("merged record demands keep each join's own source", () => {
     assert.ok(of(a) && of(a) === of(b));
     assert.ok(of(c) && of(c) === of(d));
     assert.notEqual(of(a), of(c));
+});
+
+test("record demands replay in the dynamic JSON mode they were made in", () => {
+    const frontend = createCompilerProgram(
+        `interface Report { kind: string; error: unknown }`,
+        resolve("record-demand-mode.ts"),
+    );
+    const registry = new DataTypeRegistry(
+        frontend.checker,
+        (_node, message) => {
+            throw new Error(message);
+        },
+        new ClassHierarchy(frontend.checker, frontend.program),
+    );
+    const [declaration] = frontend.sourceFile.statements;
+    assert.ok(declaration && ts.isInterfaceDeclaration(declaration));
+    const type = frontend.checker.getTypeAtLocation(declaration.name);
+    // An unknown field maps only where unknown values are stored as JSON.
+    assert.equal(registry.fromTsType(type, declaration), undefined);
+    const demand = { identity: type, type, node: declaration, frames: [] };
+    assert.throws(
+        () => registry.predeclareOwnedRecord(demand),
+        /no longer has a native object representation/,
+    );
+    registry.predeclareOwnedRecord({ ...demand, dynamicJsonStorage: true });
+    assert.equal(
+        registry.withDynamicJsonTypes(true, () =>
+            registry.fromTsType(type, declaration),
+        )?.kind,
+        "struct",
+    );
 });
 
 test("records storing functions whose results are stored another way refuse one layout", () => {

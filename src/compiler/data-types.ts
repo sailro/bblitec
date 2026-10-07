@@ -1581,6 +1581,7 @@ export class DataTypeRegistry {
         });
     }
 
+    /** Map in the generic frames and storage mode a record was demanded in. */
     private withRecordDemand<T>(
         demand: NativeRecordStorageDemand,
         work: () => T,
@@ -1593,7 +1594,10 @@ export class DataTypeRegistry {
             }
             return work();
         };
-        return apply(0);
+        return this.withDynamicJsonTypes(
+            demand.dynamicJsonStorage === true,
+            () => apply(0),
+        );
     }
 
     /** Map a checker type and retain its source for a later ownership demand. */
@@ -1633,6 +1637,9 @@ export class DataTypeRegistry {
                     (frame) => new Map(frame),
                 ),
                 ...(this.classDemanded ? { stored: true as const } : {}),
+                ...(this.dynamicJsonStorage
+                    ? { dynamicJsonStorage: true as const }
+                    : {}),
             });
         }
         return mapped;
@@ -1890,6 +1897,9 @@ export class DataTypeRegistry {
             node,
             frames,
             ...(this.classDemanded ? { stored: true as const } : {}),
+            ...(this.dynamicJsonStorage
+                ? { dynamicJsonStorage: true as const }
+                : {}),
         };
         if (!this.joinableRecord(candidate, record)) return registered;
         const mapped = this.fromTsType(record, node);
