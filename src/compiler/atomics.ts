@@ -15,7 +15,7 @@ import {
 } from "./data-types.js";
 import { booleanValue, type Value } from "./types.js";
 
-/** Read-modify-write operations: `bbl::js::AtomicOperation` and their operand count. */
+/** The read-modify-write operations, as `bbl::js::AtomicOperation` names them. */
 const MODIFYING: ReadonlyMap<string, string> = new EmissionMap([
     ["add", "add"],
     ["sub", "sub"],
@@ -34,6 +34,14 @@ const INTEGER_KINDS: ReadonlySet<string> = new Set([
     "u32array",
 ]);
 
+/** The argument counts of the operations over a typed array. */
+function operandCounts(method: string): [number, number] | undefined {
+    if (method === "load") return [2, 2];
+    if (method === "store" || MODIFYING.has(method)) return [3, 3];
+    if (method === "compareExchange") return [4, 4];
+    return method === "notify" ? [2, 3] : undefined;
+}
+
 /** `Atomics.<method>(...)`; methods needing another agent refuse. */
 export function compileAtomicsCall(
     context: ExpressionContext,
@@ -42,7 +50,8 @@ export function compileAtomicsCall(
 ): Value {
     if (method === "isLockFree") {
         context.expectArgumentCount(call, 1, 1);
-        const size = context.compileValue(argumentAt(call, 0));
+        const sizeNode = argumentAt(call, 0);
+        const size = context.compileValue(sizeNode);
         if (size.staticNumber !== undefined) {
             context.emitDiscardedValue(size);
             return booleanValue(
@@ -51,29 +60,18 @@ export function compileAtomicsCall(
         }
         context.reachJsData();
         return booleanValue(
-            `bbl::js::atomics_is_lock_free(${context.compileNumber(argumentAt(call, 0), "double")})`,
+            `bbl::js::atomics_is_lock_free(${context.dataLowerer.compileKnownValueForSink(size, { kind: "number" }, sizeNode)})`,
         );
     }
-    const operands =
-        method === "load"
-            ? 2
-            : method === "store" || MODIFYING.has(method)
-              ? 3
-              : method === "compareExchange"
-                ? 4
-                : method === "notify"
-                  ? [2, 3]
-                  : undefined;
-    if (operands === undefined)
+    const counts = operandCounts(method);
+    if (!counts)
         return context.fail(
             call,
             method === "wait" || method === "waitAsync"
                 ? `Atomics.${method} suspends an agent until another agent notifies it; one realm has no other agent.`
                 : `Atomics.${method} is not lowered.`,
         );
-    if (typeof operands === "number")
-        context.expectArgumentCount(call, operands, operands);
-    else context.expectArgumentCount(call, operands[0]!, operands[1]!);
+    context.expectArgumentCount(call, ...counts);
     const viewNode = argumentAt(call, 0);
     const viewType = integerViewType(context, viewNode, method);
     const rest = call.arguments.slice(1);

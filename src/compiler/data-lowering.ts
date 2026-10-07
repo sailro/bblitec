@@ -13572,7 +13572,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         left: ts.Expression,
         right: ts.Expression,
     ): string | undefined {
-        const instanceOf = (node: ts.Expression): ts.Expression | undefined =>
+        const prototypeArgument = (
+            node: ts.Expression,
+        ): ts.Expression | undefined =>
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&
             node.expression.name.text === "getPrototypeOf" &&
@@ -13581,13 +13583,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             node.arguments.length === 1
                 ? node.arguments[0]
                 : undefined;
-        const [call, prototype] = instanceOf(left)
+        const [call, prototype] = prototypeArgument(left)
             ? [left, right]
-            : instanceOf(right)
+            : prototypeArgument(right)
               ? [right, left]
               : [];
         if (!call || !prototype) return undefined;
-        const instance = instanceOf(call)!;
+        const instance = prototypeArgument(call)!;
         const owner = this.context.unwrap(prototype);
         const declaration =
             ts.isPropertyAccessExpression(owner) &&
