@@ -6151,7 +6151,7 @@ export class UserFunctionLowerer {
         // parameter's own type, absent or not.
         const keepsAbsence =
             storage.kind === "optional" &&
-            nullability(parameter.type).undefined;
+            nullability(this.checker.getTypeAtLocation(initializer)).undefined;
         const type =
             storage.kind === "optional" && !keepsAbsence
                 ? storage.inner
