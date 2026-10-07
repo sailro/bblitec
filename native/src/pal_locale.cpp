@@ -38,14 +38,21 @@ int32_t icu_length(std::size_t size) {
     return static_cast<int32_t>(size);
 }
 
-template <typename Fill> std::string icu_string(Fill fill) {
+/**
+ * ICU's buffer protocol: `fill(output, capacity, status)` writes into a first
+ * buffer of `capacity` units and, when ICU reports an overflow, into one sized
+ * from the length it returned.
+ */
+template <typename Char, typename Fill>
+std::basic_string<Char> icu_buffer(Fill fill, std::size_t capacity = 64) {
+    std::basic_string<Char> result(capacity, Char{});
     UErrorCode status = U_ZERO_ERROR;
-    const auto length = fill(nullptr, 0, &status);
-    if (status != U_BUFFER_OVERFLOW_ERROR)
-        check_icu(status);
-    std::string result(static_cast<std::size_t>(length) + 1, '\0');
-    status = U_ZERO_ERROR;
-    fill(result.data(), icu_length(result.size()), &status);
+    auto length = fill(result.data(), icu_length(result.size()), &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+        result.resize(static_cast<std::size_t>(length) + 1);
+        status = U_ZERO_ERROR;
+        length = fill(result.data(), icu_length(result.size()), &status);
+    }
     check_icu(status);
     result.resize(static_cast<std::size_t>(length));
     return result;
@@ -93,7 +100,7 @@ std::string locale_id(const std::string& locale) {
         throw std::runtime_error("Invalid language tag.");
     const auto length = icu_length(locale.size());
     int32_t parsed = 0;
-    auto result = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    auto result = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_forLanguageTag(locale.c_str(), output, capacity, &parsed, status);
     });
     if (length == 0 || parsed != length)
@@ -105,7 +112,7 @@ using IcuCollator = std::unique_ptr<UCollator, decltype(&ucol_close)>;
 using Enumeration = std::unique_ptr<UEnumeration, decltype(&uenum_close)>;
 
 std::string keyword(const std::string& id, const char* key) {
-    return icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    return icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_getKeywordValue(id.c_str(), key, output, capacity, status);
     });
 }
@@ -131,7 +138,7 @@ const std::vector<const char*>& available_locales() {
 
 std::string match_locale(const std::string& requested, bool lookup) {
     const auto& available = available_locales();
-    auto base = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    auto base = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_getBaseName(requested.c_str(), output, capacity, status);
     });
     if (lookup) {
@@ -152,7 +159,7 @@ std::string match_locale(const std::string& requested, bool lookup) {
     check_icu(status);
     UAcceptResult accepted = ULOC_ACCEPT_FAILED;
     const char* input = base.c_str();
-    auto matched = icu_string([&](char* output, int32_t capacity, UErrorCode* error) {
+    auto matched = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* error) {
         uenum_reset(choices.get(), error);
         return uloc_acceptLanguage(output, capacity, &accepted, &input, 1, choices.get(), error);
     });
@@ -422,18 +429,10 @@ UCollator* cached_collator(const std::vector<std::string>& locales,
 }
 
 std::string format_double(const UNumberFormat* format, double value) {
-    UErrorCode status = U_ZERO_ERROR;
-    std::u16string output(32, u'\0');
-    auto length = unum_formatDouble(format, value, output.data(), icu_length(output.size()),
-                                    nullptr, &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(length));
-        status = U_ZERO_ERROR;
-        length = unum_formatDouble(format, value, output.data(), length, nullptr, &status);
-    }
-    check_icu(status);
-    output.resize(static_cast<std::size_t>(length));
-    return js::string_from_code_units(output);
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return unum_formatDouble(format, value, output, capacity, nullptr, status);
+        }));
 }
 
 } // namespace
@@ -503,13 +502,11 @@ std::string plural_rules_select(const PluralRules& rules, double value) {
     unumf_formatDouble(static_cast<const UNumberFormatter*>(rules->numbers()), value,
                        formatted.get(), &status);
     check_icu(status);
-    std::u16string keyword(16, u'\0');
-    const auto length =
-        uplrules_selectFormatted(static_cast<const UPluralRules*>(rules->get()), formatted.get(),
-                                 keyword.data(), icu_length(keyword.size()), &status);
-    check_icu(status);
-    keyword.resize(static_cast<std::size_t>(length));
-    return js::string_from_code_units(keyword);
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* error) {
+            return uplrules_selectFormatted(static_cast<const UPluralRules*>(rules->get()),
+                                            formatted.get(), output, capacity, error);
+        }));
 }
 
 ListFormat make_list_format(const std::vector<std::string>& locales,
@@ -548,19 +545,11 @@ std::string list_format_format(const ListFormat& format, const js::Array<std::st
         lengths.push_back(icu_length(text.size()));
     }
     const auto* list = static_cast<const UListFormatter*>(format->get());
-    UErrorCode status = U_ZERO_ERROR;
-    std::u16string output(64, u'\0');
-    auto length = ulistfmt_format(list, strings.data(), lengths.data(), icu_length(units.size()),
-                                  output.data(), icu_length(output.size()), &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(length));
-        status = U_ZERO_ERROR;
-        length = ulistfmt_format(list, strings.data(), lengths.data(), icu_length(units.size()),
-                                 output.data(), length, &status);
-    }
-    check_icu(status);
-    output.resize(static_cast<std::size_t>(length));
-    return js::string_from_code_units(output);
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return ulistfmt_format(list, strings.data(), lengths.data(), icu_length(units.size()),
+                                   output, capacity, status);
+        }));
 }
 
 namespace {
@@ -576,26 +565,21 @@ std::string component_skeleton(const std::optional<std::string>& value, const ch
     throw std::runtime_error(std::string("Invalid date-time option ") + name + ".");
 }
 
-template <typename Fill> std::u16string icu_units(Fill fill) {
-    UErrorCode status = U_ZERO_ERROR;
-    const auto length = fill(nullptr, 0, &status);
-    if (status != U_BUFFER_OVERFLOW_ERROR)
-        check_icu(status);
-    std::u16string result(static_cast<std::size_t>(length) + 1, u'\0');
-    status = U_ZERO_ERROR;
-    fill(result.data(), icu_length(result.size()), &status);
-    check_icu(status);
-    result.resize(static_cast<std::size_t>(length));
-    return result;
-}
+using IcuDateFormat = std::unique_ptr<UDateFormat, decltype(&udat_close)>;
 
-} // namespace
+struct DateFormatKey {
+    DateTimeFormatOptions options;
+    DateTimeComponents components;
+    bool operator==(const DateFormatKey&) const = default;
+};
 
-std::string format_date_time(const js::Date& date, const std::vector<std::string>& locales,
-                             const DateTimeFormatOptions& options, DateTimeComponents components) {
-    const double time = *date;
-    if (std::isnan(time))
-        return "Invalid Date";
+/**
+ * The pattern format the options select, in the requested zone (the host's
+ * by default) and the proleptic Gregorian calendar; throws on invalid options.
+ */
+IcuDateFormat open_date_format(const std::vector<std::string>& locales,
+                               const DateFormatKey& format_key) {
+    const auto& [options, components] = format_key;
     auto [id, selected] = resolve_locale(locales, options.locale_matcher);
     // ECMA-402 reads the calendar and numbering system extension keys.
     for (const auto* key : {"calendar", "numbers"}) {
@@ -639,7 +623,7 @@ std::string format_date_time(const js::Date& date, const std::vector<std::string
     const std::unique_ptr<UDateTimePatternGenerator, decltype(&udatpg_close)> generator(
         udatpg_open(id.c_str(), &status), &udatpg_close);
     check_icu(status);
-    auto pattern = icu_units([&](UChar* output, int32_t capacity, UErrorCode* error) {
+    auto pattern = icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* error) {
         return udatpg_getBestPatternWithOptions(
             generator.get(), skeleton_units.data(), icu_length(skeleton_units.size()),
             UDATPG_MATCH_HOUR_FIELD_LENGTH, output, capacity, error);
@@ -660,10 +644,10 @@ std::string format_date_time(const js::Date& date, const std::vector<std::string
         zone.resize(static_cast<std::size_t>(length));
     } else
         zone = js::string_code_units(*js::make_date_time_format());
-    const std::unique_ptr<UDateFormat, decltype(&udat_close)> format(
-        udat_open(UDAT_PATTERN, UDAT_PATTERN, id.c_str(), zone.data(), icu_length(zone.size()),
-                  pattern.data(), icu_length(pattern.size()), &status),
-        &udat_close);
+    IcuDateFormat format(udat_open(UDAT_PATTERN, UDAT_PATTERN, id.c_str(), zone.data(),
+                                   icu_length(zone.size()), pattern.data(),
+                                   icu_length(pattern.size()), &status),
+                         &udat_close);
     check_icu(status);
     // ECMA-402 time values use the proleptic Gregorian calendar.
     const std::unique_ptr<UCalendar, decltype(&ucal_close)> calendar(
@@ -673,10 +657,23 @@ std::string format_date_time(const js::Date& date, const std::vector<std::string
     ucal_setGregorianChange(calendar.get(), -8.64e15, &change);
     if (U_SUCCESS(change))
         udat_setCalendar(format.get(), calendar.get());
-    const auto output = icu_units([&](UChar* text, int32_t capacity, UErrorCode* error) {
-        return udat_format(format.get(), time, text, capacity, nullptr, error);
-    });
-    return js::string_from_code_units(output);
+    return format;
+}
+
+} // namespace
+
+std::string format_date_time(const js::Date& date, const std::vector<std::string>& locales,
+                             const DateTimeFormatOptions& options, DateTimeComponents components) {
+    const double time = *date;
+    if (std::isnan(time))
+        return "Invalid Date";
+    // A cached format keeps the host zone it opened in, as local time does.
+    thread_local LocaleCache<DateFormatKey, IcuDateFormat> cache;
+    const auto* format = cache.get(locales, DateFormatKey{options, components}, open_date_format);
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return udat_format(format, time, output, capacity, nullptr, status);
+        }));
 }
 
 std::string locale_string_case(const std::string& value, const std::vector<std::string>& locales,
@@ -685,23 +682,17 @@ std::string locale_string_case(const std::string& value, const std::vector<std::
     // passes its primary language to ICU, without region or extension keywords.
     const auto requested =
         locales.empty() ? std::string(uloc_getDefault()) : locale_id(locales.front());
-    const auto locale = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    const auto locale = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_getLanguage(requested.c_str(), output, capacity, status);
     });
     const auto input = js::string_code_units(value);
     const auto length = icu_length(input.size());
     const auto convert = upper ? &u_strToUpper : &u_strToLower;
-    UErrorCode status = U_ZERO_ERROR;
-    std::u16string output(input.size(), u'\0');
-    const auto size = convert(output.data(), length, input.data(), length, locale.c_str(), &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(size));
-        status = U_ZERO_ERROR;
-        convert(output.data(), size, input.data(), length, locale.c_str(), &status);
-    }
-    check_icu(status);
-    output.resize(static_cast<std::size_t>(size));
-    return js::string_from_code_units(output);
+    return js::string_from_code_units(icu_buffer<char16_t>(
+        [&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return convert(output, capacity, input.data(), length, locale.c_str(), status);
+        },
+        input.size()));
 }
 
 std::string normalize_string(const std::string& value, const std::string& form) {
@@ -716,17 +707,11 @@ std::string normalize_string(const std::string& value, const std::string& form) 
     check_icu(status);
     const auto input = js::string_code_units(value);
     const auto length = icu_length(input.size());
-    std::u16string output(input.size(), u'\0');
-    const auto size =
-        unorm2_normalize(normalizer, input.data(), length, output.data(), length, &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(size));
-        status = U_ZERO_ERROR;
-        unorm2_normalize(normalizer, input.data(), length, output.data(), size, &status);
-    }
-    check_icu(status);
-    output.resize(static_cast<std::size_t>(size));
-    return js::string_from_code_units(output);
+    return js::string_from_code_units(icu_buffer<char16_t>(
+        [&](UChar* output, int32_t capacity, UErrorCode* error) {
+            return unorm2_normalize(normalizer, input.data(), length, output, capacity, error);
+        },
+        input.size()));
 }
 
 double local_time_zone_offset(double utc_milliseconds) {
