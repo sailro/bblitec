@@ -4584,6 +4584,9 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const resolved = this.resolveTypeParameter(type);
         const members = resolved.isUnion() ? resolved.types : [resolved];
+        // A property only null fills (`houseArc: null`) holds null.
+        if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
+            return { kind: "null" };
         if (
             !members.every(
                 (member) =>
@@ -6549,6 +6552,7 @@ export class DataTypeRegistry {
                 case "tuple":
                 case "json":
                 case "undefined":
+                case "null":
                     return;
                 default:
                     this.fail(
@@ -6787,22 +6791,12 @@ export class DataTypeRegistry {
                     ? undefined
                     : this.definedFieldValueCpp(name, field, "member");
                 const written = omittable
-                    ? field.accessor
-                        ? [
-                              "    {",
-                              `        const auto member = value.${field.name}.get();`,
-                              `        if (${optionalPresentCpp("member")}) {`,
-                              `            writer.key(${key});`,
-                              "            json_write(writer, *member);",
-                              "        }",
-                              "    }",
-                          ]
-                        : [
-                              `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
-                              `        writer.key(${key});`,
-                              `        json_write(writer, *value.${field.name});`,
-                              "    }",
-                          ]
+                    ? [
+                          `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
+                          `        writer.key(${key});`,
+                          `        json_write(writer, *value.${field.name});`,
+                          "    }",
+                      ]
                     : definedCpp !== undefined
                       ? [
                             "    {",

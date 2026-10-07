@@ -81,6 +81,11 @@ function valueOptional(
             lowerer.compileKnownValueForSink(value, dataType.inner, node),
         );
     const absent = lowerer.context.dataTypes.absentValue(dataType);
+    // A property only null fills reads null: the slot's empty state.
+    if (value.dataType?.kind === "null") {
+        lowerer.context.emitDiscardedValue(value);
+        return absent;
+    }
     if (value.kind === "void") {
         lowerer.context.emitDiscardedValue(value);
         return absent;

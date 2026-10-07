@@ -65,6 +65,11 @@ struct Undefined {
     friend bool operator==(Undefined, Undefined) = default;
 };
 
+/** A record field whose type is `null` holds null alone. */
+struct Null {
+    friend bool operator==(Null, Null) = default;
+};
+
 /** Transfer a compiler-owned temporary into its source binding. */
 template <typename T> [[nodiscard]] T take_temporary(T& value) {
     static_assert(!std::is_const_v<T>);

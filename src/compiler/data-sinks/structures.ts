@@ -549,10 +549,22 @@ function valueStruct(
         lowerer.context.dataTypes.noteRecordConversion(dataType, [
             UNKNOWN_PROPERTIES,
         ]);
+        // A parsed entry converts, checked, to a scalar field type.
+        const parsedEntry = (field: DataStructField): boolean => {
+            const stored =
+                field.type.kind === "optional" ? field.type.inner : field.type;
+            return (
+                sourceMap.value.kind === "json" &&
+                (stored.kind === "number" ||
+                    stored.kind === "boolean" ||
+                    stored.kind === "string")
+            );
+        };
         const entryType = (field: DataStructField): boolean =>
             dataTypesEqual(sourceMap.value, field.type) ||
             (field.type.kind === "optional" &&
-                dataTypesEqual(sourceMap.value, field.type.inner));
+                dataTypesEqual(sourceMap.value, field.type.inner)) ||
+            parsedEntry(field);
         const unprojected = (field: DataStructField): string =>
             `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must hold its entry type.`;
         const incompatible = fields.find((field) => !entryType(field));
@@ -573,6 +585,10 @@ function valueStruct(
                 const optional =
                     field.type.kind === "optional" &&
                     dataTypesEqual(sourceMap.value, field.type.inner);
+                if (field.accessor && parsedEntry(field)) {
+                    lowerer.context.reachJson();
+                    return `bbl::js::json_entry_accessor<${lowerer.context.dataTypes.cppType(field.type)}>(${value.cpp}, ${key})`;
+                }
                 // A closed record asserted from the open one is a view of
                 // it: reads and writes reach its entries, and a read of an
                 // absent entry refuses there, as an asserted read does.

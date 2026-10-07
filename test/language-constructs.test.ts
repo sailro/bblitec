@@ -2502,6 +2502,62 @@ check(
 `,
 );
 
+check(
+    "null-fields-absent-reads-and-typed-parsed-views",
+    `
+    interface Wall { centreline: readonly number[]; halfThickness: number; }
+    interface DetachedRing { polygon: readonly number[]; houseArc: null; contact: Wall; }
+    function detachedRingFrom(wall: Wall, touches: boolean): DetachedRing | null {
+        if (touches) return null;
+        const polygon = wall.centreline.map((value) => value * 2);
+        return { polygon, houseArc: null, contact: { centreline: wall.centreline, halfThickness: wall.halfThickness } };
+    }
+    const wall: Wall = { centreline: [1, 2, 3], halfThickness: 0.5 };
+    const ring = detachedRingFrom(wall, false);
+    if (!ring || ring.houseArc !== null || ring.houseArc === undefined || detachedRingFrom(wall, true) !== null) throw new Error("null field");
+    if (JSON.stringify(ring) !== '{"polygon":[2,4,6],"houseArc":null,"contact":{"centreline":[1,2,3],"halfThickness":0.5}}') throw new Error("null json");
+    function row(label: string, options: { value: string; label?: string; labelKey?: string; hidden?: boolean }[], current: string): string {
+        const shown: string[] = [];
+        for (let i = 0; i < options.length; i++) {
+            if (options[i]!.hidden) { if (options[i]!.value === current) shown.push(options[i]!.value); }
+            else shown.push(options[i]!.label ?? options[i]!.labelKey ?? options[i]!.value);
+        }
+        return label + ":" + shown.join(",");
+    }
+    const rows = [
+        row("autosave", [{ value: "1", label: "1m" }, { value: "5", label: "5m" }], "1"),
+        row("scheme", [{ value: "classic", labelKey: "c.classic" }, { value: "wasd", labelKey: "c.wasd" }], "wasd"),
+    ];
+    const sizes: { value: string; hidden?: boolean }[] = [{ value: "small" }, { value: "huge", hidden: true }];
+    rows.push(row("size", sizes, "huge"));
+    if (rows.join("|") !== "autosave:1m,5m|scheme:c.classic,c.wasd|size:small,huge") throw new Error("absent through an element");
+    interface Settings { dof: boolean; bloom: boolean; antialiasing: boolean; }
+    type Feature = keyof Settings;
+    const DEFAULTS: Settings = { dof: true, bloom: false, antialiasing: true };
+    const stored = new Map<string, string>([["custom", '{"bloom":3,"antialiasing":"smaa"}']]);
+    function getCustom(): Settings {
+        try {
+            const raw = stored.get("custom") ?? null;
+            if (!raw) return { ...DEFAULTS };
+            const parsed = JSON.parse(raw) as Partial<Settings>;
+            const merged = { ...DEFAULTS, ...parsed };
+            for (const key of Object.keys(DEFAULTS) as Feature[])
+                if (key !== "antialiasing" && typeof merged[key] !== "boolean") merged[key] = DEFAULTS[key];
+            if (typeof merged.antialiasing === "string") merged.antialiasing = merged.antialiasing !== "smaa";
+            else if (typeof merged.antialiasing !== "boolean") merged.antialiasing = DEFAULTS.antialiasing;
+            return merged;
+        } catch {
+            return { ...DEFAULTS };
+        }
+    }
+    const getters: Array<() => Settings> = [getCustom];
+    const custom = getters[0]!();
+    const active = (Object.keys(DEFAULTS) as Feature[]).filter((key) => custom[key]);
+    custom.dof = false;
+    if (active.join() !== "dof" || custom.bloom || custom.antialiasing || custom.dof) throw new Error("typed view of a parsed record");
+`,
+);
+
 test("an open record projected into fields of another entry type refuses", () => {
     assert.throws(
         () =>

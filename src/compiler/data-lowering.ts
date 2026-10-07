@@ -4206,8 +4206,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * A read of a property the record's type admits as absent (optional,
      * or typed to include undefined) and its struct does not store: the
-     * record lacks it, so the read is `undefined`. The receiver is a path,
-     * so skipping its evaluation skips no effect.
+     * record lacks it, so the read is `undefined`. A computed receiver
+     * (`options[i]!.hidden`) is still evaluated once, for its effects.
      */
     private absentPropertyRead(
         owner: Value,
@@ -4222,8 +4222,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
         )
             return undefined;
-        if (owner.impure || !isCppPath(owner.cpp)) return undefined;
+        const path = !owner.impure && isCppPath(owner.cpp);
         if (
+            (!path && expressionHasEffects(access.expression)) ||
             !this.context.dataTypes.absentRecordProperty(
                 dataType.name,
                 property,
@@ -4231,6 +4232,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
         )
             return undefined;
+        if (!path) this.context.emitDiscardedValue(owner);
         return { kind: "json-null", cpp: "std::nullopt" };
     }
 
@@ -10594,20 +10596,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             declared = true;
         };
         const member = referenceStruct ? "->" : ".";
+        // A field of the new object: an accessor slot (a view's) holds the
+        // value it is written as data; a receiver slot refuses.
+        const fieldOf = (name: string, node: ts.Node): DataStructField => {
+            const field = this.context.dataTypes.structField(
+                dataType.name,
+                name,
+                node,
+                "accessors",
+            );
+            if (field.accessorReceiver)
+                this.context.dataTypes.structField(dataType.name, name, node);
+            return field;
+        };
+        const store = (field: DataStructField, cpp: string): string =>
+            `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, cpp)};`;
         const assigned = new EmissionSet<string>();
         const assign = (
             sourceName: string,
             sourceValue: Value,
             node: ts.Node,
         ): void => {
-            const field = this.context.dataTypes.structField(
-                dataType.name,
-                sourceName,
-                node,
-            );
+            const field = fieldOf(sourceName, node);
             this.context.emit({
                 kind: "expression",
-                code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(sourceValue, field.type, node)};`,
+                code: store(
+                    field,
+                    this.compileKnownValueForSink(
+                        sourceValue,
+                        field.type,
+                        node,
+                    ),
+                ),
             });
             assigned.add(field.name);
         };
@@ -10640,11 +10660,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         // while it is own, keeping an earlier value
                         // otherwise; an unwritten `?` field is already
                         // absent, so its storage stores as it is.
-                        const field = this.context.dataTypes.structField(
-                            dataType.name,
-                            name,
-                            property,
-                        );
+                        const field = fieldOf(name, property);
                         if (!assigned.has(field.name)) {
                             assign(name, value, property);
                             continue;
@@ -10663,7 +10679,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         this.emitWhileOwn(entry.presence?.ownCpp, () =>
                             this.context.emit({
                                 kind: "expression",
-                                code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(entry.value, field.type, property)};`,
+                                code: store(
+                                    field,
+                                    this.compileKnownValueForSink(
+                                        entry.value,
+                                        field.type,
+                                        property,
+                                    ),
+                                ),
                             }),
                         );
                     }
@@ -10671,11 +10694,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     for (const [name, method] of Object.entries(
                         spread.recordMethods ?? {},
                     )) {
-                        const field = this.context.dataTypes.structField(
-                            dataType.name,
-                            name,
-                            property,
-                        );
+                        const field = fieldOf(name, property);
                         if (field.type.kind !== "function")
                             this.context.fail(
                                 property,
@@ -10694,7 +10713,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         );
                         this.context.emit({
                             kind: "expression",
-                            code: `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, callback)};`,
+                            code: store(field, callback),
                         });
                         assigned.add(field.name);
                     }
@@ -10704,10 +10723,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.kind === "data" &&
                     spread.dataType?.kind === "struct" &&
                     dataTypesEqual(spread.dataType, dataType) &&
-                    (!declared ||
-                        !this.context.dataTypes
-                            .structFields(dataType.name, property)
-                            .some((field) => field.type.kind === "optional"))
+                    // A copied accessor slot would keep its getter: a spread
+                    // reads each value.
+                    !this.context.dataTypes
+                        .structFields(dataType.name, property, "accessors")
+                        .some(
+                            (field) =>
+                                field.accessor ||
+                                (declared && field.type.kind === "optional"),
+                        )
                 ) {
                     if (!declared) {
                         this.context.emit(
@@ -10727,6 +10751,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     for (const field of this.context.dataTypes.structFields(
                         dataType.name,
                         property,
+                        "accessors",
                     )) {
                         assigned.add(field.name);
                     }
@@ -10768,28 +10793,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (ts.isPropertyAssignment(property)) {
                 declareDefault();
-                const field = this.context.dataTypes.structField(
-                    dataType.name,
+                const field = fieldOf(
                     this.symbolKeyOrText(property.name),
                     property,
                 );
                 this.context.emit({
                     kind: "expression",
-                    code: `${cppName}${member}${field.name} = ${this.compileForSink(property.initializer, field.type)};`,
+                    code: store(
+                        field,
+                        this.compileForSink(property.initializer, field.type),
+                    ),
                 });
                 assigned.add(field.name);
                 continue;
             }
             if (ts.isShorthandPropertyAssignment(property)) {
                 declareDefault();
-                const field = this.context.dataTypes.structField(
-                    dataType.name,
-                    property.name.text,
-                    property,
-                );
+                const field = fieldOf(property.name.text, property);
                 this.context.emit({
                     kind: "expression",
-                    code: `${cppName}${member}${field.name} = ${this.compileForSink(property.name, field.type)};`,
+                    code: store(
+                        field,
+                        this.compileForSink(property.name, field.type),
+                    ),
                 });
                 assigned.add(field.name);
                 continue;
@@ -10802,13 +10828,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) {
                 const name = propertyNameText(property.name);
                 const field =
-                    name === undefined
-                        ? undefined
-                        : this.context.dataTypes.structField(
-                              dataType.name,
-                              name,
-                              property,
-                          );
+                    name === undefined ? undefined : fieldOf(name, property);
                 if (field?.type.kind === "function") {
                     declareDefault();
                     this.context.recordProxies.requireIndependentFunction(
@@ -10817,7 +10837,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     );
                     this.context.emit({
                         kind: "expression",
-                        code: `${cppName}${member}${field.name} = ${this.context.compileStoredDataFunction(property, field.type, undefined, false)};`,
+                        code: store(
+                            field,
+                            this.context.compileStoredDataFunction(
+                                property,
+                                field.type,
+                                undefined,
+                                false,
+                            ),
+                        ),
                     });
                     assigned.add(field.name);
                     continue;
@@ -10832,7 +10860,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // An absent optional field keeps the default the declaration
         // stored, as a struct literal omitting it does.
         const missing = this.context.dataTypes
-            .structFields(dataType.name, literal)
+            .structFields(dataType.name, literal, "accessors")
             .find(
                 // A `?` field holding a nullable reference or function is
                 // absent in its default storage.
@@ -14327,6 +14355,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.emitDiscardedValue(value);
             const equal =
                 loose || literal === undefined || literal === "undefined";
+            return equal !== negated ? "true" : "false";
+        }
+        if (value.dataType?.kind === "null") {
+            this.context.emitDiscardedValue(value);
+            const equal = loose || literal === undefined || literal === "null";
             return equal !== negated ? "true" : "false";
         }
         if (value?.kind === "data" && value.dataType?.kind === "optional") {
