@@ -65,7 +65,7 @@ import {
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
-import { requireAbsenceTag } from "./absence-tag-storage.js";
+import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import {
     NumericSlotStorageRequired,
     numericSlotDeclaration,
@@ -8418,10 +8418,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const member = resolvedSymbol(this.context.checker, owner);
         if (!member || (member.flags & ts.SymbolFlags.Optional) !== 0)
             return false;
-        const absent = nullability(
-            this.context.checker.getTypeOfSymbol(member),
-        );
-        return !absent.null && !absent.undefined;
+        return !isNullable(this.context.checker.getTypeOfSymbol(member));
     }
 
     public compileOptionalStoredCall(
@@ -15060,18 +15057,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (loose || literal === undefined)
                 return negated ? present : absent;
             const state = absenceKind(this.context.checker, value, node);
-            if (state === "either") {
-                requireAbsenceTag(
-                    this.context.checker,
-                    this.context.absenceTags,
+            if (state === "either")
+                refuseEitherAbsence(
+                    this.context,
                     node,
                     value,
-                );
-                this.context.fail(
-                    node,
                     `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
                 );
-            }
             // A read that knows whether its slot existed tells a missing
             // one (`undefined`) from a stored `null` exactly.
             if (typeof state === "object") {

@@ -100,6 +100,7 @@ import {
     nullability,
     presentMembers,
     isTypeReference,
+    slotHoldsOnlyNull,
     type AbsentValueKind,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -807,16 +808,16 @@ function sanitizeIdentifier(name: string): string {
     return cppIdentifier(name);
 }
 
-/**
- * A `?` property's presence: its storage is empty exactly when the property
- * is absent, unless the storage also holds a `null` the property admits.
- * Dynamic storage keeps `undefined` apart from `null`.
- */
 /** A storage as the value it holds, whichever absent value tells apart. */
 function withoutAbsenceTag(type: DataType | undefined): DataType | undefined {
     return type?.kind === "tagged" ? type.inner : type;
 }
 
+/**
+ * A `?` property's presence: its storage is empty exactly when the property
+ * is absent, unless the storage also holds a `null` the property admits.
+ * Dynamic storage keeps `undefined` apart from `null`.
+ */
 function storedPresence(
     type: DataType,
     admitsNull: boolean,
@@ -1262,6 +1263,23 @@ export class DataTypeRegistry {
         )
             return type;
         return { kind: "tagged", inner: type };
+    }
+
+    /**
+     * The tagged storage of a source declaration whose value has `type`
+     * (resolved at `site`), when the program observes which absent value it
+     * holds ({@link absenceTaggedStorage}); undefined while one state answers.
+     */
+    public taggedDeclarationStorage(
+        declaration: ts.Declaration,
+        type: ts.Type,
+        site: ts.Node,
+    ): DataType<"tagged"> | undefined {
+        if (!this.absenceTags.has(declaration)) return undefined;
+        const stored = this.fromStoredTsType(type, site);
+        const storage =
+            stored && this.absenceTaggedStorage(declaration, stored);
+        return storage?.kind === "tagged" ? storage : undefined;
     }
 
     /** @unjournaled Immutable checked source inventory shared across emission replays. */
@@ -5614,10 +5632,7 @@ export class DataTypeRegistry {
                         0,
                 ) &&
                 values.every(
-                    (value) =>
-                        nullish(value) &&
-                        nullability(value.type).null &&
-                        !nullability(value.type).undefined,
+                    (value) => nullish(value) && slotHoldsOnlyNull(value.type),
                 );
             const mappedValue: DataType | undefined = onlyNull
                 ? { kind: "json" }

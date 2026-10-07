@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { requireAbsenceTag } from "./absence-tag-storage.js";
+import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 import {
@@ -61,18 +61,13 @@ function absentIsNull(
     operand: AbsentOperand,
     state: Exclude<Absence, "unconstrained">,
 ): string {
-    if (state === "either") {
-        requireAbsenceTag(
-            lowerer.context.checker,
-            lowerer.context.absenceTags,
+    if (state === "either")
+        refuseEitherAbsence(
+            lowerer.context,
             operand.node,
             operand.value,
-        );
-        lowerer.context.fail(
-            operand.node,
             "A value that may be null or undefined is compared strictly with another value that may be absent only once one of them is ruled out (narrow the type).",
         );
-    }
     return typeof state === "object"
         ? state.slotFoundCpp
         : String(state === "null");
