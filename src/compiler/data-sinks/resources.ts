@@ -3,6 +3,7 @@ import ts from "typescript";
 import {
     dataTypesEqual,
     isTypedArrayType,
+    sharesStorageKind,
     type DataType,
     type TypedArrayKind,
 } from "../data-types.js";
@@ -192,7 +193,13 @@ function numericViewValue(
             source.kind === "tuple" ||
             (source.kind === "vector" && source.element.kind === "number"))
     ) {
-        if (value.borrowedData || value.nativeVectorData) {
+        // A borrowed lvalue of a shared array (a stored class field) is
+        // copied into the view as that array; an engine-owned vector is not
+        // one.
+        if (
+            value.nativeVectorData ||
+            (value.borrowedData && !sharesStorageKind(source))
+        ) {
             lowerer.context.fail(
                 node,
                 "Numeric index storage requires a retained array.",

@@ -1835,6 +1835,33 @@ test("borrowed array views refuse rebinding and identity", () => {
     );
 });
 
+// A shared instance's stored array field is viewed by numeric index as that
+// array.
+check(
+    "stored-field-arrays-viewed-by-numeric-index",
+    `
+    class Shift {
+        private dx = 0;
+        private readonly scratch: [number, number, number] = [0, 0, 0];
+        private readonly lanes: number[] = [0];
+        get offset(): number { return this.dx; }
+        get lane(): number { return this.lanes[0]!; }
+        set(dx: number): void { this.dx = dx; }
+        relativeTo(base: Shift, out: Shift): void {
+            this.point(this.scratch, 1, base.dx);
+            this.point(this.lanes, 0, base.dx);
+            out.set(this.scratch[1] - base.dx);
+        }
+        point(out: { [index: number]: number }, offset: number, x: number): void { out[offset] = x + this.dx; }
+    }
+    const shifts: Shift[] = [new Shift(), new Shift(), new Shift()];
+    shifts[0]!.set(5);
+    shifts[1]!.set(2);
+    shifts[0]!.relativeTo(shifts[1]!, shifts[2]!);
+    if (shifts[2]!.offset !== 5 || shifts[0]!.lane !== 7) throw new Error("a stored field's array viewed by index");
+`,
+);
+
 check(
     "record-accessors-are-stored-native-accessors",
     `
