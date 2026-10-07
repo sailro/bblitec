@@ -4040,6 +4040,23 @@ export class DataTypeRegistry {
         return this.recordComponents.get(own)?.key ?? own;
     }
 
+    /**
+     * Storage for a binding whose type admits only `undefined` (`void`,
+     * `undefined`, a type parameter instantiated as either): it holds
+     * nothing but its state of having been assigned.
+     */
+    public undefinedOnlyStorage(type: ts.Type): DataType | undefined {
+        const resolved = this.resolveTypeParameter(type);
+        const members = resolved.isUnion() ? resolved.types : [resolved];
+        return members.every(
+            (member) =>
+                (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                0,
+        )
+            ? { kind: "undefined" }
+            : undefined;
+    }
+
     /** Required undefined fields own a key independently of their payload. */
     private fromRecordFieldType(
         type: ts.Type,

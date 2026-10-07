@@ -628,6 +628,9 @@ export class DeclarationLowerer {
                 declaration,
                 this.context.checker,
             );
+            dataType ??= this.context.dataTypes.undefinedOnlyStorage(
+                declaredType,
+            );
             if (
                 !dataType &&
                 declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
@@ -1819,11 +1822,15 @@ export class DeclarationLowerer {
         const compiled = this.context.captureManagedClosureLines(() => {
             for (const name of forward.parameterNames)
                 this.context.registerNativeBinding(name);
+            // The slot is a void function: the callback's result, typed
+            // `void` (a generic result instantiated as `void` included),
+            // is discarded.
             const compile = () =>
                 this.context.compileCallbackWithValues(
                     value.callbackDeclaration!,
                     arguments_,
                     declaration.initializer!,
+                    true,
                 );
             const result = value.callbackRecordOwner
                 ? this.context.withRecordScopes(

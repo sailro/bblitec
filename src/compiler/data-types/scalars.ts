@@ -78,7 +78,8 @@ export const scalarKinds: DataKindOperations<
         key: (type) => `module(${type.module})`,
         equal: (left, right) => left.module === right.module,
     },
-    undefined: leaf("bbl::js::Undefined", "undefined"),
+    // A unit value: rebinding it aliases nothing.
+    undefined: reseatingLeaf("bbl::js::Undefined", "undefined"),
     "weak-key": leaf("bbl::js::WeakIdentity", "weak-key"),
     error: leaf("bbl::js::Error", "error", false, true),
     file: {

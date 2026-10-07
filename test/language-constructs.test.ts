@@ -9155,3 +9155,52 @@ check(
     if (plain.join(",") !== "1,0,4") throw new Error("Number over strings " + plain.join(","));
 `,
 );
+
+check(
+    "void-results-in-bindings-and-generic-memos",
+    `
+    let builds = 0;
+    let stamp = -1;
+    let revision = 0;
+    const memoized = <T>(build: () => T): (() => T) => {
+        let value: T;
+        return (): T => {
+            if (stamp === revision) return value;
+            value = build();
+            stamp = revision;
+            return value;
+        };
+    };
+    let tops: number[] = [];
+    const refresh = memoized((): void => {
+        builds++;
+        const out: number[] = [];
+        for (const v of [1, -2, 3]) {
+            if (v < 0) continue;
+            out.push(v * revision);
+        }
+        tops = out;
+    });
+    refresh();
+    refresh();
+    revision++;
+    refresh();
+    if (builds !== 2 || tops.join(",") !== "1,3") throw new Error("memoized void builder " + builds + ":" + tops.join(","));
+    function quiet(): void { builds += 10; }
+    let done: void;
+    done = quiet();
+    if (done !== undefined || builds !== 12) throw new Error("void binding");
+`,
+);
+
+test("a void binding refuses a result without a proven undefined completion", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const hooks: Array<() => void> = [() => {}];
+            let done: void;
+            done = hooks[0]!();
+            if (done !== undefined) throw new Error("x");`),
+        /requires a proven undefined completion/,
+    );
+});
