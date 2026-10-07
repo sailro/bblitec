@@ -7,6 +7,8 @@ export interface NativeRecordStorageDemand {
     type: ts.Type;
     node: ts.Node;
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
+    /** Mapped where the record is stored, its declared functions too (`fromStoredTsType`). */
+    stored?: true;
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
     /**

@@ -1485,7 +1485,9 @@ export class DataTypeRegistry {
     /** Resolve ownership demands before any earlier initializer or alias is emitted. */
     public predeclareOwnedRecord(demand: NativeRecordStorageDemand): void {
         this.withRecordDemand(demand, () => {
-            const type = this.fromTsType(demand.type, demand.node);
+            const type = this.withClassDemand(demand.stored === true, () =>
+                this.fromTsType(demand.type, demand.node),
+            );
             if (type?.kind !== "struct")
                 this.fail(
                     demand.node,
@@ -1546,6 +1548,7 @@ export class DataTypeRegistry {
                 frames: this.typeArgumentFrames().map(
                     (frame) => new Map(frame),
                 ),
+                ...(this.classDemanded ? { stored: true as const } : {}),
             });
         }
         return mapped;
@@ -1580,8 +1583,20 @@ export class DataTypeRegistry {
             argument?: ts.Node | undefined;
         } = {},
     ): void {
-        const source = this.nativeRecordSources.get(sourceType.name);
-        const target = this.nativeRecordSources.get(targetType.name);
+        // The stored expression's own and contextual types name the stored
+        // records (`storedRecordSource`).
+        const expression =
+            argument && ts.isExpression(argument) ? argument : undefined;
+        const source = this.storedRecordSource(
+            sourceType,
+            expression && this.checker.getTypeAtLocation(expression),
+            expression,
+        );
+        const target = this.storedRecordSource(
+            targetType,
+            expression && this.checker.getContextualType(expression),
+            expression,
+        );
         const sourceFields = this.structFields(
             sourceType.name,
             node,
@@ -1629,12 +1644,7 @@ export class DataTypeRegistry {
             demand: NativeRecordStorageDemand,
             record: ts.Type,
         ): boolean =>
-            (!demand.frames.length ||
-                !this.withRecordDemand(demand, () =>
-                    this.mentionsSubstitution(record),
-                )) &&
-            (isPlainRecord(this.checker, record) ||
-                isRecordUnion(this.checker, record)) &&
+            this.joinableRecord(demand, record) &&
             !this.isClassStruct(
                 demand === source ? sourceType.name : targetType.name,
             );
@@ -1683,6 +1693,61 @@ export class DataTypeRegistry {
             node,
             `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
         );
+    }
+
+    /**
+     * Whether a record type can join a record component: a plain record or
+     * a union of them that no generic instantiation in force reaches, so it
+     * is one type under every instantiation.
+     */
+    private joinableRecord(
+        demand: NativeRecordStorageDemand,
+        record: ts.Type,
+    ): boolean {
+        return (
+            (!demand.frames.length ||
+                !this.withRecordDemand(demand, () =>
+                    this.mentionsSubstitution(record),
+                )) &&
+            (isPlainRecord(this.checker, record) ||
+                isRecordUnion(this.checker, record))
+        );
+    }
+
+    /**
+     * The checked source of a stored struct: `actual` -- the type the
+     * stored expression has or is stored as -- when it maps to the struct
+     * and can join a component, else the registered one (the first type
+     * mapped to the struct, which records of another type with the same
+     * layout share).
+     */
+    private storedRecordSource(
+        dataType: DataType<"struct">,
+        actual: ts.Type | undefined,
+        node: ts.Expression | undefined,
+    ): NativeRecordStorageDemand | undefined {
+        const registered = this.nativeRecordSources.get(dataType.name);
+        const record = actual && this.checker.getNonNullableType(actual);
+        if (
+            !record ||
+            !node ||
+            (registered &&
+                this.checker.getNonNullableType(registered.type) === record)
+        )
+            return registered;
+        const frames = this.typeArgumentFrames().map((frame) => new Map(frame));
+        const candidate: NativeRecordStorageDemand = {
+            identity: this.structIdentity(record),
+            type: record,
+            node,
+            frames,
+            ...(this.classDemanded ? { stored: true as const } : {}),
+        };
+        if (!this.joinableRecord(candidate, record)) return registered;
+        const mapped = this.fromTsType(record, node);
+        return mapped?.kind === "struct" && mapped.name === dataType.name
+            ? candidate
+            : registered;
     }
 
     /**

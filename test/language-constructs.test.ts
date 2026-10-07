@@ -8352,6 +8352,79 @@ check(
 );
 
 check(
+    "narrowed-union-records-returned-as-another-union-stay-one-object",
+    `
+    interface Ready { state: "ready"; pickupX: number; goalX: number }
+    interface Pending { state: "pending" }
+    interface Blocked { state: "blocked" }
+    type Rendezvous = Ready | Pending | Blocked;
+    type StandPoint = { state: "ready"; x: number; z: number } | Pending | Blocked;
+    const points: StandPoint[] = [{ state: "pending" }, { state: "ready", x: 1, z: 2 }];
+    function rendezvous(point: StandPoint): Rendezvous {
+        if (point.state !== "ready") return point;
+        return { state: "ready", pickupX: point.x, goalX: point.z };
+    }
+    const seen = new Set<Rendezvous>();
+    const first = rendezvous(points[0]!);
+    const second = rendezvous(points[1]!);
+    seen.add(first);
+    if (first !== points[0] || second === points[1] || seen.size !== 1) throw new Error("selected objects");
+    if (second.state !== "ready" || second.pickupX !== 1 || Object.keys(second).join() !== "state,pickupX,goalX") throw new Error("fresh arm");
+    if (Object.keys(first).join() !== "state" || JSON.stringify(points) !== '[{"state":"pending"},{"state":"ready","x":1,"z":2}]') throw new Error("keys");
+`,
+);
+
+check(
+    "records-stored-as-a-tagged-union-stay-one-object",
+    `
+    interface A { kind: "a"; x: number }
+    interface B { kind: "b"; y: number }
+    const a: A = { kind: "a", x: 1 };
+    const u: A | B = a;
+    if (u.kind === "a") u.x = 5;
+    if (a.x !== 5) throw new Error("one object");
+    const w = { kind: "a" as const, x: 2, extra: 3 };
+    const v: A | B = w;
+    if (v.kind === "a") v.x = 7;
+    if (w.x !== 7 || Object.keys(v).join() !== "kind,x,extra" || "y" in v) throw new Error("wider object");
+    const b: A | B = { kind: "b", y: 4 };
+    if (b.kind !== "b" || b.y !== 4 || Object.keys(b).join() !== "kind,y") throw new Error("other arm");
+`,
+);
+
+check(
+    "records-stored-in-nullable-slots-of-another-type-stay-one-object",
+    `
+    interface Wide { a: number; b: number }
+    interface Narrow { a: number }
+    const slots: (Narrow | null)[] = [null];
+    const w: Wide = { a: 1, b: 2 };
+    slots[0] = w;
+    slots[0]!.a = 5;
+    if (w.a !== 5 || slots[0] !== w) throw new Error("one object in a nullable slot");
+    let held: Narrow | undefined;
+    held = w;
+    held.a = 7;
+    if (w.a !== 7 || Object.keys(held).join() !== "a,b") throw new Error("one object in a nullable local");
+`,
+);
+
+check(
+    "union-records-narrowed-in-generic-bodies-stay-one-object",
+    `
+    interface Circle { kind: "circle"; r: number }
+    interface Square { kind: "square"; side: number }
+    type Shape = Circle | Square;
+    function grow(s: Square): void { s.side += 1; }
+    function apply<T>(items: Shape[], tag: T): T { for (const item of items) if (item.kind === "square") grow(item); return tag; }
+    const shapes: Shape[] = [{ kind: "square", side: 1 }, { kind: "circle", r: 2 }];
+    if (apply(shapes, 3) !== 3 || apply(shapes, "x") !== "x") throw new Error("tags");
+    const first = shapes[0]!;
+    if (first.kind !== "square" || first.side !== 3) throw new Error("written through the arm in a generic body");
+`,
+);
+
+check(
     "records-stored-as-an-engine-record-type-stay-one-object",
     `
     type VatClip = import("@babylonjs/lite").VatClip;

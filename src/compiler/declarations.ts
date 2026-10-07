@@ -8,7 +8,10 @@ import {
     findAnalysisNodeWithState,
     someAnalysisNode,
 } from "./analysis-walk.js";
-import { isPrimitiveBrowserValue } from "./browser-erasure.js";
+import {
+    browserDeploymentValue,
+    isPrimitiveBrowserValue,
+} from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
@@ -300,13 +303,21 @@ export class DeclarationLowerer {
         name: ts.Identifier,
         initializer: ts.Expression,
     ): DataType | undefined {
+        // A deployment constant the checker leaves untyped (an
+        // `import.meta.env` key its declarations omit) holds its folded value.
+        const deployed = browserDeploymentValue(this.context, initializer);
         return (
             this.context.dataLowerer.dataTypeAt(name) ??
             this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
             this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(name),
                 name,
-            )
+            ) ??
+            (typeof deployed === "string"
+                ? { kind: "string" }
+                : typeof deployed === "boolean"
+                  ? { kind: "boolean" }
+                  : undefined)
         );
     }
 
