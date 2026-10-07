@@ -31,6 +31,7 @@ import {
     type NumericSlotDeclaration,
     type NumericSlotKind,
 } from "./numeric-slot-storage.js";
+import { EnumArrayStorageRequired } from "./enum-array-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 type StorageDemand =
@@ -39,7 +40,8 @@ type StorageDemand =
     | GenericFunctionStorageRequired
     | AbsenceTagStorageRequired
     | TupleArraySlotRequired
-    | NumericSlotStorageRequired;
+    | NumericSlotStorageRequired
+    | EnumArrayStorageRequired;
 
 export type StorageRequest =
     | {
@@ -58,7 +60,8 @@ export type StorageRequest =
           kind: "numeric-slot";
           declaration: NumericSlotDeclaration;
           numeric: NumericSlotKind;
-      };
+      }
+    | { kind: "enum-array"; unions: readonly string[] };
 
 export function storageRequest(error: StorageDemand): StorageRequest {
     if (error instanceof DynamicBindingStorageRequired)
@@ -79,6 +82,8 @@ export function storageRequest(error: StorageDemand): StorageRequest {
             declaration: error.declaration,
             numeric: error.kind,
         };
+    if (error instanceof EnumArrayStorageRequired)
+        return { kind: "enum-array", unions: error.unions };
     return { kind: "generic", demand: error.demand };
 }
 
@@ -89,7 +94,8 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
         error instanceof GenericFunctionStorageRequired ||
         error instanceof AbsenceTagStorageRequired ||
         error instanceof TupleArraySlotRequired ||
-        error instanceof NumericSlotStorageRequired
+        error instanceof NumericSlotStorageRequired ||
+        error instanceof EnumArrayStorageRequired
     );
 }
 
@@ -226,6 +232,8 @@ export class StorageDemandPlanner {
         NumericSlotDeclaration,
         Set<NumericSlotKind>
     >();
+    /** @unjournaled Discovery deduplicates requests discarded by emission. */
+    private readonly enumArrays = new Set<string>();
     /** @unjournaled Bounds the discarded attempt, independently of rollback. */
     private statements = 0;
     /** @unjournaled Source declarations removed by a planning rollback. */
@@ -350,6 +358,12 @@ export class StorageDemandPlanner {
                     request.declaration,
                     new Set([request.numeric]),
                 );
+        } else if (request.kind === "enum-array") {
+            const unions = request.unions.filter(
+                (union) => !this.enumArrays.has(union),
+            );
+            if (unions.length === 0) return;
+            for (const union of unions) this.enumArrays.add(union);
         } else if (!this.generic.add(request.demand)) return;
         this.demands.push(request);
         statistics.collected++;

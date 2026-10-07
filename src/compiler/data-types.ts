@@ -1145,7 +1145,40 @@ export class DataTypeRegistry {
         private readonly tupleArraySlots: ReadonlySet<ts.Declaration> = new Set(),
         /** `ArrayLike<number>` slots retyped for the numeric arrays they store. */
         private readonly numericSlots: NumericSlots = new Map(),
+        /**
+         * String literal unions (`enumLiterals`) whose arrays store their
+         * members as strings (`EnumArrayStorageRequired`).
+         */
+        private readonly stringElementUnions: ReadonlySet<string> = new Set(),
     ) {}
+
+    /** A string literal union's identity across replays: its sorted members. */
+    public enumLiterals(name: string): string {
+        return this.enumMembers(name).join("|");
+    }
+
+    /** Whether arrays of the named literal union store its members as strings. */
+    public storesEnumElementsAsStrings(name: string): boolean {
+        return this.stringElementUnions.has(this.enumLiterals(name));
+    }
+
+    /**
+     * An array element as its array stores it: a literal union a demand
+     * gave string storage (`stringElementUnions`) as a string, also as an
+     * optional lane.
+     */
+    private arrayElementStorage(element: DataType): DataType {
+        if (
+            element.kind === "enum" &&
+            this.storesEnumElementsAsStrings(element.name)
+        )
+            return { kind: "string" };
+        if (element.kind === "optional") {
+            const inner = this.arrayElementStorage(element.inner);
+            return inner === element.inner ? element : { ...element, inner };
+        }
+        return element;
+    }
 
     /** The numeric array kinds a demand retyped `declaration`'s `ArrayLike<number>` position for. */
     public numericSlotKinds(
@@ -3194,10 +3227,11 @@ export class DataTypeRegistry {
                     const finite = this.finiteArrayType(node);
                     if (finite) return finite;
                 }
-                const element = this.fromStoredTsType(elementType, node);
-                if (!element) {
+                const mapped = this.fromStoredTsType(elementType, node);
+                if (!mapped) {
                     return undefined;
                 }
+                const element = this.arrayElementStorage(mapped);
                 // Replacing an element and mutating the object stored in an
                 // element are separate permissions: even ReadonlyArray keeps
                 // object identity for its values. Functions carry identity too,
@@ -4075,7 +4109,9 @@ export class DataTypeRegistry {
                     ? {
                           kind: "vector",
                           element: markIdentityFunctions(
-                              this.markStoredObjectReferences(element),
+                              this.markStoredObjectReferences(
+                                  this.arrayElementStorage(element),
+                              ),
                           ),
                       }
                     : undefined;

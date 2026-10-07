@@ -603,6 +603,7 @@ function compileSourceApplication(
         const absenceTags = new Set<AbsenceTagDeclaration>();
         const tupleArraySlots = new Set<ts.Declaration>();
         const numericSlots = new Map<ts.Declaration, Set<NumericSlotKind>>();
+        const stringElementUnions = new Set<string>();
         const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planning: boolean): Compiler => {
             recordStorageCompileAttempt(planning);
@@ -618,6 +619,7 @@ function compileSourceApplication(
                 absenceTags,
                 tupleArraySlots,
                 numericSlots,
+                stringElementUnions,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -694,6 +696,12 @@ function compileSourceApplication(
                         request.declaration,
                         new Set([request.numeric]),
                     );
+            } else if (
+                request.kind === "enum-array" &&
+                request.unions.some((union) => !stringElementUnions.has(union))
+            ) {
+                for (const union of request.unions)
+                    stringElementUnions.add(union);
             } else return false;
             return true;
         };
@@ -1026,6 +1034,7 @@ class Compiler implements LoweringServices {
         public readonly absenceTags: ReadonlySet<ts.Declaration>,
         public readonly tupleArraySlots: ReadonlySet<ts.Declaration>,
         numericSlots: NumericSlots,
+        stringElementUnions: ReadonlySet<string>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -1038,6 +1047,7 @@ class Compiler implements LoweringServices {
             absenceTags,
             tupleArraySlots,
             numericSlots,
+            stringElementUnions,
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
