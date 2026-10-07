@@ -367,7 +367,7 @@ function valueVector(
 }
 
 /** A lane with no identity of its own: a number, string, boolean or literal union, or a union or optional of them. */
-function plainLane(type: DataType): boolean {
+export function plainLane(type: DataType): boolean {
     switch (type.kind) {
         case "number":
         case "boolean":

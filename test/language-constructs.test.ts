@@ -10209,6 +10209,69 @@ test("stored function storage refuses values reading arguments it drops", () => 
 });
 
 check(
+    "stored-function-adapts-required-lanes-to-optional-parameters",
+    `
+    interface Host {
+        place(x: number, height: (x: number, z: number, floor: number) => number | null): number | null;
+        label(name: (id: number) => string | undefined): string;
+    }
+    function sampler(base: number) {
+        return {
+            heightAt(x: number, z: number, floor?: number): number | null {
+                if (x < 0) return null;
+                return (floor ?? base) + x + z;
+            },
+            name(id: number): string { return "#" + id; },
+        };
+    }
+    function live(deps: Host): (x: number) => [number | null, string] {
+        const samplers: ReturnType<typeof sampler>[] = [sampler(10)];
+        const sampled = samplers[0]!;
+        return (x) => [deps.place(x, sampled.heightAt), deps.label(sampled.name)];
+    }
+    const lives: Array<typeof live> = [live];
+    const seen: Array<number | null> = [];
+    const run = lives[0]!({
+        place: (x, height) => {
+            const held = height;
+            seen.push(held(x, 2, 5));
+            return height(x, 3, 0.5);
+        },
+        label: (name) => name(7) ?? "none",
+    });
+    const [first, label] = run(1);
+    if (first !== 4.5 || seen[0] !== 8 || label !== "#7") throw new Error("adapted lanes");
+    if (run(-1)[0] !== null || seen[1] !== null) throw new Error("adapted absent result");
+`,
+);
+
+test("stored function adapters refuse lanes the value does not hold", () => {
+    for (const [source, message] of [
+        [
+            `interface Deps { run(f: (value: number | undefined) => number): number }
+            function make(deps: Deps): number {
+                const table: Array<{ twice(value: number): number }> = [{ twice: (value) => value * 2 }];
+                return deps.run(table[0]!.twice);
+            }
+            const makes: Array<typeof make> = [make];
+            if (makes[0]!({ run: (f) => f(undefined) }) !== 0) throw new Error("x");`,
+            /does not match the expected data function/,
+        ],
+        [
+            `interface Deps { run(f: (key: string) => number): number }
+            function make(deps: Deps): number {
+                const table: Array<{ rank(key: "low" | "high"): number }> = [{ rank: (key) => (key === "low" ? 1 : 2) }];
+                return deps.run(table[0]!.rank);
+            }
+            const makes: Array<typeof make> = [make];
+            if (makes[0]!({ run: (f) => f("other") }) !== 2) throw new Error("x");`,
+            /does not match the expected data function/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
     "stored-function-spread-of-an-optional-lane-tuple",
     `
     type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number];
