@@ -657,18 +657,36 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         };
+        let assertion: ts.Expression = expression;
+        while (ts.isParenthesizedExpression(assertion))
+            assertion = assertion.expression;
         if (
-            ts.isAsExpression(expression) ||
-            ts.isTypeAssertionExpression(expression)
+            ts.isAsExpression(assertion) ||
+            ts.isTypeAssertionExpression(assertion)
         ) {
-            const asserted = this.resolveValue(expression);
+            // JavaScript erases the assertion: a value that may be absent
+            // reads as ToNumber reads it, NaN for undefined and 0 for null.
             if (
-                asserted.kind === "number" ||
-                (asserted.kind === "data" &&
-                    asserted.dataType?.kind === "number")
+                isNullable(this.checker.getTypeAtLocation(assertion.expression))
             ) {
-                return this.castNumber(asserted, precision);
+                const value = this.resolveValue(assertion.expression);
+                const optional = castOptionalNumber(value, true);
+                if (optional !== undefined) return optional;
+                if (!isNumericValue(value))
+                    this.fail(
+                        assertion,
+                        `Expected number, received ${value.kind}.`,
+                    );
+                return this.castNumber(value, precision);
             }
+            // A number or a parsed document, which the numeric sink coerces.
+            const asserted = this.resolveValue(assertion);
+            if (isNumericValue(asserted))
+                return this.castNumber(asserted, precision);
+            // An optional number slot behind a type the checker cannot see
+            // through (`unknown`) reads as ToNumber reads it too.
+            const slot = castOptionalNumber(asserted, true);
+            if (slot !== undefined) return slot;
         }
         const awaited = unwrapExpression(expression);
         if (ts.isAwaitExpression(awaited)) {

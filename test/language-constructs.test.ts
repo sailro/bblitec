@@ -9682,3 +9682,28 @@ test("a closed Record created in another key order than JSON writes refuses", ()
         /JSON\.stringify writes a closed Record where the stringified value, a record field or another closed Record holds it\./,
     );
 });
+
+// A number asserted from a slot that may be absent, or that an unknown type
+// hides, reads as ToNumber reads the slot: NaN for undefined.
+check(
+    "numbers-asserted-from-optional-slots",
+    `
+    interface Saved { e?: number; n?: number }
+    function epoch(record: Saved): number | undefined {
+        return Number.isFinite(record.e) && (record.e as number) >= 0 ? Math.trunc(record.e as number) : undefined;
+    }
+    const reads: Array<typeof epoch> = [epoch];
+    if (reads[0]!({ e: 3.7 }) !== 3 || reads[0]!({}) !== undefined || reads[0]!({ e: -1 }) !== undefined) throw new Error("epoch");
+    const loose = (record: Saved): number => (record.n as number) + 1;
+    const looses: Array<typeof loose> = [loose];
+    if (!Number.isNaN(looses[0]!({})) || looses[0]!({ n: 1 }) !== 2) throw new Error("loose");
+    interface Home { i: number; e?: number }
+    function epochOf(item: Home): number {
+        const record = item as { i?: unknown; e?: unknown };
+        return Number.isFinite(record.e) && (record.e as number) >= 0 ? Math.trunc(record.e as number) : -1;
+    }
+    const homeReads: Array<typeof epochOf> = [epochOf];
+    const homes: Home[] = [{ i: 1, e: 3.5 }, { i: 2 }, { i: 3, e: -1 }];
+    if (homes.map((home) => homeReads[0]!(home)).join() !== "3,-1,-1") throw new Error("unknown slots");
+`,
+);
