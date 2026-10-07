@@ -1526,9 +1526,9 @@ export class ExpressionLowerer {
                     ? operand.dataType.inner
                     : operand.dataType;
             const type =
-                operand.kind === "number"
+                operand.kind === "number" || dataType?.kind === "number"
                     ? "number"
-                    : operand.kind === "boolean"
+                    : operand.kind === "boolean" || dataType?.kind === "boolean"
                       ? "boolean"
                       : operand.kind === "string" ||
                           dataType?.kind === "string" ||
@@ -3870,6 +3870,12 @@ export class ExpressionLowerer {
                 dataType: { kind: "number" },
             };
         }
+        if (value.kind === "boolean" || value.dataType?.kind === "boolean")
+            return {
+                kind: "number",
+                cpp: `(${value.cpp} ? 1.0 : 0.0)`,
+                dataType: { kind: "number" },
+            };
         if (
             value.kind === "data" &&
             value.dataType?.kind === "optional" &&

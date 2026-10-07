@@ -7068,6 +7068,39 @@ function checkInRealm(name: string, source: string): void {
 }
 
 checkInRealm(
+    "async-returns-of-a-promise-or-a-record-branch",
+    `
+    type Result = { status: "loaded"; text: string } | { status: "invalid" } | { status: "cancelled" } | { status: "error" };
+    async function parse(text: string): Promise<Result> {
+        await Promise.resolve();
+        return text.length > 0 ? { status: "loaded", text } : { status: "invalid" };
+    }
+    interface Picked { name: string; }
+    async function choose(name: string): Promise<Picked | null> {
+        await Promise.resolve();
+        if (name === "-") return null;
+        return { name };
+    }
+    async function pick(name: string): Promise<Result> {
+        try {
+            const file = await choose(name);
+            return file ? parse(file.name) : { status: "cancelled" };
+        } catch {
+            return { status: "error" };
+        }
+    }
+    async function direct(name: string): Promise<Result> {
+        return name === "" ? { status: "cancelled" } : parse(name);
+    }
+    void (async () => {
+        const seen = [await pick("a"), await pick("-"), await pick(""), await direct(""), await direct("b")].map((r) => r.status);
+        if (seen.join(",") !== "loaded,cancelled,invalid,cancelled,loaded") throw new Error(seen.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
     "awaited-nullish-fallbacks-run-only-when-absent",
     `
     const order: string[] = [];
@@ -7796,6 +7829,47 @@ check(
 );
 
 check(
+    "optional-receivers-typed-present-and-runtime-tuple-loops",
+    `
+    interface Control { u: number; y?: number; }
+    interface Curve { controls?: readonly { u?: unknown; y?: unknown }[]; }
+    const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    function sanitize(value: unknown): Control[] {
+        if (!Array.isArray(value)) return [];
+        const parsed: Control[] = [];
+        for (let index = 0; index < value.length; index++) {
+            const raw = value[index] as { u?: unknown; y?: unknown };
+            const u = finite(raw.u);
+            if (u === undefined) continue;
+            const y = finite(raw.y);
+            parsed.push(y === undefined ? { u } : { u, y });
+        }
+        return parsed;
+    }
+    const normalize = (curve: Curve): number => sanitize(curve.controls).length;
+    const curves: Curve[] = [{ controls: [{ u: 1, y: 2 }, { u: "x" }, { u: 3 }] }, {}];
+    if (curves.map(normalize).join(",") !== "2,0") throw new Error("narrowed optional receiver");
+    const counts = (rows: readonly { readonly id?: number }[] | undefined): Map<number, number> => {
+        const out = new Map<number, number>();
+        if (!Array.isArray(rows)) return out;
+        for (const row of rows) if (typeof row?.id === "number") out.set(row.id, (out.get(row.id) ?? 0) + 1);
+        return out;
+    };
+    const world: { props?: readonly { readonly id?: number }[] }[] = [{ props: [{ id: 2 }, {}, { id: 2 }] }, {}];
+    if (world.map((each) => counts(each.props).get(2) ?? 0).join(",") !== "2,0") throw new Error("narrowed optional iteration");
+    function endInset(width: number, heights: readonly [bottom: number, top: number] = [-0.5, 0]): number[] {
+        return [-width / 2, width / 2].map((across) => {
+            let inset = 0;
+            for (const height of heights) inset = Math.max(inset, across * height);
+            return inset;
+        });
+    }
+    const insets: Array<typeof endInset> = [endInset];
+    if (insets[0]!(4).join(",") !== "1,0" || insets[0]!(2, [2, 3]).join(",") !== "0,3") throw new Error("tuple loop");
+`,
+);
+
+check(
     "record-tuple-fields-entering-number-arrays-take-array-storage",
     `
     type Vec4 = [number, number, number, number];
@@ -7823,6 +7897,24 @@ check(
     if (params.sunDir.length !== 4 || kept[1] !== params.sunDir) throw new Error("one growable array");
 `,
 );
+
+test("absence tags, spread lanes and tuple storage refuse what no storage represents", () => {
+    for (const [source, message] of [
+        [
+            "interface R { x: number } const gate = new Float32Array([1]); function pick(i: number): R | null | undefined { return i > 0 ? { x: 1 } : i < 0 ? null : undefined; } const roots: Array<typeof pick> = [pick]; let p: R | null | undefined = roots[0]!(gate[0]!); if (p === null) throw new Error('null');",
+            /stored where they are told apart only once one of them is ruled out/,
+        ],
+        [
+            "class Placement { x = 0; set(a: number, b = 0): void { this.x = a + b; } } const numbers: number[] = [1, 2]; const placement = new Placement(); placement.set(...numbers);",
+            /A spread argument of a class method expands a tuple of a fixed length/,
+        ],
+        [
+            "function grow(t: [number, number]): number { const a: number[] = t; a.push(1); return a.length; } const roots: Array<typeof grow> = [grow]; if (roots[0]!([1, 2]) !== 3) throw new Error('grow');",
+            /A fixed-length tuple stored as a number array could grow through that array/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
 
 check(
     "nullish-fallbacks-that-never-complete-or-are-null",
@@ -7853,6 +7945,53 @@ check(
     const slots: (Geometry | null)[] = [null];
     const missing = slots[3] ?? null;
     if (missing !== null || (slots[0] ?? undefined) !== undefined) throw new Error("fallback absence");
+`,
+);
+
+check(
+    "tuple-lanes-and-readonly-number-array-slots",
+    `
+    type Kind = "workshop" | "castle";
+    interface Facts { run: number; }
+    interface Home { id: number; workshop: Facts | null; castle: Facts | null; }
+    const rows: string[] = [];
+    function collect(list: readonly Home[]): void {
+        for (const home of list) {
+            const retained: readonly (readonly [Kind, number | null])[] = [
+                ["workshop", home.workshop?.run ?? null],
+                ["castle", home.castle?.run ?? null],
+            ];
+            for (const [kind, run] of retained) {
+                if (run === null || !Number.isSafeInteger(run) || run < 0) continue;
+                rows.push(kind + run);
+            }
+        }
+    }
+    collect([{ id: 1, workshop: { run: 2 }, castle: null }, { id: 2, workshop: null, castle: { run: -1 } }]);
+    if (rows.join(",") !== "workshop2") throw new Error(rows.join(","));
+    const ranked = [{ run: 2, settled: false }, { run: 1, settled: false }, { run: 2, settled: true }];
+    ranked.sort((a, b) => a.run - b.run || Number(b.settled) - Number(a.settled));
+    if (ranked.map((row) => row.run + String(row.settled)).join(",") !== "1false,2true,2false") throw new Error("Number(boolean)");
+    type Vec3 = readonly [number, number, number];
+    function aim(position: Vec3, lookAt: Vec3 | null = null): readonly number[] {
+        let target: readonly number[];
+        if (lookAt) {
+            target = lookAt;
+        } else {
+            target = [position[0] + 1, position[1], position[2]];
+        }
+        return target;
+    }
+    const fixed: Vec3 = [9, 9, 9];
+    if (aim([1, 2, 3])[0] !== 2 || aim([1, 2, 3], fixed) !== fixed || aim([1, 2, 3], fixed).length !== 3) throw new Error("readonly target");
+    interface Decl { name: string; value?: number | readonly number[]; }
+    function decls(cloud: readonly [number, number, number, number] = [0, 0, 0, 0]): Decl[] {
+        return [{ name: "a", value: 1 }, { name: "cloud", value: cloud }];
+    }
+    const cloud: [number, number, number, number] = [1, 2, 3, 4];
+    const made = decls(cloud);
+    cloud[0] = 5;
+    if ((made[1]!.value as readonly number[])[0] !== 5 || (decls()[1]!.value as readonly number[])[3] !== 0) throw new Error("readonly field");
 `,
 );
 

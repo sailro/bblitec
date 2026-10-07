@@ -3257,6 +3257,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return value;
     }
 
+    /**
+     * An optional a member access or an iteration reads through -- narrowed
+     * by a guard the data types do not follow, declared present for an
+     * implementation that may still produce nothing, or typed by a
+     * JavaScript source -- as its present value, whose read throws when it
+     * is absent, as JavaScript's member access and iteration do. Any other
+     * value is returned as it is.
+     */
+    private presentForAccess(value: Value): Value {
+        return value.dataType?.kind === "optional"
+            ? this.presentOptionalValue(value, value.dataType.inner)
+            : value;
+    }
+
     private presentOptionalValue(value: Value, inner: DataType): Value {
         return this.projectedNativeValue(
             value,
@@ -4344,6 +4358,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return this.leafValue(`${owner.cpp}.length()`, { kind: "number" });
         }
         if (dataType.kind === "optional") {
+            if (!access.questionDotToken)
+                return this.propertyRead(this.presentForAccess(owner), access);
             this.context.fail(
                 access,
                 `'${access.expression.getText()}' may be null here; narrow it before member access.`,
@@ -4754,6 +4770,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.narrowOptional(ownerValue, access.expression),
             access,
         );
+        if (owner.dataType?.kind === "optional" && !access.questionDotToken)
+            owner = this.presentForAccess(owner);
         const dataType = owner.dataType;
         if (!dataType) {
             return undefined;
@@ -14910,7 +14928,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       : undefined));
         const value =
             rawValue?.kind === "data"
-                ? this.narrowOptional(rawValue, expression)
+                ? this.presentForAccess(
+                      this.narrowOptional(rawValue, expression),
+                  )
                 : rawValue;
         if (value && isStringValue(value))
             return {
