@@ -10,6 +10,7 @@ import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
 import { authoredErrorValue, thrownMessage } from "../error-values.js";
 import { provenUndefinedValue } from "../undefined-values.js";
+import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
@@ -198,6 +199,14 @@ function valuePromise(
     ) {
         converted = `${expected}{value}`;
     }
+    if (
+        !converted &&
+        settlesNever(
+            lowerer.context.checker,
+            lowerer.context.checker.getTypeAtLocation(node),
+        )
+    )
+        return rejectionOnlyPromiseCpp(value.cpp, expected);
     if (!converted)
         return lowerer.context.fail(
             node,

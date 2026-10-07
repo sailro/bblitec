@@ -31,7 +31,11 @@ import {
     type DataStructField,
 } from "./data-types.js";
 import { errorValue } from "./error-values.js";
-import { isCustomThenable, isPromiseResultUsed } from "./promises.js";
+import {
+    isPromiseResultUsed,
+    rejectionOnlyPromiseCpp,
+    settlesNever,
+} from "./promises.js";
 import { isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
@@ -120,15 +124,19 @@ export class AsyncLowerer {
                     node,
                 ));
         const raw = context.compileValue(expression);
-        const value =
-            this.adoptOptionalPromise(raw, expression) ??
-            this.adoptValueOrPromise(raw) ??
-            raw;
+        const value = this.adoptPromiseUnion(raw, expression) ?? raw;
         if (value.kind === "promise") {
             const expected = type
                 ? context.dataTypes.cppType(type)
                 : "bbl::js::PromiseVoid";
             if (value.promiseType === expected) return value.cpp;
+            if (
+                settlesNever(
+                    context.checker,
+                    context.checker.getTypeAtLocation(expression),
+                )
+            )
+                return rejectionOnlyPromiseCpp(value.cpp, expected);
             const name = context.allocateTemporaryCppName("adopted_result");
             const conversion = context.captureManagedClosureLines(() => {
                 const binding = context.registerNativeBinding(name);
@@ -147,6 +155,7 @@ export class AsyncLowerer {
             });
             return `bbl::js::adopt_promise(${value.cpp}, ${renderClosure(conversion, `[[maybe_unused]] const ${value.promiseType}& ${name}`, expected)})`;
         }
+        this.refuseThenable(value, expression);
         if (!type) {
             context.emitDiscardedValue(value);
             return "bbl::js::PromiseVoid{}";
@@ -932,14 +941,14 @@ export class AsyncLowerer {
                 source,
             );
         let promises: Value[];
-        // An input typed Promise<never> only rejects, so it joins any
-        // settlement type: the others name the result.
+        // An input that only rejects joins any settlement type: the others
+        // name the result.
         const argumentType = context.checker.getTypeAtLocation(argument);
-        const onlyRejects = (index: number): boolean => {
-            const type = this.elementType(argumentType, index);
-            const awaited = type && context.checker.getAwaitedType(type);
-            return ((awaited?.flags ?? 0) & ts.TypeFlags.Never) !== 0;
-        };
+        const onlyRejects = (index: number): boolean =>
+            settlesNever(
+                context.checker,
+                this.elementType(argumentType, index),
+            );
         const spread = this.spreadLiteralInput(argument, operation);
         if (ts.isArrayLiteralExpression(argument) && !spread)
             promises = argument.elements.map((element) =>
@@ -983,7 +992,7 @@ export class AsyncLowerer {
                     call,
                     `Promise.${operation} inputs require a common represented settlement type.`,
                 );
-            return `bbl::js::Promise<${cppType}>::view(${promise.cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
+            return rejectionOnlyPromiseCpp(promise.cpp, cppType);
         });
         return {
             kind: "promise",
@@ -1000,7 +1009,8 @@ export class AsyncLowerer {
      * An array literal with spreads (`[p, ...ps]`) holds a count known only
      * at run time: it is the fresh array JavaScript builds first, element by
      * element in source order, which the combinator then reads as a stored
-     * array. Its elements must be promises of one settlement type.
+     * array. Its elements must be promises of one settlement type; one that
+     * only rejects joins it.
      */
     private spreadLiteralInput(
         argument: ts.Expression,
@@ -1022,6 +1032,15 @@ export class AsyncLowerer {
                 : declared?.kind === "vector" || declared?.kind === "span"
                   ? declared.element
                   : undefined;
+            if (
+                !ts.isSpreadElement(item) &&
+                type?.kind === "promise" &&
+                settlesNever(
+                    this.context.checker,
+                    this.context.checker.getTypeAtLocation(item),
+                )
+            )
+                continue;
             if (
                 type?.kind !== "promise" ||
                 (element !== undefined && !dataTypesEqual(element, type))
@@ -1644,15 +1663,20 @@ export class AsyncLowerer {
             expected,
         );
     }
-    /** An absent promise settles to absence; a present promise adopts its payload. */
-    private adoptOptionalPromise(
+    /**
+     * A union holding a promise, as resolution adopts it: an absent promise
+     * settles to absence and a present one adopts its payload; a
+     * value-or-promise union (`T | Promise<T>`) is its promise arm itself,
+     * or its value arm resolved.
+     */
+    private adoptPromiseUnion(
         value: Value,
         node: ts.Node,
         source = this.context.checker.getTypeAtLocation(node),
     ): Value | undefined {
         const type = value.dataType;
         if (type?.kind !== "optional" || type.inner.kind !== "promise")
-            return undefined;
+            return this.adoptValueOrPromise(value);
         const context = this.context;
         const awaited = context.checker.getAwaitedType(source);
         const mapped = awaited && context.dataTypes.fromTsType(awaited, node);
@@ -1696,9 +1720,7 @@ export class AsyncLowerer {
         source = this.context.checker.getTypeAtLocation(node),
     ): Value {
         if (value.kind === "promise") return value;
-        const adopted =
-            this.adoptOptionalPromise(value, node, source) ??
-            this.adoptValueOrPromise(value);
+        const adopted = this.adoptPromiseUnion(value, node, source);
         if (adopted) return adopted;
         value = this.normalizeUndefined(
             value,
@@ -1778,7 +1800,7 @@ export class AsyncLowerer {
         node: ts.Node,
         source: ts.Type | undefined,
     ): Value {
-        const adopted = this.adoptOptionalPromise(value, node, source);
+        const adopted = this.adoptPromiseUnion(value, node, source);
         if (adopted) return adopted;
         const awaited =
             source && (this.context.checker.getAwaitedType(source) ?? source);
@@ -1895,10 +1917,6 @@ export class AsyncLowerer {
             owned,
         );
     }
-    /**
-     * A value-or-promise union (`T | Promise<T>`) as a promise: its promise
-     * arm itself, or its value arm resolved.
-     */
     private adoptValueOrPromise(value: Value): Value | undefined {
         const type = value.dataType;
         if (value.kind !== "data" || type?.kind !== "union") return undefined;
@@ -1923,8 +1941,30 @@ export class AsyncLowerer {
         );
     }
 
-    private refuseThenable(value: Value, node: ts.Node): void {
-        if (isCustomThenable(this.context.dataTypes, value, node))
+    /**
+     * The one resolution entry point every settled value passes before its
+     * conversion: resolution reads a custom thenable's `then` (a method,
+     * getter, callable property or accessor field) and calls it when
+     * callable. A data `then` that is not a function is read unobservably.
+     */
+    refuseThenable(value: Value, node: ts.Node): void {
+        const property = value.recordProperties?.then;
+        const field =
+            value.dataType?.kind === "struct"
+                ? this.context.dataTypes.findStructField(
+                      value.dataType.name,
+                      "then",
+                      node,
+                  )
+                : undefined;
+        if (
+            value.recordMethods?.then ||
+            value.recordGetters?.then ||
+            property?.kind === "callback" ||
+            property?.dataType?.kind === "function" ||
+            field?.type.kind === "function" ||
+            field?.accessor
+        )
             this.context.fail(
                 node,
                 "Custom thenable assimilation requires an owned promise resolution protocol.",

@@ -366,27 +366,18 @@ function emitValue(context: PromiseLoweringContext, value: Value): void {
 }
 
 /**
- * Whether resolving a promise with `value` observes a custom thenable: a
- * `then` method, getter, callable property or accessor field, which
- * JavaScript's resolution reads (and calls when callable). A data `then`
- * that is not a function is read unobservably.
+ * Whether a promise of `type` only rejects: it settles `never`, the bottom
+ * type, so it joins any settlement type.
  */
-export function isCustomThenable(
-    dataTypes: LoweringServices["dataTypes"],
-    value: Value,
-    node: ts.Node,
+export function settlesNever(
+    checker: ts.TypeChecker,
+    type: ts.Type | undefined,
 ): boolean {
-    const property = value.recordProperties?.then;
-    const field =
-        value.dataType?.kind === "struct"
-            ? dataTypes.findStructField(value.dataType.name, "then", node)
-            : undefined;
-    return Boolean(
-        value.recordMethods?.then ||
-        value.recordGetters?.then ||
-        property?.kind === "callback" ||
-        property?.dataType?.kind === "function" ||
-        field?.type.kind === "function" ||
-        field?.accessor,
-    );
+    const awaited = type && checker.getAwaitedType(type);
+    return ((awaited?.flags ?? 0) & ts.TypeFlags.Never) !== 0;
+}
+
+/** A promise that only rejects, viewed as a promise settling `cppType`. */
+export function rejectionOnlyPromiseCpp(cpp: string, cppType: string): string {
+    return `bbl::js::Promise<${cppType}>::view(${cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
 }
