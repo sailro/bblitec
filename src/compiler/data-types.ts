@@ -3290,9 +3290,16 @@ export class DataTypeRegistry {
         if (!argument) return undefined;
         const settled = argument.isUnion() ? argument.types : [argument];
         const values = type.types.filter((member) => member !== promise);
+        // Two spellings of one object literal type are distinct checker types.
+        const same = (left: ts.Type, right: ts.Type): boolean =>
+            left === right ||
+            (this.checker.isTypeAssignableTo(left, right) &&
+                this.checker.isTypeAssignableTo(right, left));
         if (
             values.length !== settled.length ||
-            !values.every((member) => settled.includes(member))
+            !values.every((member) =>
+                settled.some((candidate) => same(member, candidate)),
+            )
         )
             return undefined;
         const value = this.fromTsType(argument, node);

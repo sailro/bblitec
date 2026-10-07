@@ -373,3 +373,21 @@ test("stored unknown-parameter methods handle values an operation supplies", (t)
 `,
         true,
     ));
+
+test("value-or-promise unions match their arms across object type spellings", (t) =>
+    nativeCheck(
+        t,
+        "value-or-promise-spellings",
+        `
+    interface Command{setAmount(id:number,amount:number):{changed:boolean}|Promise<{changed:boolean}>}
+    function control(deps:{id:number;command:Command}){return {set:async(value:number)=>(await deps.command.setAmount(deps.id,value)).changed};}
+    const controls:Array<typeof control>=[control];
+    const quick=controls[0]!({id:1,command:{setAmount:(_id,amount)=>({changed:amount>0})}});
+    const slow=controls[0]!({id:2,command:{setAmount:async(_id,amount)=>({changed:amount>1})}});
+    void(async()=>{
+        if(!await quick.set(1)||await quick.set(0)||await slow.set(1)||!await slow.set(2))throw new Error("value or promise spellings");
+        globalThis.close();
+    })();
+`,
+        true,
+    ));

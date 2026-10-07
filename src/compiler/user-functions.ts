@@ -4336,8 +4336,19 @@ export class UserFunctionLowerer {
             dataType.result?.kind === "optional"
                 ? dataType.result.inner
                 : dataType.result;
+        // An async function stored where a value-or-promise union is
+        // expected returns its promise arm.
+        const settledPromise =
+            asynchronous &&
+            resultType?.kind === "union" &&
+            resultType.members.length === 2
+                ? resultType.members.find(
+                      (member): member is DataType<"promise"> =>
+                          member.kind === "promise",
+                  )
+                : undefined;
         const promiseType =
-            resultType?.kind === "promise" ? resultType : undefined;
+            resultType?.kind === "promise" ? resultType : settledPromise;
         const generator =
             "asteriskToken" in declaration && declaration.asteriskToken
                 ? resultType?.kind === "iterator"
