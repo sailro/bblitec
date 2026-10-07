@@ -654,13 +654,13 @@ export function resolveFunctionDeclaration(
         }
         if (
             parameter.dotDotDotToken &&
-            (!ts.isIdentifier(parameter.name) ||
+            (ts.isObjectBindingPattern(parameter.name) ||
                 parameter !==
                     declaration.parameters[declaration.parameters.length - 1])
         ) {
             fail(
                 parameter,
-                "A rest parameter is the last parameter and an identifier.",
+                "A rest parameter is the last parameter and an identifier or array pattern.",
             );
         }
         if (ts.isArrayBindingPattern(parameter.name)) {
@@ -684,6 +684,37 @@ export function resolveFunctionDeclaration(
         }
     }
     return declaration;
+}
+
+/** The length of a tuple type whose elements are all required. */
+function fixedTupleLength(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): number | undefined {
+    if (!checker.isTupleType(type)) return undefined;
+    const flags = ((type as ts.TypeReference).target as ts.TupleType)
+        .elementFlags;
+    return flags.every((flag) => (flag & ts.ElementFlags.Required) !== 0)
+        ? flags.length
+        : undefined;
+}
+
+/**
+ * Whether a function literal's final parameter is a rest parameter of a
+ * fixed tuple type: its lanes are ordinary parameters of a signature that
+ * spells them, rather than a packed array.
+ */
+export function hasFixedTupleRest(
+    checker: ts.TypeChecker,
+    declaration: ts.Node,
+): boolean {
+    if (!isSupportedFunction(declaration)) return false;
+    const last = declaration.parameters.at(-1);
+    return (
+        last?.dotDotDotToken !== undefined &&
+        fixedTupleLength(checker, checker.getTypeAtLocation(last)) !==
+            undefined
+    );
 }
 
 /**
@@ -3853,6 +3884,10 @@ export class UserFunctionLowerer {
             : cpp;
     }
 
+    private fixedTupleLength(type: ts.Type): number | undefined {
+        return fixedTupleLength(this.checker, type);
+    }
+
     private nativeParameterValue(
         context: UserFunctionContext,
         parameter: ts.BindingName,
@@ -4270,6 +4305,20 @@ export class UserFunctionLowerer {
                 "reads",
                 declaration,
             );
+        // A rest parameter of a fixed tuple type is the signature's
+        // trailing parameters, one lane each.
+        const restParameter = runtimeParameters.at(-1);
+        const restLanes =
+            dataType.restParameter === undefined &&
+            restParameter?.declaration.dotDotDotToken
+                ? this.fixedTupleLength(restParameter.type)
+                : undefined;
+        const tupleRest =
+            restLanes !== undefined &&
+            dataType.parameters.length ===
+                runtimeParameters.length - 1 + restLanes
+                ? restParameter
+                : undefined;
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
         const parameters = dataType.parameters.map((type, index) => ({
@@ -4422,6 +4471,26 @@ export class UserFunctionLowerer {
                                     context.compileValue(initializer);
                                 context.emitDiscardedValue(evaluated);
                             }
+                            continue;
+                        }
+                        if (parameter === tupleRest) {
+                            const lanes = parameters
+                                .slice(runtimeIndex)
+                                .map(({ type, cppName: lane }) => {
+                                    context.registerNativeConstBinding(lane);
+                                    context.registerNativeBindingType(
+                                        lane,
+                                        context.dataTypes.cppType(type),
+                                    );
+                                    return context.dataValue(lane, type);
+                                });
+                            runtimeIndex = parameters.length;
+                            this.bindSpecializedParameter(
+                                context,
+                                ir.declaration,
+                                parameter,
+                                { kind: "tuple", cpp: "", tupleElements: lanes },
+                            );
                             continue;
                         }
                         const supplied = parameters[runtimeIndex++];

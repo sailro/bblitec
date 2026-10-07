@@ -3,6 +3,7 @@ import ts from "typescript";
 import { callMember, dataTypesEqual, type DataType } from "../data-types.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
+import { hasFixedTupleRest } from "../user-functions.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -45,7 +46,8 @@ function expressionFunction(
         if (
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
-            dataType.restParameter === undefined
+            dataType.restParameter === undefined &&
+            !hasFixedTupleRest(lowerer.context.checker, unwrapped)
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 unwrapped,
@@ -280,7 +282,11 @@ function valueFunction(
         if (
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
-            dataType.restParameter === undefined
+            dataType.restParameter === undefined &&
+            !hasFixedTupleRest(
+                lowerer.context.checker,
+                value.callbackDeclaration,
+            )
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 value.callbackDeclaration,

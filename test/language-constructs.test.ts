@@ -9335,3 +9335,33 @@ check(
         throw new Error("a callable record is the function it calls");
 `,
 );
+
+check(
+    "rest-parameters-of-fixed-tuples-bind-their-lanes",
+    `
+    type Vec3 = readonly [number, number, number];
+    interface Clearance { isClear(a: Vec3, b: Vec3, sag: number, label: string): boolean; }
+    function create(options: { limit: () => number }): Clearance {
+        const isClear = (limit: number, ...[a, b, sag, label]: Parameters<Clearance["isClear"]>): boolean =>
+            a[0] + b[0] + sag < limit && label.length > 0;
+        return { isClear: (...args) => isClear(options.limit(), ...args) };
+    }
+    const creates: Array<typeof create> = [create];
+    let limit = 10;
+    const clearance = creates[0]!({ limit: () => limit });
+    if (!clearance.isClear([1, 0, 0], [2, 0, 0], 3, "x")) throw new Error("tuple rest lanes");
+    limit = 5;
+    if (clearance.isClear([1, 0, 0], [2, 0, 0], 3, "x") || clearance.isClear([0, 0, 0], [0, 0, 0], 1, ""))
+        throw new Error("tuple rest lanes read live");
+`,
+);
+
+test("a rest object pattern keeps refusing", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            function count(...{ length }: number[]): number { return length; }
+            if (count(1, 2) !== 2) throw new Error("x");`),
+        /A rest parameter is the last parameter and an identifier or array pattern/,
+    );
+});
