@@ -29,6 +29,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
+import { numericSlotKind } from "./numeric-slot-storage.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -714,6 +715,23 @@ export class ConditionLowerer {
                     unwrapped,
                     "A record keyed by a closed union is stored by value and cannot preserve JavaScript object identity in a comparison.",
                 );
+            // A numeric view is the array it views: it is another numeric
+            // array when the two name one array (two views compare as such).
+            if (
+                equality &&
+                (leftValue.dataType?.kind === "numberindex") !==
+                    (rightValue.dataType?.kind === "numberindex")
+            ) {
+                const present = (value: Value): boolean =>
+                    value.dataType?.kind !== "optional" &&
+                    numericSlotKind(value.dataType) !== undefined;
+                if (!present(leftValue) || !present(rightValue))
+                    this.context.fail(
+                        unwrapped,
+                        "A numeric view compares by identity only with a present numeric array.",
+                    );
+                return `(${leftValue.cpp}).identity() ${operator} (${rightValue.cpp}).identity()`;
+            }
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

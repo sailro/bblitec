@@ -1835,6 +1835,205 @@ test("borrowed array views refuse rebinding and identity", () => {
     );
 });
 
+// An ArrayLike<number> slot (a record or class field, a binding, a stored
+// function's result and its elements) holding typed arrays stores them as
+// themselves: one buffer, seen through every alias.
+check(
+    "array-like-slots-store-typed-arrays",
+    `
+    function poke(view: { [index: number]: number }, index: number, value: number): void { view[index] = value; }
+    interface Budget { startX: ArrayLike<number>; startZ: ArrayLike<number>; dt: number; }
+    let stepX = new Float32Array(0);
+    const budget: Budget = { startX: stepX, startZ: stepX, dt: 0 };
+    let stepZ = new Float32Array(0);
+    function step(count: number): number {
+        if (stepX.length < count) { stepX = new Float32Array(count); stepZ = new Float32Array(count); }
+        for (let i = 0; i < count; i++) { stepX[i] = i; stepZ[i] = i * 2; }
+        budget.startX = stepX; budget.startZ = stepZ; budget.dt = 1;
+        let total = 0;
+        for (let i = 0; i < count; i++) total += budget.startX[i]! + budget.startZ[i]!;
+        return total + budget.startX.length;
+    }
+    if (step(3) !== 12) throw new Error("record field");
+    stepX[1] = 0.5;
+    if (budget.startX[1] !== 0.5 || budget.startX !== stepX) throw new Error("the field is the typed array");
+    poke(budget.startZ, 2, 9);
+    if (stepZ[2] !== 9) throw new Error("writes through the field");
+    if (Array.from(budget.startX).join(",") !== "0,0.5,2") throw new Error("Array.from over the field");
+
+    interface Binding { readonly local: ArrayLike<number>; replace(placements: ArrayLike<number>): boolean; }
+    function bind(count: number): Binding {
+        const local = new Float32Array(count);
+        const replace = (placements: ArrayLike<number>): boolean => {
+            let changed = false;
+            for (let i = 0; i < local.length; i++) {
+                const value = Math.fround(placements[i]!);
+                if (local[i] !== value) { local[i] = value; changed = true; }
+            }
+            return changed;
+        };
+        const binding: Binding = { local, replace };
+        return binding;
+    }
+    const binding = bind(2);
+    if (!binding.replace([1.5, 2.5]) || binding.local[1] !== 2.5 || binding.local.length !== 2) throw new Error("readonly field");
+
+    interface Ops<S> { poseOf(state: S): ArrayLike<number>; list(): readonly ArrayLike<number>[]; }
+    interface State { base: Float32Array; }
+    function moved(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+        for (let i = 0; i < 2; i++) if (Math.abs((a[i] ?? 0) - (b[i] ?? 0)) > 1e-3) return true;
+        return false;
+    }
+    let extra = new Float32Array(0);
+    const states: State[] = [{ base: new Float32Array([1, 2]) }, { base: new Float32Array([1, 3]) }];
+    const ops: Ops<State> = { poseOf: (state) => state.base, list: () => [states[0]!.base, extra] };
+    if (moved(ops.poseOf(states[0]!), ops.poseOf(states[0]!)) || !moved(ops.poseOf(states[0]!), ops.poseOf(states[1]!))) throw new Error("results");
+    states[0]!.base[0] = 7;
+    if (ops.poseOf(states[0]!)[0] !== 7) throw new Error("the result is the typed array");
+    extra = new Float32Array([4, 5, 6]);
+    let lanes = 0;
+    for (const entry of ops.list()) lanes += entry.length;
+    if (lanes !== 5 || ops.list()[1]![2] !== 6) throw new Error("result elements");
+    interface Query { obstacles: readonly ArrayLike<number>[]; }
+    const widened: Ops<State> = { ...ops, list: () => [...ops.list(), stepX] };
+    const query = (source: Ops<State>): Query => ({ obstacles: source.list() });
+    extra = new Float32Array(1);
+    let circles = 0;
+    for (const entry of query(widened).obstacles) circles += entry.length;
+    if (circles !== 2 + 1 + 3) throw new Error("arrays of ArrayLike results");
+    interface Corridor { obstacles: readonly ArrayLike<number>[]; radius: number; x: number; }
+    interface Obstacles { obstacles(): readonly ArrayLike<number>[]; }
+    function segmentClear(x: number, circles: ArrayLike<number>, radius: number): boolean {
+        for (let i = 0; i + 2 < circles.length; i += 3) if (Math.abs(x - circles[i]!) < circles[i + 2]! + radius) return false;
+        return true;
+    }
+    function clears(x: number, obstacles: readonly ArrayLike<number>[], radius: number): boolean {
+        return obstacles.every((set) => segmentClear(x, set, radius));
+    }
+    function corridor(input: Corridor): boolean {
+        return clears(input.x, input.obstacles, input.radius) && clears(input.x + 10, input.obstacles, input.radius);
+    }
+    function corridorQuery(deps: Obstacles): (x: number) => boolean {
+        return (x) => corridor({ obstacles: deps.obstacles(), radius: 0.25, x });
+    }
+    let pad = new Float32Array([5, 0, 1]);
+    const queries: Array<typeof corridorQuery> = [corridorQuery];
+    const clear = queries[0]!({ obstacles: () => [new Float32Array([1, 0, 0.5]), pad] });
+    if (!clear(0)) throw new Error("clear corridor");
+    pad = new Float32Array([0.5, 0, 1]);
+    if (clear(0)) throw new Error("the corridor reads the current obstacles");
+
+    function invert(scale: number): Float32Array | null { return scale === 0 ? null : new Float32Array([1 / scale]); }
+    let prepared: ArrayLike<number> | null = null;
+    const prepare = (scale: number): boolean => {
+        prepared = invert(scale);
+        if (!prepared) return false;
+        return prepared !== null;
+    };
+    const read = (index: number): number => (prepared ? prepared[index]! : -1);
+    if (!prepare(4) || read(0) !== 0.25 || prepare(0) || read(0) !== -1) throw new Error("rebound nullable binding");
+`,
+);
+
+// A shared instance's stored array field is viewed by numeric index as that
+// array.
+check(
+    "stored-field-arrays-viewed-by-numeric-index",
+    `
+    class Shift {
+        private dx = 0;
+        private readonly scratch: [number, number, number] = [0, 0, 0];
+        private readonly lanes: number[] = [0];
+        get offset(): number { return this.dx; }
+        get lane(): number { return this.lanes[0]!; }
+        set(dx: number): void { this.dx = dx; }
+        relativeTo(base: Shift, out: Shift): void {
+            this.point(this.scratch, 1, base.dx);
+            this.point(this.lanes, 0, base.dx);
+            out.set(this.scratch[1] - base.dx);
+        }
+        point(out: { [index: number]: number }, offset: number, x: number): void { out[offset] = x + this.dx; }
+    }
+    const shifts: Shift[] = [new Shift(), new Shift(), new Shift()];
+    shifts[0]!.set(5);
+    shifts[1]!.set(2);
+    shifts[0]!.relativeTo(shifts[1]!, shifts[2]!);
+    if (shifts[2]!.offset !== 5 || shifts[0]!.lane !== 7) throw new Error("a stored field's array viewed by index");
+`,
+);
+
+// A slot handed arrays of several kinds stores one numeric view of
+// whichever it holds, keeping that array's identity.
+check(
+    "array-like-slots-share-one-view-across-kinds",
+    `
+    function total(values: ArrayLike<number>): number {
+        let sum = 0;
+        for (let i = 0; i < values.length; i++) sum += values[i]!;
+        return sum;
+    }
+    function poke(view: { [index: number]: number }, index: number, value: number): void { view[index] = value; }
+    interface Sample { values: ArrayLike<number>; readonly label: string; }
+    const floats = new Float32Array([1, 2, 3]);
+    const numbers: number[] = [4, 5];
+    const tuple: [number, number, number] = [7, 8, 9];
+    const sample: Sample = { values: floats, label: "s" };
+    if (total(sample.values) !== 6 || sample.values.length !== 3) throw new Error("typed array");
+    floats[0] = 10;
+    if (sample.values[0] !== 10) throw new Error("typed array alias");
+    poke(sample.values, 1, 20);
+    if (floats[1] !== 20) throw new Error("writes through the view");
+    sample.values = numbers;
+    numbers.push(6);
+    if (sample.values.length !== 3 || total(sample.values) !== 15 || sample.values !== numbers) throw new Error("number array");
+    if (sample.values === floats) throw new Error("identity");
+    if (Array.from(sample.values, (value) => value * 2).join(",") !== "8,10,12") throw new Error("Array.from over the view");
+    sample.values = tuple;
+    tuple[1] = 0;
+    if (total(sample.values) !== 16) throw new Error("tuple");
+
+    let view: ArrayLike<number> | null = null;
+    const viewed = (): number => (view ? view.length : -1);
+    if (viewed() !== -1) throw new Error("empty view");
+    view = floats;
+    if (viewed() !== 3) throw new Error("typed binding");
+    view = numbers;
+    numbers[0] = 40;
+    if (view[0] !== 40 || viewed() !== 3) throw new Error("array binding");
+
+    interface Pose { pose(): ArrayLike<number>; list(): readonly ArrayLike<number>[]; }
+    const poses: Pose[] = [
+        { pose: () => floats, list: () => [floats, tuple] },
+        { pose: () => numbers, list: () => [numbers] },
+    ];
+    let sum = 0;
+    for (const pose of poses) {
+        sum += pose.pose()[0]!;
+        for (const entry of pose.list()) sum += entry.length;
+    }
+    if (sum !== 10 + 40 + 3 + 3 + 3) throw new Error("results");
+    floats[2] = 30;
+    if (poses[0]!.pose()[2] !== 30 || poses[0]!.list()[0]![2] !== 30) throw new Error("result aliases");
+`,
+);
+
+test("ArrayLike slots refuse what cannot keep an array's identity", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "interface Holder { values: ArrayLike<number>; } function keep(values: ArrayLike<number>): Holder { return { values }; } const typed: Holder = { values: new Float32Array(2) }; const kept = keep([1, 2]); const unused = kept.values.length + typed.values.length;",
+            ),
+        /A borrowed array view cannot retain JavaScript array identity in owning storage/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "interface Holder { values: ArrayLike<number>; } const floats = new Float32Array(2); const numbers: number[] = [1]; const holder: Holder = { values: floats }; holder.values = numbers; let none: number[] | null = null; if (floats.length > 1) none = numbers; const unused = holder.values === none;",
+            ),
+        /A numeric view compares by identity only with a present numeric array/,
+    );
+});
+
 check(
     "record-accessors-are-stored-native-accessors",
     `

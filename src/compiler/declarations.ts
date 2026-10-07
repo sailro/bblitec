@@ -2626,6 +2626,12 @@ export class DeclarationLowerer {
         }
         if (annotated && this.context.sharedClosures.identifierIsRebound(name))
             annotated = this.reboundBindingStorage(annotated, declaredType);
+        if (annotated)
+            annotated = this.context.dataTypes.numericSlotStorage(
+                declaration,
+                declaredType,
+                annotated,
+            );
         if (annotated?.kind === "enum" && sharedClosureStorage) {
             const initializer = this.context.compileValue(
                 declaration.initializer,

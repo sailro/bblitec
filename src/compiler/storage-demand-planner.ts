@@ -26,6 +26,11 @@ import {
     mergeNativeRecordStorage,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
+import {
+    NumericSlotStorageRequired,
+    type NumericSlotDeclaration,
+    type NumericSlotKind,
+} from "./numeric-slot-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 type StorageDemand =
@@ -33,7 +38,8 @@ type StorageDemand =
     | NativeRecordStorageRequired
     | GenericFunctionStorageRequired
     | AbsenceTagStorageRequired
-    | TupleArraySlotRequired;
+    | TupleArraySlotRequired
+    | NumericSlotStorageRequired;
 
 export type StorageRequest =
     | {
@@ -47,6 +53,11 @@ export type StorageRequest =
     | {
           kind: "tuple-array";
           declaration: ts.PropertySignature | ts.PropertyDeclaration;
+      }
+    | {
+          kind: "numeric-slot";
+          declaration: NumericSlotDeclaration;
+          numeric: NumericSlotKind;
       };
 
 export function storageRequest(error: StorageDemand): StorageRequest {
@@ -62,6 +73,12 @@ export function storageRequest(error: StorageDemand): StorageRequest {
         return { kind: "absence-tag", declaration: error.declaration };
     if (error instanceof TupleArraySlotRequired)
         return { kind: "tuple-array", declaration: error.declaration };
+    if (error instanceof NumericSlotStorageRequired)
+        return {
+            kind: "numeric-slot",
+            declaration: error.declaration,
+            numeric: error.kind,
+        };
     return { kind: "generic", demand: error.demand };
 }
 
@@ -71,7 +88,8 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
         error instanceof NativeRecordStorageRequired ||
         error instanceof GenericFunctionStorageRequired ||
         error instanceof AbsenceTagStorageRequired ||
-        error instanceof TupleArraySlotRequired
+        error instanceof TupleArraySlotRequired ||
+        error instanceof NumericSlotStorageRequired
     );
 }
 
@@ -203,6 +221,11 @@ export class StorageDemandPlanner {
     private readonly absenceTags = new Set<AbsenceTagDeclaration>();
     /** @unjournaled Discovery deduplicates requests discarded by emission. */
     private readonly tupleArraySlots = new Set<ts.Declaration>();
+    /** @unjournaled Discovery deduplicates requests discarded by emission. */
+    private readonly numericSlots = new Map<
+        NumericSlotDeclaration,
+        Set<NumericSlotKind>
+    >();
     /** @unjournaled Bounds the discarded attempt, independently of rollback. */
     private statements = 0;
     /** @unjournaled Source declarations removed by a planning rollback. */
@@ -318,6 +341,15 @@ export class StorageDemandPlanner {
         } else if (request.kind === "tuple-array") {
             if (this.tupleArraySlots.has(request.declaration)) return;
             this.tupleArraySlots.add(request.declaration);
+        } else if (request.kind === "numeric-slot") {
+            const kinds = this.numericSlots.get(request.declaration);
+            if (kinds?.has(request.numeric)) return;
+            if (kinds) kinds.add(request.numeric);
+            else
+                this.numericSlots.set(
+                    request.declaration,
+                    new Set([request.numeric]),
+                );
         } else if (!this.generic.add(request.demand)) return;
         this.demands.push(request);
         statistics.collected++;

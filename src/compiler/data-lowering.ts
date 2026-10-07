@@ -60,6 +60,12 @@ import {
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { requireAbsenceTag } from "./absence-tag-storage.js";
+import {
+    NumericSlotStorageRequired,
+    numericSlotDeclaration,
+    numericSlotKind,
+    type SlotStep,
+} from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import {
@@ -9807,6 +9813,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const compiled = compileDataValueSink(dataType, this, value, node);
         if (compiled !== undefined) return compiled;
+        this.requireNumericSlot(value, dataType, node);
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
             this.requireRecordBinding(node);
@@ -10094,6 +10101,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A numeric array stored in a declared `ArrayLike<number>` slot whose
+     * storage cannot hold its kind (`sink`), or an array of them stored in
+     * an array of such slots: the slot takes storage for every kind stored
+     * in it. A borrowed view has no array to keep, and refuses; returns where
+     * no slot can, so the caller refuses.
+     */
+    public requireNumericSlot(
+        value: Value | undefined,
+        sink: DataType,
+        node: ts.Node,
+    ): void {
+        const present = (type: DataType | undefined): DataType | undefined =>
+            type?.kind === "optional" ? type.inner : type;
+        let stored = present(value?.dataType);
+        let target: DataType | undefined = present(sink);
+        const within: SlotStep[] = [];
+        if (
+            (stored?.kind === "vector" || stored?.kind === "span") &&
+            numericSlotKind(stored.element) !== undefined &&
+            (target?.kind === "vector" || target?.kind === "span")
+        ) {
+            stored = present(stored.element);
+            target = present(target.element);
+            within.push("element");
+        }
+        const declaration = numericSlotDeclaration(
+            this.context.checker,
+            this.convertedExpression(node) ?? node,
+            within,
+        );
+        if (!declaration || !target) return;
+        if (stored?.kind === "span" && target.kind !== "span")
+            this.context.fail(
+                node,
+                "A borrowed array view cannot retain JavaScript array identity in owning storage.",
+            );
+        const kind = numericSlotKind(stored);
+        if (!kind) return;
+        const kinds = this.context.dataTypes.numericSlotKinds(declaration);
+        if (kinds ? kinds.has(kind) : numericSlotKind(target) === kind) return;
+        throw new NumericSlotStorageRequired(declaration, kind);
+    }
+
+    /**
      * A record initializing a local declared as a closed `Record<Union, V>`
      * of the same keys (`const lines: Record<"a" | "b", V> = board`) is that
      * record: the local is stored as the record's own type.
@@ -10169,6 +10220,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
                 freshData: true,
             };
+        this.requireNumericSlot(value, dataType, expression);
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         this.context.fail(
             expression,
@@ -11205,6 +11257,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) &&
             !freshOptional
         ) {
+            this.requireNumericSlot(
+                this.context.probeEmission(
+                    () => {
+                        try {
+                            return this.context.compileValue(expression.right);
+                        } catch (error) {
+                            if (error instanceof CompileError) return undefined;
+                            throw error;
+                        }
+                    },
+                    () => false,
+                ),
+                target.dataType,
+                expression.right,
+            );
             this.context.fail(
                 expression,
                 `'${left.text}' holds a ${kind}; rebinding it would copy in native code where JavaScript would alias, so assign through a field or element instead.`,
@@ -15287,7 +15354,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public typedArrayNumbersValue(
         cpp: string,
-        dataType: DataType<TypedArrayKind>,
+        dataType: DataType<TypedArrayKind | "numberindex">,
     ): Value {
         this.context.reachJsData();
         return {
@@ -15303,9 +15370,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * array's construction, by the iteration protocol `for...of` reads
      * (`iterationTarget`): a compile-time tuple's own elements; otherwise a
      * native range and the element each step yields -- a string's code
-     * points, a typed array's numbers, a numeric tuple's lanes, the
-     * elements of an array, Set or stored iterator. Undefined for a value
-     * that is none of these.
+     * points, a typed array's or numeric view's numbers, a numeric tuple's
+     * lanes, the elements of an array, Set or stored iterator. Undefined for
+     * a value that is none of these.
      */
     public iteratedElements(value: Value): IteratedElements | undefined {
         if (value.kind === "tuple") return { lanes: value.tupleElements ?? [] };
@@ -15316,7 +15383,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         const dataType = value.kind === "data" ? value.dataType : undefined;
-        if (isTypedArrayType(dataType))
+        // A numeric view iterates the numbers of the array it views.
+        if (isTypedArrayType(dataType) || dataType?.kind === "numberindex")
             return {
                 range: this.typedArrayNumbersValue(value.cpp, dataType),
                 element: { kind: "number" },
@@ -15426,6 +15494,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // is a range over its element storage.
             return { container: value, element: { kind: "number" } };
         }
+        // A numeric view iterates the numbers of the array it views.
+        if (dataType.kind === "numberindex")
+            return {
+                container: this.typedArrayNumbersValue(value.cpp, dataType),
+                element: { kind: "number" },
+            };
         // An array, Set or iterator ranges over its own elements; a numeric
         // tuple only when nothing states its lanes at generation (a runtime
         // tuple a parameter or field holds).

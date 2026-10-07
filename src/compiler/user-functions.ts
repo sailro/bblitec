@@ -2821,7 +2821,8 @@ export class UserFunctionLowerer {
                         mapped?.kind === "span" &&
                         mapped.element.kind === "number" &&
                         supplied &&
-                        isTypedArrayType(supplied)
+                        (isTypedArrayType(supplied) ||
+                            supplied.kind === "numberindex")
                     )
                         mapped = supplied;
                     const freshMatchingArray =
