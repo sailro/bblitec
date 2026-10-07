@@ -7677,6 +7677,144 @@ check(
 );
 
 check(
+    "callbacks-run-once-per-element-in-returned-array-methods",
+    `
+    let calls = 0;
+    const twice = (x: number): number => {
+        calls++;
+        return x * 2;
+    };
+    const keep = (x: number): boolean => {
+        calls++;
+        return x > 3;
+    };
+    const add = (sum: number, x: number): number => {
+        calls++;
+        return sum + x;
+    };
+    function blockMap(w: number): number[] {
+        return [w, w + 1].map(twice);
+    }
+    const arrowMap = (w: number): number[] => [w, w + 1].map(twice);
+    const inlineMap = (w: number): number[] =>
+        [w, w + 1].map((x) => {
+            calls++;
+            return x + 1;
+        });
+    const filtered = (w: number): number[] => [w, w + 1, w + 2].filter(keep);
+    const reduced = (w: number): number => [w, w + 1].reduce(add, 0);
+    const spread = (w: number): number[] => [...[w, w + 1].map(twice)];
+    const chosen = (w: number): number[] => (w > 0 ? [w, w].map(twice) : [w].map(twice));
+    const flat = (w: number): number[] =>
+        [w, w].flatMap((x) => {
+            calls++;
+            return [x, x];
+        });
+    const some = (w: number): boolean => [w, w + 1].some(keep);
+    const local = (w: number): number => {
+        const mapped: number[] = [w, w + 1].map(twice);
+        return mapped.length;
+    };
+    const runtime = (w: number): number[] => {
+        const xs: number[] = [];
+        for (let i = 0; i < w; i++) xs.push(i);
+        return xs.map(twice);
+    };
+    const shapes: [string, (w: number) => unknown, number][] = [
+        ["block map", blockMap, 2],
+        ["arrow map", arrowMap, 2],
+        ["inline map", inlineMap, 2],
+        ["filter", filtered, 3],
+        ["reduce", reduced, 2],
+        ["spread", spread, 2],
+        ["conditional", chosen, 2],
+        ["flatMap", flat, 2],
+        ["some", some, 1],
+        ["local", local, 2],
+        ["runtime map", runtime, 4],
+    ];
+    const failures: string[] = [];
+    for (const [label, run, expected] of shapes) {
+        calls = 0;
+        run(4);
+        if (calls !== expected) failures.push(label + " stored " + calls + "/" + expected);
+    }
+    calls = 0;
+    blockMap(4);
+    arrowMap(4);
+    spread(4);
+    chosen(4);
+    if (calls !== 8) failures.push("direct " + calls + "/8");
+    if (failures.length > 0) throw new Error(failures.join("; "));
+`,
+);
+
+check(
+    "callbacks-run-once-per-element-in-array-method-sinks",
+    `
+    let calls = 0;
+    const twice = (x: number): number => {
+        calls++;
+        return x * 2;
+    };
+    const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
+    const total = (xs: readonly number[]): number => xs.length;
+    const asTuple = (w: number): [number, number] => [w, w + 1].map(twice) as [number, number];
+    const asReadonly = (w: number): readonly number[] => [w, w + 1].map(twice);
+    const inRecord = (w: number): { values: number[] } => ({ values: [w, w + 1].map(twice) });
+    const asArgument = (w: number): number => sum([w, w + 1].map(twice));
+    const asReadonlyArgument = (w: number): number => total([w, w + 1].map(twice));
+    const joined = (w: number): string => [w, w + 1].map(twice).join(",");
+    const maximum = (w: number): number => Math.max(...[w, w + 1].map(twice));
+    const typed = (w: number): Float32Array => new Float32Array([w, w + 1].map(twice));
+    const chained = (w: number): number[] => [w, w + 1].map(twice).map(twice);
+    const assigned = (w: number): number[] => {
+        let out: number[] = [];
+        out = [w, w + 1].map(twice);
+        return out;
+    };
+    const nested = (w: number): number[][] => [[w, w + 1].map(twice)];
+    const viaFrom = (w: number): number[] => Array.from([w, w + 1], twice);
+    const pair = (x: number): [string, number] => {
+        calls++;
+        return [String(x), x];
+    };
+    const asSet = (w: number): ReadonlySet<number> => new Set([w, w + 1].map(twice));
+    const asMap = (w: number): ReadonlyMap<string, number> => new Map([w, w + 1].map(pair));
+    const shapes: [string, (w: number) => unknown, number][] = [
+        ["tuple", asTuple, 2],
+        ["readonly", asReadonly, 2],
+        ["record", inRecord, 2],
+        ["argument", asArgument, 2],
+        ["readonly argument", asReadonlyArgument, 2],
+        ["join", joined, 2],
+        ["max", maximum, 2],
+        ["typed", typed, 2],
+        ["chained", chained, 4],
+        ["assigned", assigned, 2],
+        ["nested", nested, 2],
+        ["from", viaFrom, 2],
+        ["set", asSet, 2],
+        ["map", asMap, 2],
+    ];
+    const failures: string[] = [];
+    for (const [label, run, expected] of shapes) {
+        calls = 0;
+        run(4);
+        if (calls !== expected) failures.push(label + " stored " + calls + "/" + expected);
+    }
+    calls = 0;
+    asTuple(4);
+    inRecord(4);
+    asArgument(4);
+    assigned(4);
+    nested(4);
+    if (calls !== 10) failures.push("direct " + calls + "/10");
+    if (failures.length > 0) throw new Error(failures.join("; "));
+`,
+);
+
+check(
     "absence-tagged-locals-and-inlined-parameters",
     `
     interface Region { minX: number; maxX: number; }
