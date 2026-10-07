@@ -7068,6 +7068,36 @@ function checkInRealm(name: string, source: string): void {
 }
 
 checkInRealm(
+    "awaited-nullish-fallbacks-run-only-when-absent",
+    `
+    const order: string[] = [];
+    async function load(n: number): Promise<number> {
+        order.push("load" + n);
+        await Promise.resolve();
+        return n * 2;
+    }
+    const sizes = new Map<string, number>([["a", 1]]);
+    async function count(key: string): Promise<number> {
+        order.push("count:" + key);
+        const value = sizes.get(key) ?? (await load(5));
+        order.push("got" + value);
+        return value;
+    }
+    const labels = new Map<string, string>([["a", "x"]]);
+    async function label(key: string): Promise<string> {
+        return labels.get(key) ?? String(await load(1));
+    }
+    void (async () => {
+        const counted = [await count("a"), await count("b")];
+        const labelled = [await label("a"), await label("b")];
+        if (counted.join(",") !== "1,10" || labelled.join(",") !== "x,2") throw new Error(counted.join(",") + labelled.join(","));
+        if (order.join(",") !== "count:a,got1,count:b,load5,got10,load1") throw new Error(order.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
     "async-callees-read-records-past-the-call",
     `
     interface Wide { x: number; y: number; tag: string }
@@ -7755,6 +7785,38 @@ check(
     if (uploaded.join(",") !== "uParams0:2/3/0/1,uSunDir:0/1/0,uScale:1") throw new Error(uploaded.join(","));
     kept[1]!.push(7);
     if (params.sunDir.length !== 4 || kept[1] !== params.sunDir) throw new Error("one growable array");
+`,
+);
+
+check(
+    "nullish-fallbacks-that-never-complete-or-are-null",
+    `
+    interface Geometry { name: string; size: number; }
+    const names = ["a", "b"] as const;
+    function failMissing(name: string): never { throw new Error("missing " + name); }
+    function load(bundle: Map<string, Geometry>): Geometry[] {
+        return names.map((name) => bundle.get(name) ?? failMissing(name));
+    }
+    const bundle = new Map<string, Geometry>([["a", { name: "a", size: 1 }], ["b", { name: "b", size: 2 }]]);
+    const loaded = load(bundle);
+    if (loaded[1]!.size !== 2 || loaded[0] !== bundle.get("a")) throw new Error("present results");
+    let threw = "";
+    try { load(new Map([["a", { name: "a", size: 1 }]])); } catch (error) { threw = (error as Error).message; }
+    if (threw !== "missing b") throw new Error("never fallback " + threw);
+    const counts = new Map<string, number>([["x", 0]]);
+    const zero = counts.get("x") ?? failMissing("x");
+    if (zero !== 0) throw new Error("falsy present number");
+    interface Controls { pip?: () => { reading: string } | null; }
+    const read = (controls: Controls): string => {
+        const pip = controls.pip?.() ?? null;
+        return String(pip === null) + String(pip === undefined);
+    };
+    const controls: Controls[] = [{}, { pip: () => null }, { pip: () => ({ reading: "rain" }) }];
+    const roots: Array<typeof read> = [read];
+    if (controls.map((each) => roots[0]!(each)).join(",") !== "truefalse,truefalse,falsefalse") throw new Error("null fallback");
+    const slots: (Geometry | null)[] = [null];
+    const missing = slots[3] ?? null;
+    if (missing !== null || (slots[0] ?? undefined) !== undefined) throw new Error("fallback absence");
 `,
 );
 

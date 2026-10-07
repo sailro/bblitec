@@ -210,6 +210,19 @@ function namesStableOwner(owner: Value): boolean {
 }
 
 /**
+ * `left ?? null` (or `?? undefined`): absent, the result is the fallback,
+ * so whether the left's slot existed no longer says which absent value it is.
+ */
+function withFallbackAbsence(left: Value): Value {
+    const {
+        slotFoundCpp: _slot,
+        preserveUncheckedLookup: _unchecked,
+        ...selected
+    } = left;
+    return selected;
+}
+
+/**
  * Whether `node` is written: an assignment, update or loop target, also
  * as a leaf of a destructuring pattern.
  */
@@ -3661,6 +3674,78 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * A fallback that awaits, run as statements only while `absentCpp`
+     * holds -- after the left operand, as the short circuit evaluates it --
+     * into storage the select then reads.
+     */
+    private awaitedFallback(
+        right: ts.Expression,
+        type: DataType,
+        absentCpp: string,
+    ): string {
+        const name = this.context.allocateTemporaryCppName("awaited_fallback");
+        this.context.emit({
+            kind: "declaration",
+            type: `std::optional<${this.context.dataTypes.cppType(type)}>`,
+            name,
+            initializer: "",
+            initialization: "default",
+        });
+        this.emitGuardedStore(absentCpp, () =>
+            this.context.emit({
+                kind: "expression",
+                code: `${name}.emplace(${this.compileForSink(right, type)});`,
+            }),
+        );
+        return `(*${name})`;
+    }
+
+    /**
+     * `a ?? fail()` with a fallback that never completes: the fallback runs
+     * only when `a` is absent and leaves by throwing, so the result is `a`'s
+     * present value, whatever the fallback's own kind.
+     */
+    private coalesceNeverFallback(
+        expression: ts.BinaryExpression,
+        left: Value,
+    ): Value {
+        const pinned = this.context.bindings.pinValueToTemporary(
+            left,
+            "nullish",
+            expression.left,
+        );
+        const present = this.absentComparison(
+            pinned,
+            expression.left,
+            undefined,
+            true,
+            true,
+        );
+        if (present === undefined)
+            this.context.fail(
+                expression.left,
+                "A never-completing fallback requires a left operand whose absence the native storage represents.",
+            );
+        this.emitGuardedStore(
+            present === "true"
+                ? "false"
+                : present === "false"
+                  ? "true"
+                  : `!(${present})`,
+            () =>
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(expression.right),
+                ),
+        );
+        const narrowed = withFallbackAbsence(
+            this.narrowOptional(pinned, expression.left, true),
+        );
+        return narrowed.optionalFoundCpp === undefined
+            ? narrowed
+            : { ...narrowed, optionalFoundCpp: "true" };
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -3704,7 +3789,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (left.kind === "json-null") {
             return this.context.compileValue(expression.right);
         }
-        const fallbackForSink = (type: DataType): string => {
+        if (
+            (this.context.checker.getTypeAtLocation(expression.right).flags &
+                ts.TypeFlags.Never) !==
+            0
+        )
+            return this.coalesceNeverFallback(expression, left);
+        // `absentCpp` is the test under which the fallback runs: one that
+        // awaits in an asynchronous realm is lowered as statements guarded
+        // by it, since a suspension cannot happen inside an expression arm.
+        const fallbackForSink = (
+            type: DataType,
+            absentCpp?: string,
+        ): string => {
+            if (
+                absentCpp !== undefined &&
+                this.context.options.workers &&
+                someAnalysisNode(expression.right, ts.isAwaitExpression, {
+                    functions: "skip",
+                })
+            )
+                return this.awaitedFallback(expression.right, type, absentCpp);
             const arm = this.compileArm(() =>
                 this.compileForSink(expression.right, type),
             );
@@ -3721,7 +3826,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "nullish",
             );
             const type: DataType = { kind: "json" };
-            const fallback = fallbackForSink(type);
+            const fallback = fallbackForSink(
+                type,
+                `(${value.cpp}.is_null() || ${value.cpp}.is_undefined())`,
+            );
             return this.leafValue(
                 `(${value.cpp}.is_null() || ${value.cpp}.is_undefined() ? ${fallback} : ${value.cpp})`,
                 type,
@@ -3749,7 +3857,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression.left,
             );
             return this.leafValue(
-                `(${selected.cpp} ? ${selected.cpp} : ${fallbackForSink(type)})`,
+                `(${selected.cpp} ? ${selected.cpp} : ${fallbackForSink(type, `!${selected.cpp}`)})`,
                 type,
             );
         }
@@ -3820,7 +3928,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         left.dataType,
                     );
                     return {
-                        ...left,
+                        ...withFallbackAbsence(left),
                         cpp: `(${leftFound} ? ${left.cpp} : ` + `${cppType}{})`,
                         objectIdentityCpp:
                             `(${leftFound} ? ` +
@@ -3853,7 +3961,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // `optionalResource ?? undefined` remains the same optional
                 // resource. Keep its presence flag so a later real fallback
                 // can select without dereferencing empty storage.
-                return left;
+                return withFallbackAbsence(left);
             }
             if (
                 left.kind === "data" &&
@@ -3985,7 +4093,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 inner.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(inner.name)
             ) {
-                const fallback = fallbackForSink(inner);
+                const fallback = fallbackForSink(
+                    inner,
+                    `!static_cast<bool>(${temp})`,
+                );
                 return this.leafValue(
                     `(${temp} ? ${temp} : ${fallback})`,
                     inner,
@@ -4008,7 +4119,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     inner,
                     ...(rightType.undefinedOnly ? { undefinedOnly: true } : {}),
                 };
-                const fallbackOptional = fallbackForSink(resultType);
+                const fallbackOptional = fallbackForSink(
+                    resultType,
+                    `!${optionalPresentCpp(temp)}`,
+                );
                 return {
                     kind: "data",
                     cpp:
@@ -4043,7 +4157,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 resultType,
                 expression.left,
             );
-            const fallback = fallbackForSink(resultType);
+            const fallback = fallbackForSink(
+                resultType,
+                `!${optionalPresentCpp(temp)}`,
+            );
             // Through `leafValue`, so the select carries the result
             // type's own Value kind — an optional number selects as a
             // number, an optional handle keeps its engine spelling —
