@@ -160,18 +160,18 @@ test("a record whose native initializer refused refuses where it is stored", () 
     // the store that demanded it refuses too instead of ending the survey.
     const { report } = surveySource(
         `
-        type Failure = "a" | "b" | "c";
-        type Candidate = "a" | "b";
-        interface Facts { id: number; failures: Candidate[] }
+        // A number array stored as a wider element type is a copy the
+        // program observes through the later push.
+        interface Facts { id: number; values: (number | string)[] }
         const store = new Map<number, Facts>();
-        export function record(id: number, failures: Failure[]): void {
-            const facts: Facts = { id, failures: failures as Candidate[] };
+        export function record(id: number, values: number[]): void {
+            const facts: Facts = { id, values };
             store.set(id, facts);
-            failures.push("c");
-            if (facts.failures.length !== failures.length) throw new Error("alias");
+            values.push(4);
+            if (facts.values.length !== values.length) throw new Error("alias");
         }
         const roots: Array<typeof record> = [record];
-        roots[0]!(1, ["a", "c"]);
+        roots[0]!(1, [1, 2]);
     `,
         { fileName: resolve("survey-refused-binding.ts") },
     );
