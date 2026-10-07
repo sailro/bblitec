@@ -3756,6 +3756,8 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        const signature = this.fromOneSignatureUnion(type, node);
+        if (signature) return signature;
         const settled = this.fromValueOrPromiseUnion(type, node);
         if (settled) return settled;
         // Tuple alternatives with different lengths still share array storage.
@@ -3818,6 +3820,36 @@ export class DataTypeRegistry {
             : undefined;
         if (object === null) return undefined;
         return object ?? this.fromMixedUnion(type, node);
+    }
+
+    /**
+     * Plain functions of one native signature declared apart (`methods[key]`
+     * over methods of one shape) are one function storage: every member
+     * stores as that signature.
+     */
+    private fromOneSignatureUnion(
+        type: ts.UnionType,
+        node: ts.Node,
+    ): DataType<"function"> | undefined {
+        if (
+            !type.types.every(
+                (member) =>
+                    member.getCallSignatures().length > 0 &&
+                    this.checker.getPropertiesOfType(member).length === 0,
+            )
+        )
+            return undefined;
+        const [first, ...rest] = type.types.map((member) =>
+            this.fromTsType(member, node),
+        );
+        return first?.kind === "function" &&
+            rest.every(
+                (member) =>
+                    member?.kind === "function" &&
+                    dataTypesEqual(member, first),
+            )
+            ? first
+            : undefined;
     }
 
     /**

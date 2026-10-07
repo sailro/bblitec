@@ -10257,6 +10257,189 @@ test("stored function storage refuses values reading arguments it drops", () => 
 });
 
 check(
+    "stored-function-adapts-required-lanes-to-optional-parameters",
+    `
+    interface Host {
+        place(x: number, height: (x: number, z: number, floor: number) => number | null): number | null;
+        label(name: (id: number) => string | undefined): string;
+    }
+    function sampler(base: number) {
+        return {
+            heightAt(x: number, z: number, floor?: number): number | null {
+                if (x < 0) return null;
+                return (floor ?? base) + x + z;
+            },
+            name(id: number): string { return "#" + id; },
+        };
+    }
+    function live(deps: Host): (x: number) => [number | null, string] {
+        const samplers: ReturnType<typeof sampler>[] = [sampler(10)];
+        const sampled = samplers[0]!;
+        return (x) => [deps.place(x, sampled.heightAt), deps.label(sampled.name)];
+    }
+    const lives: Array<typeof live> = [live];
+    const seen: Array<number | null> = [];
+    const run = lives[0]!({
+        place: (x, height) => {
+            const held = height;
+            seen.push(held(x, 2, 5));
+            return height(x, 3, 0.5);
+        },
+        label: (name) => name(7) ?? "none",
+    });
+    const [first, label] = run(1);
+    if (first !== 4.5 || seen[0] !== 8 || label !== "#7") throw new Error("adapted lanes");
+    if (run(-1)[0] !== null || seen[1] !== null) throw new Error("adapted absent result");
+`,
+);
+
+test("stored function adapters refuse lanes the value does not hold", () => {
+    for (const [source, message] of [
+        [
+            `interface Deps { run(f: (value: number | undefined) => number): number }
+            function make(deps: Deps): number {
+                const table: Array<{ twice(value: number): number }> = [{ twice: (value) => value * 2 }];
+                return deps.run(table[0]!.twice);
+            }
+            const makes: Array<typeof make> = [make];
+            if (makes[0]!({ run: (f) => f(undefined) }) !== 0) throw new Error("x");`,
+            /does not match the expected data function/,
+        ],
+        [
+            `interface Deps { run(f: (key: string) => number): number }
+            function make(deps: Deps): number {
+                const table: Array<{ rank(key: "low" | "high"): number }> = [{ rank: (key) => (key === "low" ? 1 : 2) }];
+                return deps.run(table[0]!.rank);
+            }
+            const makes: Array<typeof make> = [make];
+            if (makes[0]!({ run: (f) => f("other") }) !== 2) throw new Error("x");`,
+            /does not match the expected data function/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "methods-picked-by-a-runtime-key-are-called",
+    `
+    type Shape = "circle" | "square";
+    interface Costs {
+        circle(label: string, scaled: boolean): number;
+        square(label: string, scaled: boolean): number;
+    }
+    const order: string[] = [];
+    function note<T>(label: string, value: T): T { order.push(label); return value; }
+    function pricing(costs: Costs) {
+        return {
+            price(shape: Shape, label: string, scaled: boolean): { shape: Shape; cost: number } {
+                return { shape, cost: costs[note("key", shape)](note("label", label), note("scaled", scaled)) };
+            },
+        };
+    }
+    let calls = 0;
+    const made = pricing({
+        circle: (label, scaled) => { calls++; return label.length + (scaled ? 100 : 0); },
+        square: (label, scaled) => { calls++; return label.length * 2 + (scaled ? 100 : 0); },
+    });
+    if (made.price("circle", "ring", false).cost !== 4) throw new Error("circle");
+    if (made.price("square", "tile", true).cost !== 108) throw new Error("square");
+    if (calls !== 2 || order.join(",") !== "key,label,scaled,key,label,scaled") throw new Error("order " + order.join(","));
+    const stored: Array<typeof pricing> = [pricing];
+    const runtime = stored[0]!({ circle: (label) => label.length, square: (label) => -label.length });
+    if (runtime.price("square", "ab", false).cost !== -2) throw new Error("runtime record");
+`,
+);
+
+check(
+    "calling-an-absent-function-value-throws-a-type-error",
+    `
+    const handlers = new Map<string, () => number>();
+    handlers.set("one", () => 1);
+    function kindOf(run: () => void): string {
+        try {
+            run();
+            return "none";
+        } catch (error) {
+            return error instanceof TypeError ? "type" : "other";
+        }
+    }
+    if (kindOf(() => { handlers.get("one")!(); }) !== "none") throw new Error("present handler");
+    if (kindOf(() => { handlers.get("missing")!(); }) !== "type") throw new Error("absent map handler");
+    interface Hooks { done?: (value: number) => void }
+    const hooks: Hooks[] = [{}, { done: () => {} }];
+    if (kindOf(() => { hooks[0]!.done!(3); }) !== "type") throw new Error("absent optional field");
+    if (kindOf(() => { hooks[1]!.done!(3); }) !== "none") throw new Error("present optional field");
+`,
+);
+
+check(
+    "nullish-fallback-of-another-union-member-and-optional-method-calls",
+    `
+    interface Move { readonly id: number; readonly target: { readonly x: number; readonly z: number } | null }
+    interface Plan { readonly moves: readonly Move[]; commit(): void }
+    type Proposal = Plan | { readonly state: "waiting" } | { readonly state: "rejected" };
+    const planIn = (proposal: Proposal): Plan | null => ("moves" in proposal ? proposal : null);
+    const log: string[] = [];
+    let fallbackCount = 0;
+    const origin = (): "origin" => { fallbackCount++; return "origin"; };
+    function createMover(deps: { targetOf(id: number): { x: number; z: number } | null; reject(): boolean }) {
+        const seen: Array<{ x: number; z: number } | "origin"> = [];
+        const apply = (id: number, target: { x: number; z: number } | "origin"): void => {
+            seen.push(target);
+            if (target === "origin") { log.push(id + ":origin"); return; }
+            log.push(id + ":" + target.x + "," + target.z);
+        };
+        const prepare = (ids: readonly number[]): Proposal => {
+            if (deps.reject()) return { state: "rejected" };
+            const moves: Move[] = [];
+            for (const id of ids) moves.push({ id, target: deps.targetOf(id) });
+            return {
+                moves,
+                commit: () => {
+                    for (const move of moves) apply(move.id, move.target ?? origin());
+                },
+            };
+        };
+        const applyAll = (ids: readonly number[]): boolean => {
+            const plan = planIn(prepare(ids));
+            plan?.commit();
+            if (plan) {
+                const first = plan.moves[0];
+                if (first && first.target && seen[0] !== first.target) throw new Error("target identity");
+            }
+            return plan !== null;
+        };
+        return { applyAll };
+    }
+    let rejected = false;
+    const mover = createMover({ targetOf: (id) => (id % 2 ? { x: id, z: -id } : null), reject: () => rejected });
+    if (!mover.applyAll([1, 2])) throw new Error("applied");
+    rejected = true;
+    if (mover.applyAll([3])) throw new Error("rejected");
+    if (log.join(";") !== "1:1,-1;2:origin" || fallbackCount !== 1) throw new Error("log " + log.join(";") + " " + fallbackCount);
+`,
+);
+
+test("a method reading this stays refused when picked by a runtime key", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            type Shape = "circle" | "square";
+            interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
+            function pricing(costs: Costs) {
+                return { price(shape: Shape, label: string): number { return costs[shape](label); } };
+            }
+            const made = pricing({
+                scale: 10,
+                circle(label) { return this.scale * label.length; },
+                square(label) { return this.scale * 2 * label.length; },
+            });
+            if (made.price("circle", "ring") !== 40) throw new Error("x");`),
+        /reads `this`, and .* reads its function value, which could call it with another receiver/,
+    );
+});
+
+check(
     "stored-function-spread-of-an-optional-lane-tuple",
     `
     type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number];

@@ -4084,6 +4084,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     fallback,
                     fallbackLines,
                 );
+            // Operands of two members of the operator's union type (a found
+            // record or a literal) are each stored as that union.
+            const union = this.dataTypeAt(expression);
+            if (
+                left.kind === "data" &&
+                union?.kind === "union" &&
+                (fallback.kind !== left.kind ||
+                    (fallback.dataType !== undefined &&
+                        left.dataType !== undefined &&
+                        !dataTypesEqual(fallback.dataType, left.dataType)))
+            ) {
+                const { optionalFoundCpp: _found, ...present } = left;
+                const found = this.compileKnownValueForSink(
+                    present,
+                    union,
+                    expression.left,
+                );
+                return this.leafValue(
+                    `(${leftFound} ? ${found} : ${fallbackArm(union, () => this.compileKnownValueForSink(fallback, union, expression.right))})`,
+                    union,
+                );
+            }
             if (fallback.kind !== left.kind) {
                 this.context.fail(
                     expression.right,
