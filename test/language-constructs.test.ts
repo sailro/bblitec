@@ -9294,3 +9294,44 @@ checkInRealm(
     })();
 `,
 );
+
+check(
+    "function-objects-given-properties-are-callable-records",
+    `
+    type Source = (() => number) & { onResize?: (callback: () => void) => () => void };
+    type Binding = (() => void) & { dispose(): void };
+    function constantSource(value: number): Source {
+        return Object.assign(() => value * 2, {
+            onResize: (callback: () => void) => { callback(); return () => { value = -1; }; },
+        });
+    }
+    function bind(source: Source, log: number[]): Binding {
+        let disposed = false;
+        const refresh = (): void => { if (!disposed) log.push(source()); };
+        refresh();
+        const unsubscribe = source.onResize?.(refresh);
+        const dispose = (): void => { disposed = true; unsubscribe?.(); };
+        return Object.assign(refresh, { dispose });
+    }
+    const binds: Array<typeof bind> = [bind];
+    const log: number[] = [];
+    const source = constantSource(3);
+    const binding = binds[0]!(source, log);
+    binding();
+    if (typeof binding !== "function" || typeof source !== "function") throw new Error("typeof callable record");
+    binding.dispose();
+    binding();
+    if (log.join(",") !== "6,6,6" || source() !== -2) throw new Error("callable record calls " + log.join(","));
+    const callbacks: Array<() => void> = [binding];
+    callbacks[0]!();
+    if (log.length !== 3) throw new Error("callable record as a function value");
+    function wrap(): { binding: Binding; refresh: () => void } {
+        const refresh = (): void => {};
+        return { binding: Object.assign(refresh, { dispose: () => {} }), refresh };
+    }
+    const wrapped = wrap();
+    const other = wrap();
+    if (wrapped.binding !== wrapped.refresh || wrapped.binding === other.binding || other.refresh === wrapped.binding)
+        throw new Error("a callable record is the function it calls");
+`,
+);

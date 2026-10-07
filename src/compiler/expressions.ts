@@ -1504,7 +1504,11 @@ export class ExpressionLowerer {
                         ? "string"
                         : operand.kind === "callback" ||
                             operand.builtinConstructor !== undefined ||
-                            dataType?.kind === "function"
+                            dataType?.kind === "function" ||
+                            (dataType?.kind === "struct" &&
+                                this.context.dataTypes.structCall(
+                                    dataType.name,
+                                ) !== undefined)
                           ? "function"
                           : operand.kind === "void"
                             ? "undefined"
@@ -3479,6 +3483,14 @@ export class ExpressionLowerer {
                 unionMember.dataType,
             );
         }
+        const callableRecord =
+            bound?.kind === "data"
+                ? this.context.dataLowerer.compileCallableRecordCall(
+                      call,
+                      bound,
+                  )
+                : undefined;
+        if (callableRecord) return callableRecord;
         if (!bound) {
             const aliased = this.compileConstAliasCall(call, callee);
             if (aliased) return aliased;
@@ -3680,7 +3692,10 @@ export class ExpressionLowerer {
                 callable.cpp,
                 callable.dataType,
             );
-        return undefined;
+        return this.context.dataLowerer.compileCallableRecordCall(
+            call,
+            callable,
+        );
     }
 
     /**

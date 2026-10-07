@@ -119,6 +119,7 @@ import {
     type DataStructField,
     type DataType,
     type TypedArrayKind,
+    callMember,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
 import {
@@ -3268,6 +3269,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ),
             dataType: arm.member,
         };
+    }
+
+    /**
+     * A call of a callable record (`binding()`, a function object given
+     * properties by `Object.assign`): its own call, read through the record
+     * once its reference is read.
+     */
+    public compileCallableRecordCall(
+        call: ts.CallExpression,
+        value: Value,
+    ): Value | undefined {
+        const type = value.dataType;
+        const callType =
+            value.kind === "data" && type?.kind === "struct"
+                ? this.context.dataTypes.structCall(type.name)
+                : undefined;
+        if (!callType) return undefined;
+        this.context.useNativeValue(value);
+        const record = this.context.allocateTemporaryCppName("callable_record");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: record,
+            initializer: value.cpp,
+        });
+        return this.compileStoredCall(
+            call,
+            `${record}->${callMember}`,
+            callType,
+            record,
+        );
     }
 
     /** A narrowed payload owns a snapshot of that payload, not its carrier. */
@@ -13770,6 +13802,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     leftValue.staticString === rightValue.staticString;
                 return equal !== negated ? "true" : "false";
             }
+        }
+        // A callable record is one object with the function it calls: two
+        // compare by that call's identity, as a function compares.
+        const callableRecord = (operand: ts.Expression): boolean => {
+            const type = this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(operand),
+            );
+            return (
+                type.getCallSignatures().length === 1 &&
+                this.context.checker.getPropertiesOfType(type).length > 0
+            );
+        };
+        if (!loose && (callableRecord(left) || callableRecord(right))) {
+            const identity = this.context.probeEmission(() => {
+                const sides = [left, right].map((operand) => {
+                    const value = this.context.bindings.pinValueToTemporary(
+                        this.context.compileValue(operand),
+                        "compared_function",
+                        operand,
+                    );
+                    const type = value.dataType;
+                    if (
+                        value.kind === "data" &&
+                        type?.kind === "struct" &&
+                        this.context.dataTypes.structCall(type.name)
+                    )
+                        return `${value.cpp}->${callMember}`;
+                    return value.kind === "data" && type?.kind === "function"
+                        ? value.cpp
+                        : undefined;
+                });
+                return sides[0] !== undefined && sides[1] !== undefined
+                    ? `${sides[0]} ${negated ? "!=" : "=="} ${sides[1]}`
+                    : undefined;
+            });
+            if (identity) return identity;
         }
         const isNullish = (candidate: ts.Expression): boolean =>
             isNullishLiteral(this.context.checker, candidate) ||

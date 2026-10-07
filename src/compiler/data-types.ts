@@ -435,7 +435,15 @@ interface DataStructDefinition {
     fields: DataStructField[];
     /** One struct for a class hierarchy: it stores which class each object is. */
     classTag?: true;
+    /**
+     * A function object with properties (`(() => T) & { dispose(): void }`):
+     * the record's own call, held beside its properties as `callMember`.
+     */
+    call?: DataType<"function">;
 }
+
+/** The member a callable record keeps its call in; it is not a property. */
+export const callMember = "bbl_call";
 
 /** The member a class hierarchy's shared struct keeps each object's class tag in. */
 export const classTagMember = "bbl_class_tag";
@@ -2036,11 +2044,16 @@ export class DataTypeRegistry {
                 )
             )
                 return this.fromTsType(primitives[0]!, node);
-            return this.fromStructType(type, node);
+            return (
+                this.fromCallableRecordType(type, node) ??
+                this.fromStructType(type, node)
+            );
         }
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
         }
+        const brand = this.brandStorage(type, node);
+        if (brand) return brand;
         if (
             type.symbol &&
             ERROR_CONSTRUCTORS.has(type.symbol.name) &&
@@ -2404,6 +2417,8 @@ export class DataTypeRegistry {
         // An open index signature is not a closed record of its named fields.
         // Leave an unrepresented entry type on the source-specialized path.
         if (dictionary !== undefined) return dictionary ?? undefined;
+        const callable = this.fromCallableRecordType(type, node);
+        if (callable) return callable;
         const functionType = this.fromFunctionType(type, node);
         if (functionType) return functionType;
         if (type.getConstructSignatures().length > 0) {
@@ -3772,7 +3787,11 @@ export class DataTypeRegistry {
         };
     }
 
-    private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
+    private fromStructType(
+        type: ts.Type,
+        node: ts.Node,
+        call?: DataType<"function">,
+    ): DataType | undefined {
         const declaredName = (named: ts.Type): string | undefined =>
             named.aliasSymbol?.name ??
             (named.symbol &&
@@ -3792,7 +3811,13 @@ export class DataTypeRegistry {
             ) === true;
         return (
             this.mapRecursiveStruct(type, preferredName, (name) =>
-                this.fromStructTypeInner(type, node, name, storesFunctions),
+                this.fromStructTypeInner(
+                    type,
+                    node,
+                    name,
+                    storesFunctions,
+                    call,
+                ),
             ) ?? undefined
         );
     }
@@ -4225,6 +4250,7 @@ export class DataTypeRegistry {
         node: ts.Node,
         provisionalName: string,
         allowStoredFunctions: boolean,
+        call?: DataType<"function">,
     ): DataType | undefined {
         if (isDomEventType(this.checker, type)) return undefined;
         const component = this.recordComponentOf(type);
@@ -4256,37 +4282,40 @@ export class DataTypeRegistry {
                 declaration ?? node,
             );
             const callableType = this.checker.getNonNullableType(propertyType);
+            // A callable record (a function with properties) is a record.
+            const callable =
+                callableType.getCallSignatures().length > 0 &&
+                !this.isCallableRecordType(callableType);
             return {
                 type: propertyType,
-                callable: callableType.getCallSignatures().length > 0,
-                mapped:
-                    callableType.getCallSignatures().length > 0
-                        ? allowStoredFunctions &&
-                          declaration !== undefined &&
-                          (ts.isPropertySignature(declaration) ||
-                              ts.isMethodSignature(declaration) ||
-                              ts.isMethodDeclaration(declaration) ||
-                              (this.classDemanded &&
-                                  (ts.isPropertyAssignment(declaration) ||
-                                      ts.isShorthandPropertyAssignment(
-                                          declaration,
-                                      ))))
-                            ? this.fromFunctionType(
-                                  callableType,
-                                  declaration ?? node,
-                              )
-                            : undefined
-                        : // A record's own field inherits the position the record is in
-                          // rather than demanding one: an interface written to carry a
-                          // scene's singletons -- a tool context holding the workspace, the
-                          // mouse and the dragger -- is a compile-time record, and giving
-                          // each of those a runtime object because a field names them would
-                          // turn every one of them into a shared allocation nothing shares.
-                          this.fromRecordFieldType(
-                              propertyType,
+                callable,
+                mapped: callable
+                    ? allowStoredFunctions &&
+                      declaration !== undefined &&
+                      (ts.isPropertySignature(declaration) ||
+                          ts.isMethodSignature(declaration) ||
+                          ts.isMethodDeclaration(declaration) ||
+                          (this.classDemanded &&
+                              (ts.isPropertyAssignment(declaration) ||
+                                  ts.isShorthandPropertyAssignment(
+                                      declaration,
+                                  ))))
+                        ? this.fromFunctionType(
+                              callableType,
                               declaration ?? node,
-                              property,
-                          ),
+                          )
+                        : undefined
+                    : // A record's own field inherits the position the record is in
+                      // rather than demanding one: an interface written to carry a
+                      // scene's singletons -- a tool context holding the workspace, the
+                      // mouse and the dragger -- is a compile-time record, and giving
+                      // each of those a runtime object because a field names them would
+                      // turn every one of them into a shared allocation nothing shares.
+                      this.fromRecordFieldType(
+                          propertyType,
+                          declaration ?? node,
+                          property,
+                      ),
             };
         };
         for (const [name, declared] of layout.properties) {
@@ -4394,8 +4423,9 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        // A component's members are one object under several types.
-        if (partial || proxy || component) {
+        // A component's members are one object under several types, and a
+        // function object is one object wherever it is passed.
+        if (partial || proxy || component || call) {
             this.referenceStructNames.add(provisionalName);
         }
         if (
@@ -4408,13 +4438,19 @@ export class DataTypeRegistry {
             // is visible to the dispatcher after the call.
             this.referenceStructNames.add(provisionalName);
         }
-        return this.internMappedStruct(provisionalName, fields, presences);
+        return this.internMappedStruct(
+            provisionalName,
+            fields,
+            presences,
+            call,
+        );
     }
 
     private internMappedStruct(
         provisionalName: string,
         fields: DataStructField[],
         presences: readonly FieldPresence[],
+        call?: DataType<"function">,
     ): DataType<"struct"> {
         // A union's stored element and a callback's declared result share an
         // object when their field layouts agree, regardless of mapping path.
@@ -4423,7 +4459,8 @@ export class DataTypeRegistry {
                 (field) =>
                     `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${field.optionalProperty ? "optional" : "present"}:${field.sharedAbsent ? "shared" : field.uncheckedProperty ? "unchecked" : "checked"}:${JSON.stringify(field.presentForTags)}${accessorKey(field)}`,
             )
-            .join(",");
+            .join(",")
+            .concat(call ? `;call:${this.typeKey(call)}` : "");
         const existing = this.structsByKey.get(key);
         const name =
             existing && !this.referenceStructNames.has(provisionalName)
@@ -4431,8 +4468,46 @@ export class DataTypeRegistry {
                 : provisionalName;
         this.recordFieldPresences(name, fields, presences);
         if (name === provisionalName)
-            this.registerStructDefinition(key, { name, fields });
+            this.registerStructDefinition(key, {
+                name,
+                fields,
+                ...(call ? { call } : {}),
+            });
         return { kind: "struct", name };
+    }
+
+    /**
+     * A function object with properties: one call signature beside named
+     * properties (`(() => T) & { onResize?: ... }`, an interface declaring
+     * both). Its record stores the properties and, apart, its call.
+     */
+    private isCallableRecordType(type: ts.Type): boolean {
+        return (
+            type.getCallSignatures().length === 1 &&
+            type.getConstructSignatures().length === 0 &&
+            this.checker.getPropertiesOfType(type).length > 0
+        );
+    }
+
+    private fromCallableRecordType(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        if (!this.isCallableRecordType(type)) return undefined;
+        const signature = this.fromFunctionType(type, node);
+        if (signature?.kind !== "function" || signature.generic)
+            return undefined;
+        // The call is the function object itself: it keeps that identity.
+        const call: DataType<"function"> = { ...signature, identity: true };
+        const record = this.fromStructType(type, node, call);
+        return record?.kind === "struct" && this.structCall(record.name)
+            ? record
+            : undefined;
+    }
+
+    /** The call a callable record holds (`fromCallableRecordType`). */
+    public structCall(name: string): DataType<"function"> | undefined {
+        return this.structsByName.get(name)?.call;
     }
 
     /**
@@ -5420,9 +5495,12 @@ export class DataTypeRegistry {
      */
     public structFieldTypes(name: string): DataType[] {
         const definition = this.structsByName.get(name);
-        return (definition?.fields ?? []).flatMap((field) =>
-            field.accessor ? accessorFunctionTypes(field) : [field.type],
-        );
+        return [
+            ...(definition?.fields ?? []).flatMap((field) =>
+                field.accessor ? accessorFunctionTypes(field) : [field.type],
+            ),
+            ...(definition?.call ? [definition.call] : []),
+        ];
     }
 
     private registerStructDefinition(
@@ -6401,7 +6479,10 @@ export class DataTypeRegistry {
                 return;
             }
             emitted.add(definition.name);
-            for (const field of definition.fields) {
+            for (const field of [
+                ...definition.fields,
+                ...(definition.call ? [{ type: definition.call }] : []),
+            ]) {
                 for (const dependency of this.structDependencies(field.type)) {
                     const nested = structs.find(
                         (candidate) => candidate.name === dependency,
@@ -6463,6 +6544,9 @@ export class DataTypeRegistry {
                 ...(definition.classTag
                     ? [`    int ${classTagMember}{};`]
                     : []),
+                ...(definition.call
+                    ? [`    ${this.cppType(definition.call)} ${callMember};`]
+                    : []),
                 ...this.renderKeyedSlot(definition),
                 ...(definition.fields.some((field) => field.accessorReceiver)
                     ? [
@@ -6493,6 +6577,9 @@ export class DataTypeRegistry {
                                   ({ field, condition }) =>
                                       `        ${typeof condition === "string" ? `if constexpr (${condition}) ` : ""}visitor(record.${field.name});`,
                               ),
+                          ...(definition.call
+                              ? [`        visitor(record.${callMember});`]
+                              : []),
                           "    }",
                       ]),
                 ...(structuredClone

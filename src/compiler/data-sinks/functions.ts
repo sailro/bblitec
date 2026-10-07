@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-import { dataTypesEqual, type DataType } from "../data-types.js";
+import { callMember, dataTypesEqual, type DataType } from "../data-types.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
 
@@ -217,6 +217,19 @@ function valueFunction(
     }
     if (value.kind === "json-null") {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
+    }
+    // A callable record is called as its own call.
+    const callType =
+        value.kind === "data" && value.dataType?.kind === "struct"
+            ? lowerer.context.dataTypes.structCall(value.dataType.name)
+            : undefined;
+    if (callType) {
+        lowerer.context.useNativeValue(value);
+        return lowerer.compileKnownValueForSink(
+            lowerer.leafValue(`(${value.cpp})->${callMember}`, callType),
+            dataType,
+            node,
+        );
     }
     // A value with storage is shared as it is or adapted to the sink; its
     // identity is the storage's own, whether or not the sink compares it.

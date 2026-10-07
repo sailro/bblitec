@@ -1030,6 +1030,36 @@ function compileKnownDataMethod(
                 );
             }
         }
+        if (
+            field &&
+            functionType?.kind === "struct" &&
+            dataType?.kind !== "optional" &&
+            !field.accessor &&
+            lowerer.context.dataTypes.structCall(functionType.name)
+        ) {
+            const receiver =
+                lowerer.context.allocateTemporaryCppName("callback_receiver");
+            lowerer.context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: receiver,
+                initializer: narrowed.cpp,
+            });
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(recordType.name);
+            if (referenceReceiver)
+                lowerer.context.emit({
+                    kind: "expression",
+                    code: `if (!(${receiver})) throw std::runtime_error("Cannot call a method on a nullish receiver.");`,
+                });
+            return lowerer.compileCallableRecordCall(
+                call,
+                lowerer.leafValue(
+                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    functionType,
+                ),
+            );
+        }
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);

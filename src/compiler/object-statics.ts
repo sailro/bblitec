@@ -4,7 +4,7 @@ import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
-import type { DataType, OwnPresence } from "./data-types.js";
+import { callMember, type DataType, type OwnPresence } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
@@ -15,6 +15,7 @@ import {
 
 type ObjectStaticContext = Pick<
     LoweringServices,
+    | "checker"
     | "compileValue"
     | "moduleNamespaces"
     | "captureEmittedLines"
@@ -657,11 +658,49 @@ function compileObjectAssign(
     const targetExpression = context.unwrap(argumentAt(call, 0));
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
-    const target =
+    let target =
         context.probeEmission(() =>
             context.resolveRecordValue(targetExpression),
         ) ?? context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
+    // A function given properties is a callable record: a fresh record
+    // whose call is that function, filled below as a struct target is. It
+    // is built as the callable type its result is stored as, when it has
+    // one, so the record needs no conversion there.
+    const contextual = context.checker.getContextualType(call);
+    const callable = context.dataTypes.fromStoredTsType(
+        contextual &&
+            context.checker.getNonNullableType(contextual).getCallSignatures()
+                .length === 1
+            ? context.checker.getNonNullableType(contextual)
+            : context.checker.getTypeAtLocation(call),
+        call,
+    );
+    const callType =
+        callable?.kind === "struct"
+            ? context.dataTypes.structCall(callable.name)
+            : undefined;
+    if (
+        callable?.kind === "struct" &&
+        callType &&
+        (target.kind === "callback" || target.dataType?.kind === "function")
+    ) {
+        const record = context.allocateTemporaryCppName("callable_record");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: record,
+            initializer: `bbl::js::make_ref<bblscene::${callable.name}Data>()`,
+        });
+        context.emit({
+            kind: "expression",
+            code: `${record}->${callMember} = ${context.dataLowerer.compileKnownValueForSink(target, callType, targetExpression)};`,
+        });
+        target = {
+            ...context.dataLowerer.leafValue(record, callable),
+            freshData: true,
+        };
+    }
     const fresh = ts.isObjectLiteralExpression(targetExpression);
     const readPairs = (
         source: ts.Expression,

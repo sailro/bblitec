@@ -1715,10 +1715,14 @@ export class DeclarationLowerer {
             // source callback declaration returned by an inlined builder.
             return undefined;
         }
-        const signatures = this.context.checker
-            .getTypeAtLocation(name)
-            .getCallSignatures();
-        if (signatures.length !== 1) return undefined;
+        const declaredType = this.context.checker.getTypeAtLocation(name);
+        const signatures = declaredType.getCallSignatures();
+        // A function object with properties is a callable record.
+        if (
+            signatures.length !== 1 ||
+            this.context.checker.getPropertiesOfType(declaredType).length > 0
+        )
+            return undefined;
         const signature = signatures[0]!;
         const returnType =
             this.context.checker.getReturnTypeOfSignature(signature);
