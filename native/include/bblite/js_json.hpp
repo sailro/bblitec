@@ -525,9 +525,8 @@ public:
 
     /** SameValueZero, the key equality of Map and Set: NaN is one key. */
     [[nodiscard]] bool same_value_zero(const JsonValue& other) const {
-        return strict_equals(other) ||
-               (kind_ == Kind::number && other.kind_ == Kind::number && std::isnan(number_) &&
-                std::isnan(other.number_));
+        return strict_equals(other) || (kind_ == Kind::number && other.kind_ == Kind::number &&
+                                        std::isnan(number_) && std::isnan(other.number_));
     }
 
     /** The hash a Map or Set files this key under, consistent with `same_value_zero`. */
@@ -546,8 +545,8 @@ public:
         case Kind::array:
             return reinterpret_cast<std::uintptr_t>(array_identity());
         case Kind::object:
-            return reinterpret_cast<std::uintptr_t>(native_ ? native_->identity()
-                                                           : static_cast<const void*>(object_.get()));
+            return reinterpret_cast<std::uintptr_t>(
+                native_ ? native_->identity() : static_cast<const void*>(object_.get()));
         }
         return 0;
     }
@@ -1323,8 +1322,7 @@ template <typename T> [[nodiscard]] T json_entry_as(const JsonValue& value) {
  * reads convert the entry (an absent one reads as undefined), writes store
  * the value as a parsed entry. */
 template <typename T>
-[[nodiscard]] Accessor<T> json_entry_accessor(Map<std::string, JsonValue> record,
-                                              std::string key) {
+[[nodiscard]] Accessor<T> json_entry_accessor(Map<std::string, JsonValue> record, std::string key) {
     using Entry = std::tuple<Map<std::string, JsonValue>, std::string>;
     auto entry = Entry{std::move(record), std::move(key)};
     return Accessor<T>(make_closure(entry,
