@@ -3047,8 +3047,9 @@ export class ExpressionLowerer {
      * The storage of what the conditional `node` selects at `path` (a
      * member or element of its result): its type where the conditional is
      * expected (a spread into a typed record), else in the conditional or
-     * one of its arms. `present` drops the absence an arm without the
-     * member adds.
+     * one of its arms. `present` asks for the member one arm's record
+     * holds: without the absence the other arm adds, and owning its array
+     * even where the type is readonly.
      */
     private selectedDataType(
         node: ts.Node,
@@ -3080,7 +3081,10 @@ export class ExpressionLowerer {
             const type = at(owner);
             const mapped =
                 type && this.context.dataTypes.fromStoredTsType(type, node);
-            if (mapped) return mapped;
+            if (mapped)
+                return present
+                    ? this.context.dataTypes.ownReadonlyArray(mapped, type)
+                    : mapped;
         }
         return undefined;
     }

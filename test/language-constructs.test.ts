@@ -8436,6 +8436,23 @@ check(
 );
 
 check(
+    "typed-conditional-spread-readonly-array-fields",
+    `
+    interface Options { file: string; bones?: readonly number[]; names?: readonly string[] }
+    function options(file: string, bone: number | undefined): Options {
+        return { file, ...(bone === undefined ? {} : { bones: [bone, bone + 1] }), names: ["mesh"] };
+    }
+    function key(opts: Options): string { return JSON.stringify({ file: opts.file, bones: opts.bones ?? null }); }
+    const some = options("a", 4), none = options("b", undefined);
+    if (key(some) !== '{"file":"a","bones":[4,5]}' || key(none) !== '{"file":"b","bones":null}' || "bones" in none) throw new Error("conditional readonly array field");
+    const bones: number[] = [];
+    bones.push(9);
+    function hold(shared: readonly number[]): Options { return { file: "c", ...(shared.length > 0 ? { bones: shared } : {}) }; }
+    if (hold(bones).bones !== bones) throw new Error("spread keeps the array's identity");
+`,
+);
+
+check(
     "math-constants-and-members",
     `
     const ln2 = Math.LN2;
