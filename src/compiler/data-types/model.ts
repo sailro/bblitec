@@ -194,6 +194,13 @@ interface DataKinds {
         erasedParameters?: number[];
         /** Native parameter positions which accept an omitted source argument. */
         optionalParameters?: number[];
+        /**
+         * Per native parameter that can be passed both `null` and
+         * `undefined`, the source declaration's site (empty otherwise):
+         * where a stored body telling them apart demands tagged storage.
+         * Not part of the signature's identity.
+         */
+        parameterSites?: readonly string[];
     };
     struct: {
         kind: "struct";
@@ -210,6 +217,16 @@ interface DataKinds {
         kind: "optional";
         /** The absent state is known to be undefined, including resized tuple lanes. */
         undefinedOnly?: true;
+        inner: DataType;
+    };
+    /**
+     * Storage telling JavaScript's two absent values apart: `undefined`
+     * until defined, then `inner`, whose own empty state is `null`. Chosen
+     * per source storage only where the program observes the difference;
+     * reads expose `inner` with that state as `Value.slotFoundCpp`.
+     */
+    tagged: {
+        kind: "tagged";
         inner: DataType;
     };
     union: {

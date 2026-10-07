@@ -74,6 +74,7 @@ import {
     type NativeRecordStorageDemand,
 } from "./compiler/native-record-storage.js";
 import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
+import type { AbsenceTagDeclaration } from "./compiler/absence-tag-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
@@ -591,6 +592,8 @@ function compileSourceApplication(
             NativeRecordStorageDemand
         >();
         const genericFunctions = new GenericFunctionStorage();
+        const absenceTags = new Set<AbsenceTagDeclaration>();
+        const tupleArraySlots = new Set<ts.Declaration>();
         const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planning: boolean): Compiler => {
             recordStorageCompileAttempt(planning);
@@ -603,6 +606,8 @@ function compileSourceApplication(
                 ownedRecords,
                 genericFunctions,
                 lazyModules,
+                absenceTags,
+                tupleArraySlots,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -643,6 +648,16 @@ function compileSourceApplication(
                 genericFunctions.add(request.demand)
             ) {
                 return true;
+            } else if (
+                request.kind === "absence-tag" &&
+                !absenceTags.has(request.declaration)
+            ) {
+                absenceTags.add(request.declaration);
+            } else if (
+                request.kind === "tuple-array" &&
+                !tupleArraySlots.has(request.declaration)
+            ) {
+                tupleArraySlots.add(request.declaration);
             } else return false;
             return true;
         };
@@ -972,6 +987,8 @@ class Compiler implements LoweringServices {
         >,
         genericFunctions: GenericFunctionStorage,
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
+        public readonly absenceTags: ReadonlySet<ts.Declaration>,
+        public readonly tupleArraySlots: ReadonlySet<ts.Declaration>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -981,6 +998,8 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             genericFunctions,
+            absenceTags,
+            tupleArraySlots,
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -6015,7 +6034,9 @@ class Compiler implements LoweringServices {
             counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
-                : (value.optionalStorageCpp ?? value.cpp));
+                : (value.absenceTagStorageCpp ??
+                  value.optionalStorageCpp ??
+                  value.cpp));
         if (
             isCompileTimeOnlyValue(value.kind) ||
             value.kind === "browser" ||
@@ -6038,17 +6059,19 @@ class Compiler implements LoweringServices {
                       : value.kind === "texture" &&
                           value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
-                        : value.dataType
-                          ? this.dataTypes.cppType(value.dataType)
-                          : isHandleKind(value.kind)
-                            ? handleCppType(value.kind)
-                            : value.kind === "number"
-                              ? "double"
-                              : value.kind === "boolean"
-                                ? "bool"
-                                : value.kind === "string"
-                                  ? "std::string"
-                                  : undefined;
+                        : value.absenceTagType
+                          ? this.dataTypes.cppType(value.absenceTagType)
+                          : value.dataType
+                            ? this.dataTypes.cppType(value.dataType)
+                            : isHandleKind(value.kind)
+                              ? handleCppType(value.kind)
+                              : value.kind === "number"
+                                ? "double"
+                                : value.kind === "boolean"
+                                  ? "bool"
+                                  : value.kind === "string"
+                                    ? "std::string"
+                                    : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -6350,6 +6373,17 @@ class Compiler implements LoweringServices {
         return top?.kind === "native" ? top.type : undefined;
     }
 
+    /** Whether an expression's type is a Promise (every present member). */
+    private isPromiseTyped(expression: ts.Expression): boolean {
+        const members = presentMembers(
+            this.checker.getTypeAtLocation(expression),
+        );
+        return (
+            members.length > 0 &&
+            members.every((member) => member.getSymbol()?.name === "Promise")
+        );
+    }
+
     public emitNativeReturn(statement: ts.ReturnStatement): void {
         const frame = this.returnFrames.at(-1);
         if (frame?.kind === "native" && frame.generator) {
@@ -6376,20 +6410,50 @@ class Compiler implements LoweringServices {
             this.fail(statement, "Return outside a native function.");
         }
         if (coroutine && statement.expression) {
-            const result =
-                returnType !== "void" && frame.compileReturn
-                    ? frame.compileReturn(statement.expression, returnType)
-                    : this.asyncActivations.compileAsyncReturn(
-                          statement.expression,
-                          returnType === "void" ? undefined : returnType,
-                      );
-            this.emit({
-                kind: "control",
-                code: this.statements.needsReturnCompletion(statement)
-                    ? `throw bbl::js::AsyncReturn<${returnType === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(returnType)}>(${result});`
-                    : `co_return ${result};`,
-                transfer: "suspend",
-            });
+            const emitResult = (expression: ts.Expression): void => {
+                const selected = this.unwrap(expression);
+                // A promise on one branch only: each branch is its own
+                // return, the promise one adopting its settlement.
+                if (
+                    ts.isConditionalExpression(selected) &&
+                    this.isPromiseTyped(selected.whenTrue) !==
+                        this.isPromiseTyped(selected.whenFalse)
+                ) {
+                    const condition = this.conditions.compileCondition(
+                        selected.condition,
+                    );
+                    this.emit({ kind: "open", code: `if (${condition}) {` });
+                    this.increaseIndent();
+                    this.enterRuntimeControlFlow();
+                    try {
+                        emitResult(selected.whenTrue);
+                        this.decreaseIndent();
+                        this.emit({ kind: "branch", code: "} else {" });
+                        this.increaseIndent();
+                        emitResult(selected.whenFalse);
+                    } finally {
+                        this.leaveRuntimeControlFlow();
+                    }
+                    this.decreaseIndent();
+                    this.emit({ kind: "close", code: "}" });
+                    return;
+                }
+                const result =
+                    returnType !== "void" && frame.compileReturn
+                        ? frame.compileReturn(expression, returnType)
+                        : this.asyncActivations.compileAsyncReturn(
+                              expression,
+                              returnType === "void" ? undefined : returnType,
+                          );
+                this.emit({
+                    kind: "control",
+                    code: this.statements.needsReturnCompletion(statement)
+                        ? `throw bbl::js::AsyncReturn<${returnType === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(returnType)}>(${result});`
+                        : `co_return ${result};`,
+                    transfer: "suspend",
+                });
+            };
+            emitResult(statement.expression);
             return;
         }
         if (returnType === "void") {

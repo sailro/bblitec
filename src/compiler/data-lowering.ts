@@ -57,6 +57,7 @@ import {
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
+import { requireAbsenceTag } from "./absence-tag-storage.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import {
@@ -218,6 +219,19 @@ function namesStableOwner(owner: Value): boolean {
         owner.stableOwnerCpp !== undefined ||
         cppIdentifierPattern.test(owner.cpp)
     );
+}
+
+/**
+ * `left ?? null` (or `?? undefined`): absent, the result is the fallback,
+ * so whether the left's slot existed no longer says which absent value it is.
+ */
+function withFallbackAbsence(left: Value): Value {
+    const {
+        slotFoundCpp: _slot,
+        preserveUncheckedLookup: _unchecked,
+        ...selected
+    } = left;
+    return selected;
 }
 
 /**
@@ -545,6 +559,10 @@ interface DataLoweringContext extends Pick<
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+    /** Source storages that keep `null` and `undefined` apart. */
+    readonly absenceTags: ReadonlySet<ts.Declaration>;
+    /** Record properties storing their numeric tuples as growable arrays. */
+    readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 }
 
 /**
@@ -3273,6 +3291,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return value;
     }
 
+    /**
+     * An optional a member access or an iteration reads through -- narrowed
+     * by a guard the data types do not follow, declared present for an
+     * implementation that may still produce nothing, or typed by a
+     * JavaScript source -- as its present value, whose read throws when it
+     * is absent, as JavaScript's member access and iteration do. Any other
+     * value is returned as it is.
+     */
+    private presentForAccess(value: Value): Value {
+        return value.dataType?.kind === "optional"
+            ? this.presentOptionalValue(value, value.dataType.inner)
+            : value;
+    }
+
     private presentOptionalValue(value: Value, inner: DataType): Value {
         return this.projectedNativeValue(
             value,
@@ -3690,6 +3722,78 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * A fallback that awaits, run as statements only while `absentCpp`
+     * holds -- after the left operand, as the short circuit evaluates it --
+     * into storage the select then reads.
+     */
+    private awaitedFallback(
+        right: ts.Expression,
+        type: DataType,
+        absentCpp: string,
+    ): string {
+        const name = this.context.allocateTemporaryCppName("awaited_fallback");
+        this.context.emit({
+            kind: "declaration",
+            type: `std::optional<${this.context.dataTypes.cppType(type)}>`,
+            name,
+            initializer: "",
+            initialization: "default",
+        });
+        this.emitGuardedStore(absentCpp, () =>
+            this.context.emit({
+                kind: "expression",
+                code: `${name}.emplace(${this.compileForSink(right, type)});`,
+            }),
+        );
+        return `(*${name})`;
+    }
+
+    /**
+     * `a ?? fail()` with a fallback that never completes: the fallback runs
+     * only when `a` is absent and leaves by throwing, so the result is `a`'s
+     * present value, whatever the fallback's own kind.
+     */
+    private coalesceNeverFallback(
+        expression: ts.BinaryExpression,
+        left: Value,
+    ): Value {
+        const pinned = this.context.bindings.pinValueToTemporary(
+            left,
+            "nullish",
+            expression.left,
+        );
+        const present = this.absentComparison(
+            pinned,
+            expression.left,
+            undefined,
+            true,
+            true,
+        );
+        if (present === undefined)
+            this.context.fail(
+                expression.left,
+                "A never-completing fallback requires a left operand whose absence the native storage represents.",
+            );
+        this.emitGuardedStore(
+            present === "true"
+                ? "false"
+                : present === "false"
+                  ? "true"
+                  : `!(${present})`,
+            () =>
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(expression.right),
+                ),
+        );
+        const narrowed = withFallbackAbsence(
+            this.narrowOptional(pinned, expression.left, true),
+        );
+        return narrowed.optionalFoundCpp === undefined
+            ? narrowed
+            : { ...narrowed, optionalFoundCpp: "true" };
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -3733,7 +3837,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (left.kind === "json-null") {
             return this.context.compileValue(expression.right);
         }
-        const fallbackForSink = (type: DataType): string => {
+        if (
+            (this.context.checker.getTypeAtLocation(expression.right).flags &
+                ts.TypeFlags.Never) !==
+            0
+        )
+            return this.coalesceNeverFallback(expression, left);
+        // `absentCpp` is the test under which the fallback runs: one that
+        // awaits in an asynchronous realm is lowered as statements guarded
+        // by it, since a suspension cannot happen inside an expression arm.
+        const fallbackForSink = (
+            type: DataType,
+            absentCpp?: string,
+        ): string => {
+            if (
+                absentCpp !== undefined &&
+                this.context.options.workers &&
+                someAnalysisNode(expression.right, ts.isAwaitExpression, {
+                    functions: "skip",
+                })
+            )
+                return this.awaitedFallback(expression.right, type, absentCpp);
             const arm = this.compileArm(() =>
                 this.compileForSink(expression.right, type),
             );
@@ -3750,7 +3874,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "nullish",
             );
             const type: DataType = { kind: "json" };
-            const fallback = fallbackForSink(type);
+            const fallback = fallbackForSink(
+                type,
+                `(${value.cpp}.is_null() || ${value.cpp}.is_undefined())`,
+            );
             return this.leafValue(
                 `(${value.cpp}.is_null() || ${value.cpp}.is_undefined() ? ${fallback} : ${value.cpp})`,
                 type,
@@ -3778,7 +3905,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression.left,
             );
             return this.leafValue(
-                `(${selected.cpp} ? ${selected.cpp} : ${fallbackForSink(type)})`,
+                `(${selected.cpp} ? ${selected.cpp} : ${fallbackForSink(type, `!${selected.cpp}`)})`,
                 type,
             );
         }
@@ -3849,7 +3976,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         left.dataType,
                     );
                     return {
-                        ...left,
+                        ...withFallbackAbsence(left),
                         cpp: `(${leftFound} ? ${left.cpp} : ` + `${cppType}{})`,
                         objectIdentityCpp:
                             `(${leftFound} ? ` +
@@ -3882,7 +4009,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // `optionalResource ?? undefined` remains the same optional
                 // resource. Keep its presence flag so a later real fallback
                 // can select without dereferencing empty storage.
-                return left;
+                return withFallbackAbsence(left);
             }
             if (
                 left.kind === "data" &&
@@ -4014,7 +4141,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 inner.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(inner.name)
             ) {
-                const fallback = fallbackForSink(inner);
+                const fallback = fallbackForSink(
+                    inner,
+                    `!static_cast<bool>(${temp})`,
+                );
                 return this.leafValue(
                     `(${temp} ? ${temp} : ${fallback})`,
                     inner,
@@ -4037,7 +4167,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     inner,
                     ...(rightType.undefinedOnly ? { undefinedOnly: true } : {}),
                 };
-                const fallbackOptional = fallbackForSink(resultType);
+                const fallbackOptional = fallbackForSink(
+                    resultType,
+                    `!${optionalPresentCpp(temp)}`,
+                );
                 return {
                     kind: "data",
                     cpp:
@@ -4072,7 +4205,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 resultType,
                 expression.left,
             );
-            const fallback = fallbackForSink(resultType);
+            const fallback = fallbackForSink(
+                resultType,
+                `!${optionalPresentCpp(temp)}`,
+            );
             // Through `leafValue`, so the select carries the result
             // type's own Value kind — an optional number selects as a
             // number, an optional handle keeps its engine spelling —
@@ -4269,6 +4405,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return this.leafValue(`${owner.cpp}.length()`, { kind: "number" });
         }
         if (dataType.kind === "optional") {
+            if (!access.questionDotToken)
+                return this.propertyRead(this.presentForAccess(owner), access);
             this.context.fail(
                 access,
                 `'${access.expression.getText()}' may be null here; narrow it before member access.`,
@@ -4333,6 +4471,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             writable(value).nativeLvalue = true;
             if (field.uncheckedProperty)
                 writable(value).preserveUncheckedLookup = true;
+            // The slot's own declarations, should a use demand it retyped.
+            if (field.declarations)
+                writable(value).slotDeclarations = field.declarations;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
                 field.readOnly ||
@@ -4676,6 +4817,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.narrowOptional(ownerValue, access.expression),
             access,
         );
+        if (owner.dataType?.kind === "optional" && !access.questionDotToken)
+            owner = this.presentForAccess(owner);
         const dataType = owner.dataType;
         if (!dataType) {
             return undefined;
@@ -6021,12 +6164,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.context.reachJsData();
         if (vector.dataType.element.kind === "optional") {
+            // A lane past the array's end is `undefined`; one within it
+            // holds the element, whose absence is a stored `null` where its
+            // type admits no `undefined`.
             return {
                 ...this.leafValue(
                     `bbl::js::array_relative_at<${this.context.dataTypes.cppType(vector.dataType.element)}>(${vector.cpp}, ${index}.0)`,
                     vector.dataType.element,
                 ),
                 preserveUncheckedLookup: true,
+                ...(slotHoldsOnlyNull(
+                    this.context.checker.getTypeAtLocation(node),
+                )
+                    ? {
+                          slotFoundCpp: `bbl::js::array_has_index(${vector.cpp}, ${index}.0)`,
+                      }
+                    : {}),
             };
         }
         return this.leafValue(
@@ -6250,6 +6403,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public leafValue(cpp: string, dataType: DataType): Value {
         if (dataType.kind === "module-namespace")
             return this.context.moduleNamespaces.value(dataType, cpp);
+        if (dataType.kind === "tagged") {
+            // The value is read through a const view, so only a tagged
+            // store (`absenceTagStorageCpp`) can change it; whether it is
+            // defined is what tells `undefined` from `null`.
+            if (cppIdentifierPattern.test(cpp))
+                this.context.registerNativeBindingType(
+                    cpp,
+                    this.context.dataTypes.cppType(dataType),
+                );
+            return {
+                ...this.leafValue(`${cpp}.value()`, dataType.inner),
+                slotFoundCpp: `${cpp}.defined()`,
+                absenceTagStorageCpp: cpp,
+                absenceTagType: dataType,
+            };
+        }
         if (cppIdentifierPattern.test(cpp))
             this.context.registerNativeBindingType(
                 cpp,
@@ -10650,6 +10819,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // check below is what keeps aggregates out.
         const target = this.compileDataPath(left, "read");
         if (
+            target?.absenceTagStorageCpp !== undefined &&
+            target.absenceTagType !== undefined
+        ) {
+            // A tagged binding takes the value and which absent value it is.
+            this.context.emit({
+                kind: "expression",
+                code: `${target.absenceTagStorageCpp} = ${this.compileForSink(expression.right, target.absenceTagType)};`,
+            });
+            return true;
+        }
+        if (
             (target?.kind !== "data" && target?.kind !== "promise") ||
             !target.dataType
         ) {
@@ -12278,6 +12458,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const invalidateRootRecordSnapshot = (): void =>
             this.invalidateRecordFieldSnapshot(left);
         if (
+            target.absenceTagStorageCpp !== undefined &&
+            target.absenceTagType !== undefined
+        ) {
+            // A tagged field takes the value and which absent value it is.
+            if (operator !== "=")
+                this.context.fail(
+                    expression,
+                    `Assignment operator '${operator}' is not supported for storage telling null from undefined.`,
+                );
+            this.context.emit({
+                kind: "expression",
+                code: `${target.absenceTagStorageCpp} = ${this.compileForSink(expression.right, target.absenceTagType)};`,
+            });
+            invalidateRootRecordSnapshot();
+            return true;
+        }
+        if (
             target.dataType &&
             this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
         ) {
@@ -13723,11 +13920,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (loose || literal === undefined)
                 return negated ? present : absent;
             const state = absenceKind(this.context.checker, value, node);
-            if (state === "either")
+            if (state === "either") {
+                requireAbsenceTag(
+                    this.context.checker,
+                    this.context.absenceTags,
+                    node,
+                    value,
+                );
                 this.context.fail(
                     node,
                     `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
                 );
+            }
             // A read that knows whether its slot existed tells a missing
             // one (`undefined`) from a stored `null` exactly.
             if (typeof state === "object") {
@@ -14816,7 +15020,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       : undefined));
         const value =
             rawValue?.kind === "data"
-                ? this.narrowOptional(rawValue, expression)
+                ? this.presentForAccess(
+                      this.narrowOptional(rawValue, expression),
+                  )
                 : rawValue;
         if (value && isStringValue(value))
             return {
@@ -14847,9 +15053,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return { container: value, element: { kind: "number" } };
         }
         // An array, Set or iterator ranges over its own elements; a numeric
-        // tuple is not ranged over here.
+        // tuple only when nothing states its lanes at generation (a runtime
+        // tuple a parameter or field holds).
         const iterated = this.iteratedElements(value);
-        if (iterated && "range" in iterated && iterated.arity === undefined) {
+        if (
+            iterated &&
+            "range" in iterated &&
+            (iterated.arity === undefined ||
+                (value.staticElements === undefined &&
+                    value.staticElementsOwner === undefined &&
+                    value.tupleElements === undefined))
+        ) {
             const element = iterated.element;
             this.invalidateRecordArrayFacts(value);
             const elements =

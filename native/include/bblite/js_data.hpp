@@ -1359,6 +1359,27 @@ namespace gc {
 template <typename T> struct Traceable<Nullable<T>> : Traceable<T> {};
 } // namespace gc
 
+/**
+ * A slot that tells JavaScript's two absent values apart where the program
+ * observes the difference: `undefined` until it is defined, then its value,
+ * whose own empty state is `null`.
+ */
+template <typename T> class Tagged {
+public:
+    Tagged() = default;
+    Tagged(T value, bool defined) : value_(std::move(value)), defined_(defined) {}
+    [[nodiscard]] const T& value() const { return value_; }
+    [[nodiscard]] bool defined() const { return defined_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(value_); }
+
+private:
+    T value_{};
+    bool defined_ = false;
+};
+namespace gc {
+template <typename T> struct Traceable<Tagged<T>> : Traceable<T> {};
+} // namespace gc
+
 /** A Map slot of an object reference, as the Nullable an optional object is stored as. */
 template <typename T> [[nodiscard]] Nullable<Ref<T>> nullable_object(const Ref<T>& value) {
     return Nullable<Ref<T>>(value);

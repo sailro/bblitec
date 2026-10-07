@@ -96,6 +96,7 @@ interface DeclarationContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "absenceTags"
             | "allocateTemporaryCppName"
             | "classLowerer"
             | "callbackIdentity"
@@ -439,6 +440,73 @@ export class DeclarationLowerer {
         });
     }
 
+    /**
+     * A binding whose `null` and `undefined` the program tells apart
+     * (`AbsenceTagStorageRequired`) keeps both in tagged storage: undefined
+     * until its initializer or an assignment defines it.
+     */
+    private emitAbsenceTaggedDeclaration(
+        declaration: ts.VariableDeclaration,
+        cppName: string,
+        sharedClosureStorage: boolean,
+    ): boolean {
+        if (
+            !this.context.absenceTags.has(declaration) ||
+            !ts.isIdentifier(declaration.name)
+        )
+            return false;
+        const typeSite = declaration.type ?? declaration.name;
+        const stored = this.context.dataTypes.fromStoredTsType(
+            declaration.type
+                ? this.context.checker.getTypeFromTypeNode(declaration.type)
+                : this.context.checker.getTypeAtLocation(declaration.name),
+            typeSite,
+        );
+        const type =
+            stored &&
+            this.context.dataTypes.absenceTaggedStorage(declaration, stored);
+        if (type?.kind !== "tagged") return false;
+        this.context.reachJsData();
+        const cppType = this.context.dataTypes.cppType(type);
+        const initializer = declaration.initializer
+            ? this.context.dataLowerer.compileForSink(
+                  declaration.initializer,
+                  type,
+              )
+            : undefined;
+        this.context.emit(
+            sharedClosureStorage
+                ? {
+                      kind: "declaration",
+                      type: "auto",
+                      name: cppName,
+                      initializer: `bbl::js::make_gc_shared<${cppType}>(${initializer ?? ""})`,
+                  }
+                : initializer !== undefined
+                  ? {
+                        kind: "declaration",
+                        type: cppType,
+                        name: cppName,
+                        initializer,
+                    }
+                  : {
+                        kind: "declaration",
+                        type: cppType,
+                        name: cppName,
+                        initializer: "",
+                        initialization: "default",
+                        attributes: "[[maybe_unused]] ",
+                    },
+        );
+        const bound = sharedClosureStorage ? `(*${cppName})` : cppName;
+        this.context.dataLowerer.registerLocal(bound, "owned");
+        this.context.bindings.defineVariable(declaration.name, {
+            ...this.context.dataLowerer.leafValue(bound, type),
+            ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
+        });
+        return true;
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -555,6 +623,14 @@ export class DeclarationLowerer {
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
+        if (
+            this.emitAbsenceTaggedDeclaration(
+                declaration,
+                cppName,
+                sharedClosureStorage,
+            )
+        )
+            return;
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||

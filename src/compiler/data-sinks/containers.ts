@@ -1,6 +1,11 @@
 import ts from "typescript";
 
-import { dataTypesEqual, doubleLiteral, type DataType } from "../data-types.js";
+import {
+    dataTypesEqual,
+    doubleLiteral,
+    isUndefinedDataType,
+    type DataType,
+} from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
 
 import {
@@ -11,6 +16,15 @@ import { unaliasedValue } from "./aliasing.js";
 import { ownEntries } from "../object-statics.js";
 import { argumentOnlyRead, arrayLentForCall } from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
+import {
+    absenceKind,
+    admitsUndefined,
+    storedAsReadonlyArray,
+} from "../type-facts.js";
+import {
+    requireAbsenceTag,
+    requireTupleArraySlot,
+} from "../absence-tag-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function expressionOptional(
@@ -58,6 +72,84 @@ function expressionMapOrSet(
     const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.cpp;
+}
+
+/**
+ * Into storage that tells `undefined` from `null` (`DataType<"tagged">`): a
+ * value that cannot be `undefined` is stored defined, the way its own sink
+ * stores it; any other value states which absent value it holds.
+ */
+function expressionTagged(
+    dataType: DataType<"tagged">,
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
+    const checker = lowerer.context.checker;
+    if (!admitsUndefined(checker.getTypeAtLocation(expression)))
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${lowerer.compileForSink(expression, dataType.inner)}, true}`;
+    const value = lowerer.context.compileValue(unwrapped);
+    const tagged = valueTagged(dataType, lowerer, value, expression);
+    if (tagged === undefined)
+        lowerer.context.fail(
+            expression,
+            `Expected a value storable as ${lowerer.context.dataTypes.cppType(dataType.inner)}, received ${value.kind}.`,
+        );
+    return tagged;
+}
+
+function valueTagged(
+    dataType: DataType<"tagged">,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
+    const context = lowerer.context;
+    const cppType = context.dataTypes.cppType(dataType);
+    const inner = dataType.inner;
+    if (value.kind === "json-null")
+        return value.cpp === "std::nullopt"
+            ? `${cppType}{}`
+            : `${cppType}{${context.dataTypes.absentValue(inner)}, true}`;
+    if (isUndefinedDataType(value.dataType)) {
+        context.emitDiscardedValue(value);
+        return `${cppType}{}`;
+    }
+    // Another tagged storage of this type is copied with its state.
+    if (
+        value.absenceTagStorageCpp !== undefined &&
+        value.absenceTagType !== undefined &&
+        dataTypesEqual(value.absenceTagType, dataType)
+    )
+        return value.absenceTagStorageCpp;
+    const absence = absenceKind(context.checker, value, node);
+    if (absence === "either") {
+        requireAbsenceTag(context.checker, context.absenceTags, node, value);
+        return context.fail(
+            node,
+            "A value that may be null or undefined is stored where they are told apart only once one of them is ruled out (narrow the type).",
+        );
+    }
+    const pinned =
+        typeof absence === "object" && ts.isExpression(node)
+            ? context.bindings.pinValueToTemporary(value, "tagged_source", node)
+            : value;
+    const {
+        slotFoundCpp: _found,
+        absenceTagStorageCpp: _storage,
+        absenceTagType: _type,
+        ...stored
+    } = pinned;
+    const converted = lowerer.compileKnownValueForSink(stored, inner, node);
+    if (typeof absence === "object")
+        return `${cppType}{${converted}, static_cast<bool>(${absence.slotFoundCpp})}`;
+    if (absence !== "undefined") return `${cppType}{${converted}, true}`;
+    // Only `undefined` is absent here: the value is defined when present.
+    const slot = context.allocateTemporaryCppName("tagged_slot");
+    const present = context.dataTypes.slotPresentCpp(inner, slot);
+    return present === undefined
+        ? `${cppType}{${converted}, true}`
+        : `([&]() { auto ${slot} = ${converted}; return ${cppType}{${slot}, ${present}}; }())`;
 }
 
 function expressionSpanOrTupleOrTable(
@@ -248,9 +340,9 @@ function valueVector(
 /**
  * A number array holding a tuple is the tuple itself, and can grow. The
  * tuple's fixed native storage cannot follow that growth, so it is adopted
- * only when nothing else holds the tuple or the callee it is handed to only
- * reads it; a tuple binding instead takes growable array storage, and any
- * other tuple refuses.
+ * only when nothing else holds the tuple, the callee it is handed to only
+ * reads it or the slot is typed as a readonly array; a tuple binding
+ * instead takes growable array storage, and any other tuple refuses.
  */
 function requireGrowableTuple(
     lowerer: DataSinkHost,
@@ -260,8 +352,13 @@ function requireGrowableTuple(
     const converted = lowerer.convertedExpression(node);
     const expression = converted && unwrapExpression(converted);
     if (unaliasedValue(lowerer, value, node)) return;
-    // A callee that only reads the array cannot grow or retain it.
-    if (expression && argumentOnlyRead(lowerer.context.checker, expression))
+    // A callee that only reads the array cannot grow or retain it, nor can
+    // a slot typed as a readonly array.
+    if (
+        expression &&
+        (argumentOnlyRead(lowerer.context.checker, expression) ||
+            storedAsReadonlyArray(lowerer.context.checker, converted))
+    )
         return;
     const declaration =
         (expression && ts.isIdentifier(expression)
@@ -273,6 +370,8 @@ function requireGrowableTuple(
         lowerer.context.bindings.variableDeclarationOf(value.cpp);
     if (declaration && !lowerer.context.dynamicBindings.has(declaration))
         throw new DynamicBindingStorageRequired(declaration, "array");
+    // A record property's tuples take growable array storage likewise.
+    requireTupleArraySlot(lowerer.context.tupleArraySlots, value);
     lowerer.context.fail(
         node,
         "A fixed-length tuple stored as a number array could grow through that array, which its native storage cannot follow; give it number[] storage or store a copy ([...tuple]).",
@@ -461,6 +560,7 @@ const identityContainerSink = {
 
 export const containersSinks: DataSinkOperations<
     | "optional"
+    | "tagged"
     | "vector"
     | "map"
     | "set"
@@ -483,6 +583,7 @@ export const containersSinks: DataSinkOperations<
         value: valueProduct,
     },
     optional: { expression: expressionOptional, value: valueOptional },
+    tagged: { expression: expressionTagged, value: valueTagged },
     vector: { expression: expressionVector, value: valueVector },
     map: { expression: expressionMapOrSet, value: valueMap },
     set: { expression: expressionMapOrSet, value: valueSetOrTable },

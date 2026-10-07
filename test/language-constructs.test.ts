@@ -6218,12 +6218,20 @@ check(
 `,
 );
 
-test("numeric tuples outside a binding refuse array parameters that may grow them", () => {
+check(
+    "record-tuple-fields-grown-through-array-parameters",
+    `
+    function push(out: number[]): void { out.push(1); }
+    interface Holder { lanes: [number, number, number] }
+    function make(): Holder { return { lanes: [0, 0, 0] }; }
+    const holder = make();
+    push(holder.lanes);
+    if (holder.lanes.length !== 4 || holder.lanes[3] !== 1) throw new Error("grown field");
+`,
+);
+
+test("numeric tuple parameters refuse array parameters that may grow them", () => {
     for (const source of [
-        `interface Holder { lanes: [number, number, number] }
-        function make(): Holder { return { lanes: [0, 0, 0] }; }
-        const holder = make();
-        push(holder.lanes);`,
         `function frame(t: [number, number, number]): void { push(t); }
         const frames: Array<typeof frame> = [frame];
         const lanes: [number, number, number] = [0, 0, 0];
@@ -7060,6 +7068,69 @@ function checkInRealm(name: string, source: string): void {
 }
 
 checkInRealm(
+    "async-returns-of-a-promise-or-a-record-branch",
+    `
+    type Result = { status: "loaded"; text: string } | { status: "invalid" } | { status: "cancelled" } | { status: "error" };
+    async function parse(text: string): Promise<Result> {
+        await Promise.resolve();
+        return text.length > 0 ? { status: "loaded", text } : { status: "invalid" };
+    }
+    interface Picked { name: string; }
+    async function choose(name: string): Promise<Picked | null> {
+        await Promise.resolve();
+        if (name === "-") return null;
+        return { name };
+    }
+    async function pick(name: string): Promise<Result> {
+        try {
+            const file = await choose(name);
+            return file ? parse(file.name) : { status: "cancelled" };
+        } catch {
+            return { status: "error" };
+        }
+    }
+    async function direct(name: string): Promise<Result> {
+        return name === "" ? { status: "cancelled" } : parse(name);
+    }
+    void (async () => {
+        const seen = [await pick("a"), await pick("-"), await pick(""), await direct(""), await direct("b")].map((r) => r.status);
+        if (seen.join(",") !== "loaded,cancelled,invalid,cancelled,loaded") throw new Error(seen.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
+    "awaited-nullish-fallbacks-run-only-when-absent",
+    `
+    const order: string[] = [];
+    async function load(n: number): Promise<number> {
+        order.push("load" + n);
+        await Promise.resolve();
+        return n * 2;
+    }
+    const sizes = new Map<string, number>([["a", 1]]);
+    async function count(key: string): Promise<number> {
+        order.push("count:" + key);
+        const value = sizes.get(key) ?? (await load(5));
+        order.push("got" + value);
+        return value;
+    }
+    const labels = new Map<string, string>([["a", "x"]]);
+    async function label(key: string): Promise<string> {
+        return labels.get(key) ?? String(await load(1));
+    }
+    void (async () => {
+        const counted = [await count("a"), await count("b")];
+        const labelled = [await label("a"), await label("b")];
+        if (counted.join(",") !== "1,10" || labelled.join(",") !== "x,2") throw new Error(counted.join(",") + labelled.join(","));
+        if (order.join(",") !== "count:a,got1,count:b,load5,got10,load1") throw new Error(order.join(","));
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
     "async-callees-read-records-past-the-call",
     `
     interface Wide { x: number; y: number; tag: string }
@@ -7575,6 +7646,352 @@ check(
     pending = { x: 2 };
     changed = pending !== null && pending !== undefined;
     if (!changed) throw new Error("present pending");
+`,
+);
+
+check(
+    "absence-tagged-locals-and-inlined-parameters",
+    `
+    interface Region { minX: number; maxX: number; }
+    const gate = new Float32Array([0, 1]);
+    let pending: Region | null | undefined;
+    const log: string[] = [];
+    const queue = (dirty: Region | null | undefined): void => {
+        if (dirty === undefined || pending === null) return;
+        pending = dirty === null ? null : { minX: Math.min(pending?.minX ?? dirty.minX, dirty.minX), maxX: dirty.maxX };
+    };
+    const consume = (): string => {
+        const taken = pending;
+        pending = undefined;
+        return taken === undefined ? "none" : taken === null ? "full" : String(taken.minX);
+    };
+    queue(undefined);
+    log.push(consume());
+    queue({ minX: 3, maxX: 4 });
+    queue({ minX: 1, maxX: 5 });
+    log.push(consume());
+    queue(null);
+    queue({ minX: 7, maxX: 8 });
+    log.push(consume());
+    log.push(consume());
+    let picked: Region | null | undefined = gate[1]! > 0 ? null : undefined;
+    log.push(String(picked === null), typeof picked);
+    picked = gate[0]! > 0 ? null : undefined;
+    log.push(String(picked === null), typeof picked, String(picked === undefined));
+    picked = { minX: 9, maxX: 9 };
+    const alias = picked;
+    alias.minX = 10;
+    log.push(String(picked.minX), String(alias === picked));
+    if (log.join(",") !== "none,1,full,none,true,object,false,undefined,true,10,true") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "absence-tagged-stored-parameters-and-defaults",
+    `
+    interface Region { minX: number; }
+    interface Field { rebuild(base?: Region | null): string; }
+    function createField(): Field {
+        const describe = (dirty: Region | null | undefined): string =>
+            dirty === undefined ? "none" : dirty === null ? "full" : "r" + dirty.minX;
+        const rebuild = (base?: Region | null): string => describe(base);
+        return { rebuild };
+    }
+    const field = createField();
+    const results = [field.rebuild(), field.rebuild(null), field.rebuild({ minX: 2 }), field.rebuild(undefined)];
+    if (results.join(",") !== "none,full,r2,none") throw new Error(results.join(","));
+    let made = 0;
+    interface Ticket { id: number; }
+    function make(studio: boolean): Ticket | null { made++; return studio ? null : { id: made }; }
+    function kickoff(studio: boolean, ready: Ticket | null = make(studio)): string {
+        return ready === null ? "null" : "t" + ready.id;
+    }
+    const roots: Array<typeof kickoff> = [kickoff];
+    const outcomes = [roots[0]!(false), roots[0]!(false, null), roots[0]!(true), roots[0]!(true, { id: 7 })];
+    if (outcomes.join(",") !== "t1,null,null,t7" || made !== 2) throw new Error(outcomes.join(",") + made);
+`,
+);
+
+check(
+    "absence-tagged-record-fields",
+    `
+    interface Mask { cells: number; }
+    interface Reach { ok(x: number): boolean; }
+    interface Options { mask?: Mask | null; reach?: Reach | null; }
+    const describe = (opts: Options): string =>
+        opts.mask === undefined ? "build" : opts.mask === null ? "none" : "m" + opts.mask.cells;
+    const step = (opts: Options, x: number): string =>
+        opts.reach === null ? "pending" : opts.reach === undefined ? "direct" : opts.reach.ok(x) ? "yes" : "no";
+    const all: Options[] = [{}, { mask: null }, { mask: { cells: 3 } }, { mask: undefined, reach: null }, { reach: { ok: (x) => x > 1 } }];
+    const seen = all.map((opts) => describe(opts) + ":" + step(opts, 2));
+    if (seen.join(",") !== "build:direct,none:direct,m3:direct,build:pending,build:yes") throw new Error(seen.join(","));
+    const changed = all[0]!;
+    changed.mask = null;
+    changed.reach = { ok: (x) => x > 5 };
+    if (describe(changed) !== "none" || step(changed, 2) !== "no") throw new Error("field writes");
+    changed.mask = undefined;
+    if (describe(changed) !== "build" || step(changed, 9) !== "yes") throw new Error("undefined field");
+`,
+);
+
+check(
+    "absence-tagged-shared-function-parameters",
+    `
+    interface Reach { ok(x: number): boolean; }
+    interface Step { reach?: Reach | null; x: number; }
+    const log: string[] = [];
+    function find(x: number, reach: Reach | null | undefined): string {
+        if (reach === null) return "pending";
+        if (reach !== undefined && !reach.ok(x)) return "blocked";
+        return "free";
+    }
+    function select(step: Step): string {
+        if (step.reach === null) return "nav";
+        return find(step.x, step.reach);
+    }
+    function selectAll(steps: Step[]): void {
+        for (const step of steps) log.push(select(step), find(step.x * 2, step.reach));
+    }
+    const roots: Array<typeof selectAll> = [selectAll];
+    roots[0]!([{ x: 1 }, { x: 2, reach: null }, { x: 3, reach: { ok: (x) => x > 4 } }]);
+    if (log.join(",") !== "free,free,nav,pending,blocked,free") throw new Error(log.join(","));
+`,
+);
+
+check(
+    "absence-tagged-option-records-through-stored-signatures",
+    `
+    interface Region { minX: number; }
+    interface Pipeline {
+        refreshOnly(baseDirty?: Region | null): string;
+        refreshAndDecor(opts?: { decorations?: boolean; baseDirty?: Region | null }): string;
+    }
+    function createPipeline(): Pipeline {
+        let pending: Region | null | undefined;
+        const queue = (dirty: Region | null | undefined): void => {
+            if (dirty === undefined || pending === null) return;
+            pending = dirty;
+        };
+        const refreshOnly = (baseDirty?: Region | null): string => {
+            queue(baseDirty);
+            const taken = pending;
+            pending = undefined;
+            return taken === undefined ? "none" : taken === null ? "full" : "r" + taken.minX;
+        };
+        const refreshAndDecor = (opts: { decorations?: boolean; baseDirty?: Region | null } = {}): string => {
+            const result = refreshOnly(opts.baseDirty);
+            return opts.decorations !== false ? result + "+decor" : result;
+        };
+        const kick = (): string => refreshAndDecor({ baseDirty: null });
+        return { refreshOnly, refreshAndDecor: (opts) => (opts ? refreshAndDecor(opts) : kick()) };
+    }
+    const roots: Array<typeof createPipeline> = [createPipeline];
+    const pipeline = roots[0]!();
+    const seen = [pipeline.refreshOnly(), pipeline.refreshAndDecor({ baseDirty: { minX: 3 } }), pipeline.refreshAndDecor(), pipeline.refreshAndDecor({ decorations: false })];
+    if (seen.join(",") !== "none,r3+decor,full+decor,none") throw new Error(seen.join(","));
+`,
+);
+
+check(
+    "tuple-spreads-into-class-method-parameters",
+    `
+    type Pose = readonly [dx: number, dy: number, dz: number, yaw?: number, pivotX?: number, pivotZ?: number];
+    type Shift = [number, number, number, number, number, number];
+    class Placement {
+        dx = 0; dy = 0; dz = 0; yaw = 0; pivotX = 0; pivotZ = 0;
+        set(dx: number, dy: number, dz: number, yaw = 0, pivotX = 0, pivotZ = 0): boolean {
+            if (dx === this.dx && dy === this.dy && dz === this.dz && yaw === this.yaw && pivotX === this.pivotX && pivotZ === this.pivotZ) return false;
+            this.dx = dx; this.dy = dy; this.dz = dz; this.yaw = yaw; this.pivotX = pivotX; this.pivotZ = pivotZ;
+            return true;
+        }
+    }
+    const gate = new Float32Array([1, 0]);
+    const current = new Placement();
+    const base = new Placement();
+    const shift: Shift = [1, 2, 3, 4, 5, 6];
+    const zero: Shift = [0, 0, 0, 0, 0, 0];
+    const bases = new Map<number, Shift>();
+    if (!current.set(...shift) || current.set(...shift)) throw new Error("fixed lanes");
+    base.set(...(bases.get(1) ?? zero));
+    bases.set(1, [9, 8, 7, 6, 5, 4]);
+    base.set(...(bases.get(1) ?? zero));
+    const offset = (wide: boolean): Pose => (wide ? shift : [7, 8, 9]);
+    const render = new Placement();
+    render.set(...offset(gate[1]! > 0));
+    if (current.yaw !== 4 || base.pivotZ !== 4 || render.dz !== 9 || render.yaw !== 0 || render.pivotZ !== 0) throw new Error("spread lanes");
+    render.set(...offset(gate[0]! > 0));
+    if (render.pivotZ !== 6 || render.yaw !== 4) throw new Error("present optional lanes");
+    let extra = 0;
+    const lanes = (): Shift => { extra++; return shift; };
+    render.set(1, ...lanes());
+    if (extra !== 1 || render.dx !== 1 || render.dy !== 1 || render.pivotZ !== 5) throw new Error("leading argument then lanes");
+`,
+);
+
+check(
+    "optional-receivers-typed-present-and-runtime-tuple-loops",
+    `
+    interface Control { u: number; y?: number; }
+    interface Curve { controls?: readonly { u?: unknown; y?: unknown }[]; }
+    const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    function sanitize(value: unknown): Control[] {
+        if (!Array.isArray(value)) return [];
+        const parsed: Control[] = [];
+        for (let index = 0; index < value.length; index++) {
+            const raw = value[index] as { u?: unknown; y?: unknown };
+            const u = finite(raw.u);
+            if (u === undefined) continue;
+            const y = finite(raw.y);
+            parsed.push(y === undefined ? { u } : { u, y });
+        }
+        return parsed;
+    }
+    const normalize = (curve: Curve): number => sanitize(curve.controls).length;
+    const curves: Curve[] = [{ controls: [{ u: 1, y: 2 }, { u: "x" }, { u: 3 }] }, {}];
+    if (curves.map(normalize).join(",") !== "2,0") throw new Error("narrowed optional receiver");
+    const counts = (rows: readonly { readonly id?: number }[] | undefined): Map<number, number> => {
+        const out = new Map<number, number>();
+        if (!Array.isArray(rows)) return out;
+        for (const row of rows) if (typeof row?.id === "number") out.set(row.id, (out.get(row.id) ?? 0) + 1);
+        return out;
+    };
+    const world: { props?: readonly { readonly id?: number }[] }[] = [{ props: [{ id: 2 }, {}, { id: 2 }] }, {}];
+    if (world.map((each) => counts(each.props).get(2) ?? 0).join(",") !== "2,0") throw new Error("narrowed optional iteration");
+    function endInset(width: number, heights: readonly [bottom: number, top: number] = [-0.5, 0]): number[] {
+        return [-width / 2, width / 2].map((across) => {
+            let inset = 0;
+            for (const height of heights) inset = Math.max(inset, across * height);
+            return inset;
+        });
+    }
+    const insets: Array<typeof endInset> = [endInset];
+    if (insets[0]!(4).join(",") !== "1,0" || insets[0]!(2, [2, 3]).join(",") !== "0,3") throw new Error("tuple loop");
+`,
+);
+
+check(
+    "record-tuple-fields-entering-number-arrays-take-array-storage",
+    `
+    type Vec4 = [number, number, number, number];
+    type Vec3 = [number, number, number];
+    interface Params { hs: number; bump: number; sunDir: Vec3; }
+    function pack(p: Params): { uParams0: Vec4; uSunDir: Vec3 } {
+        return { uParams0: [p.hs, p.bump, 0, 1], uSunDir: p.sunDir };
+    }
+    const uploaded: string[] = [];
+    const kept: number[][] = [];
+    function upload(name: string, value: number | number[]): void {
+        if (typeof value !== "number") kept.push(value);
+        uploaded.push(name + ":" + (typeof value === "number" ? value : value.join("/")));
+    }
+    function setParameters(params: Params, scale?: number): void {
+        const packed = pack(params);
+        for (const [name, value] of Object.entries(packed)) upload(name, value);
+        upload("uScale", scale ?? 1);
+    }
+    const roots: Array<typeof setParameters> = [setParameters];
+    const params: Params = { hs: 2, bump: 3, sunDir: [0, 1, 0] };
+    roots[0]!(params);
+    if (uploaded.join(",") !== "uParams0:2/3/0/1,uSunDir:0/1/0,uScale:1") throw new Error(uploaded.join(","));
+    kept[1]!.push(7);
+    if (params.sunDir.length !== 4 || kept[1] !== params.sunDir) throw new Error("one growable array");
+`,
+);
+
+test("absence tags, spread lanes and tuple storage refuse what no storage represents", () => {
+    for (const [source, message] of [
+        [
+            "interface R { x: number } const gate = new Float32Array([1]); function pick(i: number): R | null | undefined { return i > 0 ? { x: 1 } : i < 0 ? null : undefined; } const roots: Array<typeof pick> = [pick]; let p: R | null | undefined = roots[0]!(gate[0]!); if (p === null) throw new Error('null');",
+            /stored where they are told apart only once one of them is ruled out/,
+        ],
+        [
+            "class Placement { x = 0; set(a: number, b = 0): void { this.x = a + b; } } const numbers: number[] = [1, 2]; const placement = new Placement(); placement.set(...numbers);",
+            /A spread argument of a class method expands a tuple of a fixed length/,
+        ],
+        [
+            "function grow(t: [number, number]): number { const a: number[] = t; a.push(1); return a.length; } const roots: Array<typeof grow> = [grow]; if (roots[0]!([1, 2]) !== 3) throw new Error('grow');",
+            /A fixed-length tuple stored as a number array could grow through that array/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "nullish-fallbacks-that-never-complete-or-are-null",
+    `
+    interface Geometry { name: string; size: number; }
+    const names = ["a", "b"] as const;
+    function failMissing(name: string): never { throw new Error("missing " + name); }
+    function load(bundle: Map<string, Geometry>): Geometry[] {
+        return names.map((name) => bundle.get(name) ?? failMissing(name));
+    }
+    const bundle = new Map<string, Geometry>([["a", { name: "a", size: 1 }], ["b", { name: "b", size: 2 }]]);
+    const loaded = load(bundle);
+    if (loaded[1]!.size !== 2 || loaded[0] !== bundle.get("a")) throw new Error("present results");
+    let threw = "";
+    try { load(new Map([["a", { name: "a", size: 1 }]])); } catch (error) { threw = (error as Error).message; }
+    if (threw !== "missing b") throw new Error("never fallback " + threw);
+    const counts = new Map<string, number>([["x", 0]]);
+    const zero = counts.get("x") ?? failMissing("x");
+    if (zero !== 0) throw new Error("falsy present number");
+    interface Controls { pip?: () => { reading: string } | null; }
+    const read = (controls: Controls): string => {
+        const pip = controls.pip?.() ?? null;
+        return String(pip === null) + String(pip === undefined);
+    };
+    const controls: Controls[] = [{}, { pip: () => null }, { pip: () => ({ reading: "rain" }) }];
+    const roots: Array<typeof read> = [read];
+    if (controls.map((each) => roots[0]!(each)).join(",") !== "truefalse,truefalse,falsefalse") throw new Error("null fallback");
+    const slots: (Geometry | null)[] = [null];
+    const missing = slots[3] ?? null;
+    if (missing !== null || (slots[0] ?? undefined) !== undefined) throw new Error("fallback absence");
+`,
+);
+
+check(
+    "tuple-lanes-and-readonly-number-array-slots",
+    `
+    type Kind = "workshop" | "castle";
+    interface Facts { run: number; }
+    interface Home { id: number; workshop: Facts | null; castle: Facts | null; }
+    const rows: string[] = [];
+    function collect(list: readonly Home[]): void {
+        for (const home of list) {
+            const retained: readonly (readonly [Kind, number | null])[] = [
+                ["workshop", home.workshop?.run ?? null],
+                ["castle", home.castle?.run ?? null],
+            ];
+            for (const [kind, run] of retained) {
+                if (run === null || !Number.isSafeInteger(run) || run < 0) continue;
+                rows.push(kind + run);
+            }
+        }
+    }
+    collect([{ id: 1, workshop: { run: 2 }, castle: null }, { id: 2, workshop: null, castle: { run: -1 } }]);
+    if (rows.join(",") !== "workshop2") throw new Error(rows.join(","));
+    const ranked = [{ run: 2, settled: false }, { run: 1, settled: false }, { run: 2, settled: true }];
+    ranked.sort((a, b) => a.run - b.run || Number(b.settled) - Number(a.settled));
+    if (ranked.map((row) => row.run + String(row.settled)).join(",") !== "1false,2true,2false") throw new Error("Number(boolean)");
+    type Vec3 = readonly [number, number, number];
+    function aim(position: Vec3, lookAt: Vec3 | null = null): readonly number[] {
+        let target: readonly number[];
+        if (lookAt) {
+            target = lookAt;
+        } else {
+            target = [position[0] + 1, position[1], position[2]];
+        }
+        return target;
+    }
+    const fixed: Vec3 = [9, 9, 9];
+    if (aim([1, 2, 3])[0] !== 2 || aim([1, 2, 3], fixed) !== fixed || aim([1, 2, 3], fixed).length !== 3) throw new Error("readonly target");
+    interface Decl { name: string; value?: number | readonly number[]; }
+    function decls(cloud: readonly [number, number, number, number] = [0, 0, 0, 0]): Decl[] {
+        return [{ name: "a", value: 1 }, { name: "cloud", value: cloud }];
+    }
+    const cloud: [number, number, number, number] = [1, 2, 3, 4];
+    const made = decls(cloud);
+    cloud[0] = 5;
+    if ((made[1]!.value as readonly number[])[0] !== 5 || (decls()[1]!.value as readonly number[])[3] !== 0) throw new Error("readonly field");
 `,
 );
 
@@ -8896,15 +9313,19 @@ check(
     if (holder.points.length !== 2 || (points[1] as Wheel).label !== "rear") throw new Error("one array, one record");
 `,
 );
-test("tuples stored as growable number arrays need growable storage", () => {
-    assert.throws(
-        () =>
-            compileSource(`interface H { pos: [number, number] }
-            const h: H = { pos: [1, 2] };
-            const store: number[][] = [];
-            store.push(h.pos);`),
-        /fixed-length tuple stored as a number array could grow through that array/,
-    );
+check(
+    "record-tuple-fields-stored-in-number-array-containers",
+    `
+    interface H { pos: [number, number] }
+    const h: H = { pos: [1, 2] };
+    const store: number[][] = [];
+    store.push(h.pos);
+    store[0]!.push(3);
+    if (h.pos.length !== 3 || store[0] !== h.pos) throw new Error("one growable array");
+`,
+);
+
+test("tuple parameters stored as growable number arrays need growable storage", () => {
     assert.throws(
         () =>
             compileSource(`const store: number[][] = [];

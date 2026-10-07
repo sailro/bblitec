@@ -26,6 +26,11 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
 import { nullability, typeCanCarryReference } from "./type-facts.js";
+import {
+    requireAbsenceTag,
+    requireDeclarationAbsenceTag,
+    storedSignatureParameter,
+} from "./absence-tag-storage.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import {
     functionBodyPrologue,
@@ -991,6 +996,7 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "absenceTags"
             | "classLowerer"
             | "callbacks"
             | "evaluationOrder"
@@ -4241,6 +4247,7 @@ export class UserFunctionLowerer {
                 owner,
                 identityCpp,
                 receiver,
+                expression,
             );
         } finally {
             this.loweringStoredDataFunctions.delete(declaration);
@@ -4254,7 +4261,9 @@ export class UserFunctionLowerer {
         owner?: Value,
         identityCpp?: string,
         receiver?: Value,
+        site?: ts.Node,
     ): string {
+        const signatureType = dataType;
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
             dataType.result &&
@@ -4523,6 +4532,25 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
+                        // A parameter that tells null from undefined needs
+                        // the signature its callers pass through to as well.
+                        if (
+                            type.kind !== "tagged" &&
+                            context.absenceTags.has(parameter.declaration)
+                        )
+                            requireDeclarationAbsenceTag(
+                                context.absenceTags,
+                                context.dataTypes.signatureParameterDeclaration(
+                                    signatureType,
+                                    runtimeIndex - 1,
+                                ) ??
+                                    (site &&
+                                        storedSignatureParameter(
+                                            this.checker,
+                                            site,
+                                            ir.parameters.indexOf(parameter),
+                                        )),
+                            );
                         // Stored callbacks receive owned parameters by value.
                         // Their separate source bindings can borrow that stable
                         // storage until a source assignment requires a copy.
@@ -4917,21 +4945,65 @@ export class UserFunctionLowerer {
             this.bindArgumentsObject(context, ir, arguments_, callNode) ??
             arguments_;
         ir.parameters.forEach((parameter, index) => {
+            const source = ts.isCallExpression(callNode)
+                ? callNode.arguments[index]
+                : undefined;
             const value = this.parameterValue(
                 context,
                 parameter,
                 values[index],
-                ts.isCallExpression(callNode)
-                    ? callNode.arguments[index]
-                    : undefined,
+                source,
             );
             this.bindSpecializedParameter(
                 context,
                 ir.declaration,
                 parameter,
-                value,
+                this.absenceTaggedParameter(context, parameter, value, source),
             );
         });
+    }
+
+    /**
+     * An inlined parameter whose `null` and `undefined` the body tells apart
+     * holds its argument in tagged storage, unless the argument already
+     * states which absent value it is.
+     */
+    private absenceTaggedParameter(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+        source: ts.Expression | undefined,
+    ): Value {
+        if (
+            !context.absenceTags.has(parameter.declaration) ||
+            value.slotFoundCpp !== undefined ||
+            value.kind === "json-null"
+        )
+            return value;
+        const stored = context.dataTypes.fromStoredTsType(
+            parameter.type,
+            parameter.declaration,
+        );
+        const type =
+            stored &&
+            context.dataTypes.absenceTaggedStorage(
+                parameter.declaration,
+                stored,
+            );
+        if (type?.kind !== "tagged") return value;
+        const name = context.allocateTemporaryCppName("tagged_argument");
+        context.emit({
+            kind: "declaration",
+            type: context.dataTypes.cppType(type),
+            name,
+            initializer: context.dataLowerer.compileKnownValueForSink(
+                value,
+                type,
+                source ?? parameter.declaration,
+            ),
+        });
+        context.registerNativeConstBinding(name);
+        return context.dataValue(name, type);
     }
 
     /** The implicit arguments owner is shared by native storage and finite-call admission. */
@@ -6336,6 +6408,9 @@ export class UserFunctionLowerer {
             isGlobalUndefined(this.checker, initializer)
         )
             return argument;
+        // An argument that states whether it is defined takes the default
+        // only when it is not: a `null` argument is the parameter's value.
+        const definedCpp = absent.null ? argument.slotFoundCpp : undefined;
         if (absent.null) {
             if (!mayBeUndefined) return argument;
             // A default of `null` gives an undefined argument the value a
@@ -6344,12 +6419,29 @@ export class UserFunctionLowerer {
                 unwrapExpression(initializer).kind === ts.SyntaxKind.NullKeyword
             )
                 return argument;
-            return context.fail(
-                source ?? parameter.declaration,
-                "A default parameter requires a distinct undefined state when its argument can also be null.",
-            );
+            if (definedCpp === undefined) {
+                if (source)
+                    requireAbsenceTag(
+                        this.checker,
+                        context.absenceTags,
+                        source,
+                        argument,
+                    );
+                else
+                    requireDeclarationAbsenceTag(
+                        context.absenceTags,
+                        parameter.declaration,
+                    );
+                return context.fail(
+                    source ?? parameter.declaration,
+                    "A default parameter requires a distinct undefined state when its argument can also be null.",
+                );
+            }
         }
-        const type = storage.kind === "optional" ? storage.inner : storage;
+        const type =
+            definedCpp !== undefined || storage.kind !== "optional"
+                ? storage
+                : storage.inner;
         const input = context.allocateTemporaryCppName("default_argument");
         context.emit({
             kind: "declaration",
@@ -6369,10 +6461,14 @@ export class UserFunctionLowerer {
         const result = context.allocateTemporaryCppName("default_value");
         const cppType = context.dataTypes.cppType(type);
         const present =
-            storage.kind === "optional"
+            definedCpp ??
+            (storage.kind === "optional"
                 ? optionalPresentCpp(input)
-                : `static_cast<bool>(${input})`;
-        const selected = storage.kind === "optional" ? `*${input}` : input;
+                : `static_cast<bool>(${input})`);
+        const selected =
+            definedCpp === undefined && storage.kind === "optional"
+                ? `*${input}`
+                : input;
         context.emit({
             kind: "declaration",
             // The selected binding is stable, but object and collection

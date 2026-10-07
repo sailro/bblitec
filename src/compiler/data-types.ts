@@ -388,6 +388,8 @@ export interface DataStructField {
     accessor?: StructFieldAccessor;
     /** The finite record type supplied as `this` when the slot is read. */
     accessorReceiver?: string;
+    /** The source property declarations the slot stores, for absence-tag demands. */
+    declarations?: readonly ts.Declaration[];
 }
 
 /** The accessors an accessor-backed record field holds. */
@@ -790,11 +792,17 @@ function sanitizeIdentifier(name: string): string {
  * is absent, unless the storage also holds a `null` the property admits.
  * Dynamic storage keeps `undefined` apart from `null`.
  */
+/** A storage as the value it holds, whichever absent value tells apart. */
+function withoutAbsenceTag(type: DataType | undefined): DataType | undefined {
+    return type?.kind === "tagged" ? type.inner : type;
+}
+
 function storedPresence(
     type: DataType,
     admitsNull: boolean,
 ): OwnPropertyPresence {
-    if (type.kind === "json") return "stored";
+    // Tagged storage is undefined exactly when the property holds nothing.
+    if (type.kind === "json" || type.kind === "tagged") return "stored";
     if (
         type.kind !== "optional" &&
         type.kind !== "struct" &&
@@ -1032,7 +1040,31 @@ export class DataTypeRegistry {
         public readonly classHierarchy: ClassHierarchy,
         private readonly asynchronous = false,
         private readonly genericFunctionDemands = new GenericFunctionStorage(),
+        /** Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
+        private readonly absenceTags: ReadonlySet<ts.Declaration> = new Set(),
+        /** Record properties storing their numeric tuples as growable arrays. */
+        private readonly tupleArraySlots: ReadonlySet<ts.Declaration> = new Set(),
     ) {}
+
+    /**
+     * `type` as the storage of `declaration`: tagged when the program
+     * observes which absent value it holds (`AbsenceTagStorageRequired`).
+     * Dynamic documents and storage without an absent state already answer.
+     */
+    public absenceTaggedStorage(
+        declaration: ts.Declaration | undefined,
+        type: DataType,
+    ): DataType {
+        if (
+            declaration === undefined ||
+            !this.absenceTags.has(declaration) ||
+            type.kind === "json" ||
+            type.kind === "tagged" ||
+            this.slotPresentCpp(type, "slot") === undefined
+        )
+            return type;
+        return { kind: "tagged", inner: type };
+    }
 
     /** @unjournaled Immutable checked source inventory shared across emission replays. */
     private arraySources?: FiniteArraySources;
@@ -1532,6 +1564,11 @@ export class DataTypeRegistry {
                     ? inner
                     : { ...dataType, inner };
             }
+            case "tagged":
+                return {
+                    kind: "tagged",
+                    inner: this.markStoredObjectReferences(dataType.inner),
+                };
             case "vector":
             case "span": {
                 const element = this.markStoredObjectReferences(
@@ -1987,6 +2024,7 @@ export class DataTypeRegistry {
         if (inner.kind === "struct")
             return this.markStoredObjectReferences(inner);
         return inner.kind === "optional" ||
+            inner.kind === "tagged" ||
             inner.kind === "json" ||
             inner.kind === "function"
             ? inner
@@ -2023,6 +2061,7 @@ export class DataTypeRegistry {
      */
     public slotPresentCpp(type: DataType, cpp: string): string | undefined {
         if (type.kind === "optional") return optionalPresentCpp(cpp);
+        if (type.kind === "tagged") return `${cpp}.defined()`;
         if (type.kind === "json") return `!${cpp}.is_undefined()`;
         return type.kind === "function" ||
             (type.kind === "struct" && this.isReferenceStruct(type.name))
@@ -2769,7 +2808,12 @@ export class DataTypeRegistry {
                 const owned = markIdentityFunctions(
                     this.ownReadonlyArray(mapped, parameterType),
                 );
-                return [defaulted ? this.nullableType(owned, true) : owned];
+                return [
+                    this.absenceTaggedStorage(
+                        declaration,
+                        defaulted ? this.nullableType(owned, true) : owned,
+                    ),
+                ];
             });
         if (parameters.some((parameter) => parameter === undefined)) {
             return undefined;
@@ -2799,7 +2843,7 @@ export class DataTypeRegistry {
         if (resultType && !result) {
             return undefined;
         }
-        return {
+        const mapped: DataType<"function"> = {
             kind: "function",
             ...(restParameter === undefined ? {} : { restParameter }),
             parameters: (parameters as DataType[]).map((parameter) =>
@@ -2815,6 +2859,54 @@ export class DataTypeRegistry {
             ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
             ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
         };
+        // A parameter that can be passed both absent values names its
+        // declaration, which a body telling them apart demands tagged.
+        const sites = signature
+            .getParameters()
+            .filter((_, index) => !erasedParameters.includes(index))
+            .map((parameter) => {
+                const declaration =
+                    parameter.valueDeclaration ?? parameter.declarations?.[0];
+                if (!declaration || !ts.isParameter(declaration)) return "";
+                const absent = nullability(
+                    this.checker.getTypeOfSymbolAtLocation(
+                        parameter,
+                        declaration,
+                    ),
+                );
+                if (
+                    !absent.null ||
+                    (!absent.undefined && !declaration.initializer)
+                )
+                    return "";
+                const site = `${declaration.getSourceFile().fileName}:${declaration.pos}`;
+                this.parameterSites.set(site, declaration);
+                return site;
+            });
+        return sites.some((site) => site !== "")
+            ? { ...mapped, parameterSites: sites }
+            : mapped;
+    }
+
+    /**
+     * @unjournaled Declarations are program facts; the sites function types
+     * name them by survive every replay.
+     */
+    private readonly parameterSites = new Map<
+        string,
+        ts.ParameterDeclaration
+    >();
+
+    /**
+     * The source parameter declaration behind native parameter `index` of a
+     * signature this registry mapped (`parameterSites`).
+     */
+    public signatureParameterDeclaration(
+        type: DataType<"function">,
+        index: number,
+    ): ts.ParameterDeclaration | undefined {
+        const site = type.parameterSites?.[index];
+        return site ? this.parameterSites.get(site) : undefined;
     }
 
     private fromGenericFunction(
@@ -4359,8 +4451,12 @@ export class DataTypeRegistry {
                         (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
                     0,
             )
-        )
-            return this.fromTsType(type, node);
+        ) {
+            const mapped = this.fromTsType(type, node);
+            return mapped && property?.declarations?.length === 1
+                ? this.absenceTaggedStorage(property.declarations[0], mapped)
+                : mapped;
+        }
         if (property && (property.flags & ts.SymbolFlags.Optional) !== 0)
             return this.nullableType({ kind: "undefined" }, true);
         return { kind: "undefined" };
@@ -4531,10 +4627,13 @@ export class DataTypeRegistry {
                       // mouse and the dragger -- is a compile-time record, and giving
                       // each of those a runtime object because a field names them would
                       // turn every one of them into a shared allocation nothing shares.
-                      this.fromRecordFieldType(
-                          propertyType,
-                          declaration ?? node,
-                          property,
+                      // Its tagged absence is the layout's, decided below.
+                      withoutAbsenceTag(
+                          this.fromRecordFieldType(
+                              propertyType,
+                              declaration ?? node,
+                              property,
+                          ),
                       ),
             };
         };
@@ -4594,12 +4693,35 @@ export class DataTypeRegistry {
                       : nullable
                         ? this.nullableType(stored)
                         : stored;
-            const mapped: DataType = this.markStoredObjectReferences(
+            const declarations = declared.flatMap(
+                ({ symbol }) => symbol.declarations ?? [],
+            );
+            // A property whose tuples a number array may grow stores arrays.
+            const growable: DataType =
+                joined.kind === "tuple" &&
+                declarations.some((declaration) =>
+                    this.tupleArraySlots.has(declaration),
+                )
+                    ? { kind: "vector", element: { kind: "number" } }
+                    : joined;
+            const untagged: DataType = this.markStoredObjectReferences(
                 markIdentityFunctions(
                     optional
-                        ? this.nullableType(joined, joined.kind === "undefined")
-                        : joined,
+                        ? this.nullableType(
+                              growable,
+                              growable.kind === "undefined",
+                          )
+                        : growable,
                 ),
+            );
+            // One layout stores the property once: tagged when a program
+            // tells its absent values apart through any member declaring it.
+            const taggedDeclaration = declarations.find((declaration) =>
+                this.absenceTags.has(declaration),
+            );
+            const mapped = this.absenceTaggedStorage(
+                taggedDeclaration,
+                untagged,
             );
             const accessor = this.propertyAccessor(property, view || proxy);
             if (
@@ -4619,6 +4741,7 @@ export class DataTypeRegistry {
                     isSymbolPropertyKey(name) ? symbolFieldName(name) : name,
                 ),
                 type: mapped,
+                declarations,
                 ...(accessor ? { accessor } : {}),
                 ...(proxy ? { accessorReceiver: provisionalName } : {}),
                 ...(declared.every(({ symbol }) => propertyIsReadOnly(symbol))

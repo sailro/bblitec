@@ -18,6 +18,7 @@ import {
     classTagMember,
     dataTypesEqual,
     passesByReference,
+    tupleComponents,
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
@@ -1794,6 +1795,170 @@ export class ClassLowerer {
     }
 
     /**
+     * A method call's arguments with each spread tuple expanded into the
+     * lanes it supplies, one per parameter they reach (JavaScript reads
+     * and ignores the rest). `expressions` names each position's source
+     * expression; `missing` marks lanes a shorter tuple of the type may not
+     * hold, which are `undefined` there so a default applies.
+     */
+    private classCallArguments(
+        method: ts.MethodDeclaration,
+        argumentList: readonly ts.Expression[],
+    ): {
+        expressions: readonly ts.Expression[];
+        values: Value[];
+        missing: ReadonlySet<number>;
+    } {
+        if (!argumentList.some(ts.isSpreadElement))
+            return {
+                expressions: argumentList,
+                values: this.compileClassArguments(
+                    method,
+                    argumentList,
+                    "method",
+                ),
+                missing: new Set(),
+            };
+        const expressions: ts.Expression[] = [];
+        const values: Value[] = [];
+        const missing = new Set<number>();
+        // An argument a later one touches the storage of is evaluated where
+        // JavaScript evaluates it (`evaluation-order.ts`).
+        const ordered =
+            this.context.evaluationOrder.operandsToPin(argumentList);
+        for (const [index, argument] of argumentList.entries()) {
+            if (!ts.isSpreadElement(argument)) {
+                const parameter = method.parameters[values.length];
+                if (!parameter || !ts.isIdentifier(parameter.name))
+                    this.context.fail(
+                        argument,
+                        parameter
+                            ? "Class parameters must be plain identifiers."
+                            : "Class method received too many arguments.",
+                    );
+                const value = this.context.compileClassParameterValue(
+                    parameter.name,
+                    argument,
+                );
+                expressions.push(argument);
+                values.push(
+                    ordered[index] && value.kind !== "callback"
+                        ? pinOperand(
+                              this.context,
+                              value,
+                              argument,
+                              "class_argument",
+                          )
+                        : value,
+                );
+                continue;
+            }
+            for (const lane of this.spreadLanes(argument.expression)) {
+                if (lane.missing) missing.add(values.length);
+                expressions.push(argument.expression);
+                values.push(lane.value);
+            }
+        }
+        return {
+            expressions: expressions.slice(0, method.parameters.length),
+            values: values.slice(0, method.parameters.length),
+            missing,
+        };
+    }
+
+    /**
+     * The lanes a spread argument of a fixed-length tuple type supplies,
+     * read off one evaluation of the tuple; optional lanes past its
+     * required length may be missing.
+     */
+    private spreadLanes(
+        expression: ts.Expression,
+    ): { value: Value; missing: boolean }[] {
+        const spread = this.context.compileValue(expression);
+        if (spread.kind === "tuple" && spread.tupleElements)
+            return spread.tupleElements.map((value) => ({
+                value,
+                missing: false,
+            }));
+        const type = spread.dataType;
+        if (spread.kind === "data" && type?.kind === "tuple") {
+            const bound = this.context.bindings.bindDataTuple(
+                spread,
+                type.arity,
+                "spread_tuple",
+            );
+            return tupleComponents(bound, type.arity, "double").map((cpp) => ({
+                value: { kind: "number", cpp, dataType: { kind: "number" } },
+                missing: false,
+            }));
+        }
+        const tuple = this.context.checker.getTypeAtLocation(expression);
+        const flags = this.context.checker.isTupleType(tuple)
+            ? ((tuple as ts.TypeReference).target as ts.TupleType).elementFlags
+            : undefined;
+        if (
+            spread.kind === "data" &&
+            (type?.kind === "product" || type?.kind === "vector") &&
+            flags !== undefined &&
+            flags.every(
+                (flag) =>
+                    (flag &
+                        (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) ===
+                    0,
+            )
+        ) {
+            const pinned = this.context.bindings.pinValueToTemporary(
+                spread,
+                "spread_tuple",
+                expression,
+            );
+            return flags.map((flag, index) => {
+                const missing = (flag & ts.ElementFlags.Optional) !== 0;
+                if (type.kind === "vector" && missing) {
+                    // A lane past the array's end is undefined.
+                    const lane: DataType =
+                        type.element.kind === "optional"
+                            ? type.element
+                            : {
+                                  kind: "optional",
+                                  inner: type.element,
+                                  undefinedOnly: true,
+                              };
+                    return {
+                        value: this.context.dataLowerer.leafValue(
+                            `bbl::js::array_relative_at<${this.context.dataTypes.cppType(lane)}>(${pinned.cpp}, ${index}.0)`,
+                            lane,
+                        ),
+                        missing,
+                    };
+                }
+                const value =
+                    type.kind === "product"
+                        ? this.context.dataLowerer.fixedTupleElement(
+                              pinned,
+                              index,
+                              expression,
+                          )
+                        : this.context.dataLowerer.readVectorBindingElement(
+                              pinned,
+                              index,
+                              expression,
+                          );
+                if (!value)
+                    this.context.fail(
+                        expression,
+                        "A spread argument lane is not represented.",
+                    );
+                return { value, missing };
+            });
+        }
+        return this.context.fail(
+            expression,
+            "A spread argument of a class method expands a tuple of a fixed length.",
+        );
+    }
+
+    /**
      * Compiles a method with `this` bound to its constructed instance.
      *
      * The method is the one the receiver's class resolves the name to
@@ -2276,10 +2441,9 @@ export class ClassLowerer {
                     `Method '${methodLabel(method)}' cannot select a compile-time record through an early value return.`,
                 );
             }
-            const argumentValues = this.compileClassArguments(
+            const argumentValues = this.classCallArguments(
                 method,
                 call.arguments,
-                "method",
             );
             this.context.bindings.pushScope(
                 this.context.allocateUserFunctionPrefix(),
@@ -2289,10 +2453,11 @@ export class ClassLowerer {
             try {
                 this.bindParameters(
                     method,
-                    call.arguments,
+                    argumentValues.expressions,
                     undefined,
                     false,
-                    argumentValues,
+                    argumentValues.values,
+                    argumentValues.missing,
                 );
                 const result = this.inlineOnReceiver(
                     method,
@@ -2339,15 +2504,13 @@ export class ClassLowerer {
                 true,
             );
         }
+        const argumentValues = this.classCallArguments(method, call.arguments);
+        // Spread lanes bind by position, which only the inline body does.
         const shared =
             sharedBody &&
+            !call.arguments.some(ts.isSpreadElement) &&
             (!returnType ||
                 !this.context.dataTypes.carriesFunction(returnType));
-        const argumentValues = this.compileClassArguments(
-            method,
-            call.arguments,
-            "method",
-        );
         if (shared) {
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
@@ -2360,7 +2523,7 @@ export class ClassLowerer {
                         this.context.compileSharedMethod(
                             method,
                             call,
-                            argumentValues,
+                            argumentValues.values,
                         ),
                 );
                 if (result) return result;
@@ -2376,10 +2539,11 @@ export class ClassLowerer {
         try {
             this.bindParameters(
                 method,
-                call.arguments,
+                argumentValues.expressions,
                 undefined,
                 false,
-                argumentValues,
+                argumentValues.values,
+                argumentValues.missing,
             );
             const result = returnsVoid
                 ? undefined
@@ -3110,6 +3274,7 @@ export class ClassLowerer {
         parameterProperties?: Record<string, Value>,
         preserveStaticRecords = false,
         evaluatedArguments?: readonly Value[],
+        missingLanes: ReadonlySet<number> = new Set(),
     ): void {
         const spreadParameters = this.spreadParameterSymbols(declaration);
         declaration.parameters.forEach((parameter, index) => {
@@ -3195,7 +3360,17 @@ export class ClassLowerer {
                     : preserveStaticRecords || spreadUse
                       ? this.context.compileValue(argument)
                       : undefined;
-            if (staticRecord?.kind === "record") {
+            if (
+                evaluatedArgument &&
+                missingLanes.has(index) &&
+                parameter.initializer
+            ) {
+                this.bindDefaultedLane(
+                    parameter.name,
+                    parameter.initializer,
+                    evaluatedArgument,
+                );
+            } else if (staticRecord?.kind === "record") {
                 this.context.bindings.bindParameterValue(
                     parameter.name,
                     staticRecord,
@@ -3218,6 +3393,64 @@ export class ClassLowerer {
                 );
             }
         });
+    }
+
+    /**
+     * A defaulted parameter a spread tuple's optional lane supplies: the
+     * lane where the tuple holds it, else the default, evaluated in the
+     * callee's scope only then.
+     */
+    private bindDefaultedLane(
+        name: ts.Identifier,
+        initializer: ts.Expression,
+        lane: Value,
+    ): void {
+        const type = this.context.dataLowerer.dataTypeAt(name);
+        if (lane.dataType?.kind !== "optional" || !type)
+            this.context.fail(
+                initializer,
+                "A defaulted parameter supplied by an optional spread lane requires optional lane storage.",
+            );
+        const input = this.context.allocateTemporaryCppName("spread_lane");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: input,
+            initializer: lane.cpp,
+        });
+        let fallback = "";
+        const lines = this.context.captureEmittedLines(() => {
+            this.context.enterRuntimeControlFlow();
+            try {
+                fallback = this.context.compileForDataSink(initializer, type);
+            } finally {
+                this.context.leaveRuntimeControlFlow();
+            }
+        });
+        const present = this.context.dataLowerer.compileKnownValueForSink(
+            this.context.dataLowerer.narrowOptional(
+                this.context.dataLowerer.leafValue(input, lane.dataType),
+                initializer,
+                true,
+            ),
+            type,
+            initializer,
+        );
+        const cppType = this.context.dataTypes.cppType(type);
+        const result = this.context.allocateTemporaryCppName("spread_value");
+        this.context.emit({
+            kind: "declaration",
+            type: `const ${cppType}`,
+            name: result,
+            initializer: `[&]() -> ${cppType} {
+    if (${optionalPresentCpp(input)}) return ${present};
+${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
+}()`,
+        });
+        this.context.bindings.bindParameterValue(
+            name,
+            this.context.dataValue(result, type),
+        );
     }
 
     private initializeParameterProperty(
