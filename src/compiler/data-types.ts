@@ -54,12 +54,12 @@ import {
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
+import { ReplayStorage } from "./replay-storage.js";
 import {
     numericSlotRead,
     numericSlotStorage,
     withNumericSlotStorage,
     type NumericSlotKind,
-    type NumericSlots,
 } from "./numeric-slot-storage.js";
 import {
     recordCopyObservation,
@@ -119,7 +119,6 @@ import { optionalPresentCpp, type Value } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
-    GenericFunctionStorage,
     divergentGenericFunctionDemand,
     sameGenericFunctionSignature,
     sameTypeFrames,
@@ -1138,19 +1137,20 @@ export class DataTypeRegistry {
         /** Which local classes extend which, for class-backed structs and dispatch. */
         public readonly classHierarchy: ClassHierarchy,
         private readonly asynchronous = false,
-        private readonly genericFunctionDemands = new GenericFunctionStorage(),
-        /** Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
-        private readonly absenceTags: ReadonlySet<ts.Declaration> = new Set(),
-        /** Record properties storing their numeric tuples as growable arrays. */
-        private readonly tupleArraySlots: ReadonlySet<ts.Declaration> = new Set(),
-        /** `ArrayLike<number>` slots retyped for the numeric arrays they store. */
-        private readonly numericSlots: NumericSlots = new Map(),
+        /** The storage demands this compile replays with; read, never added to. */
+        private readonly storage = new ReplayStorage(checker),
         /**
-         * String literal unions (`enumLiterals`) whose arrays store their
-         * members as strings (`EnumArrayStorageRequired`).
+         * A discarded planning attempt's sink for record joins: lowering
+         * goes on with a copy, so one attempt meets every join.
          */
-        private readonly stringElementUnions: ReadonlySet<string> = new Set(),
+        private readonly planJoin?: (demand: NativeRecordStorageDemand) => void,
     ) {}
+
+    /** Demands a record join; a planning attempt goes on with a copy. */
+    private requireJoin(demand: NativeRecordStorageDemand): void {
+        if (!this.planJoin) throw new NativeRecordStorageRequired(demand);
+        this.planJoin(demand);
+    }
 
     /** A string literal union's identity across replays: its sorted members. */
     public enumLiterals(name: string): string {
@@ -1159,7 +1159,7 @@ export class DataTypeRegistry {
 
     /** Whether arrays of the named literal union store its members as strings. */
     public storesEnumElementsAsStrings(name: string): boolean {
-        return this.stringElementUnions.has(this.enumLiterals(name));
+        return this.storage.stringElementUnions.has(this.enumLiterals(name));
     }
 
     /**
@@ -1184,7 +1184,7 @@ export class DataTypeRegistry {
     public numericSlotKinds(
         declaration: ts.Declaration,
     ): ReadonlySet<NumericSlotKind> | undefined {
-        return this.numericSlots.get(declaration);
+        return this.storage.numericSlots.get(declaration);
     }
 
     /**
@@ -1195,7 +1195,7 @@ export class DataTypeRegistry {
         expression: ts.Expression,
     ): DataType | undefined {
         const declaration = numericSlotRead(this.checker, expression);
-        if (!declaration || !this.numericSlots.has(declaration))
+        if (!declaration || !this.storage.numericSlots.has(declaration))
             return undefined;
         const type = this.checker.getTypeAtLocation(expression);
         const mapped = this.fromTsType(type, expression);
@@ -1228,7 +1228,7 @@ export class DataTypeRegistry {
         type: ts.Type,
         mapped: DataType,
     ): DataType | undefined {
-        const kinds = this.numericSlots.get(declaration);
+        const kinds = this.storage.numericSlots.get(declaration);
         return kinds
             ? withNumericSlotStorage(
                   this.checker,
@@ -1250,7 +1250,7 @@ export class DataTypeRegistry {
     ): DataType {
         if (
             declaration === undefined ||
-            !this.absenceTags.has(declaration) ||
+            !this.storage.absenceTags.has(declaration) ||
             type.kind === "json" ||
             type.kind === "tagged" ||
             this.slotPresentCpp(type, "slot") === undefined
@@ -2378,8 +2378,8 @@ export class DataTypeRegistry {
                           sourceRecord,
                           targetRecord,
                       ))
-            )
-                throw new NativeRecordStorageRequired({
+            ) {
+                this.requireJoin({
                     ...source,
                     type: sourceRecord,
                     joins: [
@@ -2393,6 +2393,8 @@ export class DataTypeRegistry {
                         },
                     ],
                 });
+                return;
+            }
         }
         return this.fail(
             node,
@@ -2594,7 +2596,7 @@ export class DataTypeRegistry {
             this.joined(source.type, target.type)
         )
             return;
-        throw new NativeRecordStorageRequired({
+        this.requireJoin({
             ...source,
             joins: [
                 { source: source.type, target: target.type, kind: "spread" },
@@ -3658,7 +3660,7 @@ export class DataTypeRegistry {
     ): DataType<"function"> | undefined {
         const declaration = signature.declaration;
         if (!declaration || ts.isJSDocSignature(declaration)) return undefined;
-        const family = this.genericFunctionDemands.family(
+        const family = this.storage.genericFunctions.family(
             signature,
             this.typeArgumentFrames(),
         );
@@ -3678,7 +3680,7 @@ export class DataTypeRegistry {
             declaration,
             fields,
         });
-        for (const demand of this.genericFunctionDemands.get(family)) {
+        for (const demand of this.storage.genericFunctions.get(family)) {
             const type = this.withGenericFunctionArguments(
                 declaration,
                 demand,
@@ -3851,7 +3853,7 @@ export class DataTypeRegistry {
                 }
                 return (
                     this.caughtErrorType(argument, holdsError) ??
-                    this.genericFunctionDemands.expressionType(
+                    this.storage.genericFunctions.expressionType(
                         this.checker,
                         argument,
                     )
@@ -3867,7 +3869,7 @@ export class DataTypeRegistry {
                       ...new Set(
                           call.arguments.slice(restIndex).map((argument) => {
                               const type =
-                                  this.genericFunctionDemands.expressionType(
+                                  this.storage.genericFunctions.expressionType(
                                       this.checker,
                                       ts.isSpreadElement(argument)
                                           ? argument.expression
@@ -5690,7 +5692,7 @@ export class DataTypeRegistry {
             const growable: DataType =
                 joined.kind === "tuple" &&
                 declarations.some((declaration) =>
-                    this.tupleArraySlots.has(declaration),
+                    this.storage.tupleArraySlots.has(declaration),
                 )
                     ? { kind: "vector", element: { kind: "number" } }
                     : joined;
@@ -5707,7 +5709,7 @@ export class DataTypeRegistry {
             // One layout stores the property once: tagged when a program
             // tells its absent values apart through any member declaring it.
             const taggedDeclaration = declarations.find((declaration) =>
-                this.absenceTags.has(declaration),
+                this.storage.absenceTags.has(declaration),
             );
             const mapped = this.absenceTaggedStorage(
                 taggedDeclaration,

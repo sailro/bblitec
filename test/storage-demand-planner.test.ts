@@ -145,3 +145,96 @@ test("survey and coverage publish only fresh strict attempts after planning refu
         ),
     );
 });
+
+test("planning goes on past declaration storage demands and stops at a lost write", () => {
+    const properties = ["first", "second", "third", "fourth", "fifth"];
+    const options = `
+        interface Mask { cells: number }
+        interface Options { ${properties
+            .map((name) => `${name}?: Mask | null;`)
+            .join(" ")} }
+        const all: Options[] = [{ first: null, third: { cells: 4 }, fourth: undefined, second: undefined }, {}];
+        const options = all[all.length - 2]!;
+    `;
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    // Each statement declares only its own name: one plan collects the
+    // three absence tags the two strict attempts before it did not meet.
+    const independent =
+        options +
+        properties
+            .map(
+                (name) =>
+                    `const ${name} = options.${name} === null ? "n" : options.${name} === undefined ? "u" : "s";`,
+            )
+            .join("\n") +
+        `if (${properties.join(" + ")} !== "nusuu") throw new Error("absence tags");`;
+    const baseline = measured(false, () => compileSource(independent));
+    const planned = measured(true, () => compileSource(independent));
+    assert.deepEqual(planned.result, baseline.result);
+    assert.equal(planned.planning, 1);
+    assert.equal(planned.collected, 3);
+    assert.ok(planned.constructions < baseline.constructions);
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/absence-tags",
+        planned.result.cpp,
+    );
+    // A rolled-back statement's write loses `seen`: the next statement
+    // reading it ends discovery.
+    const counted =
+        options +
+        `let seen = 0;` +
+        properties
+            .map((name) => `if (options.${name} === null) seen += 1;`)
+            .join("\n") +
+        `if (seen !== 1) throw new Error("absence tags");`;
+    const countedBaseline = measured(false, () => compileSource(counted));
+    const countedPlanned = measured(true, () => compileSource(counted));
+    assert.deepEqual(countedPlanned.result, countedBaseline.result);
+    assert.equal(countedPlanned.planning, 1);
+    assert.equal(countedPlanned.dependent, 1);
+    assert.equal(countedPlanned.collected, 1);
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/absence-tag-writes",
+        countedPlanned.result.cpp,
+    );
+});
+
+test("planning collects every record join one statement meets", () => {
+    const source = `
+        interface Spot { x: number; y: number; label: string }
+        interface A { x: number }
+        interface B { y: number }
+        interface C { x: number; y: number }
+        interface D { label: string; x: number }
+        function gather(spot: Spot): number {
+            const as: A[] = [spot];
+            const bs: B[] = [spot];
+            const cs: C[] = [spot];
+            const ds: D[] = [spot];
+            spot.x = 7;
+            spot.y = 1;
+            return as[0]!.x + bs[0]!.y + cs[0]!.x + ds[0]!.x;
+        }
+        const spots: Spot[] = [{ x: 1, y: 2, label: "s" }];
+        const total = spots.map(gather)[0];
+        if (total !== 22) throw new Error("joined records");
+    `;
+    const baseline = measured(false, () => compileSource(source));
+    const planned = measured(true, () => compileSource(source));
+    assert.deepEqual(planned.result, baseline.result);
+    // Each join ends a strict attempt; the plan goes on with a copy.
+    assert.equal(baseline.constructions, 5);
+    assert.equal(planned.planning, 1);
+    assert.equal(planned.collected, 2);
+    assert.equal(planned.constructions, 4);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/record-joins",
+        planned.result.cpp,
+    );
+});

@@ -192,6 +192,7 @@ test("merged record demands keep each join's own source", () => {
             joins: [{ source: c, target: d, kind: "value" }],
         },
     );
+    assert.ok(merged);
     const components = recordComponents(frontend.checker, merged.joins ?? []);
     const of = (type: ts.Type) =>
         components.get(recordIdentity(frontend.checker, type));

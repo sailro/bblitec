@@ -69,24 +69,15 @@ import {
     requireDynamicBindingStorage,
     type DynamicBindingStorage,
 } from "./compiler/dynamic-binding-storage.js";
-import {
-    mergeNativeRecordStorage,
-    type NativeRecordStorageDemand,
-} from "./compiler/native-record-storage.js";
-import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
-import type { AbsenceTagDeclaration } from "./compiler/absence-tag-storage.js";
-import type {
-    NumericSlotKind,
-    NumericSlots,
-} from "./compiler/numeric-slot-storage.js";
+import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
     storageDemandPlanningEnabled,
     storageRequest,
     StorageDemandPlanner,
-    type StorageRequest,
 } from "./compiler/storage-demand-planner.js";
+import { ReplayStorage } from "./compiler/replay-storage.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import {
@@ -249,11 +240,7 @@ import {
     libraryArgumentIsReadOnly,
     parameterIsReadOnly,
 } from "./compiler/parameter-effects.js";
-import {
-    isRecordComponentKey,
-    recordComponents,
-    recordIdentity,
-} from "./compiler/record-components.js";
+import { recordComponents } from "./compiler/record-components.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
@@ -591,120 +578,31 @@ function compileSourceApplication(
         };
         // Each demand belongs to a source binding, not its spelling. Reuse the
         // frontend and rebuild emission so earlier aliases use the same storage.
-        const dynamicBindings = new Map<
-            ts.VariableDeclaration,
-            DynamicBindingStorage | undefined
-        >();
-        const ownedRecords = new Map<
-            NativeRecordStorageDemand["identity"],
-            NativeRecordStorageDemand
-        >();
-        const genericFunctions = new GenericFunctionStorage();
-        const absenceTags = new Set<AbsenceTagDeclaration>();
-        const tupleArraySlots = new Set<ts.Declaration>();
-        const numericSlots = new Map<ts.Declaration, Set<NumericSlotKind>>();
-        const stringElementUnions = new Set<string>();
+        const storage = new ReplayStorage(input.checker);
         const lazyModules = new Set<ts.SourceFile>();
-        const newCompiler = (planning: boolean): Compiler => {
-            recordStorageCompileAttempt(planning);
+        const newCompiler = (planner?: StorageDemandPlanner): Compiler => {
+            recordStorageCompileAttempt(planner !== undefined);
             return new Compiler(
                 input.program,
                 input.sourceFile,
                 input.checker,
                 resolved,
-                dynamicBindings,
-                ownedRecords,
-                genericFunctions,
+                storage,
                 lazyModules,
-                absenceTags,
-                tupleArraySlots,
-                numericSlots,
-                stringElementUnions,
+                planner,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
         // only the attempt that ran to the end.
         const lower = (): CompileResult =>
             coverSourceRealm(input.program, input.sourceFile.fileName, () => {
-                const compiler = newCompiler(false);
+                const compiler = newCompiler();
                 const result = traceSourceProgram(input.program, () =>
                     compiler.compile(),
                 );
                 result.manifest.inputs = input.localFiles;
                 return result;
             });
-        const acceptStorage = (request: StorageRequest): boolean => {
-            if (
-                request.kind === "dynamic" &&
-                (!dynamicBindings.has(request.declaration) ||
-                    (request.storage &&
-                        !dynamicBindings.get(request.declaration)))
-            ) {
-                dynamicBindings.set(request.declaration, request.storage);
-            } else if (request.kind === "record") {
-                // A record component's members demand apart: their shared
-                // key is renumbered as joins grow.
-                const key = isRecordComponentKey(request.demand.identity)
-                    ? recordIdentity(input.checker, request.demand.type)
-                    : request.demand.identity;
-                const previous = ownedRecords.get(key);
-                const merged = mergeNativeRecordStorage(
-                    previous,
-                    request.demand,
-                );
-                const accessorsKey = (
-                    demand: NativeRecordStorageDemand,
-                ): string =>
-                    (demand.accessors ?? [])
-                        .map(({ name, setter }) => `${name}:${setter}`)
-                        .join(",");
-                if (
-                    previous &&
-                    previous.proxy === merged.proxy &&
-                    previous.armFields === merged.armFields &&
-                    previous.view === merged.view &&
-                    previous.document === merged.document &&
-                    (previous.joins?.length ?? 0) ===
-                        (merged.joins?.length ?? 0) &&
-                    accessorsKey(previous) === accessorsKey(merged)
-                )
-                    return false;
-                ownedRecords.set(key, merged);
-            } else if (
-                request.kind === "generic" &&
-                genericFunctions.add(request.demand)
-            ) {
-                return true;
-            } else if (
-                request.kind === "absence-tag" &&
-                !absenceTags.has(request.declaration)
-            ) {
-                absenceTags.add(request.declaration);
-            } else if (
-                request.kind === "tuple-array" &&
-                !tupleArraySlots.has(request.declaration)
-            ) {
-                tupleArraySlots.add(request.declaration);
-            } else if (
-                request.kind === "numeric-slot" &&
-                !numericSlots.get(request.declaration)?.has(request.numeric)
-            ) {
-                const kinds = numericSlots.get(request.declaration);
-                if (kinds) kinds.add(request.numeric);
-                else
-                    numericSlots.set(
-                        request.declaration,
-                        new Set([request.numeric]),
-                    );
-            } else if (
-                request.kind === "enum-array" &&
-                request.unions.some((union) => !stringElementUnions.has(union))
-            ) {
-                for (const union of request.unions)
-                    stringElementUnions.add(union);
-            } else return false;
-            return true;
-        };
         const acceptReplay = (error: unknown): boolean => {
             if (error instanceof ModuleActivationRequired) {
                 if (lazyModules.has(error.file)) return false;
@@ -712,7 +610,7 @@ function compileSourceApplication(
                 return true;
             }
             if (isStorageDemand(error))
-                return acceptStorage(storageRequest(error));
+                return storage.add(storageRequest(error));
             if (
                 error instanceof RuntimeSearchParamsRequired &&
                 (!resolved.runtimeSearchParams ||
@@ -728,8 +626,15 @@ function compileSourceApplication(
             } else return false;
             return true;
         };
-        let storageReplays = 0;
+        // A second storage demand no plan foresaw starts a discarded planning
+        // attempt, which collects the demands past it; demands the last plan
+        // lacked plan again, to a fixed point. A plan that found no more
+        // than the next strict attempt would doubles the demands the next
+        // one waits for.
+        let unplanned = 0;
+        let interval = 2;
         for (;;) {
+            const started = performance.now();
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
@@ -737,22 +642,33 @@ function compileSourceApplication(
             } catch (error) {
                 if (!acceptReplay(error)) throw error;
                 if (
-                    isStorageDemand(error) &&
-                    ++storageReplays === 2 &&
-                    storageDemandPlanningEnabled()
-                ) {
-                    const planner = new StorageDemandPlanner();
-                    // No coverage realm or survey attempt can publish this
-                    // discarded compiler. The next strict attempt owns both.
-                    try {
-                        planner.run(() => {
-                            newCompiler(true).compile();
-                        });
-                    } catch (planningError) {
-                        if (!acceptReplay(planningError)) throw planningError;
-                    }
-                    for (const demand of planner.demands) acceptStorage(demand);
+                    !isStorageDemand(error) ||
+                    !storageDemandPlanningEnabled() ||
+                    ++unplanned < interval
+                )
+                    continue;
+                unplanned = 0;
+                // A plan may lower as much as two strict attempts.
+                const planner = new StorageDemandPlanner(
+                    input.checker,
+                    2 * (performance.now() - started),
+                    survey !== undefined,
+                );
+                // No coverage realm or survey attempt can publish this
+                // discarded compiler. The next strict attempt owns both.
+                try {
+                    planner.run(() => {
+                        newCompiler(planner).compile();
+                    });
+                } catch (planningError) {
+                    if (!acceptReplay(planningError)) throw planningError;
                 }
+                const added = planner.demands.filter(
+                    (demand) =>
+                        !storage.joinsAlreadyHeld(demand) &&
+                        storage.add(demand),
+                ).length;
+                interval = added > 1 ? 2 : 2 * interval;
             }
         }
     };
@@ -1015,27 +931,32 @@ class Compiler implements LoweringServices {
     @journaled private accessor temporaryIndex = 0;
     @journaled public accessor defaultRenderTaskAdapted = false;
     @journaled private accessor sceneRegistrationSite: ts.Node | undefined;
+    /** The storage demands this compile replays with (`ReplayStorage`). */
+    public readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+    private readonly ownedRecords: ReadonlyMap<
+        NativeRecordStorageDemand["identity"],
+        NativeRecordStorageDemand
+    >;
+    public readonly absenceTags: ReadonlySet<ts.Declaration>;
+    public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 
     public constructor(
         public readonly program: ts.Program,
         public readonly sourceFile: ts.SourceFile,
         public readonly checker: ts.TypeChecker,
         public readonly options: ResolvedCompileOptions,
-        public readonly dynamicBindings: ReadonlyMap<
-            ts.VariableDeclaration,
-            DynamicBindingStorage | undefined
-        >,
-        private readonly ownedRecords: ReadonlyMap<
-            NativeRecordStorageDemand["identity"],
-            NativeRecordStorageDemand
-        >,
-        genericFunctions: GenericFunctionStorage,
+        storage: ReplayStorage,
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
-        public readonly absenceTags: ReadonlySet<ts.Declaration>,
-        public readonly tupleArraySlots: ReadonlySet<ts.Declaration>,
-        numericSlots: NumericSlots,
-        stringElementUnions: ReadonlySet<string>,
+        /** The discarded planning attempt this compiler lowers for, if any. */
+        planner?: StorageDemandPlanner,
     ) {
+        this.dynamicBindings = storage.dynamicBindings;
+        this.ownedRecords = storage.records;
+        this.absenceTags = storage.absenceTags;
+        this.tupleArraySlots = storage.tupleArraySlots;
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
         this.dataTypes = new DataTypeRegistry(
@@ -1043,11 +964,8 @@ class Compiler implements LoweringServices {
             (node, message) => this.fail(node, message),
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
-            genericFunctions,
-            absenceTags,
-            tupleArraySlots,
-            numericSlots,
-            stringElementUnions,
+            storage,
+            planner && ((demand) => planner.planJoin(demand)),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);

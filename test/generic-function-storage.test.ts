@@ -7,10 +7,8 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { ClassHierarchy } from "../src/compiler/class-members.js";
 import { DataTypeRegistry } from "../src/compiler/data-types.js";
-import {
-    GenericFunctionStorage,
-    GenericFunctionStorageRequired,
-} from "../src/compiler/generic-function-storage.js";
+import { GenericFunctionStorageRequired } from "../src/compiler/generic-function-storage.js";
+import { ReplayStorage } from "../src/compiler/replay-storage.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import {
     optionalNativeFixtureTools,
@@ -421,7 +419,7 @@ test("a stored generic call keeps one signature across replays and refuses one t
     );
     const call = statement.expression;
     const functionType = checker.getTypeAtLocation(count.name);
-    const replay = (storage: GenericFunctionStorage) => {
+    const replay = (storage: ReplayStorage) => {
         const registry = new DataTypeRegistry(
             checker,
             (_node, message) => {
@@ -436,7 +434,7 @@ test("a stored generic call keeps one signature across replays and refuses one t
         const name = stored.generic;
         return () => registry.genericFunctionCall(name, call, () => false);
     };
-    const demand = (storage: GenericFunctionStorage) => {
+    const demand = (storage: ReplayStorage) => {
         try {
             replay(storage)();
         } catch (error) {
@@ -448,17 +446,20 @@ test("a stored generic call keeps one signature across replays and refuses one t
     };
     // The checker types an object literal afresh at every request; each
     // replay must still reach the signature the previous one stored.
-    const converging = new GenericFunctionStorage();
-    assert.ok(converging.add(demand(converging)));
+    const converging = new ReplayStorage(checker);
+    assert.ok(converging.add({ kind: "generic", demand: demand(converging) }));
     assert.equal(replay(converging)().name, "call_0");
     assert.equal(replay(converging)().name, "call_0");
     // A site whose stored signature differs only by type identity would
     // demand another signature at every replay.
-    const diverging = new GenericFunctionStorage();
+    const diverging = new ReplayStorage(checker);
     const first = demand(diverging);
     diverging.add({
-        ...first,
-        parameters: [checker.getTypeAtLocation(twin.name)],
+        kind: "generic",
+        demand: {
+            ...first,
+            parameters: [checker.getTypeAtLocation(twin.name)],
+        },
     });
     assert.throws(
         replay(diverging),
