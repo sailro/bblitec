@@ -14124,6 +14124,23 @@ test("imported module records reached through holders and element reads are one 
     );
 });
 
+// A record handed to a function that compares it is the one object its
+// literal created, whether the call is inlined or runs a compiled body.
+check(
+    "records-compared-by-a-called-function-stay-one-object",
+    `
+    interface Point { x: number; y: number }
+    const point = { x: 1, y: 2 };
+    const other = { x: 1, y: 2 };
+    function sameAs(value: Point, against: Point): boolean { return value === against; }
+    const compares: Array<typeof sameAs> = [sameAs];
+    if (!sameAs(point, point) || sameAs(point, other)) throw new Error("direct");
+    if (!compares[0]!(point, point) || compares[0]!(point, other)) throw new Error("stored");
+    const alias = point;
+    if (alias !== point || alias === other) throw new Error("alias");
+`,
+);
+
 check(
     "empty-object-tokens-compare-by-identity",
     `

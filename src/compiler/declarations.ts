@@ -24,7 +24,10 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
-import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
+import {
+    requireOneObject,
+    type DynamicBindingStorage,
+} from "./dynamic-binding-storage.js";
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements } from "./loop-control.js";
@@ -123,6 +126,7 @@ interface DeclarationContext
             | "moduleRelativeAssetUrl"
             | "nativeBindingCheckpoint"
             | "options"
+            | "program"
             | "moduleNamespaces"
             | "moduleContainerIsMutated"
             | "reachJson"
@@ -987,6 +991,7 @@ export class DeclarationLowerer {
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
         let value = this.context.compileValue(declaration.initializer);
+        requireOneObject(this.context, declaration, value);
         if (value.kind === "record" && declaration.type) {
             value = this.context.bindings.materializeDeclaredRecordContainers(
                 value,

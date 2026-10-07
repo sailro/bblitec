@@ -40,7 +40,10 @@ import {
     TYPED_ARRAY_KINDS,
     typeofTag,
 } from "./data-types.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    requireOneObject,
+} from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -82,6 +85,7 @@ import {
     isUpdateExpression,
     expressionHasEffects,
     expressionMayRunCode,
+    outermostWrapper,
     regularExpressionParts,
     unwrapExpression,
     wrappedParent,
@@ -857,6 +861,17 @@ export class ExpressionLowerer {
             const resolved = this.context.resolveStaticExpression(unwrapped);
             if (resolved !== unwrapped) {
                 const value = this.compileValue(resolved);
+                const initializer = outermostWrapper(resolved);
+                const declaration = initializer.parent;
+                if (
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer === initializer
+                )
+                    requireOneObject(
+                        this.context.dataLowerer.context,
+                        declaration,
+                        value,
+                    );
                 return value.kind === "regexp"
                     ? this.context.nativeEmission.materializeStaticNativeValue(
                           unwrapped,
