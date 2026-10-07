@@ -110,6 +110,14 @@ import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
+import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
+import {
+    namespaceMemberName,
+    namespaceSymbol,
+} from "./namespace-declarations.js";
+import { templateParts } from "./tagged-templates.js";
+import { compileSymbolCall } from "./symbol-values.js";
+import { compileBigIntUpdate, compileBigIntValue } from "./bigint-values.js";
 import { unicodeUnitPattern } from "./regexp-unicode.js";
 import {
     FORMATTED_MATH_FOLDS,
@@ -443,6 +451,13 @@ export function stringConcatPart(
     if (value.kind === "data" && value.dataType?.kind === "string") {
         return value.cpp;
     }
+    if (value.kind === "data" && value.dataType?.kind === "bigint")
+        return `(${value.cpp}).to_string(10)`;
+    if (value.kind === "data" && value.dataType?.kind === "symbol")
+        return context.fail(
+            node,
+            "A symbol converts to text only through String(symbol) or its toString(); an implicit conversion throws a TypeError.",
+        );
     if (value.dataType?.kind === "optional") {
         const inner = value.dataType.inner;
         const present = stringConcatPart(
@@ -639,8 +654,21 @@ export class ExpressionLowerer {
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
             return { kind: "json-null", cpp: "" };
         }
+        const bigint = compileBigIntValue(this.context, unwrapped);
+        if (bigint) return bigint;
 
         if (ts.isVoidExpression(unwrapped)) {
+            // Reading a name or a literal (`void 0`) observes nothing.
+            const inert = this.context.unwrap(unwrapped.expression);
+            if (
+                ts.isIdentifier(inert) ||
+                inert.kind === ts.SyntaxKind.ThisKeyword ||
+                ts.isLiteralExpression(inert) ||
+                inert.kind === ts.SyntaxKind.TrueKeyword ||
+                inert.kind === ts.SyntaxKind.FalseKeyword ||
+                inert.kind === ts.SyntaxKind.NullKeyword
+            )
+                return { kind: "void", cpp: "" };
             const operand = this.compileValue(unwrapped.expression);
             return {
                 kind: "void",
@@ -849,9 +877,24 @@ export class ExpressionLowerer {
             }
             const namespace = this.compileModuleNamespace(unwrapped);
             if (namespace) return namespace;
+            if (enumObjectSymbol(this.context.checker, unwrapped))
+                this.context.fail(
+                    unwrapped,
+                    `Enum object '${unwrapped.text}' is a value only as the receiver of a member or computed-key read.`,
+                );
+            if (namespaceSymbol(this.context.checker, unwrapped))
+                this.context.fail(
+                    unwrapped,
+                    `Namespace object '${unwrapped.text}' is a value only as the receiver of a member read.`,
+                );
             return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const namespaceMember = namespaceMemberName(
+                this.context.checker,
+                unwrapped,
+            );
+            if (namespaceMember) return this.compileValue(namespaceMember);
             if (
                 unwrapped.name.text === "url" &&
                 ts.isMetaProperty(unwrapped.expression) &&
@@ -1090,6 +1133,18 @@ export class ExpressionLowerer {
                     this.context.cppString(text),
                 );
             if (typeof member === "number") return numberConstantValue(member);
+            const enumLookup = compileEnumElementAccess(
+                this.context,
+                unwrapped,
+            );
+            if (enumLookup)
+                return assertedNonNull
+                    ? this.context.dataLowerer.narrowOptional(
+                          enumLookup,
+                          expression,
+                          true,
+                      )
+                    : enumLookup;
             const value = this.compileIndexedValue(
                 unwrapped,
                 expression,
@@ -1218,6 +1273,8 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (isUpdateExpression(unwrapped)) {
+            const bigintUpdate = compileBigIntUpdate(this.context, unwrapped);
+            if (bigintUpdate) return bigintUpdate;
             const updated =
                 this.context.dataLowerer.compileUpdateValue(unwrapped);
             if (updated) return updated;
@@ -1480,7 +1537,10 @@ export class ExpressionLowerer {
             if (unionType?.kind === "union") {
                 const names = unionType.members.map((member) =>
                     this.context.cppString(
-                        member.kind === "number" || member.kind === "boolean"
+                        member.kind === "number" ||
+                            member.kind === "boolean" ||
+                            member.kind === "symbol" ||
+                            member.kind === "bigint"
                             ? member.kind
                             : member.kind === "string" || member.kind === "enum"
                               ? "string"
@@ -1528,7 +1588,10 @@ export class ExpressionLowerer {
                           ? "function"
                           : operand.kind === "void"
                             ? "undefined"
-                            : "object";
+                            : dataType?.kind === "symbol" ||
+                                dataType?.kind === "bigint"
+                              ? dataType.kind
+                              : "object";
             let present = presenceCpp(operand);
             if (operand.dataType?.kind === "function") {
                 const callable = `static_cast<bool>(${operand.cpp})`;
@@ -1615,9 +1678,126 @@ export class ExpressionLowerer {
             if (selected) return selected;
         }
 
+        if (ts.isTaggedTemplateExpression(unwrapped))
+            return this.compileTaggedTemplate(unwrapped);
+        if (ts.isClassExpression(unwrapped))
+            this.context.fail(
+                unwrapped,
+                "A class expression is lowered as the initializer of a const it names.",
+            );
+
         this.context.fail(
             unwrapped,
             `Unsupported value expression: ${syntaxKindName(unwrapped.kind)}.`,
+        );
+    }
+
+    /** One strings-array accessor per tagged template site. */
+    private readonly templateSites = new EmissionMap<
+        ts.TaggedTemplateExpression,
+        string
+    >();
+
+    /**
+     * `tag\`...\`` calls the tag with the site's strings array, then the
+     * substitutions; `String.raw` joins the raw strings and substitutions.
+     */
+    private compileTaggedTemplate(
+        expression: ts.TaggedTemplateExpression,
+    ): Value {
+        const parts =
+            templateParts(expression.template) ??
+            this.context.fail(
+                expression.template,
+                "A template escape without a cooked value leaves an undefined string, which the strings array does not store.",
+            );
+        const tag = this.context.unwrap(expression.tag);
+        if (
+            ts.isPropertyAccessExpression(tag) &&
+            tag.name.text === "raw" &&
+            this.context.libraryGlobal(tag.expression) === "String"
+        )
+            return this.compileTemplateText(
+                parts.raw[0]!,
+                parts.substitutions.map((substitution, index) => ({
+                    expression: substitution,
+                    text: parts.raw[index + 1]!,
+                })),
+            );
+        const callee = namespaceMemberName(this.context.checker, tag) ?? tag;
+        if (!ts.isIdentifier(callee))
+            this.context.fail(
+                expression.tag,
+                "A template tag is a function named by an identifier.",
+            );
+        let accessor = this.templateSites.get(expression);
+        if (!accessor) {
+            const strings = (texts: readonly string[]): string =>
+                `{${texts.map((text) => `std::string(${this.context.cppString(text)})`).join(", ")}}`;
+            accessor =
+                this.context.allocateTemporaryCppName("template_strings");
+            this.context.nativeEmission.registerNativeTemplate(
+                accessor,
+                [
+                    `inline bbl::js::Array<std::string>& ${accessor}() {`,
+                    `    static thread_local bbl::js::Array<std::string> ${accessor}_value = bbl::js::template_strings(${strings(parts.cooked)}, ${strings(parts.raw)});`,
+                    `    return ${accessor}_value;`,
+                    "}",
+                ],
+                `inline bbl::js::Array<std::string>& ${accessor}();`,
+            );
+            this.templateSites.set(expression, accessor);
+        }
+        this.context.reachJsData();
+        const stringsValue = this.context.dataValue(`bblscene::${accessor}()`, {
+            kind: "vector",
+            element: { kind: "string" },
+        });
+        // Substitutions run left to right before the call; one a later
+        // substitution may change is read where it stands.
+        let lastEffect = parts.substitutions.length - 1;
+        while (
+            lastEffect >= 0 &&
+            !expressionMayRunCode(parts.substitutions[lastEffect]!)
+        )
+            lastEffect--;
+        const substitutions = parts.substitutions.map((substitution, index) => {
+            const value = this.compileValue(substitution);
+            return index < lastEffect
+                ? this.context.bindings.pinValueToTemporary(
+                      value,
+                      "template_substitution",
+                      substitution,
+                  )
+                : value;
+        });
+        // A rest parameter takes the substitutions from its position on.
+        const signature = this.context.checker.getResolvedSignature(expression);
+        const parameters = signature?.getDeclaration()?.parameters ?? [];
+        const rest = parameters.findIndex(
+            (parameter) => parameter.dotDotDotToken !== undefined,
+        );
+        const arguments_: Value[] = [stringsValue, ...substitutions];
+        const values =
+            rest > 0
+                ? [
+                      ...arguments_.slice(0, rest),
+                      ...(arguments_.length >= rest
+                          ? [
+                                {
+                                    kind: "tuple" as const,
+                                    cpp: "",
+                                    tupleElements: arguments_.slice(rest),
+                                },
+                            ]
+                          : []),
+                  ]
+                : arguments_;
+        return this.context.userFunctions.compileCallbackWithValues(
+            this.context,
+            callee,
+            values,
+            expression,
         );
     }
 
@@ -1698,19 +1878,31 @@ export class ExpressionLowerer {
     }
 
     private compileTemplate(expression: ts.TemplateExpression): Value {
-        const parts: string[] = [this.context.cppString(expression.head.text)];
-        let compiledStaticText = expression.head.text;
+        return this.compileTemplateText(
+            expression.head.text,
+            expression.templateSpans.map((span) => ({
+                expression: span.expression,
+                text: span.literal.text,
+            })),
+        );
+    }
+
+    /** A template's text: each substitution's string between the literal parts. */
+    private compileTemplateText(
+        head: string,
+        spans: readonly { expression: ts.Expression; text: string }[],
+    ): Value {
+        const parts: string[] = [this.context.cppString(head)];
+        let compiledStaticText = head;
         let allCompiledValuesAreStatic = true;
-        let lastEffect = expression.templateSpans.length - 1;
+        let lastEffect = spans.length - 1;
         while (
             lastEffect >= 0 &&
-            !expressionMayRunCode(
-                expression.templateSpans[lastEffect]!.expression,
-            )
+            !expressionMayRunCode(spans[lastEffect]!.expression)
         ) {
             lastEffect--;
         }
-        expression.templateSpans.forEach((span, index) => {
+        spans.forEach((span, index) => {
             // Resolve each substitution after its predecessors' effects. A
             // closed numeric expression keeps its fact alongside helper results.
             const known = this.context.evaluator.staticTextValue(
@@ -1737,8 +1929,8 @@ export class ExpressionLowerer {
                 compiledStaticText += staticText;
             }
             parts.push(stringConcatPart(this.context, value, span.expression));
-            parts.push(this.context.cppString(span.literal.text));
-            compiledStaticText += span.literal.text;
+            parts.push(this.context.cppString(span.text));
+            compiledStaticText += span.text;
         });
         if (allCompiledValuesAreStatic) {
             return {
@@ -3110,7 +3302,14 @@ export class ExpressionLowerer {
                 staticString: moduleAsset,
             };
         }
-        const callee = this.context.unwrap(call.expression);
+        const symbol = compileSymbolCall(this.context, call);
+        if (symbol) return symbol;
+        // `N.f()` calls the namespace member `f` as its body does.
+        const callee =
+            namespaceMemberName(
+                this.context.checker,
+                this.context.unwrap(call.expression),
+            ) ?? this.context.unwrap(call.expression);
         // A microtask runs after the current task: the realm's event loop.
         // Structured cloning uses the realm's message codecs.
         const realmGlobal = this.context.libraryGlobal(callee);
@@ -3369,6 +3568,11 @@ export class ExpressionLowerer {
                     (text) => this.context.cppString(text),
                 );
             }
+            // `String(symbol)` is its description text, as `toString()`.
+            if (value.kind === "data" && value.dataType?.kind === "symbol")
+                return this.context.dataValue(`(${value.cpp}).to_string()`, {
+                    kind: "string",
+                });
             if (
                 value.dataType?.kind === "union" &&
                 value.dataType.members.every(
@@ -3393,6 +3597,7 @@ export class ExpressionLowerer {
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "enum" ||
+                value.dataType?.kind === "bigint" ||
                 isUndefinedDataType(value.dataType) ||
                 // An absent value spells "undefined" or "null", as in a
                 // concatenation.
@@ -3854,6 +4059,13 @@ export class ExpressionLowerer {
                 dataType: { kind: "number" },
             };
         }
+        // `Number(bigint)` is the nearest double.
+        if (value.kind === "data" && value.dataType?.kind === "bigint")
+            return {
+                kind: "number",
+                cpp: `(${value.cpp}).to_number()`,
+                dataType: { kind: "number" },
+            };
         if (
             value.kind === "data" &&
             value.dataType?.kind === "optional" &&
@@ -6765,7 +6977,7 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         method: string,
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         found: string,
     ): Value {
         const type = this.context.dataLowerer.dataTypeAt(call);

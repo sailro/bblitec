@@ -4054,8 +4054,8 @@ check(
 test("unsupported language shapes refuse explicitly", () => {
     for (const [source, message] of [
         [
-            "function* gen(): Generator<number> { yield* [1]; } for (const v of gen()) {}",
-            /delegation/,
+            "function* gen(): Generator<number> { yield* new Set([1]); } for (const v of gen()) {}",
+            /yield\* delegates to a generator, an iterator or an array/,
         ],
         [
             "const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}",
@@ -9802,3 +9802,427 @@ test("Object.assign refuses a source method reading this", () => {
         /this source's accessors or methods are not represented/,
     );
 });
+
+check(
+    "void-operator-and-proven-undefined-results",
+    `
+    let calls = 0;
+    function touch(): void { calls++; }
+    const v = void 0;
+    const w = void touch();
+    if (v !== undefined || w !== undefined || calls !== 1) throw new Error("void operator");
+    function apply<T>(deps: { finish(): T; commit(result: T): void }): T {
+        const result = deps.finish();
+        deps.commit(result);
+        return result;
+    }
+    let committed = 0;
+    const done = apply({
+        finish: () => undefined,
+        commit: (result) => { if (result === undefined) committed++; },
+    });
+    if (done !== undefined || committed !== 1) throw new Error("generic undefined result");
+`,
+);
+
+test("a void-typed result without a proven undefined completion refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const cb: () => void = () => 5; const r = cb(); export {};",
+            ),
+        /Expression assigned to 'r' does not produce a native value/,
+    );
+});
+
+check(
+    "static-fields-assigned-by-static-blocks",
+    `
+    class Ids {
+        static next: number;
+        static label: string;
+        static {
+            const offset = 2;
+            Ids.next = offset * 2;
+            this.label = "id";
+        }
+        static take(): string { return Ids.label + Ids.next++; }
+    }
+    if (Ids.next !== 4 || Ids.label !== "id") throw new Error("static block assignment");
+    if (Ids.take() !== "id4" || Ids.next !== 5) throw new Error("static field storage");
+`,
+);
+
+test("a static field a static block may read before assigning refuses", () => {
+    for (const source of [
+        "class C { static n: number; static { const m = [C.n]; C.n = m.length; } } export {};",
+        "class C { static n: number; static { C.n = [1].length; } } export {};",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /Static field 'n' has no initializer, so it starts undefined/,
+        );
+});
+
+check(
+    "enum-objects-reverse-and-forward-mappings",
+    `
+    enum Dir { Up, Down, Left = 10, Right }
+    enum Tone { Soft = "soft", Loud = "loud" }
+    const picked = [Dir.Down, Dir.Right][1]!;
+    if (Dir.Right !== 11 || Dir[picked] !== "Right") throw new Error("reverse mapping");
+    const down = [1][0]!;
+    if (Dir[down] !== "Down" || Dir[-0] !== "Up") throw new Error("number key");
+    const missing = Dir[down + 5];
+    if (missing !== undefined) throw new Error("missing reverse key");
+    const key = ["Left"][0] as keyof typeof Dir;
+    if (Dir[key] !== 10) throw new Error("forward mapping");
+    const toneKey = ["Loud"][0] as keyof typeof Tone;
+    if (Tone[toneKey] !== "loud") throw new Error("string member");
+    function local(index: number): string {
+        enum Local { A = 1, B }
+        return Local[index] ?? "none";
+    }
+    if (local(2) !== "B" || local(3) !== "none") throw new Error("local enum");
+`,
+);
+
+test("an enum object refuses outside member and computed-key reads", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "enum Dir { A, B } const keys = Object.keys(Dir); export {};",
+            ),
+        /Enum object 'Dir' is a value only as the receiver/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(): number { enum E { A = 'x'.length } return E.A; } const n = f(); export {};",
+            ),
+        /needs a runtime enum object/,
+    );
+});
+
+check(
+    "namespace-members-and-merging",
+    `
+    namespace Geometry {
+        export const unit = 2;
+        const hidden = unit * 3;
+        export let count = 0;
+        export function scaled(n: number): number { count++; return n * hidden; }
+        export namespace Inner { export const depth = unit + 1; }
+    }
+    namespace Geometry { export const extra = unit * 10; }
+    namespace A.B { export const deep = 7; }
+    if (Geometry.unit !== 2 || Geometry.scaled(2) !== 12 || Geometry.count !== 1) throw new Error("members");
+    if (Geometry.Inner.depth !== 3 || Geometry.extra !== 20 || A.B.deep !== 7) throw new Error("nesting and merging");
+`,
+);
+
+test("namespace objects refuse writes and value uses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "namespace G { export let c = 0; } G.c = 3; export {};",
+            ),
+        /Namespace member 'c' is written through its own name/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "namespace G { export const k = 1; } const g = G; export {};",
+            ),
+        /Namespace object 'G' is a value only as the receiver/,
+    );
+});
+
+check(
+    "tagged-templates-and-string-raw",
+    `
+    function tag(strings: TemplateStringsArray, ...values: number[]): string {
+        return strings.join("|") + values.join(",");
+    }
+    const x = [1, 2];
+    if (tag\`a\${x[0]!}b\${x[1]!}c\` !== "a|b|c1,2") throw new Error("tag call");
+    const order: string[] = [];
+    function note(label: string, value: number): number { order.push(label); return value; }
+    function pair(strings: TemplateStringsArray, first: number, second: number): number {
+        order.push("call");
+        return strings.length * 100 + first * 10 + second;
+    }
+    if (pair\`<\${note("first", 1)}|\${note("second", 2)}>\` !== 312) throw new Error("fixed parameters");
+    if (order.join(",") !== "first,second,call") throw new Error("substitution order");
+    const seen: TemplateStringsArray[] = [];
+    function keep(strings: TemplateStringsArray): number {
+        seen.push(strings);
+        return strings.length;
+    }
+    for (let i = 0; i < 2; i++) keep\`x\${i}y\`;
+    keep\`x\${0}y\`;
+    if (seen[0] !== seen[1] || seen[0] === seen[2]) throw new Error("site identity");
+    if (seen[0]!.raw[0] !== "x" || seen[0]!.raw !== seen[1]!.raw) throw new Error("raw identity");
+    function rawTag(strings: TemplateStringsArray): string { return strings.raw.join("/") + strings.join("/"); }
+    if (rawTag\`a\\n\${1}b\` !== "a\\\\n/ba\\n/b") throw new Error("raw and cooked");
+    const v = String.raw\`a\\nb\${x[0]!}\`;
+    if (v.length !== 5 || v !== "a\\\\nb1") throw new Error("String.raw");
+`,
+);
+
+test("tagged templates refuse undefined cooked strings and method tags", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "function tag(s: TemplateStringsArray): number { return s.length; } const v = tag`\\unicode`; export {};",
+            ),
+        /A template escape without a cooked value/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "const o = { tag(s: TemplateStringsArray): string { return s[0]!; } }; const v = o.tag`x`; export {};",
+            ),
+        /A template tag is a function named by an identifier/,
+    );
+});
+
+check(
+    "symbol-values-and-symbol-keyed-brands",
+    `
+    const s = Symbol("k");
+    const t = Symbol("k");
+    if (s.description !== "k" || s === t || typeof s !== "symbol") throw new Error("identity");
+    const alias = s;
+    if (alias !== s || !s) throw new Error("alias");
+    if (s.toString() !== "Symbol(k)" || String(t) !== "Symbol(k)") throw new Error("text");
+    const anonymous = Symbol();
+    if (anonymous.description !== undefined || anonymous.toString() !== "Symbol()") throw new Error("anonymous");
+    const registered = Symbol.for("app");
+    if (registered !== Symbol.for("app") || Symbol.keyFor(registered) !== "app" || Symbol.keyFor(s) !== undefined)
+        throw new Error("registry");
+    const symbols: symbol[] = [s, t];
+    if (symbols.indexOf(t) !== 1 || !symbols.includes(s)) throw new Error("search");
+    const brand: unique symbol = Symbol("occluder");
+    interface Occluders {
+        readonly [brand]: true;
+        readonly clips: readonly number[];
+        readonly key: string;
+    }
+    function make(clips: readonly number[]): Occluders {
+        const copy = clips.map((clip) => clip * 2);
+        return Object.freeze({ [brand]: true as const, clips: Object.freeze(copy), key: copy.join(",") });
+    }
+    const made = make([1, 2]);
+    if (made.key !== "2,4" || made.clips.length !== 2 || made[brand] !== true) throw new Error("brand fields");
+    if (Object.keys(made).join(",") !== "clips,key" || JSON.stringify(made) !== '{"clips":[2,4],"key":"2,4"}')
+        throw new Error("symbol keys are not string keys");
+`,
+);
+
+test("a symbol refuses implicit string conversion", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'const s = Symbol("x"); const t = `${s}`; export {};',
+            ),
+        /A symbol converts to text only through String\(symbol\)/,
+    );
+});
+
+check(
+    "bigint-values-exact-arithmetic",
+    `
+    const b = 10n;
+    if (b * 2n !== 20n || typeof b !== "bigint") throw new Error("literal");
+    const huge = 2n ** 100n;
+    if (huge.toString() !== "1267650600228229401496703205376" || huge.toString(16) !== "10000000000000000000000000")
+        throw new Error("power");
+    if (huge / 3n !== 422550200076076467165567735125n || huge % 7n !== 2n) throw new Error("long division");
+    let counter = 5n;
+    counter += 3n;
+    counter++;
+    counter *= -2n;
+    --counter;
+    if (counter !== -19n) throw new Error("compound and update");
+    if (-7n / 2n !== -3n || -7n % 2n !== -1n) throw new Error("truncating division");
+    if (-5n >> 1n !== -3n || 1n << 70n !== 1180591620717411303424n || 8n >> -2n !== 32n) throw new Error("shift");
+    if ((-6n & 3n) !== 2n || ~0n !== -1n || (5n ^ 3n) !== 6n || (-4n | 1n) !== -3n) throw new Error("bitwise");
+    if (BigInt(42) !== 42n || BigInt("0x10") !== 16n || BigInt(" -12 ") !== -12n || BigInt(true) !== 1n) throw new Error("conversion");
+    if (Number(huge) !== 2 ** 100 || Number(2n ** 53n + 1n) !== 2 ** 53 || String(-12n) !== "-12" || \`\${b}!\` !== "10!")
+        throw new Error("text and number");
+    if (BigInt.asIntN(8, 255n) !== -1n || BigInt.asUintN(8, -1n) !== 255n || BigInt.asIntN(64, 2n ** 63n) !== -(2n ** 63n))
+        throw new Error("wrap");
+    if (!(1n < 2) || !(3n > 2.5) || 2n < 1.5 || 2n >= Infinity || !(2n <= 2)) throw new Error("mixed comparison");
+    const order: string[] = [];
+    function step(label: string, value: bigint): bigint { order.push(label); return value; }
+    if (step("a", 2n) - step("b", 3n) !== -1n || order.join("") !== "ab") throw new Error("operand order");
+    const errors: string[] = [];
+    const zero = [0n][0]!;
+    try { if (1n / zero) errors.push("none"); } catch (error) { errors.push(error instanceof RangeError ? "range" : "other"); }
+    try { if (2n ** -zero - 1n) errors.push("ok"); } catch { errors.push("unexpected"); }
+    try { if (BigInt(1.5)) errors.push("none"); } catch (error) { errors.push(error instanceof RangeError ? "range" : "other"); }
+    try { if (BigInt("1.5")) errors.push("none"); } catch (error) { errors.push(error instanceof SyntaxError ? "syntax" : "other"); }
+    if (errors.join(",") !== "range,range,syntax") throw new Error("errors " + errors.join(","));
+    if (zero || !huge) throw new Error("truthiness");
+    const list: bigint[] = [1n, 2n, 3n];
+    if (list.indexOf(2n) !== 1 || !list.includes(3n)) throw new Error("search");
+`,
+);
+
+test("BigInt operators refuse Number operands and unrepresented conversions", () => {
+    for (const [source, message] of [
+        [
+            "const x = [1n][0]!; const y = x + (1 as unknown as bigint); export {};",
+            /A BigInt operator's operands are both BigInts/,
+        ],
+        [
+            "const x = [1n][0]!; const s = JSON.stringify({ x }); export {};",
+            /JSON\.stringify does not serialize a 'bigint' value/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "bigint-typed-arrays",
+    `
+    const a = new BigInt64Array(2);
+    if (a.length !== 2 || a[0] !== 0n || a.byteLength !== 16) throw new Error("length");
+    a[0] = -5n;
+    a[1] = 2n ** 63n;
+    if (a[0] !== -5n || a[1] !== -(2n ** 63n)) throw new Error("signed wrap");
+    a[0] += 7n;
+    if (a[0] !== 2n) throw new Error("compound element");
+    const u = new BigUint64Array([1n, -1n]);
+    if (u[1] !== 2n ** 64n - 1n) throw new Error("unsigned wrap");
+    const view = new BigUint64Array(a.buffer, 8, 1);
+    if (view[0] !== 2n ** 63n || view.byteOffset !== 8) throw new Error("buffer view");
+    view[0] = 1n;
+    if (a[1] !== 1n) throw new Error("shared bytes");
+    const copy = new BigInt64Array(u);
+    if (copy[1] !== -1n || copy.buffer === u.buffer) throw new Error("copy");
+`,
+);
+
+check(
+    "generator-delegation-empty-yields-and-iterable-classes",
+    `
+    function* inner(): Generator<number> { yield 1; yield 2; }
+    function* outer(): Generator<number> { yield* inner(); yield* [3, 4]; yield 5; }
+    if ([...outer()].join(",") !== "1,2,3,4,5") throw new Error("delegation");
+    function* gaps(): Generator<number | undefined> { yield 1; yield; yield 3; }
+    const seen: Array<number | undefined> = [];
+    for (const value of gaps()) seen.push(value);
+    if (seen.length !== 3 || seen[1] !== undefined || seen[2] !== 3) throw new Error("empty yield");
+    const log: string[] = [];
+    function* guarded(): Generator<number> {
+        try { yield 1; yield 2; } finally { log.push("inner closed"); }
+    }
+    function* delegating(): Generator<number> {
+        try { yield* guarded(); yield 9; } finally { log.push("outer closed"); }
+    }
+    for (const value of delegating()) { if (value === 1) break; }
+    if (log.join(",") !== "inner closed,outer closed") throw new Error("return forwarded to the delegate");
+    const items = [1, 2];
+    function* live(): Generator<number> { yield* items; }
+    const iterator = live();
+    const first = iterator.next();
+    items.push(3);
+    if (first.value !== 1 || [...iterator].join(",") !== "2,3") throw new Error("array delegate reads live");
+    class Range {
+        constructor(private readonly end: number) {}
+        *[Symbol.iterator](): Generator<number> { for (let i = 0; i < this.end; i++) yield i; }
+        *scaled(factor: number): Generator<number> { for (const value of this) yield value * factor; }
+    }
+    const range = new Range(3);
+    if ([...range].join(",") !== "0,1,2") throw new Error("iterable class spread");
+    let sum = 0;
+    for (const value of range.scaled(10)) sum += value;
+    if (sum !== 30) throw new Error("generator method");
+    class Bag { items = [1, 2]; *[Symbol.iterator](): Iterator<number> { yield* this.items; } }
+    let total = 0;
+    for (const value of new Bag()) total += value;
+    if (total !== 3) throw new Error("iterable class");
+`,
+);
+
+test("generator delegation and empty yields refuse unrepresented protocols", () => {
+    for (const [source, message] of [
+        [
+            "function* g(): Generator<number> { yield* new Set([1]); } const xs = [...g()]; export {};",
+            /yield\* delegates to a generator, an iterator or an array/,
+        ],
+        [
+            "interface P { a: number } function* g(): Generator<P | undefined> { yield; } const xs = [...g()]; export {};",
+            /A generator's empty yields produce undefined/,
+        ],
+        [
+            "class Bag { [Symbol.iterator](): Iterator<number> { return [1, 2][Symbol.iterator](); } } let t = 0; for (const v of new Bag()) t += v; export {};",
+            /A \[Symbol\.iterator\] method is lowered as a generator method/,
+        ],
+        [
+            "class N { constructor(readonly v: number, readonly next: N | null) {} *walk(): Generator<number> { yield this.v; if (this.next) yield* this.next.walk(); } } const xs = [...new N(1, new N(2, null)).walk()]; export {};",
+            /Recursive generator method 'N\.walk' is not supported/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "class-expressions-bound-to-constants",
+    `
+    const K = class { n = 1; };
+    if (new K().n !== 1) throw new Error("class expression");
+    const Counter = class Tally {
+        static created = 0;
+        count: number;
+        constructor(start: number) { this.count = start; Tally.created++; }
+        bump(): number { return ++this.count; }
+    };
+    const first = new Counter(5);
+    const second = new Counter(1);
+    if (first.bump() !== 6 || second.bump() !== 2 || Counter.created !== 2) throw new Error("named class expression");
+    if (!(first instanceof Counter)) throw new Error("instanceof");
+    class Base { kind(): string { return "base"; } }
+    const Derived = class extends Base { kind(): string { return "derived:" + super.kind(); } };
+    if (new Derived().kind() !== "derived:base") throw new Error("extends");
+`,
+);
+
+test("a class expression outside a const initializer refuses", () => {
+    for (const source of [
+        "let K = class { n = 1; }; const k = new K(); export {};",
+        "function make(c: new () => { n: number }): number { return new c().n; } const n = make(class { n = 1; }); export {};",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /A class expression is lowered as the initializer of a const it names/,
+        );
+});
+
+check(
+    "symbol-keyed-struct-literals",
+    `
+    const brand: unique symbol = Symbol("occluder");
+    interface Occluders {
+        readonly [brand]: true;
+        readonly clips: readonly number[];
+        readonly key: string;
+    }
+    const byKey = new Map<number, Occluders>();
+    function make(clips: readonly number[]): Occluders {
+        const snapshot = clips.map((clip) => Object.freeze([clip, clip + 1]));
+        return Object.freeze({
+            [brand]: true as const,
+            clips: Object.freeze(snapshot.map((pair) => pair[0]!)),
+            key: \`C\${clips.join(",")}\`,
+        });
+    }
+    byKey.set(1, make([1, 2]));
+    const direct: Occluders = { [brand]: true, clips: [3], key: "direct" };
+    byKey.set(2, direct);
+    if (byKey.get(1)!.key !== "C1,2" || byKey.get(2)![brand] !== true) throw new Error("brand records");
+    if (Object.keys(direct).join(",") !== "clips,key") throw new Error("string keys");
+`,
+);

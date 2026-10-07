@@ -1717,6 +1717,10 @@ export class BindingScopes {
                     "enummap",
                     "event-target",
                     "module-namespace",
+                    "bigint",
+                    "symbol",
+                    "i64array",
+                    "u64array",
                 ].includes(value.dataType.kind));
         if (isJsonValue(value) || snapshotsData) {
             const cpp = this.context.allocateTemporaryCppName(label);

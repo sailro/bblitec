@@ -1,11 +1,76 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    resolvedSymbol,
+    symbolPropertyKey,
+} from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
+
+/**
+ * The local class a name's symbol declares: a class declaration, or a
+ * `const` the program binds to a class expression (`const K = class {}`).
+ */
+export function localClassOfSymbol(
+    symbol: ts.Symbol | undefined,
+): ts.ClassLikeDeclaration | undefined {
+    for (const declaration of symbol?.declarations ?? []) {
+        if (ts.isClassLike(declaration)) return declaration;
+        const initializer =
+            ts.isVariableDeclaration(declaration) &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            declaration.initializer
+                ? skipOuterExpressions(declaration.initializer)
+                : undefined;
+        if (initializer && ts.isClassExpression(initializer))
+            return initializer;
+    }
+    return undefined;
+}
+
+/** Parentheses and type assertions around an expression. */
+function skipOuterExpressions(expression: ts.Expression): ts.Expression {
+    while (
+        ts.isParenthesizedExpression(expression) ||
+        ts.isAsExpression(expression) ||
+        ts.isSatisfiesExpression(expression) ||
+        ts.isTypeAssertionExpression(expression)
+    )
+        expression = expression.expression;
+    return expression;
+}
+
+/**
+ * The names a class binds: its own, and for a class expression the `const`
+ * it initializes (the name the class's static members are read through).
+ */
+export function classBindingNames(
+    declaration: ts.ClassLikeDeclaration,
+): ts.Identifier[] {
+    let parent: ts.Node = declaration.parent;
+    while (
+        ts.isParenthesizedExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isTypeAssertionExpression(parent)
+    )
+        parent = parent.parent;
+    const bound =
+        ts.isClassExpression(declaration) &&
+        ts.isVariableDeclaration(parent) &&
+        ts.isIdentifier(parent.name)
+            ? parent.name
+            : undefined;
+    return [
+        ...(bound ? [bound] : []),
+        ...(declaration.name ? [declaration.name] : []),
+    ];
+}
 
 /** Instance fields include the properties declared by constructor parameters. */
 export function classInstanceProperties(
-    declaration: ts.ClassDeclaration,
+    declaration: ts.ClassLikeDeclaration,
 ): (ts.PropertyDeclaration | ts.ParameterDeclaration)[] {
     return declaration.members.flatMap<
         ts.PropertyDeclaration | ts.ParameterDeclaration
@@ -42,7 +107,7 @@ type StaticElement =
  * (`classMethod`, `classAccessors`, `classChain`).
  */
 export interface ClassMemberTable {
-    readonly declaration: ts.ClassDeclaration;
+    readonly declaration: ts.ClassLikeDeclaration;
     /** The local class this one extends. */
     readonly base: ClassMemberTable | undefined;
     /** An `extends` clause naming something other than a local class. */
@@ -70,7 +135,10 @@ export interface ClassMemberTable {
 }
 
 /** Tables are pure functions of the program, so they outlive any emission transaction. */
-const classMemberTables = new WeakMap<ts.ClassDeclaration, ClassMemberTable>();
+const classMemberTables = new WeakMap<
+    ts.ClassLikeDeclaration,
+    ClassMemberTable
+>();
 
 export function isStaticMember(member: ts.ClassElement): boolean {
     return (
@@ -78,7 +146,7 @@ export function isStaticMember(member: ts.ClassElement): boolean {
     );
 }
 
-function isAbstractClass(declaration: ts.ClassDeclaration): boolean {
+function isAbstractClass(declaration: ts.ClassLikeDeclaration): boolean {
     return (
         (ts.getCombinedModifierFlags(declaration) &
             ts.ModifierFlags.Abstract) !==
@@ -109,9 +177,9 @@ function recordImplementation<T extends ts.FunctionLikeDeclaration>(
 /** The local class an `extends` clause names, or the clause when it names something else. */
 function resolveHeritage(
     checker: ts.TypeChecker,
-    declaration: ts.ClassDeclaration,
+    declaration: ts.ClassLikeDeclaration,
 ):
-    | { base: ts.ClassDeclaration }
+    | { base: ts.ClassLikeDeclaration }
     | { unsupported: ts.ExpressionWithTypeArguments }
     | { errorBase: string }
     | undefined {
@@ -126,7 +194,7 @@ function resolveHeritage(
         ERROR_CONSTRUCTORS.has(symbol.name)
     )
         return { errorBase: symbol.name };
-    const base = symbol?.getDeclarations()?.find(ts.isClassDeclaration);
+    const base = localClassOfSymbol(symbol);
     return base &&
         !base.getSourceFile().isDeclarationFile &&
         (ts.getCombinedModifierFlags(base) & ts.ModifierFlags.Ambient) === 0
@@ -136,7 +204,7 @@ function resolveHeritage(
 
 export function classMemberTable(
     checker: ts.TypeChecker,
-    declaration: ts.ClassDeclaration,
+    declaration: ts.ClassLikeDeclaration,
 ): ClassMemberTable {
     const cached = classMemberTables.get(declaration);
     if (cached) return cached;
@@ -166,8 +234,17 @@ export function classMemberTable(
             staticElements.push(member);
             continue;
         }
-        if (!member.name || !ts.isMemberName(member.name)) continue;
-        const name = member.name.text;
+        // A method a unique symbol names (`*[Symbol.iterator]()`) is keyed
+        // by that symbol's property key.
+        const name = !member.name
+            ? undefined
+            : ts.isMemberName(member.name)
+              ? member.name.text
+              : ts.isMethodDeclaration(member) &&
+                  ts.isComputedPropertyName(member.name)
+                ? symbolPropertyKey(checker, member.name.expression)
+                : undefined;
+        if (name === undefined) continue;
         if (ts.isMethodDeclaration(member)) {
             recordImplementation(
                 isStaticMember(member) ? staticMethods : methods,
@@ -239,7 +316,7 @@ export function classErrorBase(table: ClassMemberTable): string | undefined {
  */
 export function classHasStaticState(
     checker: ts.TypeChecker,
-    declaration: ts.ClassDeclaration,
+    declaration: ts.ClassLikeDeclaration,
 ): boolean {
     return classChain(classMemberTable(checker, declaration)).some(
         (link, index) =>
@@ -264,7 +341,7 @@ export function classChain(table: ClassMemberTable): ClassMemberTable[] {
 /** Whether `table`'s class is `ancestor` or extends it. */
 export function classExtends(
     table: ClassMemberTable,
-    ancestor: ts.ClassDeclaration,
+    ancestor: ts.ClassLikeDeclaration,
 ): boolean {
     return classChain(table).some((link) => link.declaration === ancestor);
 }
@@ -286,6 +363,29 @@ export function classMethod(
         declared ??= method;
     }
     return declared;
+}
+
+/** The `[Symbol.iterator]` method an instance of `table`'s class sees. */
+export function classIteratorMethod(
+    checker: ts.TypeChecker,
+    table: ClassMemberTable,
+): ts.MethodDeclaration | undefined {
+    for (const link of classChain(table))
+        for (const method of link.methods.values()) {
+            const name = method.name;
+            if (
+                ts.isComputedPropertyName(name) &&
+                ts.isPropertyAccessExpression(name.expression) &&
+                name.expression.name.text === "iterator" &&
+                ts.isIdentifier(name.expression.expression) &&
+                name.expression.expression.text === "Symbol" &&
+                declaredInDefaultLibrary(
+                    resolvedSymbol(checker, name.expression.expression),
+                )
+            )
+                return method;
+        }
+    return undefined;
 }
 
 /**
@@ -358,10 +458,10 @@ export function staticClassMember(
     const member = resolvedSymbol(checker, name)?.declarations?.find(
         (candidate): candidate is ts.ClassElement =>
             ts.isClassElement(candidate) &&
-            ts.isClassDeclaration(candidate.parent) &&
+            ts.isClassLike(candidate.parent) &&
             isStaticMember(candidate),
     );
-    if (!member || !ts.isClassDeclaration(member.parent)) return undefined;
+    if (!member || !ts.isClassLike(member.parent)) return undefined;
     return {
         table: classMemberTable(checker, member.parent),
         name: name.text,
@@ -381,23 +481,26 @@ export function staticClassMember(
 export class ClassHierarchy {
     /** @unjournaled Derived from the program alone, on first use. */
     private subclassesByClass:
-        Map<ts.ClassDeclaration, ts.ClassDeclaration[]> | undefined;
+        Map<ts.ClassLikeDeclaration, ts.ClassLikeDeclaration[]> | undefined;
 
     public constructor(
         private readonly checker: ts.TypeChecker,
         private readonly program: ts.Program,
     ) {}
 
-    public table(declaration: ts.ClassDeclaration): ClassMemberTable {
+    public table(declaration: ts.ClassLikeDeclaration): ClassMemberTable {
         return classMemberTable(this.checker, declaration);
     }
 
     /** The classes that name `declaration` in their `extends` clause, in source order. */
     public subclasses(
-        declaration: ts.ClassDeclaration,
-    ): readonly ts.ClassDeclaration[] {
+        declaration: ts.ClassLikeDeclaration,
+    ): readonly ts.ClassLikeDeclaration[] {
         if (!this.subclassesByClass) {
-            const found = new Map<ts.ClassDeclaration, ts.ClassDeclaration[]>();
+            const found = new Map<
+                ts.ClassLikeDeclaration,
+                ts.ClassLikeDeclaration[]
+            >();
             for (const file of this.program.getSourceFiles()) {
                 if (
                     file.isDeclarationFile ||
@@ -405,7 +508,7 @@ export class ClassHierarchy {
                 )
                     continue;
                 forEachAnalysisNode(file, (node) => {
-                    if (!ts.isClassDeclaration(node)) return;
+                    if (!ts.isClassLike(node)) return;
                     const base = this.table(node).base?.declaration;
                     if (!base) return;
                     const list = found.get(base) ?? [];
@@ -419,7 +522,7 @@ export class ClassHierarchy {
     }
 
     /** Whether the class takes part in inheritance at all. */
-    public inHierarchy(declaration: ts.ClassDeclaration): boolean {
+    public inHierarchy(declaration: ts.ClassLikeDeclaration): boolean {
         return (
             this.table(declaration).base !== undefined ||
             this.subclasses(declaration).length > 0
@@ -427,16 +530,16 @@ export class ClassHierarchy {
     }
 
     /** The class at the top of `declaration`'s chain. */
-    public root(declaration: ts.ClassDeclaration): ts.ClassDeclaration {
+    public root(declaration: ts.ClassLikeDeclaration): ts.ClassLikeDeclaration {
         return classChain(this.table(declaration)).at(-1)!.declaration;
     }
 
     /** Every class of the hierarchy under `root`, itself first, depth first in source order. */
     public hierarchyClasses(
-        root: ts.ClassDeclaration,
-    ): readonly ts.ClassDeclaration[] {
-        const classes: ts.ClassDeclaration[] = [];
-        const visit = (current: ts.ClassDeclaration): void => {
+        root: ts.ClassLikeDeclaration,
+    ): readonly ts.ClassLikeDeclaration[] {
+        const classes: ts.ClassLikeDeclaration[] = [];
+        const visit = (current: ts.ClassLikeDeclaration): void => {
             classes.push(current);
             this.subclasses(current).forEach(visit);
         };
@@ -450,8 +553,8 @@ export class ClassHierarchy {
      * source order. The order is the hierarchy's tag numbering.
      */
     public concreteClasses(
-        declaration: ts.ClassDeclaration,
-    ): readonly ts.ClassDeclaration[] {
+        declaration: ts.ClassLikeDeclaration,
+    ): readonly ts.ClassLikeDeclaration[] {
         return this.hierarchyClasses(declaration).filter(
             (candidate) => !isAbstractClass(candidate),
         );
@@ -467,7 +570,7 @@ export class ClassHierarchy {
     ): readonly (ts.MethodDeclaration | undefined)[] | undefined {
         const owner = method.parent;
         if (
-            !ts.isClassDeclaration(owner) ||
+            !ts.isClassLike(owner) ||
             owner.getSourceFile().isDeclarationFile ||
             isStaticMember(method) ||
             !ts.isMemberName(method.name)
@@ -502,7 +605,7 @@ export class ClassHierarchy {
     }
 
     /** The run-time tag of a concrete class within its hierarchy. */
-    public tag(declaration: ts.ClassDeclaration): number {
+    public tag(declaration: ts.ClassLikeDeclaration): number {
         return this.concreteClasses(this.root(declaration)).indexOf(
             declaration,
         );
@@ -513,8 +616,8 @@ export class ClassHierarchy {
      * static class a receiver narrowed to them can be read as.
      */
     public commonClass(
-        classes: readonly ts.ClassDeclaration[],
-    ): ts.ClassDeclaration {
+        classes: readonly ts.ClassLikeDeclaration[],
+    ): ts.ClassLikeDeclaration {
         const [first, ...rest] = classes;
         if (!first) throw new Error("A common class needs at least one class.");
         return classChain(this.table(first)).find((link) =>

@@ -2215,14 +2215,14 @@ export interface ValueFields {
     /** JavaScript function identity retained by a materialized native callback. */
     platformCallbackIdentity?: number;
     /** Constructed class identity, retained when an inlined return wraps Value. */
-    classDeclaration?: ts.ClassDeclaration;
+    classDeclaration?: ts.ClassLikeDeclaration;
     /**
      * The concrete classes a stored instance read as `classDeclaration` can
      * be at run time, when there are several; absent when its class is exact.
      */
-    classCandidates?: readonly ts.ClassDeclaration[];
+    classCandidates?: readonly ts.ClassLikeDeclaration[];
     /** The class whose static fields this record holds: the value of a class name. */
-    classStatics?: ts.ClassDeclaration;
+    classStatics?: ts.ClassLikeDeclaration;
     /** A resolved builtin constructor retained through generation-known aliases. */
     builtinConstructor?: "ResizeObserver" | "MutationObserver";
     /**

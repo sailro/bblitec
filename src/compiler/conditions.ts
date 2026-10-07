@@ -28,6 +28,7 @@ import { unwrapExpression } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
+import { isBigIntTyped } from "./bigint-values.js";
 import { isStringValue, sameCompiledValue, type Value } from "./types.js";
 
 function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
@@ -98,6 +99,13 @@ export class ConditionLowerer {
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
+        // A BigInt is truthy unless it is zero.
+        if (isBigIntTyped(this.context.checker, unwrapped)) {
+            const condition = this.context.dataLowerer.truthinessCondition(
+                this.context.compileValue(unwrapped),
+            );
+            if (condition !== undefined) return condition;
+        }
         if (this.context.options.workers && ts.isAwaitExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             if (value.kind === "void") {
@@ -618,6 +626,16 @@ export class ConditionLowerer {
                 rightValue,
                 unwrapped.right,
             );
+            // A BigInt is strictly equal only to a BigInt.
+            if (
+                equality &&
+                (leftValue.dataType?.kind === "bigint") !==
+                    (rightValue.dataType?.kind === "bigint")
+            ) {
+                this.context.emitDiscardedValue(leftValue);
+                this.context.emitDiscardedValue(rightValue);
+                return operator === "==" ? "false" : "true";
+            }
             if (
                 equality &&
                 (hasBorrowedArrayIdentity(leftValue.dataType) ||

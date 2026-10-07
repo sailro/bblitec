@@ -63,6 +63,10 @@ export const scalarKinds: DataKindOperations<
     | "plural-rules"
     | "list-format"
     | "number"
+    | "symbol"
+    | "bigint"
+    | "i64array"
+    | "u64array"
     | "boolean"
     | "string"
     | "arraybuffer"
@@ -125,6 +129,16 @@ export const scalarKinds: DataKindOperations<
     "plural-rules": opaqueLeaf("bbl::pal::PluralRules", "pluralrules"),
     "list-format": opaqueLeaf("bbl::pal::ListFormat", "listformat"),
     number: reseatingLeaf(CPP_SCALAR.number, "n"),
+    symbol: reseatingLeaf("bbl::js::Symbol", "sym", true),
+    bigint: reseatingLeaf("bbl::js::BigInt", "big"),
+    i64array: {
+        ...reseatingLeaf("bbl::js::I64Array", "i64", true),
+        sharesStorage: true,
+    },
+    u64array: {
+        ...reseatingLeaf("bbl::js::U64Array", "u64", true),
+        sharesStorage: true,
+    },
     boolean: reseatingLeaf(CPP_SCALAR.boolean, "b"),
     string: reseatingLeaf(CPP_SCALAR.string, "str"),
     arraybuffer: reseatingLeaf("bbl::js::ArrayBuffer", "ab", true),

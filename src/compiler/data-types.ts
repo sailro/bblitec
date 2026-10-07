@@ -76,8 +76,10 @@ import {
     declaredInDefaultLibrary,
     declaredInDomLibrary,
     declaredSymbol,
+    isSymbolPropertyKey,
     libraryGlobal,
     resolvedSymbol,
+    symbolFieldName,
 } from "./symbols.js";
 import {
     absentValueKind,
@@ -91,6 +93,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
     type ClassHierarchy,
+    classBindingNames,
     classChain,
     classErrorBase,
     classInstanceProperties,
@@ -453,7 +456,7 @@ export const classTagMember = "bbl_class_tag";
  * declaration's own `P`.
  */
 interface ClassStructBinding {
-    declaration: ts.ClassDeclaration;
+    declaration: ts.ClassLikeDeclaration;
     type: ts.Type;
 }
 
@@ -543,6 +546,8 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "number-format"
         | "plural-rules"
         | "list-format"
+        | "i64array"
+        | "u64array"
     ),
 ])[] = [
     ["Storage", "dom", "storage"],
@@ -559,6 +564,8 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["NumberFormat", "default", "number-format"],
     ["PluralRules", "default", "plural-rules"],
     ["ListFormat", "default", "list-format"],
+    ["BigInt64Array", "default", "i64array"],
+    ["BigUint64Array", "default", "u64array"],
 ];
 
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
@@ -1195,7 +1202,7 @@ export class DataTypeRegistry {
         if (
             type.getCallSignatures().length ||
             type.getConstructSignatures().length ||
-            type.symbol?.declarations?.some(ts.isClassDeclaration) ||
+            type.symbol?.declarations?.some(ts.isClassLike) ||
             this.checker.getPropertiesOfType(type).length === 0
         )
             return;
@@ -1346,7 +1353,7 @@ export class DataTypeRegistry {
             if (contextual) noteImplemented(contextual);
             return;
         }
-        if (!ts.isClassDeclaration(node.parent) || isStaticMember(node)) return;
+        if (!ts.isClassLike(node.parent) || isStaticMember(node)) return;
         for (const clause of node.parent.heritageClauses ?? [])
             if (clause.token === ts.SyntaxKind.ImplementsKeyword)
                 for (const implemented of clause.types)
@@ -2115,6 +2122,10 @@ export class DataTypeRegistry {
         ) {
             return { kind: "string" };
         }
+        if ((type.flags & ts.TypeFlags.ESSymbolLike) !== 0)
+            return { kind: "symbol" };
+        if ((type.flags & ts.TypeFlags.BigIntLike) !== 0)
+            return { kind: "bigint" };
         if ((type.flags & ts.TypeFlags.Union) !== 0) {
             const members = (type as ts.UnionType).types;
             if (
@@ -2191,6 +2202,13 @@ export class DataTypeRegistry {
                     : declaredInDefaultLibrary(type.symbol)),
         );
         if (libraryObject) return { kind: libraryObject[2] };
+        // A tagged template's frozen strings array; its `raw` array is
+        // found from its identity (`bbl::js::template_raw`).
+        if (
+            type.symbol?.name === "TemplateStringsArray" &&
+            declaredInDefaultLibrary(type.symbol)
+        )
+            return { kind: "vector", element: { kind: "string" } };
         const deferredObject =
             declaredInDomLibrary(type.symbol) &&
             DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
@@ -2317,7 +2335,7 @@ export class DataTypeRegistry {
         }
         if (
             type.symbol &&
-            (type.symbol.declarations ?? []).some(ts.isClassDeclaration)
+            (type.symbol.declarations ?? []).some(ts.isClassLike)
         ) {
             if (declaredIn(type.symbol, "babylon")) {
                 return undefined;
@@ -3534,7 +3552,7 @@ export class DataTypeRegistry {
                 (member) =>
                     // Class instances retain their nominal owner; their fields
                     // alone cannot represent instanceof or private brands.
-                    member.symbol?.declarations?.some(ts.isClassDeclaration) ||
+                    member.symbol?.declarations?.some(ts.isClassLike) ||
                     member.getCallSignatures().length > 0 ||
                     member.getConstructSignatures().length > 0 ||
                     this.checker.getIndexInfosOfType(member).length > 0,
@@ -4140,7 +4158,7 @@ export class DataTypeRegistry {
 
     /** The active substitution, so a receiver can carry it. */
     public typeArgumentsOf(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         type: ts.Type,
     ): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
         const parameters = declaration.typeParameters;
@@ -4178,7 +4196,8 @@ export class DataTypeRegistry {
         return undefined;
     }
 
-    private resolveTypeParameter(type: ts.Type): ts.Type {
+    /** A type with every type parameter in force replaced by its argument. */
+    public resolveTypeParameter(type: ts.Type): ts.Type {
         const seen = new Set<ts.Type>();
         while (!seen.has(type)) {
             seen.add(type);
@@ -4596,7 +4615,9 @@ export class DataTypeRegistry {
                 );
             fields.push({
                 sourceName: name,
-                name: sanitizeIdentifier(name),
+                name: sanitizeIdentifier(
+                    isSymbolPropertyKey(name) ? symbolFieldName(name) : name,
+                ),
                 type: mapped,
                 ...(accessor ? { accessor } : {}),
                 ...(proxy ? { accessorReceiver: provisionalName } : {}),
@@ -4947,7 +4968,7 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): DataType | undefined {
         const declaration = (type.symbol?.declarations ?? []).find(
-            ts.isClassDeclaration,
+            ts.isClassLike,
         );
         if (!declaration) {
             return undefined;
@@ -4969,7 +4990,9 @@ export class DataTypeRegistry {
             return this.fromClassHierarchy(declaration, node);
         }
         const name = this.uniqueName(
-            sanitizeIdentifier(declaration.name?.text ?? "Instance"),
+            sanitizeIdentifier(
+                classBindingNames(declaration)[0]?.text ?? "Instance",
+            ),
             this.structNames,
         );
         this.classStructNames.set(identity, name);
@@ -4992,12 +5015,12 @@ export class DataTypeRegistry {
      * ever one of them; a field an override restates is the base's slot.
      */
     private fromClassHierarchy(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         node: ts.Node,
     ): DataType {
         const root = this.classHierarchy.root(declaration);
         const classes = this.classHierarchy.hierarchyClasses(root);
-        const typeOf = (member: ts.ClassDeclaration): ts.Type => {
+        const typeOf = (member: ts.ClassLikeDeclaration): ts.Type => {
             const symbol = member.name
                 ? declaredSymbol(this.checker, member.name)
                 : undefined;
@@ -5089,7 +5112,7 @@ export class DataTypeRegistry {
      * must name the same slots whatever order the walk reached things in.
      */
     private classStructFields(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         type: ts.Type,
     ): { fields: DataStructField[]; presences: FieldPresence[] } {
         const table = this.classHierarchy.table(declaration);
@@ -5180,7 +5203,7 @@ export class DataTypeRegistry {
      * instance can have -- abstract with no concrete class under it.
      */
     private rejectUnsupportedRuntimeClass(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         node: ts.Node,
     ): void {
         const className = declaration.name?.text ?? "?";
@@ -5386,7 +5409,7 @@ export class DataTypeRegistry {
             }
         }
         const symbol = concrete.symbol;
-        const declaration = symbol?.declarations?.find(ts.isClassDeclaration);
+        const declaration = symbol?.declarations?.find(ts.isClassLike);
         if (
             !symbol ||
             !declaration ||
@@ -6464,6 +6487,8 @@ export class DataTypeRegistry {
                 "    writer.begin_object();",
             );
             const fieldLines = (field: DataStructField): string[] => {
+                // JSON writes string-keyed properties only.
+                if (isSymbolPropertyKey(field.sourceName)) return [];
                 if (isUndefinedDataType(field.type))
                     return [
                         `    static_cast<void>(value.${field.name}${field.accessor ? ".get()" : ""});`,

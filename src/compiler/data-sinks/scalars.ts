@@ -262,6 +262,22 @@ const opaqueSink = {
             : undefined,
 };
 
+/** A leaf only a value of its own kind converts to. */
+function sameKindSink<K extends "symbol" | "bigint" | "i64array" | "u64array">(
+    kind: K,
+): DataSinkOperations<K>[K] {
+    return {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                unwrapped,
+            ),
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === kind ? value.cpp : undefined,
+    };
+}
+
 export const scalarsSinks: DataSinkOperations<
     | "module-namespace"
     | "weak-key"
@@ -288,6 +304,10 @@ export const scalarsSinks: DataSinkOperations<
     | "list-format"
     | "weak-ref"
     | "number"
+    | "symbol"
+    | "bigint"
+    | "i64array"
+    | "u64array"
     | "boolean"
     | "string"
     | "json"
@@ -455,6 +475,10 @@ export const scalarsSinks: DataSinkOperations<
     "weak-ref": opaqueSink,
     date: opaqueSink,
     number: { expression: expressionNumber, value: valueNumber },
+    symbol: sameKindSink("symbol"),
+    bigint: sameKindSink("bigint"),
+    i64array: sameKindSink("i64array"),
+    u64array: sameKindSink("u64array"),
     boolean: { expression: expressionBoolean, value: valueBoolean },
     string: { expression: expressionString, value: valueString },
     json: { expression: expressionJson, value: valueJson },

@@ -1,6 +1,7 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { rootIdentifier, argumentAt } from "./syntax.js";
+import { isSymbolPropertyKey } from "./symbols.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -155,6 +156,9 @@ function uncloneablePosition(
                 type.name,
                 node,
             )) {
+                // Cloning drops a symbol-keyed property the struct keeps.
+                if (isSymbolPropertyKey(field.sourceName))
+                    return refuse("an object with a symbol-keyed property");
                 const found = uncloneablePosition(
                     context,
                     field.type,
@@ -203,6 +207,13 @@ function uncloneablePosition(
             return refuse("an Intl.ListFormat");
         case "weak-ref":
             return refuse("a WeakRef");
+        case "symbol":
+            return refuse("a Symbol");
+        case "bigint":
+            return refuse("a BigInt");
+        case "i64array":
+        case "u64array":
+            return refuse("a BigInt typed array");
         case "bufferview":
             return refuse("an ArrayBufferView without its element class");
         case "numberindex":

@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { classChain, type ClassHierarchy } from "./class-members.js";
+import {
+    classChain,
+    localClassOfSymbol,
+    type ClassHierarchy,
+} from "./class-members.js";
 import { isEngineDeclaration, type EngineBodies } from "./engine-bodies.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { propertyIsReadOnly } from "./data-types.js";
@@ -761,7 +765,7 @@ export class EvaluationOrder {
         declaration: ts.Node,
     ): readonly Unit[] | undefined {
         if (ts.isConstructorDeclaration(declaration))
-            return ts.isClassDeclaration(declaration.parent)
+            return ts.isClassLike(declaration.parent)
                 ? this.construction(declaration.parent)
                 : undefined;
         if (ts.isMethodDeclaration(declaration))
@@ -769,7 +773,7 @@ export class EvaluationOrder {
         if (ts.isAccessor(declaration))
             return declaration.body &&
                 !(
-                    ts.isClassDeclaration(declaration.parent) &&
+                    ts.isClassLike(declaration.parent) &&
                     this.hierarchy.subclasses(declaration.parent).length > 0
                 )
                 ? [declaration]
@@ -1037,7 +1041,7 @@ export class EvaluationOrder {
     private runs(access: DirectAccess, accessor: ts.AccessorDeclaration): void {
         if (
             !accessor.body ||
-            (ts.isClassDeclaration(accessor.parent) &&
+            (ts.isClassLike(accessor.parent) &&
                 this.hierarchy.subclasses(accessor.parent).length > 0)
         ) {
             cannotFollow(access);
@@ -1212,15 +1216,14 @@ export class EvaluationOrder {
         call: ts.CallExpression | ts.NewExpression,
     ): readonly Unit[] | "library" | undefined {
         if (call.expression.kind === ts.SyntaxKind.SuperKeyword) {
-            const owner = ts.findAncestor(call, ts.isClassDeclaration);
+            const owner = ts.findAncestor(call, ts.isClassLike);
             const base = owner && this.hierarchy.table(owner).base?.declaration;
             return base ? this.construction(base) : undefined;
         }
         if (ts.isNewExpression(call)) {
-            const declaration = resolvedSymbol(
-                this.checker,
-                unwrapExpression(call.expression),
-            )?.declarations?.find(ts.isClassDeclaration);
+            const declaration = localClassOfSymbol(
+                resolvedSymbol(this.checker, unwrapExpression(call.expression)),
+            );
             if (declaration && !declaration.getSourceFile().isDeclarationFile)
                 return this.construction(declaration);
             return this.checker
@@ -1308,7 +1311,7 @@ export class EvaluationOrder {
 
     /** The constructors and field initializers `new` of a class runs, or undefined past a non-local base. */
     private construction(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): readonly Unit[] | undefined {
         const units: Unit[] = [];
         for (const link of classChain(this.hierarchy.table(declaration))) {
@@ -1457,9 +1460,14 @@ export function readScalarOperand(
                 ? "std::string"
                 : value.kind === "data" &&
                     value.dataType &&
-                    ["number", "boolean", "string", "enum"].includes(
-                        value.dataType.kind,
-                    )
+                    [
+                        "number",
+                        "boolean",
+                        "string",
+                        "enum",
+                        "bigint",
+                        "symbol",
+                    ].includes(value.dataType.kind)
                   ? context.dataTypes.cppType(value.dataType)
                   : undefined;
     if (!type) return undefined;

@@ -404,7 +404,7 @@ function valueStruct(
                                 field.type,
                                 value,
                                 ts.isMethodDeclaration(method) &&
-                                    ts.isClassDeclaration(method.parent),
+                                    ts.isClassLike(method.parent),
                                 homeReceiver(self, method),
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(

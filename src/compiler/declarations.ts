@@ -32,6 +32,8 @@ import {
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
+import { provenUndefinedValue } from "./undefined-values.js";
+import { localClassOfSymbol } from "./class-members.js";
 import { ownKeysKnown } from "./object-statics.js";
 import {
     staticNumberValue,
@@ -95,6 +97,7 @@ interface DeclarationContext
         Pick<
             LoweringServices,
             | "allocateTemporaryCppName"
+            | "classLowerer"
             | "callbackIdentity"
             | "captureManagedClosureLines"
             | "compileCallbackWithValues"
@@ -874,6 +877,22 @@ export class DeclarationLowerer {
             return;
         }
 
+        // `const K = class { ... }` declares the class `K`: what the
+        // declaration runs (static fields and blocks) runs here.
+        const classExpression = this.context.unwrap(declaration.initializer);
+        if (ts.isClassExpression(classExpression)) {
+            if (
+                localClassOfSymbol(
+                    this.context.symbols.valueSymbol(declaration.name),
+                ) !== classExpression
+            )
+                this.context.fail(
+                    declaration.initializer,
+                    "A class expression is lowered as the initializer of a const it names.",
+                );
+            this.context.classLowerer.emitDeclaration(classExpression);
+            return;
+        }
         const forwardCallback = this.prepareForwardFunctionResult(
             declaration,
             cppName,
@@ -1031,6 +1050,23 @@ export class DeclarationLowerer {
             return;
         }
         if (value.kind === "void") {
+            // `void x`, or a call whose completion is proven undefined: the
+            // effects run here and the binding is `undefined`.
+            if (
+                !value.abruptCompletion &&
+                !value.coroutineResult &&
+                !this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                ) &&
+                provenUndefinedValue(this.context, declaration.initializer)
+            ) {
+                this.context.emitDiscardedValue(value);
+                this.context.bindings.defineVariable(declaration.name, {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                });
+                return;
+            }
             this.context.fail(
                 declaration.initializer,
                 `Expression assigned to '${sourceName}' does not produce a native value.`,

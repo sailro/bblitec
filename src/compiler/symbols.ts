@@ -328,6 +328,32 @@ export function enumMemberConstant(
         : checker.getConstantValue(access);
 }
 
+/**
+ * The property key a `unique symbol` names (`[brand]`): the checker's name
+ * of the property it keys, which no string key spells.
+ */
+export function symbolPropertyKey(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): string | undefined {
+    const type = checker.getTypeAtLocation(expression);
+    return (type.flags & ts.TypeFlags.UniqueESSymbol) !== 0
+        ? ts.unescapeLeadingUnderscores(
+              (type as ts.UniqueESSymbolType).escapedName,
+          )
+        : undefined;
+}
+
+/** Whether a property key is a symbol's: no string-keyed enumeration lists it. */
+export function isSymbolPropertyKey(key: string): boolean {
+    return key.startsWith("__@");
+}
+
+/** A symbol-keyed struct field's C++ name. */
+export function symbolFieldName(key: string): string {
+    return `symbol_${key.slice(3)}`;
+}
+
 /** The names the library binds the global object itself to. */
 const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
     "globalThis",

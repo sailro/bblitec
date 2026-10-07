@@ -44,6 +44,7 @@ interface UndefinedContext {
         isImmutableVariable(node: ts.Node | undefined): boolean;
     };
     sharedClosures: { identifierIsRebound(identifier: ts.Identifier): boolean };
+    dataTypes: { resolveTypeParameter(type: ts.Type): ts.Type };
 }
 
 /** Follow immutable results to a concrete completion, never an erased void type. */
@@ -57,9 +58,12 @@ export function provenUndefinedValue(
         const expression = unwrapExpression(source);
         if (seen.has(expression)) return false;
         seen.add(expression);
+        // A type parameter answers through the substitution in force.
         if (
             ts.isVoidExpression(expression) ||
-            (context.checker.getTypeAtLocation(expression).flags &
+            (context.dataTypes.resolveTypeParameter(
+                context.checker.getTypeAtLocation(expression),
+            ).flags &
                 ts.TypeFlags.Undefined) !==
                 0
         )

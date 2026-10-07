@@ -31,7 +31,11 @@ import {
     type DataType,
 } from "./data-types.js";
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
-import { classMemberTable, classMethod } from "./class-members.js";
+import {
+    classMemberTable,
+    classMethod,
+    localClassOfSymbol,
+} from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
@@ -123,7 +127,7 @@ interface NativeMethodSignature {
     parameters: DataFunctionParameter[];
     returnType: DataType | undefined;
     method: ts.MethodDeclaration;
-    classDeclaration: ts.ClassDeclaration;
+    classDeclaration: ts.ClassLikeDeclaration;
     getters: Record<string, ts.GetAccessorDeclaration>;
 }
 
@@ -617,7 +621,7 @@ export class NativeFunctionLowerer {
     public tryCompileMethodCall(
         call: ts.CallExpression,
         method: ts.MethodDeclaration,
-        classDeclaration: ts.ClassDeclaration,
+        classDeclaration: ts.ClassLikeDeclaration,
         instance: Value,
     ): Value | undefined {
         if (requiresDefaultParameterBinding(this.context.checker, method, call))
@@ -1674,7 +1678,7 @@ export class NativeFunctionLowerer {
      */
     private resolveMethodSignature(
         method: ts.MethodDeclaration,
-        classDeclaration: ts.ClassDeclaration,
+        classDeclaration: ts.ClassLikeDeclaration,
     ): NativeMethodSignature | undefined {
         const cached = this.methodSignatures.get(method);
         if (cached) {
@@ -1917,7 +1921,7 @@ export class NativeFunctionLowerer {
      */
     private collectMethodClosure(
         method: ts.MethodDeclaration,
-        classDeclaration: ts.ClassDeclaration,
+        classDeclaration: ts.ClassLikeDeclaration,
     ): MethodClosure | undefined {
         const table = classMemberTable(this.context.checker, classDeclaration);
         const memberNamed = (
@@ -1943,11 +1947,12 @@ export class NativeFunctionLowerer {
         const localClassConstruction = (node: ts.NewExpression): boolean => {
             const callee = this.context.unwrap(node.expression);
             if (!ts.isIdentifier(callee)) return true;
-            const target = resolvedSymbol(this.context.checker, callee);
-            return (target?.declarations ?? []).some(
-                (candidate) =>
-                    ts.isClassDeclaration(candidate) &&
-                    !candidate.getSourceFile().isDeclarationFile,
+            const target = localClassOfSymbol(
+                resolvedSymbol(this.context.checker, callee),
+            );
+            return (
+                target !== undefined &&
+                !target.getSourceFile().isDeclarationFile
             );
         };
         const invalid = (root: ts.Node) =>

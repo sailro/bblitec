@@ -13,6 +13,7 @@ import {
     PINNED_COMPARISON_OPERATORS,
     foldNumericComparison,
 } from "../lowering/pinned-operators.js";
+import { localClassOfSymbol } from "./class-members.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -34,7 +35,7 @@ interface ConditionComparison {
 /** The one primitive type every member of `type` has, if it has one. */
 function primitiveKind(
     type: ts.Type,
-): "number" | "string" | "boolean" | undefined {
+): "number" | "string" | "boolean" | "bigint" | undefined {
     const kinds = new Set(
         (type.isUnion() ? type.types : [type]).map((member) =>
             member.flags & ts.TypeFlags.NumberLike
@@ -43,7 +44,9 @@ function primitiveKind(
                   ? "string"
                   : member.flags & ts.TypeFlags.BooleanLike
                     ? "boolean"
-                    : undefined,
+                    : member.flags & ts.TypeFlags.BigIntLike
+                      ? "bigint"
+                      : undefined,
         ),
     );
     const [kind] = kinds;
@@ -186,8 +189,8 @@ export function compileClassInstanceOf(
     className: ts.Identifier,
 ): string | undefined {
     const symbol = context.symbols.valueSymbol(className);
-    const declaration = symbol?.valueDeclaration;
-    if (!declaration || !ts.isClassDeclaration(declaration)) {
+    const declaration = localClassOfSymbol(symbol);
+    if (!symbol || !declaration) {
         return undefined;
     }
     const value = context.compileValue(expression.left);

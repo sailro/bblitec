@@ -35,6 +35,7 @@ import {
     isGlobalUndefined,
     isNullishLiteral,
     resolvedSymbol,
+    symbolPropertyKey,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import {
@@ -166,6 +167,17 @@ import {
     literalMember,
     unwrapExpression,
 } from "./syntax.js";
+import {
+    namespaceMemberName,
+    refuseNamespaceMemberWrite,
+} from "./namespace-declarations.js";
+import { isTemplateStringsArray } from "./tagged-templates.js";
+import { symbolProperty } from "./symbol-values.js";
+import {
+    bigintArrayElementAccess,
+    bigintArrayProperty,
+    compileBigIntArrayNew,
+} from "./bigint-values.js";
 import { recordAt } from "./record-access.js";
 import {
     completeLiteralSelf,
@@ -385,7 +397,7 @@ function lengthExtents(
                     ts.isBindingElement(node.parent) ||
                     ts.isFunctionDeclaration(node.parent) ||
                     ts.isFunctionExpression(node.parent) ||
-                    ts.isClassDeclaration(node.parent) ||
+                    ts.isClassLike(node.parent) ||
                     ts.isClassExpression(node.parent)) &&
                     node.parent.name === node)
             )
@@ -1764,6 +1776,15 @@ export class DataLowerer {
         );
     }
 
+    /** A literal property's key: a unique symbol's property key, else its source text. */
+    private symbolKeyOrText(name: ts.PropertyName): string {
+        return (
+            (ts.isComputedPropertyName(name)
+                ? symbolPropertyKey(this.context.checker, name.expression)
+                : undefined) ?? name.getText()
+        );
+    }
+
     public dataTypeAt(node: ts.Node): DataType | undefined {
         // The checker types a private name only through its symbol; the
         // name node itself answers `any`.
@@ -1856,9 +1877,13 @@ export class DataLowerer {
                 );
             }
             if (mode === "write") {
-                const shared = this.sharesObjectStorage(
-                    this.narrowOptional(bound, unwrapped).dataType,
-                );
+                const stored = this.narrowOptional(bound, unwrapped).dataType;
+                // A primitive (a BigInt, a symbol) is a value: writing a copy
+                // of one is rebinding that copy.
+                const shared =
+                    this.sharesObjectStorage(stored) ||
+                    stored?.kind === "bigint" ||
+                    stored?.kind === "symbol";
                 if (state === "copy" && !shared) {
                     this.context.fail(
                         unwrapped,
@@ -1873,6 +1898,15 @@ export class DataLowerer {
                 }
             }
             return bound;
+        }
+        const namespaceMember = namespaceMemberName(
+            this.context.checker,
+            unwrapped,
+        );
+        if (namespaceMember) {
+            if (mode === "write")
+                refuseNamespaceMemberWrite(this.context, namespaceMember);
+            return this.compileDataPath(namespaceMember, mode, throughReceiver);
         }
         if (ts.isPropertyAccessExpression(unwrapped) && mode === "write") {
             this.context.classLowerer.refuseInheritedStaticWrite(unwrapped);
@@ -4176,6 +4210,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             return undefined;
         }
+        if (dataType.kind === "symbol")
+            return symbolProperty(this, owner, property);
+        if (dataType.kind === "i64array" || dataType.kind === "u64array")
+            return bigintArrayProperty(this, owner, property);
+        if (
+            dataType.kind === "vector" &&
+            property === "raw" &&
+            isTemplateStringsArray(this.context.checker, access.expression)
+        )
+            return this.leafValue(
+                `bbl::js::template_raw(${owner.cpp})`,
+                dataType,
+            );
         if (dataType.kind === "handle") {
             // The path left the data model at a resource handle; the
             // engine's own property lowering owns everything past it.
@@ -4633,6 +4680,34 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             return undefined;
         }
+        if (dataType.kind === "i64array" || dataType.kind === "u64array") {
+            // The array is read before an index that may replace it.
+            const array = this.indexMayChangeOwner(access)
+                ? this.context.bindings.pinValueToTemporary(
+                      owner,
+                      "bigint_array",
+                      access.expression,
+                  )
+                : owner;
+            const index = preparedIndex
+                ? this.compileKnownValueForSink(
+                      preparedIndex,
+                      { kind: "number" },
+                      access.argumentExpression,
+                  )
+                : this.context.compileNumber(
+                      access.argumentExpression,
+                      "double",
+                  );
+            this.context.reachJsData();
+            return bigintArrayElementAccess(
+                this,
+                array,
+                index,
+                mode,
+                this.context.cppString(this.indexSiteLabel(access)),
+            );
+        }
         if (dataType.kind === "file-list") {
             if (mode === "write")
                 return this.context.fail(
@@ -5040,7 +5115,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 const name =
                     key.staticString ??
-                    (keyType.isStringLiteral() ? keyType.value : undefined);
+                    (keyType.isStringLiteral() ? keyType.value : undefined) ??
+                    symbolPropertyKey(
+                        this.context.checker,
+                        access.argumentExpression,
+                    );
                 if (name === undefined) return undefined;
                 this.context.emitDiscardedValue(key);
                 const field = this.context.dataTypes.structField(
@@ -7263,6 +7342,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             element.kind !== "enum" &&
             element.kind !== "handle" &&
             element.kind !== "function" &&
+            element.kind !== "symbol" &&
+            element.kind !== "bigint" &&
             !(
                 element.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(element.name)
@@ -7270,7 +7351,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             this.context.fail(
                 call,
-                `Array.${method} is supported for numbers, booleans, strings, tags, handles, functions, and shared objects, not ${element.kind}: JavaScript would compare by identity here.`,
+                `Array.${method} is supported for numbers, booleans, strings, tags, handles, functions, symbols, BigInts and shared objects, not ${element.kind}: JavaScript would compare by identity here.`,
             );
         }
         this.context.reachJsData();
@@ -8208,6 +8289,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             compileWeakRefNew(this, expression) ??
             this.compileNewArray(expression) ??
             this.compileTypedArrayNew(expression) ??
+            compileBigIntArrayNew(this, expression) ??
             this.compileArrayBufferNew(expression) ??
             this.compileDataViewNew(expression) ??
             this.compileMapOrSetNew(expression)
@@ -9956,12 +10038,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             if (ts.isPropertyAssignment(property)) {
-                const name = property.name.getText();
                 provided.set(
                     ts.isStringLiteral(property.name) ||
                         ts.isNumericLiteral(property.name)
                         ? property.name.text
-                        : name,
+                        : this.symbolKeyOrText(property.name),
                     property.initializer,
                 );
                 continue;
@@ -10428,7 +10509,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             field.type,
                             spread,
                             ts.isMethodDeclaration(method) &&
-                                ts.isClassDeclaration(method.parent),
+                                ts.isClassLike(method.parent),
                         );
                         this.context.emit({
                             kind: "expression",
@@ -10495,7 +10576,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 declareDefault();
                 const field = this.context.dataTypes.structField(
                     dataType.name,
-                    property.name.getText(),
+                    this.symbolKeyOrText(property.name),
                     property,
                 );
                 this.context.emit({
@@ -13421,6 +13502,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
+        // Every symbol is truthy; a BigInt is unless it is zero.
+        if (value.kind === "data" && value.dataType?.kind === "symbol")
+            return `(static_cast<void>(${value.cpp}), true)`;
+        if (value.kind === "data" && value.dataType?.kind === "bigint")
+            return `!(${value.cpp}).is_zero()`;
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return (
                 objectTruthinessCpp(value) ?? `static_cast<bool>(${value.cpp})`
@@ -13835,7 +13921,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? resolvedSymbol(this.context.checker, owner.expression)
                       ?.valueDeclaration
                 : undefined;
-        if (!declaration || !ts.isClassDeclaration(declaration))
+        if (!declaration || !ts.isClassLike(declaration))
             return this.context.fail(
                 call,
                 "Object.getPrototypeOf is lowered in a comparison with a class's prototype only.",
@@ -14705,6 +14791,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (iteratorRange) {
             return iteratorRange;
         }
+        // An instance whose class implements `[Symbol.iterator]`.
+        const iterable = knownTuple
+            ? undefined
+            : this.context.classLowerer.compileIterableIterator(expression);
+        if (iterable?.dataType?.kind === "iterator")
+            return { container: iterable, element: iterable.dataType.element };
         const rawValue =
             knownTuple && !ts.isIdentifier(this.context.unwrap(expression))
                 ? this.materializeKnownTuple(expression, knownTuple)
@@ -15659,6 +15751,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const rawIterable =
             projected ??
+            this.context.classLowerer.compileIterableIterator(
+                spread.expression,
+            ) ??
             (ts.isIdentifier(expression)
                 ? this.materializeConstantArray(expression)
                 : undefined) ??

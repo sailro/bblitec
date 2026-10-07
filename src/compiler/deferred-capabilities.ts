@@ -215,7 +215,7 @@ function declarationApi(
         ts.isIdentifier(parent.parent.name)
     )
         return `${parent.parent.name.text}.${name.text}`;
-    if (ts.isInterfaceDeclaration(parent) || ts.isClassDeclaration(parent)) {
+    if (ts.isInterfaceDeclaration(parent) || ts.isClassLike(parent)) {
         const namespace = parent.parent;
         const prefix =
             ts.isModuleBlock(namespace) &&
