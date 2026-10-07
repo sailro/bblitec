@@ -1806,6 +1806,9 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
                            return false;
                    },
                    left, right);
+    } else if constexpr (requires { left.same_value_zero(right); }) {
+        // A value carrying several kinds (a parsed document) owns its rule.
+        return left.same_value_zero(right);
     } else {
         return std::equal_to<T>{}(left, right);
     }
@@ -1828,6 +1831,8 @@ template <typename T> [[nodiscard]] decltype(auto) stored_key(const T& key) {
             },
             stored);
         return stored;
+    } else if constexpr (requires { key.stored_key(); }) {
+        return key.stored_key();
     } else {
         return key;
     }
@@ -1858,6 +1863,8 @@ template <typename T> struct ValueHash {
             return ValueHash<const void*>{}(value.get());
         } else if constexpr (requires { value.identity(); }) {
             return ValueHash<std::remove_cvref_t<decltype(value.identity())>>{}(value.identity());
+        } else if constexpr (requires { value.key_hash(); }) {
+            return value.key_hash();
         } else {
             return std::hash<T>{}(value);
         }

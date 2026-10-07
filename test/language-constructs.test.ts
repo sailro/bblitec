@@ -8887,3 +8887,345 @@ check(
     if (failed) throw new Error(failed);
 `,
 );
+
+// Entry pairs a callback builds at run time are typed as the entries their
+// consumer stores: array and tuple values beside literal-union keys.
+check(
+    "collection-entries-from-callback-pairs",
+    `
+    type Job = "none" | "farmer" | "smith" | "baker";
+    interface Perk { id: string; job: Job; value: number }
+    const ORDER: readonly Exclude<Job, "none">[] = ["farmer", "smith", "baker"];
+    const GROW: Perk = Object.freeze({ id: "grow", job: "farmer", value: 2 });
+    const FORGE: Perk = Object.freeze({ id: "forge", job: "smith", value: 3 });
+    const BY_JOB = Object.freeze(Object.fromEntries(
+        ORDER.map((job) => [job, Object.freeze(job === "farmer" ? [GROW] : job === "smith" ? [FORGE, GROW] : [])]),
+    )) as Readonly<Record<Exclude<Job, "none">, readonly Perk[]>>;
+    function count(job: Exclude<Job, "none">): number { return BY_JOB[job].length; }
+    const counts: Array<typeof count> = [count];
+    if (counts[0]!("smith") !== 2 || counts[0]!("baker") !== 0 || BY_JOB.farmer[0] !== GROW || BY_JOB.smith[1] !== GROW)
+        throw new Error("perk table");
+    const KEYS: readonly string[] = ["a", "b"];
+    const lists = Object.fromEntries(KEYS.map((key) => [key, key === "a" ? [1, 2] : []]));
+    if (lists.a!.length !== 2 || lists.b!.length !== 0 || Object.keys(lists).join() !== "a,b") throw new Error("list entries");
+    type Tint = [number, number, number];
+    interface Slot { key: string; tint: Tint }
+    function changed(before: readonly Slot[], after: readonly Slot[]): string {
+        const byKey = new Map(before.map((s) => [s.key, s.tint]));
+        let out = "";
+        for (const s of after) {
+            const old = byKey.get(s.key);
+            if (!old || old[0] !== s.tint[0]) out += s.key;
+        }
+        return out;
+    }
+    const tint: Tint = [1, 0, 0];
+    if (changed([{ key: "a", tint }, { key: "c", tint }], [{ key: "a", tint: [2, 0, 0] }, { key: "b", tint }, { key: "c", tint }]) !== "ab")
+        throw new Error("tuple values");
+`,
+);
+
+// Number() is ToNumber over every representation of its operand.
+check(
+    "number-conversion-of-documents-booleans-and-optionals",
+    `
+    const texts: Array<string | undefined> = ["3", undefined, " 4 ", ""];
+    const flags: Array<boolean | null> = [true, null, false];
+    const numbers: Array<number | undefined> = [2, undefined];
+    let total = "";
+    for (const t of texts) total += Number(t) + ";";
+    for (const f of flags) total += Number(f) + ";";
+    for (const n of numbers) total += Number(n) + ";";
+    const doc = JSON.parse('{"a":"5","b":null,"c":[2],"d":{},"e":true,"f":"x","g":[1,2]}') as Record<string, unknown>;
+    for (const k of ["a", "b", "c", "d", "e", "f", "g", "h"]) total += Number(doc[k]) + ";";
+    if (total !== "3;NaN;4;0;1;0;0;2;NaN;5;0;2;NaN;1;NaN;NaN;NaN;") throw new Error(total);
+    interface Placement { bucket: number; slope: boolean }
+    const placements: Placement[] = [{ bucket: 1, slope: true }, { bucket: 0, slope: true }, { bucket: 1, slope: false }];
+    placements.sort((a, b) => a.bucket - b.bucket || Number(a.slope) - Number(b.slope));
+    if (placements.map((p) => p.bucket + (p.slope ? "t" : "f")).join() !== "0t,1f,1t") throw new Error("boolean order");
+    function levels(text: string): number[] {
+        const value = JSON.parse(text) as unknown;
+        if (!Array.isArray(value)) throw new Error("levels");
+        const out: number[] = [];
+        for (const raw of value) {
+            const { size } = raw as { size?: unknown };
+            out.push(Number(size));
+        }
+        return out;
+    }
+    const decoded = levels('[{"size":"4"},{"size":2},{"size":null},{}]');
+    if (decoded[0] !== 4 || decoded[1] !== 2 || decoded[2] !== 0 || !Number.isNaN(decoded[3])) throw new Error("fields");
+`,
+);
+
+// An array stored as an array of another element type is a copy, admitted
+// only where JavaScript could not tell it from the one array it keeps.
+check(
+    "arrays-stored-with-converted-elements",
+    `
+    const ORDER = ["deer", "rabbit", "fox"] as const;
+    type Kind = (typeof ORDER)[number];
+    interface Def { airborne?: boolean; clips?: { fly?: string[] } }
+    const TABLE: Record<Kind, Def> = { deer: {}, rabbit: { airborne: true, clips: { fly: ["a"] } }, fox: { airborne: true } };
+    function grounded(): readonly Kind[] {
+        return (Object.keys(TABLE) as Kind[]).filter((kind) => TABLE[kind].airborne === true && (TABLE[kind].clips?.fly?.length ?? 0) === 0);
+    }
+    const kinds: Array<typeof grounded> = [grounded];
+    if (kinds[0]!().join() !== "fox") throw new Error("keys as literal union");
+    type ChurchFailure = "nave" | "bell";
+    type MillFailure = "wheel" | "water";
+    interface Plate { kind: "church" | "mill"; church?: { failures: readonly ChurchFailure[] }; mill?: { failures: readonly MillFailure[] } }
+    function failures(plate: Readonly<Plate>): readonly string[] {
+        switch (plate.kind) {
+            case "church": return plate.church?.failures ?? [];
+            case "mill": return plate.mill?.failures ?? [];
+        }
+    }
+    const reports: Array<typeof failures> = [failures];
+    if (reports[0]!({ kind: "church", church: { failures: ["bell"] } }).join() !== "bell" || reports[0]!({ kind: "mill" }).length !== 0)
+        throw new Error("literal unions as strings");
+    type Mask = readonly (boolean | undefined)[];
+    function dirty(mask: Mask | null): boolean { return mask?.some(Boolean) === true; }
+    function merge(current: boolean[] | null, next: Mask): boolean[] {
+        const out = current ? current.slice() : new Array<boolean>(next.length).fill(false);
+        for (let i = 0; i < next.length; i++) if (next[i]) out[i] = true;
+        return out;
+    }
+    function run(): string {
+        let pending: boolean[] | null = null;
+        const touched: boolean[] = [false, true];
+        pending = merge(pending, touched);
+        pending = merge(pending, [true]);
+        return (dirty(pending) ? "dirty:" : "clean:") + pending.join();
+    }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!() !== "dirty:true,true") throw new Error("lent optional lanes");
+    type Ids = readonly (string | null | undefined)[];
+    function ids(wall: Ids | undefined, houses: readonly { primary: string; secondary?: string }[]): string[] {
+        const resolve = (requested: Ids | undefined) => [...new Set((requested ?? []).map((id) => id ?? "none"))];
+        const parts = (h: { primary: string; secondary?: string }): string[] => h.secondary ? [h.primary, h.secondary] : [h.primary];
+        return resolve([...(wall ?? []), ...houses.flatMap(parts)]);
+    }
+    const resolved: Array<typeof ids> = [ids];
+    if (resolved[0]!(["a", null, undefined, "a"], [{ primary: "b", secondary: "c" }]).join() !== "a,none,b,c") throw new Error("fresh optional lanes");
+    interface Sample { readonly lastMs: number; readonly maxMs: number }
+    interface Timings { record(slot: number, ms: number): void; frame(): [string, Sample][] }
+    function timings(labels: readonly string[]): Timings {
+        const last = new Float32Array(labels.length);
+        const max = new Float32Array(labels.length);
+        return {
+            record(slot, ms) { last[slot] = ms; if (ms > max[slot]!) max[slot] = ms; },
+            frame() { return labels.map((label, i) => [label, { lastMs: last[i]!, maxMs: max[i]! }]); },
+        };
+    }
+    const factories: Array<typeof timings> = [timings];
+    const t = factories[0]!(["a", "b"]);
+    t.record(1, 4);
+    const frame = t.frame();
+    if (frame[1]![0] !== "b" || frame[1]![1].maxMs !== 4 || frame[0]![1].lastMs !== 0) throw new Error("tuple record lanes");
+    const parsed = JSON.parse('["a", 1, "b", null]') as unknown;
+    const strings = new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : []);
+    if (strings.size !== 2 || !strings.has("b")) throw new Error("guarded document strings");
+`,
+);
+
+test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
+    for (const [source, message] of [
+        [
+            "type K = 'a' | 'b'; const kinds: K[] = []; function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; kinds.push('a'); if (roots[0]!().length !== 1) throw new Error('x');",
+            /is a copy, and the program changes the elements of such arrays/,
+        ],
+        [
+            "type K = 'a' | 'b'; const kinds: readonly K[] = [1, 2].map((i) => (i % 2 ? 'a' : 'b')); function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
+            /is a copy, and the program compares such arrays by identity/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+// `x || undefined` and `x && y` over optional scalars keep absence apart
+// from the falsy values the left operand selects.
+check(
+    "optional-scalar-logical-values",
+    `
+    interface Tower { id?: number; name: string; label?: string }
+    interface Input { towers: readonly Tower[]; idOf(tower: Tower, index: number): number | undefined }
+    function assemble(input: Input): string { return input.towers.map((t, i) => String(input.idOf(t, i))).join(); }
+    function live(towers: readonly Tower[]): string {
+        return assemble({ towers, idOf: (tower) => tower.id || undefined });
+    }
+    const lives: Array<typeof live> = [live];
+    if (lives[0]!([{ id: 3, name: "a" }, { name: "b" }, { id: 0, name: "c" }, { id: NaN, name: "d" }]) !== "3,undefined,undefined,undefined")
+        throw new Error("number or undefined");
+    function label(tower: Tower): string | undefined { return tower.label || undefined; }
+    const labels: Array<typeof label> = [label];
+    if (labels[0]!({ name: "a", label: "" }) !== undefined || labels[0]!({ name: "a", label: "x" }) !== "x") throw new Error("string or undefined");
+    function guarded(tower: Tower): number | undefined { return tower.id && tower.id + 1; }
+    const guards: Array<typeof guarded> = [guarded];
+    if (guards[0]!({ name: "a", id: 0 }) !== 0 || guards[0]!({ name: "a" }) !== undefined || guards[0]!({ name: "a", id: 2 }) !== 3)
+        throw new Error("number and number");
+`,
+);
+
+// A parameter defaulted to a value that may itself be undefined stays optional.
+check(
+    "defaulted-parameter-that-may-be-undefined",
+    `
+    interface Idle { day?: number; built?: number }
+    interface Fields { od?: number; os?: number }
+    function fields(idle: Idle, mutation = false, built = idle.built): Fields {
+        const out: Fields = {};
+        if (!mutation && idle.day !== undefined) out.od = idle.day;
+        if (built !== undefined) out.os = built;
+        return out;
+    }
+    const stored: Array<typeof fields> = [fields];
+    const f = stored[0]!({ day: 2, built: 1 });
+    if (f.od !== 2 || f.os !== 1) throw new Error("defaults");
+    const g = stored[0]!({}, true, 5);
+    if (g.od !== undefined || g.os !== 5) throw new Error("override");
+    if (stored[0]!({}).os !== undefined || "os" in stored[0]!({})) throw new Error("absent default");
+`,
+);
+
+// An assertion to a record type reads the record member of a union of a
+// string and one record type.
+check(
+    "asserted-record-member-of-a-string-union",
+    `
+    interface Decl { readonly name: string; readonly sampleType?: "float" | "depth" }
+    type Sampler = string | Decl;
+    function samplers(shadows: boolean): readonly Sampler[] {
+        return shadows ? [{ name: "csm", sampleType: "depth" }, { name: "stable" } as Sampler] : [{ name: "albedo" }];
+    }
+    function names(shadows: boolean): string[] { return samplers(shadows).map((sampler) => (sampler as { name: string }).name); }
+    const stored: Array<typeof names> = [names];
+    if (stored[0]!(true).join() !== "csm,stable" || stored[0]!(false).join() !== "albedo") throw new Error("names");
+    const name = (sampler: Sampler): string => (sampler as { name: string }).name;
+    if (name({ name: "x" }) !== "x") throw new Error("name");
+`,
+);
+
+// A spread copies a field only to have a later property replace it.
+check(
+    "spread-fields-a-later-property-replaces",
+    `
+    interface Span { ax: number; bx: number; banked: boolean; stepYA?: number; stepYB?: number; tint?: [number, number, number] }
+    function split(span: Span, cuts: number[]): Span[] {
+        const bounds = [0, ...cuts, 1];
+        const segs: Span[] = [];
+        for (let i = 0; i + 1 < bounds.length; i++)
+            segs.push({ ...span, ax: bounds[i]!, bx: bounds[i + 1]!, banked: i === 0 ? span.banked : false, stepYA: undefined, stepYB: undefined });
+        for (let i = 0; i + 1 < segs.length; i++) segs[i]!.stepYB = i;
+        return segs;
+    }
+    const stored: Array<typeof split> = [split];
+    const tint: [number, number, number] = [1, 2, 3];
+    const s = stored[0]!({ ax: 0, bx: 1, banked: true, stepYA: 4, tint }, [0.5]);
+    if (s.length !== 2 || s[0]!.stepYA !== undefined || s[0]!.stepYB !== 0 || s[1]!.stepYB !== undefined) throw new Error("replaced fields");
+    if (s[1]!.tint !== tint || s[1]!.banked || !s[0]!.banked || s[1]!.ax !== 0.5) throw new Error("copied fields");
+`,
+);
+
+// Collections whose type arguments name unknown hold parsed documents,
+// keyed by SameValueZero: object identity, string value, one NaN.
+check(
+    "collections-of-parsed-documents",
+    `
+    function asRecord(v: unknown): Record<string, unknown> | null {
+        return v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
+    }
+    function firstById(text: string): string {
+        const rows = JSON.parse(text) as unknown[];
+        const byId = new Map<number, Record<string, unknown>>();
+        for (const raw of rows) {
+            const row = asRecord(raw);
+            const id = row?.id;
+            if (row !== null && typeof id === "number" && !byId.has(id)) byId.set(id, row);
+        }
+        if (byId.get(1) !== asRecord(rows[0])) throw new Error("identity");
+        let out = "";
+        for (const [id, row] of byId) out += id + "=" + String(row.name) + ";";
+        return out;
+    }
+    const stored: Array<typeof firstById> = [firstById];
+    if (stored[0]!('[{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":1,"name":"c"},3]') !== "1=a;2=b;") throw new Error("first rows");
+    type Row = Record<string, unknown>;
+    function count(text: string): string {
+        const seen = new Map<Row, number>();
+        const values = new Set<unknown>();
+        const rows = JSON.parse(text) as unknown[];
+        for (const raw of rows) {
+            values.add(raw);
+            if (raw && typeof raw === "object") seen.set(raw as Row, (seen.get(raw as Row) ?? 0) + 1);
+        }
+        for (const raw of rows) if (raw && typeof raw === "object") seen.set(raw as Row, (seen.get(raw as Row) ?? 0) + 1);
+        values.add(-0);
+        return seen.size + ":" + values.size + ":" + [...seen.values()].join();
+    }
+    const counts: Array<typeof count> = [count];
+    if (counts[0]!('[{"a":1},{"a":1},"x","x",0,null,null]') !== "2:5:2,2") throw new Error("keys " + counts[0]!('[{"a":1},{"a":1},"x","x",0,null,null]'));
+`,
+);
+
+test("collections refuse type arguments without a represented storage", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const pending = new Map<string, object>(); pending.set('a', {}); if (pending.size !== 1) throw new Error('x');",
+            ),
+        /new Map requires concrete data type arguments or a contextual container type/,
+    );
+});
+
+// A parsed array read as a typed array copies its elements where the
+// source builds a new collection (a spread, a Set), and finds its own
+// elements whatever record type the source reads them as.
+check(
+    "parsed-arrays-copied-into-typed-collections",
+    `
+    interface Request { asset: string; clips: readonly string[] }
+    function fail(message: string): never { throw new Error(message); }
+    function normalize(request: Request): Request {
+        if (
+            !Array.isArray(request?.clips) ||
+            request.clips.length === 0 ||
+            request.clips.some((clip) => typeof clip !== "string" || clip.length === 0) ||
+            new Set(request.clips).size !== request.clips.length
+        )
+            fail("clips must be unique names");
+        return { asset: request.asset, clips: [...request.clips] };
+    }
+    function decode(text: string): Request {
+        const metadata = JSON.parse(text) as { request?: unknown };
+        return normalize(metadata.request as Request);
+    }
+    const decoders: Array<typeof decode> = [decode];
+    const r = decoders[0]!('{"request":{"asset":"a","clips":["x","y"]}}');
+    if (r.clips.join() !== "x,y" || r.asset !== "a" || r.clips.length !== 2) throw new Error("normalized");
+    let threw = false;
+    try { decoders[0]!('{"request":{"asset":"a","clips":["x","x"]}}'); } catch { threw = true; }
+    if (!threw) throw new Error("duplicates");
+    type Usage = "walls" | "roof" | "ground";
+    function usages(m: { usages?: readonly Usage[]; usage?: Usage }): Usage[] {
+        if (m.usages && m.usages.length > 0) return [...new Set(m.usages)];
+        return m.usage ? [m.usage] : ["walls"];
+    }
+    function parse(text: string): Usage[] { return usages(JSON.parse(text) as { usages?: Usage[]; usage?: Usage }); }
+    const parsers: Array<typeof parse> = [parse];
+    if (parsers[0]!('{"usages":["roof","walls","roof"]}').join() !== "roof,walls" || parsers[0]!('{"usage":"ground"}').join() !== "ground")
+        throw new Error("literal union set");
+    interface RawNode { name?: string; mesh?: number }
+    interface RawJson { nodes?: RawNode[]; meshes?: { name?: string }[] }
+    function meshName(text: string): string {
+        const json = JSON.parse(text) as RawJson;
+        const node = (json.nodes ?? []).find((n) => n.mesh !== undefined);
+        if (!node || node.mesh === undefined) return "none";
+        if (node !== json.nodes![1]) throw new Error("found element identity");
+        return (node.name ?? "?") + ":" + (json.meshes?.[node.mesh]?.name ?? "-");
+    }
+    const names: Array<typeof meshName> = [meshName];
+    if (names[0]!('{"nodes":[{"name":"a"},{"name":"b","mesh":0}],"meshes":[{"name":"m"}]}') !== "b:m" || names[0]!('{"nodes":[{}]}') !== "none")
+        throw new Error("found node");
+`,
+);

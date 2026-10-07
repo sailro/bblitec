@@ -7,6 +7,7 @@ import {
     type ObservedWrite,
     type ProgramObservations,
 } from "./program-observations.js";
+import { yieldsNewArray } from "./fresh-records.js";
 import { declaredSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 
@@ -119,6 +120,77 @@ export function recordCopyObservation(
     );
     byKey.set(key, answer ?? null);
     return answer;
+}
+
+/**
+ * Why a native copy of an array of plain values (numbers, strings,
+ * booleans and their unions, which have no identity of their own), stored
+ * where the program reads it as `target`, could be told apart from the one
+ * array JavaScript keeps, or undefined when nothing in the program can: a
+ * change of the elements or length of an array either type may hold, or an
+ * identity use of an array the copy's type may hold. An array type holds
+ * the array when their element types are related either way, as array
+ * covariance lets one object reach both.
+ */
+export function arrayCopyObservation(
+    context: RecordObservationContext,
+    source: ts.Type,
+    target: ts.Type,
+): string | undefined {
+    const observations = programObservations(context.program);
+    const { checker } = context;
+    const either = [source, target];
+    const copyTypes = [
+        target,
+        ...observations.assertions
+            .filter(
+                ({ asserted, open }) =>
+                    open || checker.isTypeAssignableTo(asserted, target),
+            )
+            .map(({ asserted }) => asserted),
+    ];
+    if (
+        writesWhere(
+            observations,
+            (type) => holdsArray(checker, type, either),
+            () => true,
+            observations.arrayWrites,
+        )
+    )
+        return "the program changes the elements of such arrays";
+    if (
+        [...observations.identities].some((type) =>
+            holdsArray(checker, type, copyTypes),
+        )
+    )
+        return "the program compares such arrays by identity";
+    return undefined;
+}
+
+/** Whether a value of type `holder` can be one of the arrays typed `arrays`. */
+function holdsArray(
+    checker: ts.TypeChecker,
+    holder: ts.Type,
+    arrays: readonly ts.Type[],
+): boolean {
+    if (holder.isUnion() || holder.isIntersection())
+        return holder.types.some((member) =>
+            holdsArray(checker, member, arrays),
+        );
+    const element = checker.getIndexTypeOfType(holder, ts.IndexKind.Number);
+    if (element === undefined || (holder.flags & ts.TypeFlags.Object) === 0)
+        return holdsRecord(checker, holder, arrays);
+    const open =
+        ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter;
+    if ((element.flags & open) !== 0) return true;
+    return arrays.some((array) => {
+        const own = checker.getIndexTypeOfType(array, ts.IndexKind.Number);
+        return (
+            own === undefined ||
+            checker.isTypeAssignableTo(own, element) ||
+            checker.isTypeAssignableTo(element, own)
+        );
+    });
 }
 
 function observed(
@@ -300,7 +372,8 @@ export function arrayLentForCall(
         ts.findAncestor(
             write.node,
             (node) => node === call || reached.units.has(node),
-        ) !== undefined;
+        ) !== undefined &&
+        !createdDuringCall(context.checker, write, call, reached.units);
     // An engine or ambient function may change any array it is handed.
     return (
         writesWhere(observations, holds, during, observations.arrayWrites) ===
@@ -311,6 +384,73 @@ export function arrayLentForCall(
             (write) => write.property === undefined && during(write),
         ) === undefined
     );
+}
+
+/**
+ * Whether an array write changes an array the call itself creates: a new
+ * array (`new Array(n).fill(x)`), or a `const` local of a function the
+ * call enters (not the one it is written in) initialized with one, so
+ * every activation holds its own array and none existed before the call.
+ */
+function createdDuringCall(
+    checker: ts.TypeChecker,
+    write: ObservedWrite,
+    call: ts.CallExpression,
+    units: ReadonlySet<ts.Node>,
+): boolean {
+    const target = ts.isCallExpression(write.node)
+        ? write.node.expression
+        : write.node;
+    if (
+        !ts.isPropertyAccessExpression(target) &&
+        !ts.isElementAccessExpression(target)
+    )
+        return false;
+    const receiver = unwrapExpression(target.expression);
+    if (newArrayExpression(checker, receiver)) return true;
+    if (!ts.isIdentifier(receiver)) return false;
+    const declaration = declaredSymbol(checker, receiver)?.valueDeclaration;
+    if (
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        !declaration.initializer ||
+        !ts.isVariableDeclarationList(declaration.parent) ||
+        (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+        !newArrayExpression(checker, declaration.initializer)
+    )
+        return false;
+    const owner = ts.findAncestor(declaration, ts.isFunctionLike);
+    return (
+        owner !== undefined &&
+        units.has(owner) &&
+        ts.findAncestor(call, (node) => node === owner) === undefined
+    );
+}
+
+/** An array expression that evaluates to an array no earlier reference holds. */
+function newArrayExpression(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isConditionalExpression(unwrapped))
+        return (
+            newArrayExpression(checker, unwrapped.whenTrue) &&
+            newArrayExpression(checker, unwrapped.whenFalse)
+        );
+    // These methods return their receiver.
+    if (
+        ts.isCallExpression(unwrapped) &&
+        ts.isPropertyAccessExpression(unwrapped.expression) &&
+        ["fill", "copyWithin", "reverse", "sort"].includes(
+            unwrapped.expression.name.text,
+        ) &&
+        checker.isArrayLikeType(
+            checker.getTypeAtLocation(unwrapped.expression.expression),
+        )
+    )
+        return newArrayExpression(checker, unwrapped.expression.expression);
+    return yieldsNewArray(checker, unwrapped);
 }
 
 /**

@@ -1339,7 +1339,7 @@ export class ExpressionLowerer {
                     ts.SyntaxKind.AmpersandAmpersandToken)
         ) {
             const logical =
-                this.context.dataLowerer.compileOptionalBooleanLogicalValue(
+                this.context.dataLowerer.compileOptionalScalarLogicalValue(
                     unwrapped,
                 );
             if (logical) return logical;
@@ -3794,37 +3794,54 @@ export class ExpressionLowerer {
         }
         const value = this.compileValue(unwrapped);
         if (value.kind === "number") return value;
-        if (isStringValue(value)) {
+        const present = (cpp: string, type: DataType | undefined) =>
+            type?.kind === "number"
+                ? `static_cast<double>(${cpp})`
+                : type?.kind === "string"
+                  ? `bbl::js::number_from_string(${cpp})`
+                  : type?.kind === "boolean"
+                    ? `(${cpp} ? 1.0 : 0.0)`
+                    : type?.kind === "json"
+                      ? `${cpp}.to_number()`
+                      : undefined;
+        const number = (cpp: string): Value => {
             this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::number_from_string(${value.cpp})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            (value.dataType.inner.kind === "string" ||
-                value.dataType.inner.kind === "number")
-        ) {
-            const present =
-                value.dataType.inner.kind === "string"
-                    ? "bbl::js::number_from_string(*v)"
-                    : "static_cast<double>(*v)";
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp:
-                    `([&]() { const auto& v = ${value.cpp}; ` +
-                    `return v.has_value() ? ${present} : ` +
-                    `std::numeric_limits<double>::quiet_NaN(); }())`,
-                dataType: { kind: "number" },
-            };
+            return { kind: "number", cpp, dataType: { kind: "number" } };
+        };
+        if (isStringValue(value))
+            return number(present(value.cpp, { kind: "string" })!);
+        if (value.kind === "boolean")
+            return number(present(value.cpp, { kind: "boolean" })!);
+        const direct =
+            value.kind === "data" && present(value.cpp, value.dataType);
+        if (direct) return number(direct);
+        // An absent operand is NaN when it is `undefined` and 0 when it is
+        // `null`, so the storage must say which one it holds.
+        const inner =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : undefined;
+        if (inner && present("*v", inner)) {
+            const absence = absenceKind(this.context.checker, value, unwrapped);
+            const absent =
+                absence === "null"
+                    ? "0.0"
+                    : absence === "either"
+                      ? this.context.fail(
+                            expression,
+                            "Number() of a value that may be null or undefined requires storage telling them apart.",
+                        )
+                      : typeof absence === "object"
+                        ? `(${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
+                        : "std::numeric_limits<double>::quiet_NaN()";
+            return number(
+                `([&]() { const auto& v = ${value.cpp}; ` +
+                    `return v.has_value() ? ${present("*v", inner)} : ${absent}; }())`,
+            );
         }
         this.context.fail(
             expression,
-            `Number() supports number and string values, received ${value.kind}.`,
+            `Number() supports numbers, strings, booleans, parsed documents and their optionals, received ${value.kind}.`,
         );
     }
 

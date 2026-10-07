@@ -6111,7 +6111,16 @@ export class UserFunctionLowerer {
                 "A default parameter requires a distinct undefined state when its argument can also be null.",
             );
         }
-        const type = storage.kind === "optional" ? storage.inner : storage;
+        // A default that may itself be undefined (`p = record.optional`)
+        // leaves the parameter optional: its value is stored as the
+        // parameter's own type, absent or not.
+        const keepsAbsence =
+            storage.kind === "optional" &&
+            nullability(parameter.type).undefined;
+        const type =
+            storage.kind === "optional" && !keepsAbsence
+                ? storage.inner
+                : storage;
         const input = context.allocateTemporaryCppName("default_argument");
         context.emit({
             kind: "declaration",
@@ -6134,7 +6143,8 @@ export class UserFunctionLowerer {
             storage.kind === "optional"
                 ? optionalPresentCpp(input)
                 : `static_cast<bool>(${input})`;
-        const selected = storage.kind === "optional" ? `*${input}` : input;
+        const selected =
+            storage.kind === "optional" && !keepsAbsence ? `*${input}` : input;
         context.emit({
             kind: "declaration",
             // The selected binding is stable, but object and collection

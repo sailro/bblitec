@@ -41,6 +41,7 @@ import {
     absenceKind,
     admitsUndefined,
     arrayElementType,
+    isTypeReference,
     nullability,
     presentValuesTruthy,
     slotHoldsOnlyNull,
@@ -602,6 +603,17 @@ function updateStepCpp(
  * documented value-copy contract: locals bound from data paths are copies and
  * reject writes; owned locals reject writes after escaping by copy.
  */
+/** Whether an expression, past parentheses and `!`, is a type assertion. */
+function assertsType(expression: ts.Expression): boolean {
+    let current = expression;
+    while (
+        ts.isParenthesizedExpression(current) ||
+        ts.isNonNullExpression(current)
+    )
+        current = current.expression;
+    return ts.isAsExpression(current) || ts.isTypeAssertionExpression(current);
+}
+
 export class DataLowerer {
     private readonly indexedStrings = new EmissionMap<
         string,
@@ -3191,6 +3203,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
         if (exact >= 0) return exact;
+        // `(value as { name: string })` asserts a record view of a union
+        // holding one record type: the read is that member's, and a value
+        // holding another member throws where it is selected.
+        if (
+            expression &&
+            narrowed?.kind === "struct" &&
+            assertsType(expression)
+        ) {
+            const records = type.members.flatMap((member, index) =>
+                member.kind === "struct" ? [index] : [],
+            );
+            if (records.length === 1) return records[0]!;
+        }
         // Array.isArray widens readonly arrays to any[] in lib.d.ts. The
         // represented union still supplies the element type when exactly one
         // member is an array; several array alternatives require more evidence.
@@ -8023,6 +8048,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ? this.context.dataTypes.fromTsType(contextualType, expression)
             : undefined;
         const arguments_ = expression.arguments ?? [];
+        // Type arguments naming `unknown` (`Map<number, Record<string,
+        // unknown>>`) hold parsed documents in dynamic storage.
+        const documents = (): DataType | undefined => {
+            const type = this.context.checker.getTypeAtLocation(expression);
+            if (!isTypeReference(type)) return undefined;
+            const types = this.context.dataTypes;
+            const [first, second] = this.context.checker
+                .getTypeArguments(type)
+                .map((argument) =>
+                    types.withDynamicJsonTypes(
+                        true,
+                        () =>
+                            types.dynamicJsonType(argument) ??
+                            types.fromTsType(argument, expression),
+                    ),
+                );
+            if (
+                !first ||
+                (constructedKind === "map") !== (second !== undefined)
+            )
+                return undefined;
+            return second
+                ? {
+                      kind: "map",
+                      key: types.markStoredObjectReferences(first),
+                      value: types.markStoredObjectReferences(second),
+                  }
+                : {
+                      kind: "set",
+                      element: types.markStoredObjectReferences(first),
+                  };
+        };
         const declared =
             expectedType?.kind === "map" || expectedType?.kind === "set"
                 ? expectedType
@@ -8030,7 +8087,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? contextual
                   : direct?.kind === "map" || direct?.kind === "set"
                     ? direct
-                    : undefined;
+                    : [documents()].find(
+                          (type): type is DataType<"map" | "set"> =>
+                              type?.kind === "map" || type?.kind === "set",
+                      );
         // A Set copying a native collection whose element type the checker
         // widened (an `Array.isArray` guard leaves `any[]`) takes the
         // element type of the collection it copies.
@@ -8054,7 +8114,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             copiedType?.kind === "span" ||
             copiedType?.kind === "set"
                 ? { kind: "set", element: copiedType.element }
-                : undefined);
+                : // A parsed array the checker widened to `any[]` keeps its
+                  // elements as documents.
+                  copiedType?.kind === "json"
+                  ? { kind: "set", element: copiedType }
+                  : undefined);
         if (!dataType) {
             this.context.fail(
                 expression,
@@ -8109,20 +8173,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const source = copied ?? this.context.compileValue(iterable);
         // The constructor copies the elements into a new collection, even
         // when the source is a Set. A borrowed view is read, never retained.
+        // The constructor reads each element once and keeps none of the
+        // source, so an element conversion copies nothing JavaScript shares.
         const values =
             source.kind === "data" &&
             (source.dataType?.kind === "span" ||
                 source.dataType?.kind === "set") &&
             dataTypesEqual(source.dataType.element, dataType.element)
                 ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`
-                : this.compileKnownValueForSink(
-                      source,
-                      {
-                          kind: "vector",
-                          element: dataType.element,
-                      },
-                      iterable,
-                  );
+                : isJsonValue(source) && dataType.element.kind !== "json"
+                  ? this.documentElementsCopy(
+                        source,
+                        dataType.element,
+                        iterable,
+                    )
+                  : this.compileKnownValueForSink(
+                        { ...source, unaliased: source.unaliased ?? "object" },
+                        {
+                            kind: "vector",
+                            element: dataType.element,
+                        },
+                        iterable,
+                    );
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
@@ -8751,10 +8823,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (
             dataType.kind === "optional" &&
-            dataType.inner.kind === "boolean" &&
+            ["boolean", "number", "string", "enum"].includes(
+                dataType.inner.kind,
+            ) &&
             ts.isBinaryExpression(unwrapped)
         ) {
-            const logical = this.compileOptionalBooleanLogicalValue(unwrapped);
+            const logical = this.compileOptionalScalarLogicalValue(unwrapped);
             if (logical)
                 return this.compileKnownValueForSink(
                     logical,
@@ -8880,13 +8954,44 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : key === undefined
                   ? mappedElement(this.context.checker, container)
                   : literalMember(container, key);
-        const at = expression ?? node;
-        const previous = this.memberConversion;
-        this.memberConversion = {
-            node: at,
+        return this.compileConvertedMember(
+            member,
+            dataType,
+            expression ?? node,
             expression,
-            elementOf: typeof key === "string" ? undefined : container,
-        };
+            typeof key === "string" ? undefined : container,
+        );
+    }
+
+    /**
+     * Stores `lane` as `dataType`: one lane of a native value a sink at
+     * `node` reads (a key or value of a collection entry pair), which no
+     * expression of the source names, so neither its freshness nor its
+     * narrowing is the node's.
+     */
+    public compileLaneForSink(
+        lane: Value,
+        dataType: DataType,
+        node: ts.Node,
+    ): string {
+        return this.compileConvertedMember(
+            lane,
+            dataType,
+            node,
+            undefined,
+            undefined,
+        );
+    }
+
+    private compileConvertedMember(
+        member: Value,
+        dataType: DataType,
+        at: ts.Node,
+        expression: ts.Expression | undefined,
+        elementOf: ts.Expression | undefined,
+    ): string {
+        const previous = this.memberConversion;
+        this.memberConversion = { node: at, expression, elementOf };
         try {
             return this.compileKnownValueForSink(member, dataType, at);
         } finally {
@@ -8984,12 +9089,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // binding graph, generation cannot retain a snapshot of its contents.
         if (value.dataType?.kind === "tuple")
             this.invalidateStaticElements(value);
+        // A member read out of the node's value narrows by its own
+        // expression; one no expression names keeps its stored type.
+        const narrowing = this.convertedExpression(node);
         if (
             dataType.kind !== "optional" &&
             dataType.kind !== "json" &&
-            ts.isExpression(node)
+            narrowing !== undefined
         ) {
-            value = this.narrowOptional(value, node);
+            value = this.narrowOptional(value, narrowing);
         }
         if (
             value.ownedCpp !== undefined &&
@@ -9367,6 +9475,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return value;
         }
+        // An array of another element type converts its elements as it is
+        // stored (`valueVector`), which decides whether that copy is exact.
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "vector" &&
+            dataType.kind === "vector"
+        )
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+                freshData: true,
+            };
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
@@ -10104,8 +10225,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             assigned.add(field.name);
         };
-        for (const property of literal.properties) {
+        // A spread copies a field a later property of the literal writes
+        // again only to be replaced: the later value is the one kept.
+        const writtenAfter = (index: number): Set<string> =>
+            new Set(
+                literal.properties
+                    .slice(index + 1)
+                    .flatMap((later) =>
+                        ts.isPropertyAssignment(later) ||
+                        ts.isShorthandPropertyAssignment(later)
+                            ? [this.context.propertyName(later.name)].filter(
+                                  (name): name is string => name !== undefined,
+                              )
+                            : [],
+                    ),
+            );
+        for (const [index, property] of literal.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
+                const replaced = writtenAfter(index);
                 const source =
                     this.compileDataPath(property.expression, "read") ??
                     this.context.compileValue(property.expression);
@@ -10129,6 +10266,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     for (const [name, value] of Object.entries(
                         spread.recordProperties ?? {},
                     )) {
+                        if (replaced.has(name)) continue;
                         // A key a conditional spread decides is stored only
                         // while it is own, keeping an earlier value
                         // otherwise; an unwritten `?` field is already
@@ -10230,13 +10368,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
+                    // A getter still runs where the spread reads it.
+                    const excludedKeys = new Set(
+                        this.context.dataTypes
+                            .structFields(
+                                spread.dataType.name,
+                                property,
+                                "accessors",
+                            )
+                            .filter(
+                                (field) =>
+                                    !field.accessor &&
+                                    replaced.has(field.sourceName),
+                            )
+                            .map((field) => field.sourceName),
+                    );
                     for (const name of this.copyStructOwnProperties(
                         { cpp: cppName, type: dataType },
                         spread,
                         spread.dataType,
                         property.expression,
                         "spread",
-                        { fresh: (field) => !assigned.has(field) },
+                        {
+                            excludedKeys,
+                            fresh: (field) => !assigned.has(field),
+                        },
                     ))
                         assigned.add(name);
                     continue;
@@ -11151,8 +11307,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return this.leafValue(result, type);
     }
 
-    /** Nullable boolean selection keeps absence distinct from false. */
-    public compileOptionalBooleanLogicalValue(
+    /**
+     * Nullable scalar selection (`flag && other`, `id || undefined`) keeps
+     * absence distinct from false, 0, NaN and the empty string.
+     */
+    public compileOptionalScalarLogicalValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
         const operator = expression.operatorToken.kind;
@@ -11162,7 +11321,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         const type = this.dataTypeAt(expression);
-        if (type?.kind !== "optional" || type.inner.kind !== "boolean")
+        if (
+            type?.kind !== "optional" ||
+            !["boolean", "number", "string", "enum"].includes(type.inner.kind)
+        )
             return undefined;
         // An object contributes only its absent state to `object && bool`;
         // its present value belongs to the unselected arm, not the bool sink.
@@ -11177,7 +11339,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.compileLogicalSelection(
                 expression,
                 type,
-                "logical_boolean",
+                "logical_value",
                 (left) =>
                     absentObject
                         ? this.context.dataTypes.absentValue(type)
@@ -15303,6 +15465,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: `${iterable.cpp}.elements()`,
                 dataType: { kind: "span", element: dataType.element },
             };
+        // A parsed array spreads into a new array of scalar lanes, each
+        // element stored as the scalar sinks store a parsed value.
+        if (
+            isJsonValue(iterable) &&
+            ["number", "string", "boolean", "enum"].includes(
+                dataType.element.kind,
+            )
+        )
+            return {
+                ...this.leafValue(
+                    this.documentElementsCopy(
+                        iterable,
+                        dataType.element,
+                        spread,
+                    ),
+                    dataType,
+                ),
+                freshSpread: true,
+            };
         const iterated = this.iteratedElements(iterable);
         if (iterated && "lanes" in iterated) {
             return {
@@ -15365,6 +15546,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return projected?.freshData || iterated.range.freshData
             ? { ...iterated.range, freshSpread: true }
             : iterated.range;
+    }
+
+    /**
+     * A new array of a parsed array's elements, each stored as `element`
+     * the way a scalar sink stores a parsed value. A value that is not an
+     * array has no elements.
+     */
+    private documentElementsCopy(
+        document: Value,
+        element: DataType,
+        node: ts.Node,
+    ): string {
+        const item = this.context.allocateTemporaryCppName("document_item");
+        let converted = "";
+        const prepared = this.context.captureEmittedLines(() => {
+            converted = this.compileKnownValueForSink(
+                this.leafValue(item, { kind: "json" }),
+                element,
+                node,
+            );
+        });
+        if (prepared.length > 0)
+            this.context.fail(
+                node,
+                "A parsed array's elements convert in place; this element conversion needs statements.",
+            );
+        this.context.reachJsData();
+        return (
+            `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(element)}>(` +
+            `${document.cpp}.elements(), [](const auto& ${item}) { return ${converted}; })`
+        );
     }
 
     public compileVectorSink(

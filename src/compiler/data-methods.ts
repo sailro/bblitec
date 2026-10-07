@@ -1861,7 +1861,10 @@ function compileArrayFind(
     const { call, narrowed, dataType } = state;
     // The checked program's ES2022 library does not declare `findLast`:
     // its result is the receiver's element or undefined.
+    // A parsed array's element is found as itself, whatever record type
+    // the source reads it as; its absence is the document's undefined.
     const resultType =
+        (dataType.element.kind === "json" ? dataType.element : undefined) ??
         (method === "find" ? lowerer.dataTypeAt(call) : undefined) ??
         (method === "findLast"
             ? lowerer.context.dataTypes.nullableType(dataType.element, true)
@@ -2459,8 +2462,10 @@ function compileArrayMap(
                             callback,
                             "Array.flatMap result",
                         );
+                    // flatMap reads the returned array's elements once and
+                    // keeps none of the array itself.
                     const values = lowerer.compileKnownValueForSink(
-                        result,
+                        { ...result, unaliased: result.unaliased ?? "object" },
                         mappedType,
                         callback,
                     );

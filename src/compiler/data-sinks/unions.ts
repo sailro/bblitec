@@ -55,6 +55,11 @@ function unionValue(
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
+    // A record stored as the union's one record type converts through
+    // the record sink, which decides how the two types share the object.
+    const records = type.members.filter((member) => member.kind === "struct");
+    if (memberIndex < 0 && source?.kind === "struct" && records.length === 1)
+        memberIndex = type.members.indexOf(records[0]!);
     if (memberIndex < 0) return undefined;
     const cpp = lowerer.compileKnownValueForSink(
         value,

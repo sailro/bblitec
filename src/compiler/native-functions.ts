@@ -805,6 +805,16 @@ export class NativeFunctionLowerer {
                         ? known.dataType.inner
                         : known.dataType,
                 );
+            if (
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "parse" &&
+                libraryGlobal(
+                    this.context.checker,
+                    node.expression.expression,
+                ) === "JSON"
+            )
+                return predicate({ kind: "json" });
             return (
                 (ts.isPropertyAccessExpression(node) ||
                     ts.isElementAccessExpression(node)) &&
