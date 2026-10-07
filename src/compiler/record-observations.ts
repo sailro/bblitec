@@ -9,7 +9,7 @@ import {
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
 import { declaredSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { expressionMayRunCode, unwrapExpression } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
 export interface RecordObservationContext {
@@ -206,6 +206,22 @@ export function arrayCopyObservation(
         )
     )
         return "the program changes the elements of such arrays";
+    return arrayIdentityObservation(context, target);
+}
+
+/**
+ * Why a native copy of an array, stored where the program reads it as
+ * `target`, could be told apart from the array JavaScript keeps by its
+ * identity alone, or undefined when no identity use (`ProgramObservations`)
+ * can reach an array of that type. An assertion to a subtype of `target`,
+ * or out of `any` or `unknown`, extends where the copy may flow.
+ */
+export function arrayIdentityObservation(
+    context: RecordObservationContext,
+    target: ts.Type,
+): string | undefined {
+    const observations = programObservations(context.program);
+    const { checker } = context;
     const copyTypes = [
         target,
         ...observations.assertions
@@ -219,11 +235,14 @@ export function arrayCopyObservation(
         [...observations.identities].some((type) =>
             holdsArray(checker, type, copyTypes, (element) =>
                 copyTypes.some((copy) => {
-                    const own = elementOf(copy);
+                    const own = checker.getIndexTypeOfType(
+                        copy,
+                        ts.IndexKind.Number,
+                    );
                     return (
                         own === undefined ||
-                        assignable(own, element) ||
-                        assignable(element, own)
+                        checker.isTypeAssignableTo(own, element) ||
+                        checker.isTypeAssignableTo(element, own)
                     );
                 }),
             ),
@@ -434,6 +453,45 @@ export function argumentOnlyRead(
     argument: ts.Node,
 ): boolean {
     return readOnlyArgumentCall(checker, argument) !== undefined;
+}
+
+/**
+ * Whether the array `expression` evaluates is read element by element
+ * where it is produced, then dropped: the initializer of an array
+ * destructuring declaration, reached through wrappers and the arms of a
+ * selection (`?:`, `??`, `||`, the right of `&&`), binding names without a
+ * default that can run code. Nothing runs between taking a copy of the
+ * array and reading it, and nothing keeps the copy, so the two agree.
+ */
+export function arrayDestructuredAtOnce(expression: ts.Expression): boolean {
+    let current = climb(expression);
+    let parent = current.parent;
+    while (
+        (ts.isConditionalExpression(parent) && parent.condition !== current) ||
+        (ts.isBinaryExpression(parent) &&
+            (parent.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken ||
+                parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                (parent.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken &&
+                    parent.right === current)))
+    ) {
+        current = climb(parent);
+        parent = current.parent;
+    }
+    return (
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === current &&
+        ts.isArrayBindingPattern(parent.name) &&
+        parent.name.elements.every(
+            (element) =>
+                ts.isOmittedExpression(element) ||
+                (!element.dotDotDotToken &&
+                    ts.isIdentifier(element.name) &&
+                    (!element.initializer ||
+                        !expressionMayRunCode(element.initializer))),
+        )
+    );
 }
 
 /**

@@ -17,6 +17,8 @@ import { ownEntries } from "../object-statics.js";
 import {
     argumentOnlyRead,
     arrayCopyObservation,
+    arrayDestructuredAtOnce,
+    arrayIdentityObservation,
     arrayLentForCall,
 } from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
@@ -255,6 +257,7 @@ function valueVector(
         );
     }
     if (value.kind === "tuple") {
+        requireOneNamedArray(lowerer, value, node);
         lowerer.context.reachJsData();
         const elements = value.tupleElements ?? [];
         elements.forEach((entry, index) =>
@@ -366,6 +369,31 @@ function valueVector(
     return undefined;
 }
 
+/**
+ * A compile-time array a declaration names is built anew at each use that
+ * stores it. JavaScript keeps the declaration's one array, so where the
+ * program may compare such arrays by identity the declaration takes one
+ * runtime array instead.
+ */
+function requireOneNamedArray(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): void {
+    const expression = lowerer.convertedExpression(node);
+    const declaration =
+        expression &&
+        lowerer.context.bindings.tupleDeclaration(value, expression);
+    if (!declaration || lowerer.context.dynamicBindings.has(declaration))
+        return;
+    const checker = lowerer.context.checker;
+    const target =
+        checker.getContextualType(expression) ??
+        checker.getTypeAtLocation(expression);
+    if (arrayIdentityObservation(lowerer.context, target) !== undefined)
+        throw new DynamicBindingStorageRequired(declaration, "array");
+}
+
 /** A lane with no identity of its own: a number, string, boolean or literal union, or a union or optional of them. */
 export function plainLane(type: DataType): boolean {
     switch (type.kind) {
@@ -391,9 +419,9 @@ export function plainLane(type: DataType): boolean {
  * JavaScript keeps one array, so the copy is admitted only where nothing
  * can tell the two apart: nothing else holds the array (a fresh one, whose
  * elements are then judged one by one), the callee it is handed to only
- * reads it and nothing the call runs changes it, or its lanes are plain
- * values and no change or identity use in the program reaches an array
- * that may be either one.
+ * reads it and nothing the call runs changes it, a destructuring reads it
+ * where it is produced, or its lanes are plain values and no change or
+ * identity use in the program reaches an array that may be either one.
  */
 function convertedElementsCopy(
     dataType: DataType<"vector">,
@@ -407,7 +435,8 @@ function convertedElementsCopy(
     const lent =
         !unaliased &&
         array !== undefined &&
-        arrayLentForCall(lowerer.context, array);
+        (arrayLentForCall(lowerer.context, array) ||
+            arrayDestructuredAtOnce(array));
     if (!unaliased && !lent) {
         const checker = lowerer.context.checker;
         const target = array && checker.getContextualType(array);

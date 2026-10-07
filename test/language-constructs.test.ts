@@ -1818,6 +1818,83 @@ check(
 `,
 );
 
+// A readonly array constant is one array wherever it is stored or
+// compared: a default, an argument and a field all hold the same object.
+check(
+    "named-constant-arrays-keep-one-identity",
+    `
+    interface Collider { readonly x: number; readonly r: number; group?: number }
+    const EMPTY: readonly Collider[] = [];
+    const NUMS: readonly number[] = [1, 2];
+    let kept: readonly Collider[] | null = null;
+    let keptNums: readonly number[] | null = null;
+    function keep(list: readonly Collider[] = EMPTY): boolean {
+        const same = kept === list;
+        kept = list;
+        return same;
+    }
+    function keepNums(list: readonly number[] = NUMS): boolean {
+        const same = keptNums === list;
+        keptNums = list;
+        return same;
+    }
+    const keeps: Array<typeof keep> = [keep];
+    const keepsNums: Array<typeof keepNums> = [keepNums];
+    if (keeps[0]!() || !keeps[0]!() || keeps[0]!(EMPTY) !== true) throw new Error("default constant");
+    if (keepsNums[0]!() || !keepsNums[0]!() || keepsNums[0]!(NUMS) !== true || keepsNums[0]!([1, 2])) throw new Error("numbers");
+    interface Index { colliders: readonly Collider[]; count: number }
+    let active: Index | null = null;
+    function matches(index: Index | null, colliders: readonly Collider[]): index is Index {
+        return index !== null && index.colliders === colliders && index.count === colliders.length;
+    }
+    function prime(colliders: readonly Collider[]): number {
+        if (matches(active, colliders)) return 0;
+        active = { colliders, count: colliders.length };
+        return 1;
+    }
+    function clear(x: number, colliders: readonly Collider[] = NO_COLLIDERS): number {
+        return prime(colliders) + x;
+    }
+    const NO_COLLIDERS: readonly Collider[] = [];
+    function run(x: number): number { return clear(x) + clear(x); }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!(1) !== 3) throw new Error("first prime");
+    const first = active;
+    if (runs[0]!(1) !== 2 || active !== first) throw new Error("one empty array");
+`,
+);
+
+// A recursive function's readonly array parameter is its caller's array
+// where the function compares it by identity.
+check(
+    "recursive-readonly-array-parameter-identity",
+    `
+    interface Collider { ax: number; radius: number; group?: number }
+    interface Index { colliders: readonly Collider[]; count: number }
+    let active: Index | null = null;
+    function matches(index: Index | null, colliders: readonly Collider[]): index is Index {
+        return index !== null && index.colliders === colliders && index.count === colliders.length;
+    }
+    function serves(colliders: readonly Collider[]): boolean { return matches(active, colliders); }
+    function prime(colliders: readonly Collider[]): void {
+        if (!matches(active, colliders)) active = { colliders, count: colliders.length };
+    }
+    let indexed = 0;
+    function pointClear(x: number, colliders: readonly Collider[], depth: number): boolean {
+        if (depth > 0 && !pointClear(x + 1, colliders, depth - 1)) return false;
+        if (serves(colliders)) { indexed++; return active!.colliders.every((c) => Math.abs(c.ax - x) > c.radius); }
+        return colliders.every((c) => Math.abs(c.ax - x) > c.radius);
+    }
+    function run(x: number, list: readonly Collider[], depth: number): boolean { return pointClear(x, list, depth); }
+    const set: Collider[] = [{ ax: 0, radius: 1 }];
+    const primes: Array<typeof prime> = [prime];
+    const runs: Array<typeof run> = [run];
+    primes[0]!(set);
+    if (runs[0]!(5, set, 2) !== true || runs[0]!(-1, set, 1) !== false || indexed !== 4) throw new Error("indexed set");
+    if (runs[0]!(5, [{ ax: 0, radius: 1 }], 1) !== true || indexed !== 4) throw new Error("equal set is another array");
+`,
+);
+
 test("borrowed array views refuse rebinding and identity", () => {
     assert.throws(
         () =>
@@ -7641,6 +7718,42 @@ check(
 `,
 );
 
+// A readonly array a conditional spread builds is the record's own array,
+// stored and serialized as the one array JavaScript keeps.
+check(
+    "conditional-spread-readonly-array-member",
+    `
+    interface HerdOptions { file: string; capacity: number; anchors?: readonly number[]; bones?: readonly number[]; shadow?: boolean }
+    interface Prototype { file: string; bone?: number }
+    function herdOptions(options: Prototype): HerdOptions {
+        return { file: options.file, capacity: 1, ...(options.bone === undefined ? {} : { bones: [options.bone, options.bone + 1] }) };
+    }
+    function cacheKey(opts: HerdOptions): string {
+        return JSON.stringify({ file: opts.file, anchors: opts.anchors ?? null, bones: opts.bones ?? null });
+    }
+    const prepared = new Map<string, number>();
+    function create(file: string, shell: { bone: number } | null, shadow: boolean): string {
+        const opts: HerdOptions = { ...herdOptions({ file, ...(shell ? { bone: shell.bone } : {}) }), shadow };
+        const key = cacheKey(opts);
+        if (!prepared.has(key)) prepared.set(key, prepared.size);
+        return key + "#" + prepared.get(key) + ":" + (opts.bones === opts.bones) + ":" + (opts.shadow === true);
+    }
+    const creates: Array<typeof create> = [create];
+    if (creates[0]!("t", { bone: 3 }, true) !== '{"file":"t","anchors":null,"bones":[3,4]}#0:true:true') throw new Error("present");
+    if (creates[0]!("t", null, false) !== '{"file":"t","anchors":null,"bones":null}#1:true:false') throw new Error("absent");
+    if (creates[0]!("t", { bone: 3 }, false) !== '{"file":"t","anchors":null,"bones":[3,4]}#0:true:false') throw new Error("cached");
+    interface Track { name: string; points?: readonly number[] }
+    function track(name: string, from: number | null): Track {
+        return { name, ...(from === null ? {} : { points: [from, from * 2] }) };
+    }
+    const tracks: Array<typeof track> = [track];
+    const t = tracks[0]!("a", 2);
+    const points = t.points;
+    if (points !== t.points || points?.length !== 2 || points[1] !== 4 || tracks[0]!("b", null).points !== undefined)
+        throw new Error("one member array");
+`,
+);
+
 check(
     "conditional-spread-own-keys",
     `
@@ -11809,6 +11922,70 @@ check(
     if (strings.size !== 2 || !strings.has("b")) throw new Error("guarded document strings");
 `,
 );
+
+// A selection of tuples of different lengths destructured where it is
+// produced reads a converted copy nothing else holds, even though the
+// program changes number arrays elsewhere.
+check(
+    "destructured-selection-of-converted-arrays",
+    `
+    function clearPoint(x: number, z: number, margin = 0.5): [number, number] {
+        const out: [number, number] = [x, z];
+        if (x < margin) out[0] = margin;
+        return out;
+    }
+    function seatNearby(x: number, z: number, admitted: (x: number, z: number) => boolean): [number, number, boolean] | null {
+        for (let r = 1; r < 4; r++) if (admitted(x + r, z)) return [x + r, z, true];
+        return null;
+    }
+    function reseat(x: number, z: number, admitted: ((x: number, z: number) => boolean) | null): [x: number, z: number, admitted: boolean] {
+        const cleared = clearPoint(x, z);
+        const stranded = admitted !== null && !admitted(cleared[0], cleared[1]);
+        if (admitted && stranded) {
+            const seat = seatNearby(cleared[0], cleared[1], admitted);
+            if (seat) return seat;
+        }
+        return [cleared[0], cleared[1], !stranded];
+    }
+    function place(x: number, z: number, restore = false): [number, number] {
+        const admitted = (px: number, _pz: number): boolean => px > 2;
+        const [seatX, seatZ] = restore ? reseat(x, z, admitted) : clearPoint(x, z, 0.2);
+        const [, , kept = false] = (restore ? seatNearby(x, z, admitted) : null) ?? [0, 0];
+        return [seatX, kept ? seatZ : -seatZ];
+    }
+    const places: Array<typeof place> = [place];
+    const a = places[0]!(0, 1, true);
+    const b = places[0]!(0.1, 1);
+    if (a[0] !== 2.5 || a[1] !== 1 || b[0] !== 0.2 || b[1] !== -1) throw new Error("destructured selection");
+    const trail: number[] = [];
+    function note(v: number): number { trail.push(v); return trail.length; }
+    const notes: Array<typeof note> = [note];
+    if (notes[0]!(1) !== 1) throw new Error("trail");
+`,
+);
+
+test("arrays destructured with code between their reads refuse a converted copy", () => {
+    const shapes = `
+        const trail: number[] = [];
+        function note(v: number): number { trail.push(v); return v; }
+        const stored: [number, number] = [1, 2];
+        function pair(x: number): [number, number] { stored[0] = x; return stored; }
+        const seat: [number, number, boolean] = [0, 0, true];
+        function triple(x: number): [number, number, boolean] { seat[1] = x; return seat; }
+    `;
+    for (const destructuring of [
+        "const [a = note(4), b] = flag ? triple(x) : pair(x); return a + b;",
+        "let a = 0, b = 0; [a, b] = flag ? triple(x) : pair(x); return a + b;",
+        "const [a, ...rest] = flag ? triple(x) : pair(x); return a + rest.length;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${shapes} function run(x: number, flag: boolean): number { ${destructuring} } const runs: Array<typeof run> = [run]; if (runs[0]!(1, true) < 0) throw new Error('x');`,
+                ),
+            /is a copy, and the program changes the elements of such arrays/,
+        );
+});
 
 test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
     for (const [source, message] of [

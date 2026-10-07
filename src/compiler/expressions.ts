@@ -2720,6 +2720,15 @@ export class ExpressionLowerer {
                     continue;
                 }
                 const present = trueValue ?? falseValue!;
+                // The record holds the array a compile-time member builds,
+                // so a readonly one owns its storage as a returned one does.
+                const memberType =
+                    present.dataType === undefined &&
+                    present.kind !== "number" &&
+                    present.kind !== "boolean" &&
+                    present.kind !== "string"
+                        ? this.selectedDataType(node, [...path, name], true)
+                        : undefined;
                 const inner =
                     present.dataType ??
                     (present.kind === "number"
@@ -2728,10 +2737,9 @@ export class ExpressionLowerer {
                           ? { kind: "boolean" as const }
                           : present.kind === "string"
                             ? { kind: "string" as const }
-                            : this.selectedDataType(
-                                  node,
-                                  [...path, name],
-                                  true,
+                            : memberType &&
+                              this.context.dataTypes.ownReturnedArray(
+                                  memberType,
                               ));
                 if (!inner) {
                     this.context.fail(

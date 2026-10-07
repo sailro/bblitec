@@ -61,6 +61,7 @@ import { readOnlyDataMethods } from "./receiver-methods.js";
 import {
     callArgumentIsReadOnly,
     parameterIsReadOnly,
+    parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
@@ -2833,6 +2834,22 @@ export class UserFunctionLowerer {
                     if (mapped && returnsArray && !freshMatchingArray) {
                         mapped = context.dataTypes.ownReturnedArray(mapped);
                     }
+                    // A readonly array the function compares, keeps or hands
+                    // on is its caller's array object; one it only reads is
+                    // lent as a borrowed view.
+                    if (
+                        mapped &&
+                        ts.isIdentifier(parameter.name) &&
+                        !parameterOnlyRead(
+                            this.checker,
+                            declaration,
+                            parameter.name,
+                        )
+                    )
+                        mapped = context.dataTypes.ownReadonlyArray(
+                            mapped,
+                            type,
+                        );
                     const inner =
                         mapped?.kind === "optional" ? mapped.inner : mapped;
                     const platformHandle =
