@@ -11990,15 +11990,172 @@ test("arrays destructured with code between their reads refuse a converted copy"
 test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
     for (const [source, message] of [
         [
-            "type K = 'a' | 'b'; const kinds: K[] = []; function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; kinds.push('a'); if (roots[0]!().length !== 1) throw new Error('x');",
+            "const values: number[] = []; function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; values.push(1); if (roots[0]!().length !== 1) throw new Error('x');",
             /is a copy, and the program changes the elements of such arrays/,
         ],
         [
-            "type K = 'a' | 'b'; const kinds: readonly K[] = [1, 2].map((i) => (i % 2 ? 'a' : 'b')); function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
+            "const values: readonly number[] = [1, 2].map((i) => i * 2); function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
             /is a copy, and the program compares such arrays by identity/,
         ],
     ] as const)
         assert.throws(() => compileSource(source), message);
+});
+
+// An array of a string literal union the program also reads as a string
+// array, or as an array of a wider union, stores its members as strings:
+// every view is the one array, written and compared through either.
+check(
+    "literal-union-arrays-viewed-as-string-arrays",
+    `
+    type K = "a" | "b";
+    const kinds: K[] = [];
+    function names(): readonly string[] { return kinds; }
+    const roots: Array<typeof names> = [names];
+    kinds.push("a");
+    if (roots[0]!().length !== 1 || roots[0]!() !== roots[0]!() || roots[0]!()[0] !== "a") throw new Error("one array");
+    type NewsFailure = "floating" | "flatRoof" | "storeys";
+    type MillFailure = "wheel" | "water";
+    type Kind = "news" | "mill";
+    interface NewsRecipe { readonly homeId: number; readonly failures: readonly NewsFailure[] }
+    interface MillRecipe { readonly homeId: number; failures: MillFailure[] }
+    interface Host { readonly homeId: number; readonly floating: boolean; readonly flat: boolean }
+    const LABELS: Record<NewsFailure, string> = { floating: "F", flatRoof: "R", storeys: "S" };
+    function buildNews(hosts: readonly Host[]): NewsRecipe[] {
+        const recipes: NewsRecipe[] = [];
+        for (const host of hosts) {
+            const failures: NewsFailure[] = [];
+            if (host.floating) failures.push("floating");
+            if (!host.flat) failures.push("flatRoof");
+            recipes.push({ homeId: host.homeId, failures });
+        }
+        return recipes;
+    }
+    function buildMills(hosts: readonly Host[]): MillRecipe[] {
+        return hosts.map((host) => ({ homeId: host.homeId, failures: host.flat ? ["wheel"] : [] }));
+    }
+    interface Entry { homeId: number; news: { failures: readonly NewsFailure[] } | null; mill: MillRecipe | null; kinds: readonly Kind[] }
+    interface Row { readonly homeId: number; readonly kind: Kind; readonly failures: readonly string[] }
+    function rows(list: readonly Entry[]): Row[] {
+        const out: Row[] = [];
+        for (const record of list)
+            for (const kind of record.kinds) {
+                const failures: readonly string[] = kind === "news" ? record.news?.failures ?? [] : record.mill?.failures ?? [];
+                out.push({ homeId: record.homeId, kind, failures });
+            }
+        return out;
+    }
+    function reported(entry: Readonly<Entry>, kind: Kind): readonly string[] {
+        switch (kind) {
+            case "news": return entry.news?.failures ?? [];
+            case "mill": return entry.mill?.failures ?? [];
+        }
+    }
+    function describe(failures: readonly NewsFailure[]): string {
+        let text = "";
+        for (const failure of failures) {
+            switch (failure) {
+                case "floating": text += "f"; break;
+                case "flatRoof": text += "r"; break;
+                default: text += "s";
+            }
+            text += LABELS[failure];
+            if (failure === "storeys") text += "!";
+        }
+        return text;
+    }
+    function same(a: unknown, b: unknown): boolean { return a === b; }
+    function run(): string {
+        const hosts: Host[] = [{ homeId: 1, floating: true, flat: false }, { homeId: 9, floating: false, flat: true }];
+        const news = buildNews(hosts);
+        const mills = buildMills(hosts);
+        const list: Entry[] = news.map((recipe, i) => ({ homeId: recipe.homeId, news: { failures: recipe.failures }, mill: mills[i]!, kinds: ["news", "mill"] }));
+        const table = rows(list);
+        if (!same(table[0]!.failures, news[0]!.failures) || table[1]!.failures !== mills[0]!.failures) throw new Error("one array per view");
+        if (reported(list[1]!, "mill") !== mills[1]!.failures) throw new Error("returned view");
+        mills[1]!.failures.push("water");
+        if (table[3]!.failures.join() !== "wheel,water") throw new Error("write through the union view");
+        const view: string[] = mills[0]!.failures;
+        view.push("wheel");
+        if (mills[0]!.failures.length !== 1 || mills[0]!.failures[0] !== "wheel" || table[1]!.failures.length !== 1) throw new Error("write through the string view");
+        if (describe(news[0]!.failures) !== "fFrR" || !news[0]!.failures.includes("flatRoof")) throw new Error("switch and keys over elements");
+        return JSON.stringify(table.map((row) => [row.kind, row.failures]));
+    }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!() !== '[["news",["floating","flatRoof"]],["mill",["wheel"]],["news",[]],["mill",["wheel","water"]]]') throw new Error("rows");
+`,
+);
+
+check(
+    "nested-literal-union-arrays-viewed-as-string-arrays",
+    `
+    type ChurchFailure = "nave" | "bell";
+    type KilnFailure = "kiln" | "kilnAccess" | "kilnAccess.blocked" | "chimney";
+    type Recipe = "church" | "kiln";
+    function rowsWithFamily<F extends string>(failures: readonly F[], member: (failure: F) => boolean, group: F): readonly (readonly F[])[] {
+        const rows: F[][] = [];
+        let family: F[] | null = null;
+        for (const failure of failures) {
+            if (!member(failure)) { rows.push([failure]); continue; }
+            if (!family) rows.push(family = []);
+            if (failure === group) family.unshift(failure);
+            else family.push(failure);
+        }
+        return rows;
+    }
+    const CHURCH_FAILURES: readonly ChurchFailure[] = ["nave", "bell"];
+    const CHURCH_ROWS: readonly (readonly ChurchFailure[])[] = CHURCH_FAILURES.map((failure) => [failure] as const);
+    const KILN_ROWS: readonly (readonly KilnFailure[])[] = rowsWithFamily<KilnFailure>(["kiln", "kilnAccess.blocked", "kilnAccess", "chimney"], (f) => f.startsWith("kilnAccess"), "kilnAccess");
+    const ROWS: Readonly<Record<Recipe, readonly (readonly string[])[]>> = { church: CHURCH_ROWS, kiln: KILN_ROWS };
+    interface Plate { readonly candidates: readonly Recipe[]; readonly church: { failures: readonly ChurchFailure[] } | null; readonly kiln: { failures: readonly KilnFailure[] } | null }
+    interface ChecklistRow { readonly token: string; readonly tokens: readonly string[]; readonly state: "met" | "missing" }
+    function reported(plate: Readonly<Plate>, recipe: Recipe): readonly string[] {
+        switch (recipe) {
+            case "church": return plate.church?.failures ?? [];
+            case "kiln": return plate.kiln?.failures ?? [];
+        }
+    }
+    function checklists(plate: Readonly<Plate>): readonly { recipe: Recipe; rows: readonly ChecklistRow[] }[] {
+        return plate.candidates.map((recipe) => {
+            const failures = reported(plate, recipe);
+            const rows: ChecklistRow[] = ROWS[recipe].map((tokens) => ({
+                token: tokens[0]!,
+                tokens,
+                state: tokens.some((token) => failures.includes(token)) ? "missing" as const : "met" as const,
+            }));
+            return { recipe, rows };
+        });
+    }
+    function lines(recipe: Recipe): readonly { key: string }[] {
+        return ROWS[recipe].map((tokens) => ({ key: "row." + recipe + "." + tokens[0]! }));
+    }
+    function same(a: unknown, b: unknown): boolean { return a === b; }
+    function run(): string {
+        const kiln: KilnFailure[] = [];
+        kiln.push("kilnAccess.blocked");
+        const plate: Plate = { candidates: ["church", "kiln"], church: { failures: [] }, kiln: { failures: kiln } };
+        const result = checklists(plate);
+        if (!same(result[1]!.rows[1]!.tokens, KILN_ROWS[1]) || result[0]!.rows[0]!.tokens !== CHURCH_ROWS[0]) throw new Error("rows keep their arrays");
+        if (reported(plate, "kiln") !== kiln) throw new Error("reported view");
+        kiln.push("chimney");
+        if (checklists(plate)[1]!.rows.map((row) => row.state).join() !== "met,missing,missing") throw new Error("write through the union array");
+        return JSON.stringify([result[1]!.rows.map((row) => [row.token, row.tokens, row.state]), lines("kiln").map((line) => line.key)]);
+    }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!() !== '[[["kiln",["kiln"],"met"],["kilnAccess",["kilnAccess","kilnAccess.blocked"],"missing"],["chimney",["chimney"],"met"]],["row.kiln.kiln","row.kiln.kilnAccess","row.kiln.chimney"]]')
+        throw new Error("checklist");
+`,
+);
+
+test("literal-union arrays store strings only where a string view reads them", () => {
+    const viewed = compileSource(
+        "type K = 'a' | 'b'; const kinds: K[] = []; function names(): readonly string[] { return kinds; } const roots: Array<typeof names> = [names]; kinds.push('a'); if (roots[0]!() !== roots[0]!()) throw new Error('x');",
+    ).cpp;
+    assert.match(viewed, /bbl::js::Array<std::string> v_kinds/);
+    const kept = compileSource(
+        "type K = 'a' | 'b'; const kinds: K[] = []; function count(): number { return kinds.length; } const roots: Array<typeof count> = [count]; kinds.push('a'); if (roots[0]!() !== 1) throw new Error('x');",
+    ).cpp;
+    assert.doesNotMatch(kept, /Array<std::string>/);
+    assert.match(kept, /bbl::js::Array<bblscene::K>/);
 });
 
 // `x || undefined` and `x && y` over optional scalars keep absence apart

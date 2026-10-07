@@ -13,6 +13,10 @@ import {
     initializedVariableDeclaration,
 } from "../dynamic-binding-storage.js";
 import { unaliasedValue } from "./aliasing.js";
+import {
+    EnumArrayStorageRequired,
+    enumsReadAsStrings,
+} from "../enum-array-storage.js";
 import { ownEntries } from "../object-statics.js";
 import {
     argumentOnlyRead,
@@ -394,6 +398,24 @@ function requireOneNamedArray(
         throw new DynamicBindingStorageRequired(declaration, "array");
 }
 
+/**
+ * An array of a literal union read as an array of strings (directly or
+ * through nested arrays and optional lanes) needs no copy once arrays of
+ * that union store strings: the compile replays with that storage
+ * (`EnumArrayStorageRequired`) unless every such union already has it.
+ */
+function requireStringElements(
+    lowerer: DataSinkHost,
+    source: DataType,
+    target: DataType,
+): void {
+    const dataTypes = lowerer.context.dataTypes;
+    const unions = enumsReadAsStrings(source, target)
+        ?.filter((name) => !dataTypes.storesEnumElementsAsStrings(name))
+        .map((name) => dataTypes.enumLiterals(name));
+    if (unions?.length) throw new EnumArrayStorageRequired(unions);
+}
+
 /** A lane with no identity of its own: a number, string, boolean or literal union, or a union or optional of them. */
 export function plainLane(type: DataType): boolean {
     switch (type.kind) {
@@ -454,6 +476,7 @@ function convertedElementsCopy(
         if (observed !== undefined) {
             // An array of ArrayLike slots takes the kind of its elements.
             lowerer.requireNumericSlot(value, dataType, node);
+            requireStringElements(lowerer, element, dataType.element);
             lowerer.context.fail(
                 node,
                 `An array stored as an array of another element type is a copy, and ${observed}; JavaScript keeps one array.`,
@@ -613,6 +636,14 @@ function valueSpan(
     if (value.dataType && lowerer.spanCompatible(value.dataType, dataType)) {
         return value.cpp;
     }
+    // A view of a literal union's array as strings views one array once
+    // that array stores strings.
+    if (value.dataType?.kind === "vector" || value.dataType?.kind === "span")
+        requireStringElements(
+            lowerer,
+            value.dataType.element,
+            dataType.element,
+        );
     return undefined;
 }
 
