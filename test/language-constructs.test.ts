@@ -3233,6 +3233,60 @@ checkInRealm(
 );
 
 checkInRealm(
+    "promise-combinators-over-literal-spreads",
+    `
+    const order: string[] = [];
+    async function tick(count: number): Promise<void> { for (let i = 0; i < count; i++) await Promise.resolve(); }
+    async function step(name: string): Promise<void> { order.push(name); await tick(1); }
+    async function value(name: string, result: number, delay: number): Promise<number> { order.push(name); await tick(delay); return result; }
+    async function fail(error: Error, delay: number): Promise<number> { await tick(delay); throw error; }
+    function startAll(extra: boolean, ready: Promise<void> | null): Promise<void> | null {
+        return Promise.all([ready!, step("a"), ...(extra ? [step("extra")] : [])]).then(() => undefined);
+    }
+    function many(names: string[]): Promise<number>[] { order.push("spread"); return names.map((name, index) => value(name, index, 3 - index)); }
+    void (async () => {
+        const started = startAll(true, step("first"));
+        if (order.join() !== "first,a,extra") throw new Error("inputs start in order " + order.join());
+        await started;
+        await startAll(false, step("again"));
+        order.length = 0;
+        const values = await Promise.all([value("x", 10, 1), ...many(["p", "q"]), value("y", 20, 0)]);
+        if (values.join() !== "10,0,1,20" || order.join() !== "x,spread,p,q,y") throw new Error("ordered results " + values.join() + " " + order.join());
+        const xs = [1, 2, 3];
+        const doubled = await Promise.all([...xs.map((x) => value("m", x * 2, 3 - x)), value("n", 7, 0)]);
+        if (doubled.join() !== "2,4,6,7") throw new Error("mapped spread " + doubled.join());
+        const voids = await Promise.all([step("v"), ...[step("w")]]);
+        if (voids.length !== 2 || voids[0] !== undefined || voids[1] !== undefined) throw new Error("void results are undefined");
+        const pending: Promise<void>[] = [step("k"), step("l")];
+        const fromStored = await Promise.all(pending);
+        if (fromStored.length !== 2 || fromStored[1] !== undefined) throw new Error("stored void array");
+        const slow = new RangeError("slow"), fast = new TypeError("fast");
+        let caught = "none";
+        try { await Promise.all([fail(slow, 3), ...[fail(fast, 1)], value("z", 1, 0)]); } catch (error) { caught = error === fast ? "fast" : "other"; }
+        if (caught !== "fast") throw new Error("first rejection wins: " + caught);
+        const settled = await Promise.allSettled([value("s", 5, 1), ...[fail(slow, 0)]]);
+        const kept = settled[0]!, lost = settled[1]!;
+        if (kept.status !== "fulfilled" || kept.value !== 5 || lost.status !== "rejected" || lost.reason !== slow) throw new Error("settled spread");
+        const winner = await Promise.race([value("r", 1, 3), ...[value("t", 2, 1)]]);
+        const any = await Promise.any([fail(slow, 0), ...[value("u", 9, 2)]]);
+        if (winner !== 2 || any !== 9) throw new Error("race and any over spreads");
+        globalThis.close();
+    })();
+`,
+);
+
+test("promise combinator literal spreads refuse mixed settlement types", () => {
+    for (const source of [
+        "async function n(): Promise<number> { return 1; } async function s(): Promise<string> { return ''; } const xs = [s()]; void Promise.all([n(), ...xs]);",
+        "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /Promise\.all literal spreads require promises and arrays of promises of one settlement type/,
+        );
+});
+
+checkInRealm(
     "structured-clone-copies-data",
     `
     interface Row { a: number[]; name: string; when?: Date }

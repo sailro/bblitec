@@ -151,7 +151,7 @@ parameter refuse.
 | `reject` | Owned Error identity |
 | `then` / `catch` | Owned captures, queued reactions, compatible result storage, destructured fulfillment parameters; callback throws reject; `catch` and rejection callbacks bind their parameter to the caught Error |
 | `finally` | Waits for cleanup; preserves original result unless cleanup throws/rejects |
-| `all` | Ordered literal tuples and stored arrays of value promises; first rejection wins |
+| `all` | Ordered literal tuples and stored arrays of promises (a void fulfillment is undefined); first rejection wins |
 | `allSettled` | Ordered literal tuples and stored promise arrays, including void; fresh settlement records and original Error identities |
 | `race` / `any` | Homogeneous represented arrays/tuples (a `Promise<never>` input joins any); `race` with empty input stays pending; `any` rejects with an AggregateError of every reason |
 
@@ -159,9 +159,9 @@ Optional promise values adopt their present payload or settle to absence through
 `resolve`, reactions and literal `all` tuples. An async `return c ? promise : value` returns each branch
 as its own return. Arbitrary rejection values, heterogeneous race results
 and unrepresented aggregation shapes refuse.
-`all` excludes literal spreads, other iterables and stored void/value-only arrays. `allSettled` excludes
-literal spreads and other iterables. Async collection callbacks start synchronously and retain
-suspension; predicate promises are truthy.
+A literal with spreads is the runtime array of its promises, which share one settlement type. `all`
+excludes other iterables and stored value-only arrays; `allSettled` excludes other iterables. Async
+collection callbacks start synchronously and retain suspension; predicate promises are truthy.
 Awaited, statically expanded `Promise.all` maps preserve fixed asset-load order; runtime-sized resource construction refuses.
 Outside a realm the executor runs in place and an await reads the settlement; one still pending ends the
 awaiting activation ([fidelity](fidelity.md#semantic-contract)). Timers/microtasks need no engine. RAF
