@@ -2602,6 +2602,7 @@ function compileArrayMap(
                     code: `${output}.push_back(${value});`,
                 });
             },
+            method === "map" ? requested.element : undefined,
         ),
     );
     lowerer.context.emit(`${collectorCppType(state, mappedType)} ${output};`);

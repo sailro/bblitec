@@ -7847,6 +7847,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             element: string,
             index: string,
         ) => void,
+        /** The element type a collecting method stores each result as. */
+        resultType?: DataType,
     ): void {
         if (call.arguments.length !== 1) {
             this.context.fail(
@@ -8023,6 +8025,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               callbackArguments,
                               call,
                               method === "forEach",
+                              resultType ? { resultType } : undefined,
                           );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
