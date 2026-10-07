@@ -10303,6 +10303,28 @@ check(
 );
 
 check(
+    "calling-an-absent-function-value-throws-a-type-error",
+    `
+    const handlers = new Map<string, () => number>();
+    handlers.set("one", () => 1);
+    function kindOf(run: () => void): string {
+        try {
+            run();
+            return "none";
+        } catch (error) {
+            return error instanceof TypeError ? "type" : "other";
+        }
+    }
+    if (kindOf(() => { handlers.get("one")!(); }) !== "none") throw new Error("present handler");
+    if (kindOf(() => { handlers.get("missing")!(); }) !== "type") throw new Error("absent map handler");
+    interface Hooks { done?: (value: number) => void }
+    const hooks: Hooks[] = [{}, { done: () => {} }];
+    if (kindOf(() => { hooks[0]!.done!(3); }) !== "type") throw new Error("absent optional field");
+    if (kindOf(() => { hooks[1]!.done!(3); }) !== "none") throw new Error("present optional field");
+`,
+);
+
+check(
     "nullish-fallback-of-another-union-member-and-optional-method-calls",
     `
     interface Move { readonly id: number; readonly target: { readonly x: number; readonly z: number } | null }
