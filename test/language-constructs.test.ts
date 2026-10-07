@@ -7117,6 +7117,42 @@ test("read-only closed-key records refuse what their copies would observe", () =
 });
 
 check(
+    "dictionaries-of-one-arm-pass-as-union-dictionaries",
+    `
+    type Slots = Readonly<Record<string, string | readonly string[]>>;
+    function word(slots: Slots, name: string): string {
+        const value = slots[name];
+        if (value === undefined) return "-";
+        return typeof value === "string" ? value.toUpperCase() : value.map((part) => part.toUpperCase()).join("+");
+    }
+    function guarded(slots: Slots, name: string): string {
+        const value = slots[name];
+        try {
+            return typeof value === "string" ? value : value.map((part) => part).join("+");
+        } catch (error) {
+            return error instanceof TypeError ? "type" : "other";
+        }
+    }
+    interface Row { key: string; nouns?: Record<string, string> }
+    const rows: Row[] = [{ key: "a", nouns: { a: "potter" } }, { key: "b" }, { key: "c", nouns: { a: "x" } }];
+    const words = rows.map((row) => (row.nouns ? word(row.nouns, row.key) + guarded(row.nouns, row.key) : "none"));
+    if (words.join(",") !== "POTTERpotter,none,-type") throw new Error("one-arm dictionaries " + words.join(","));
+    const lists: Slots = { a: ["p", "q"], b: "r" };
+    if (rows.map((row) => word(lists, row.key)).join(",") !== "P+Q,R,-") throw new Error("union dictionary");
+`,
+);
+
+test("a missing primitive method refuses effectful arguments", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'let calls = 0; function next(): number { calls++; return calls; } type Slots = Readonly<Record<string, string | number[]>>; function word(slots: Slots, name: string): string { const value = slots[name]; if (value === undefined) return "-"; return typeof value === "string" ? value : value.fill(next()).length + ""; } interface Row { key: string; nouns?: Record<string, string> } const rows: Row[] = [{ key: "a", nouns: { a: "potter" } }]; const words = rows.map((row) => (row.nouns ? word(row.nouns, row.key) : "none")); if (words.join() !== "potter") throw new Error("w");',
+            ),
+        /Unsupported call target 'value.fill' on data:optional/,
+    );
+});
+
+check(
     "immediate-promise-callbacks-destructure-their-value",
     `
     interface Pair { wave: number; caustics: number }
