@@ -1818,6 +1818,83 @@ check(
 `,
 );
 
+// A readonly array constant is one array wherever it is stored or
+// compared: a default, an argument and a field all hold the same object.
+check(
+    "named-constant-arrays-keep-one-identity",
+    `
+    interface Collider { readonly x: number; readonly r: number; group?: number }
+    const EMPTY: readonly Collider[] = [];
+    const NUMS: readonly number[] = [1, 2];
+    let kept: readonly Collider[] | null = null;
+    let keptNums: readonly number[] | null = null;
+    function keep(list: readonly Collider[] = EMPTY): boolean {
+        const same = kept === list;
+        kept = list;
+        return same;
+    }
+    function keepNums(list: readonly number[] = NUMS): boolean {
+        const same = keptNums === list;
+        keptNums = list;
+        return same;
+    }
+    const keeps: Array<typeof keep> = [keep];
+    const keepsNums: Array<typeof keepNums> = [keepNums];
+    if (keeps[0]!() || !keeps[0]!() || keeps[0]!(EMPTY) !== true) throw new Error("default constant");
+    if (keepsNums[0]!() || !keepsNums[0]!() || keepsNums[0]!(NUMS) !== true || keepsNums[0]!([1, 2])) throw new Error("numbers");
+    interface Index { colliders: readonly Collider[]; count: number }
+    let active: Index | null = null;
+    function matches(index: Index | null, colliders: readonly Collider[]): index is Index {
+        return index !== null && index.colliders === colliders && index.count === colliders.length;
+    }
+    function prime(colliders: readonly Collider[]): number {
+        if (matches(active, colliders)) return 0;
+        active = { colliders, count: colliders.length };
+        return 1;
+    }
+    function clear(x: number, colliders: readonly Collider[] = NO_COLLIDERS): number {
+        return prime(colliders) + x;
+    }
+    const NO_COLLIDERS: readonly Collider[] = [];
+    function run(x: number): number { return clear(x) + clear(x); }
+    const runs: Array<typeof run> = [run];
+    if (runs[0]!(1) !== 3) throw new Error("first prime");
+    const first = active;
+    if (runs[0]!(1) !== 2 || active !== first) throw new Error("one empty array");
+`,
+);
+
+// A recursive function's readonly array parameter is its caller's array
+// where the function compares it by identity.
+check(
+    "recursive-readonly-array-parameter-identity",
+    `
+    interface Collider { ax: number; radius: number; group?: number }
+    interface Index { colliders: readonly Collider[]; count: number }
+    let active: Index | null = null;
+    function matches(index: Index | null, colliders: readonly Collider[]): index is Index {
+        return index !== null && index.colliders === colliders && index.count === colliders.length;
+    }
+    function serves(colliders: readonly Collider[]): boolean { return matches(active, colliders); }
+    function prime(colliders: readonly Collider[]): void {
+        if (!matches(active, colliders)) active = { colliders, count: colliders.length };
+    }
+    let indexed = 0;
+    function pointClear(x: number, colliders: readonly Collider[], depth: number): boolean {
+        if (depth > 0 && !pointClear(x + 1, colliders, depth - 1)) return false;
+        if (serves(colliders)) { indexed++; return active!.colliders.every((c) => Math.abs(c.ax - x) > c.radius); }
+        return colliders.every((c) => Math.abs(c.ax - x) > c.radius);
+    }
+    function run(x: number, list: readonly Collider[], depth: number): boolean { return pointClear(x, list, depth); }
+    const set: Collider[] = [{ ax: 0, radius: 1 }];
+    const primes: Array<typeof prime> = [prime];
+    const runs: Array<typeof run> = [run];
+    primes[0]!(set);
+    if (runs[0]!(5, set, 2) !== true || runs[0]!(-1, set, 1) !== false || indexed !== 4) throw new Error("indexed set");
+    if (runs[0]!(5, [{ ax: 0, radius: 1 }], 1) !== true || indexed !== 4) throw new Error("equal set is another array");
+`,
+);
+
 test("borrowed array views refuse rebinding and identity", () => {
     assert.throws(
         () =>

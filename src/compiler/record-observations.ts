@@ -206,6 +206,22 @@ export function arrayCopyObservation(
         )
     )
         return "the program changes the elements of such arrays";
+    return arrayIdentityObservation(context, target);
+}
+
+/**
+ * Why a native copy of an array, stored where the program reads it as
+ * `target`, could be told apart from the array JavaScript keeps by its
+ * identity alone, or undefined when no identity use (`ProgramObservations`)
+ * can reach an array of that type. An assertion to a subtype of `target`,
+ * or out of `any` or `unknown`, extends where the copy may flow.
+ */
+export function arrayIdentityObservation(
+    context: RecordObservationContext,
+    target: ts.Type,
+): string | undefined {
+    const observations = programObservations(context.program);
+    const { checker } = context;
     const copyTypes = [
         target,
         ...observations.assertions
@@ -219,11 +235,14 @@ export function arrayCopyObservation(
         [...observations.identities].some((type) =>
             holdsArray(checker, type, copyTypes, (element) =>
                 copyTypes.some((copy) => {
-                    const own = elementOf(copy);
+                    const own = checker.getIndexTypeOfType(
+                        copy,
+                        ts.IndexKind.Number,
+                    );
                     return (
                         own === undefined ||
-                        assignable(own, element) ||
-                        assignable(element, own)
+                        checker.isTypeAssignableTo(own, element) ||
+                        checker.isTypeAssignableTo(element, own)
                     );
                 }),
             ),

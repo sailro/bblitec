@@ -26,6 +26,7 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
@@ -658,6 +659,31 @@ export class ConditionLowerer {
                 this.context.expectSameEngine(leftValue, rightValue, unwrapped);
                 return `${leftValue.cpp} ${operator} ${rightValue.cpp}`;
             }
+            // A compile-time array a declaration names has no identity of
+            // its own; compared, the declaration takes one runtime array.
+            if (equality)
+                for (const [operand, node] of [
+                    [leftValue, unwrapped.left],
+                    [rightValue, unwrapped.right],
+                ] as const) {
+                    const declaration =
+                        operand.kind === "tuple"
+                            ? this.context.bindings.tupleDeclaration(
+                                  operand,
+                                  node,
+                              )
+                            : undefined;
+                    if (
+                        declaration &&
+                        !this.context.dataLowerer.context.dynamicBindings.has(
+                            declaration,
+                        )
+                    )
+                        throw new DynamicBindingStorageRequired(
+                            declaration,
+                            "array",
+                        );
+                }
             // The statement emitter supplies the condition's outer
             // parentheses. Comparisons bind more tightly than the logical
             // expressions that compose them, so another pair here is both
