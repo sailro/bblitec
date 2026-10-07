@@ -5427,15 +5427,20 @@ export class UserFunctionLowerer {
         if (cached) {
             return cached;
         }
-        const parameters = declaration.parameters.map(
-            (parameter): UserFunctionParameterIr => {
+        // A `this` parameter types the receiver; it takes no argument.
+        const parameters = declaration.parameters
+            .filter(
+                (parameter) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.name.text !== "this",
+            )
+            .map((parameter): UserFunctionParameterIr => {
                 return {
                     declaration: parameter,
                     name: parameter.name,
                     type: this.checker.getTypeAtLocation(parameter),
                 };
-            },
-        );
+            });
         const body = declaration.body;
         if (!body) {
             fail(declaration, "Reached user functions require a body.");

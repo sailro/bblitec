@@ -9032,3 +9032,27 @@ check(
     if (countdown("x", 2) !== "xxx") throw new Error("same literal recursion");
 `,
 );
+
+check(
+    "function-call-with-this-and-partial-bind",
+    `
+    function f(this: { k: number }, n: number): number { return this.k + n; }
+    if (f.call({ k: 1 }, 2) !== 3) throw new Error("call with this");
+    interface Counter { k: number }
+    function bump(this: Counter, by: number): number { this.k += by; return this.k; }
+    const counters: Counter[] = [{ k: 1 }];
+    if (bump.call(counters[0]!, 2) !== 3 || counters[0]!.k !== 3) throw new Error("call writes through this");
+    function add(a: number, b: number): number { return a + b; }
+    const inc = add.bind(null, 1);
+    if (inc(2) !== 3) throw new Error("bind partial");
+    const order: string[] = [];
+    function trace(label: string, value: number): number { order.push(label); return value; }
+    const three = (a: number, b: number, c: number): number => a * 100 + b * 10 + c;
+    const fns: Array<typeof three> = [three];
+    const bound = fns[0]!.bind(null, trace("a", 1), trace("b", 2));
+    if (order.join(",") !== "a,b") throw new Error("bound arguments read at bind");
+    if (bound(trace("c", 3)) !== 123 || bound(4) !== 124 || order.join(",") !== "a,b,c")
+        throw new Error("bound arguments read once " + order.join(","));
+    if (inc === add.bind(null, 1)) throw new Error("bind identity");
+`,
+);

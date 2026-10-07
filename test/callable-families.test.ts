@@ -37,8 +37,8 @@ function nativeCheck(
     });
 }
 
-test("call and bind refuse unrepresented dynamic receivers and partial binding", () => {
-    for (const method of ["call", "bind", "apply"])
+test("bind and apply refuse dynamic receivers and arguments bound into a rest parameter", () => {
+    for (const method of ["bind", "apply"])
         assert.throws(
             () =>
                 compileSource(`
@@ -58,10 +58,12 @@ test("call and bind refuse unrepresented dynamic receivers and partial binding",
     assert.throws(
         () =>
             compileSource(`
-            const add=(a:number,b:number):number=>a+b;
-            add.bind(undefined,1);
+            const count=(...values:number[]):number=>values.length;
+            const counts=[count];
+            const bound=counts[0]!.bind(undefined,1);
+            if(bound(2)!==2)throw new Error("rest");
         `),
-        /arguments/,
+        /cannot bind arguments into a rest parameter/,
     );
 });
 
