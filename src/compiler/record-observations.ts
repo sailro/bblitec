@@ -297,36 +297,6 @@ function observedArrayIdentity(
 }
 
 /**
- * Why a copy stored where the program reads it as `target` could be told
- * apart from the one object JavaScript keeps by its identity alone: the
- * array half (`arrayIdentityObservation`), or for a record an identity use
- * of a type that may hold it.
- */
-export function identityObservation(
-    context: RecordObservationContext,
-    target: ts.Type,
-): string | undefined {
-    const { checker } = context;
-    if (checker.isArrayLikeType(target))
-        return arrayIdentityObservation(context, target);
-    const observations = programObservations(context.program);
-    const copyTypes = [
-        target,
-        ...observations.assertions
-            .filter(
-                ({ asserted, open }) =>
-                    open || checker.isTypeAssignableTo(asserted, target),
-            )
-            .map(({ asserted }) => asserted),
-    ];
-    return [...observations.identities].some((type) =>
-        holdsRecord(checker, type, copyTypes),
-    )
-        ? "the program compares such records by identity"
-        : undefined;
-}
-
-/**
  * Why the object a declaration's literal creates must stay one runtime
  * object rather than a compile-time record or tuple rebuilt at each use,
  * found before lowering from the program's uses of the binding:
@@ -335,8 +305,10 @@ export function identityObservation(
  *   followed through wrappers, selections, aliases and the parameters of
  *   program functions it is handed to; a use that only reads it (a member,
  *   an element, iteration, a callee that only reads the argument) observes
- *   nothing, an equality operand compares it, and any other use stores it
- *   where an identity use of that type may reach (`identityObservation`).
+ *   nothing, and an equality operand compares it. A tuple stored in an
+ *   array slot is compared where arrays of the slot's type are
+ *   (`arrayIdentityObservation`); a record or tuple stored anywhere else
+ *   keeps the storage its sink gives it.
  *   Two empty-object tokens compared with each other are settled at
  *   generation (`foldSettledComparison`) unless either is one object.
  * - `receiverWrites`: the fields its methods write through `this`, which
@@ -405,6 +377,9 @@ function identityUses(
     const { checker } = context;
     const tokens: ts.VariableDeclaration[] = [];
     const token = emptyTokenRoot(checker, declaration) === declaration;
+    const array = checker.isArrayLikeType(
+        checker.getTypeAtLocation(declaration.name),
+    );
     const followed: ts.Symbol[] = [];
     const follow = (name: ts.BindingName): void => {
         const symbol = ts.isIdentifier(name)
@@ -449,8 +424,8 @@ function identityUses(
                     continue;
                 const parameter = programParameter(callee, parent, position);
                 if (parameter) follow(parameter.name);
-                else reason = storedIdentity(context, use);
-            } else if (!onlyReads(use, parent))
+                else if (array) reason = storedIdentity(context, use);
+            } else if (array && !onlyReads(use, parent))
                 reason = storedIdentity(context, use);
             if (reason) break;
         }
@@ -459,16 +434,41 @@ function identityUses(
     return uses;
 }
 
-/** Why a value stored where the program reads it may be compared by identity. */
+/**
+ * Why a tuple stored where the program reads it may be compared by
+ * identity: only an array slot holds the tuple as an array, and the engine
+ * takes what a call hands it, however nested in literals, in its own
+ * storage.
+ */
 function storedIdentity(
     context: RecordObservationContext,
     use: ts.Expression,
 ): string | undefined {
     const { checker } = context;
-    return identityObservation(
-        context,
+    let holder: ts.Node = use;
+    while (
+        ts.isPropertyAssignment(holder.parent) ||
+        ts.isShorthandPropertyAssignment(holder.parent) ||
+        ts.isObjectLiteralExpression(holder.parent) ||
+        ts.isArrayLiteralExpression(holder.parent) ||
+        ts.isParenthesizedExpression(holder.parent) ||
+        ts.isAsExpression(holder.parent) ||
+        ts.isSatisfiesExpression(holder.parent)
+    )
+        holder = holder.parent;
+    const call = holder.parent;
+    const callee =
+        (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
+        call.expression !== holder
+            ? checker.getResolvedSignature(call)?.declaration
+            : undefined;
+    if (callee && declarationOrigin(callee) === "babylon") return undefined;
+    const slot = checker.getNonNullableType(
         checker.getContextualType(use) ?? checker.getTypeAtLocation(use),
     );
+    return checker.isArrayLikeType(slot)
+        ? arrayIdentityObservation(context, slot)
+        : undefined;
 }
 
 /** An equality, which compares object operands by identity. */
