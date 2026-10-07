@@ -1675,6 +1675,11 @@ export class ExpressionLowerer {
 
         if (ts.isTaggedTemplateExpression(unwrapped))
             return this.compileTaggedTemplate(unwrapped);
+        if (ts.isClassExpression(unwrapped))
+            this.context.fail(
+                unwrapped,
+                "A class expression is lowered as the initializer of a const it names.",
+            );
 
         this.context.fail(
             unwrapped,
@@ -6779,7 +6784,7 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         method: string,
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         found: string,
     ): Value {
         const type = this.context.dataLowerer.dataTypeAt(call);

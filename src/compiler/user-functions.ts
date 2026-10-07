@@ -5496,7 +5496,7 @@ export class UserFunctionLowerer {
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Static) ===
                 0 ||
-            !ts.isClassDeclaration(declaration.parent) ||
+            !ts.isClassLike(declaration.parent) ||
             !declaration.body ||
             declaration.body.statements.length !== 1
         ) {

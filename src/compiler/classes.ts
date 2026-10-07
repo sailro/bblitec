@@ -21,7 +21,10 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
-import { borrowsReferenceParameter } from "./user-functions.js";
+import {
+    borrowsReferenceParameter,
+    type UserFunctionContext,
+} from "./user-functions.js";
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import { firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
@@ -44,7 +47,10 @@ import {
     classExtends,
     classErrorBase,
     classHasStaticState,
+    classBindingNames,
+    classIteratorMethod,
     classMemberTable,
+    localClassOfSymbol,
     classMethod,
     effectiveConstructor,
     isStaticMember,
@@ -80,9 +86,9 @@ function superCallOf(statement: ts.Statement): ts.CallExpression | undefined {
 }
 
 /** The class whose body lexically contains `node`: the home of its `super`. */
-function enclosingClass(node: ts.Node): ts.ClassDeclaration | undefined {
+function enclosingClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
     for (let current = node.parent; current; current = current.parent) {
-        if (ts.isClassDeclaration(current)) return current;
+        if (ts.isClassLike(current)) return current;
     }
     return undefined;
 }
@@ -95,10 +101,10 @@ function enclosingClass(node: ts.Node): ts.ClassDeclaration | undefined {
 function isInertExpression(
     checker: ts.TypeChecker,
     node: ts.Expression,
-    classSymbol: ts.Symbol | undefined,
+    classSymbols: ReadonlySet<ts.Symbol | undefined>,
 ): boolean {
     const inert = (expression: ts.Expression): boolean =>
-        isInertExpression(checker, expression, classSymbol);
+        isInertExpression(checker, expression, classSymbols);
     const primitive = (expression: ts.Expression): boolean =>
         (checker.getTypeAtLocation(expression).flags &
             (ts.TypeFlags.NumberLike |
@@ -120,7 +126,7 @@ function isInertExpression(
         return true;
     if (ts.isIdentifier(expression))
         return (
-            resolvedSymbol(checker, expression) !== classSymbol &&
+            !classSymbols.has(resolvedSymbol(checker, expression)) &&
             primitive(expression)
         );
     if (ts.isPrefixUnaryExpression(expression))
@@ -175,12 +181,14 @@ function staticFieldAssignedBeforeRead(
     table: ClassMemberTable,
     field: ts.PropertyDeclaration & { name: ts.MemberName },
 ): boolean {
-    const classSymbol = table.declaration.name
-        ? declaredSymbol(checker, table.declaration.name)
-        : undefined;
+    const classSymbols = new Set(
+        classBindingNames(table.declaration).map((name) =>
+            declaredSymbol(checker, name),
+        ),
+    );
     const fieldSymbol = declaredSymbol(checker, field.name);
     const inert = (expression: ts.Expression): boolean =>
-        isInertExpression(checker, expression, classSymbol);
+        isInertExpression(checker, expression, classSymbols);
     // `C.x = value` or `this.x = value` storing a static data field of
     // this class: a store that runs no code of its own.
     const staticWrite = (
@@ -198,7 +206,7 @@ function staticFieldAssignedBeforeRead(
         const owner = unwrapExpression(target.expression);
         return (owner.kind === ts.SyntaxKind.ThisKeyword ||
             (ts.isIdentifier(owner) &&
-                resolvedSymbol(checker, owner) === classSymbol)) &&
+                classSymbols.has(resolvedSymbol(checker, owner)))) &&
             table.staticFields.has(target.name.text)
             ? {
                   field: resolvedSymbol(checker, target),
@@ -254,7 +262,7 @@ function staticFieldAssignedBeforeRead(
 
 /** The private names one class body declares. */
 function declaredPrivateNames(
-    declaration: ts.ClassDeclaration,
+    declaration: ts.ClassLikeDeclaration,
 ): Map<string, ts.PrivateIdentifier> {
     const names = new Map<string, ts.PrivateIdentifier>();
     for (const member of declaration.members) {
@@ -265,58 +273,62 @@ function declaredPrivateNames(
     return names;
 }
 
-interface ClassLoweringContext extends Pick<
-    LoweringServices,
-    | "checker"
-    | "evaluationOrder"
-    | "options"
-    | "asyncActivations"
-    | "dataTypes"
-    | "dataLowerer"
-    | "nativeFunctions"
-    | "functionEmissionScope"
-    | "canShareFunctionBody"
-    | "compileSharedMethod"
-    | "registerNativeBinding"
-    | "registerNativeBindingType"
-    | "registerNativeConstBinding"
-    | "registerNativeTemporary"
-    | "cppString"
-    | "sharedClosures"
-    | "compileValue"
-    | "emitStatement"
-    | "emitDiscardedValue"
-    | "bindings"
-    | "platformDocumentHidden"
-    | "bindClassParameterValue"
-    | "compileClassParameterValue"
-    | "bindClassField"
-    | "bindNullableClassField"
-    | "bindUninitializedClassDataField"
-    | "bindOptionalResourceValue"
-    | "allocateUserFunctionPrefix"
-    | "allocateTemporaryCppName"
-    | "reachJsData"
-    | "emit"
-    | "increaseIndent"
-    | "decreaseIndent"
-    | "beginNativeFunctionBody"
-    | "endNativeFunctionBody"
-    | "dataValue"
-    | "compileForDataSink"
-    | "assignOptionalResourceValue"
-    | "defineThis"
-    | "activeThis"
-    | "registerClassInstance"
-    | "classOf"
-    | "compileRecordGetter"
-    | "enterRuntimeControlFlow"
-    | "leaveRuntimeControlFlow"
-    | "probeEmission"
-    | "useNativeValue"
-    | "unwrap"
-    | "fail"
-> {}
+interface ClassLoweringContext
+    extends
+        UserFunctionContext,
+        Pick<
+            LoweringServices,
+            | "checker"
+            | "userFunctions"
+            | "evaluationOrder"
+            | "options"
+            | "asyncActivations"
+            | "dataTypes"
+            | "dataLowerer"
+            | "nativeFunctions"
+            | "functionEmissionScope"
+            | "canShareFunctionBody"
+            | "compileSharedMethod"
+            | "registerNativeBinding"
+            | "registerNativeBindingType"
+            | "registerNativeConstBinding"
+            | "registerNativeTemporary"
+            | "cppString"
+            | "sharedClosures"
+            | "compileValue"
+            | "emitStatement"
+            | "emitDiscardedValue"
+            | "bindings"
+            | "platformDocumentHidden"
+            | "bindClassParameterValue"
+            | "compileClassParameterValue"
+            | "bindClassField"
+            | "bindNullableClassField"
+            | "bindUninitializedClassDataField"
+            | "bindOptionalResourceValue"
+            | "allocateUserFunctionPrefix"
+            | "allocateTemporaryCppName"
+            | "reachJsData"
+            | "emit"
+            | "increaseIndent"
+            | "decreaseIndent"
+            | "beginNativeFunctionBody"
+            | "endNativeFunctionBody"
+            | "dataValue"
+            | "compileForDataSink"
+            | "assignOptionalResourceValue"
+            | "defineThis"
+            | "activeThis"
+            | "registerClassInstance"
+            | "classOf"
+            | "compileRecordGetter"
+            | "enterRuntimeControlFlow"
+            | "leaveRuntimeControlFlow"
+            | "probeEmission"
+            | "useNativeValue"
+            | "unwrap"
+            | "fail"
+        > {}
 
 /**
  * Lowers the reached class subset: a class is a compile-time record of
@@ -350,7 +362,7 @@ export class ClassLowerer {
     }>();
     /** Per receiver class, whether a method reaches itself through `this`. */
     private readonly recursiveMethods = new EmissionMap<
-        ts.ClassDeclaration,
+        ts.ClassLikeDeclaration,
         Map<ts.MethodDeclaration, boolean>
     >();
     /**
@@ -366,6 +378,9 @@ export class ClassLowerer {
         string,
         Set<string>
     >();
+    /** Generator methods whose bodies are being lowered. */
+    private readonly activeGeneratorMethods =
+        new EmissionSet<ts.MethodDeclaration>();
     private readonly activeRecursiveMethods = new EmissionMap<
         ts.MethodDeclaration,
         {
@@ -389,7 +404,7 @@ export class ClassLowerer {
      * against: `this` inside them still names the class.
      */
     private readonly emptyStaticRecords = new EmissionMap<
-        ts.ClassDeclaration,
+        ts.ClassLikeDeclaration,
         Value
     >();
     /**
@@ -402,7 +417,7 @@ export class ClassLowerer {
 
     public constructor(private readonly context: ClassLoweringContext) {}
 
-    private table(declaration: ts.ClassDeclaration): ClassMemberTable {
+    private table(declaration: ts.ClassLikeDeclaration): ClassMemberTable {
         return classMemberTable(this.context.checker, declaration);
     }
 
@@ -412,16 +427,12 @@ export class ClassLowerer {
      */
     public resolveClass(
         expression: ts.NewExpression,
-    ): ts.ClassDeclaration | undefined {
+    ): ts.ClassLikeDeclaration | undefined {
         const callee = this.context.unwrap(expression.expression);
         if (!ts.isIdentifier(callee)) {
             return undefined;
         }
-        const target = resolvedSymbol(this.context.checker, callee);
-        const declaration = (target?.declarations ?? []).find(
-            ts.isClassDeclaration,
-        );
-        return declaration;
+        return localClassOfSymbol(resolvedSymbol(this.context.checker, callee));
     }
 
     /** The class a static member access reads, through a class name or a static `this`. */
@@ -438,9 +449,9 @@ export class ClassLowerer {
                 (candidate): candidate is ts.ClassElement =>
                     ts.isClassElement(candidate) &&
                     isStaticMember(candidate) &&
-                    ts.isClassDeclaration(candidate.parent),
+                    ts.isClassLike(candidate.parent),
             );
-            return member && ts.isClassDeclaration(member.parent)
+            return member && ts.isClassLike(member.parent)
                 ? { table: this.table(member.parent), name: access.name.text }
                 : undefined;
         }
@@ -500,9 +511,9 @@ export class ClassLowerer {
         if (!ts.isIdentifier(owner)) return undefined;
         const bound = this.context.bindings.lookupOptional(owner);
         if (bound?.classStatics) return bound;
-        const declaration = resolvedSymbol(this.context.checker, owner)
-            ?.getDeclarations()
-            ?.find(ts.isClassDeclaration);
+        const declaration = localClassOfSymbol(
+            resolvedSymbol(this.context.checker, owner),
+        );
         if (!declaration || bound) return undefined;
         if (this.hasStaticState(declaration)) {
             this.context.fail(
@@ -525,7 +536,7 @@ export class ClassLowerer {
     }
 
     /** Whether evaluating the class declaration runs or stores anything. */
-    public hasStaticState(declaration: ts.ClassDeclaration): boolean {
+    public hasStaticState(declaration: ts.ClassLikeDeclaration): boolean {
         return classHasStaticState(this.context.checker, declaration);
     }
 
@@ -540,16 +551,20 @@ export class ClassLowerer {
      * with no static state emits nothing: construction and member calls
      * lower where they are reached.
      */
-    public emitDeclaration(declaration: ts.ClassDeclaration): void {
+    public emitDeclaration(declaration: ts.ClassLikeDeclaration): void {
         if (!this.hasStaticState(declaration)) return;
         const table = this.table(declaration);
-        if (!declaration.name) {
+        const names = classBindingNames(declaration);
+        const name = names[0];
+        if (!name) {
             this.context.fail(
                 declaration,
                 "A class with static state requires a name.",
             );
         }
-        const baseName = table.base?.declaration.name;
+        const baseName = table.base
+            ? classBindingNames(table.base.declaration)[0]
+            : undefined;
         const inherited = baseName
             ? this.context.bindings.lookupOptional(baseName)
             : undefined;
@@ -560,7 +575,7 @@ export class ClassLowerer {
         ) {
             this.context.fail(
                 declaration,
-                `Class '${declaration.name.text}' extends a class whose ` +
+                `Class '${name.text}' extends a class whose ` +
                     "static state is not evaluated in this scope.",
             );
         }
@@ -573,7 +588,8 @@ export class ClassLowerer {
             recordProperties: statics,
             classStatics: declaration,
         };
-        this.context.bindings.bindCompileTimeValue(declaration.name, record);
+        for (const bound of names)
+            this.context.bindings.bindCompileTimeValue(bound, record);
         const previousThis = this.context.activeThis();
         this.context.defineThis(record);
         try {
@@ -627,7 +643,7 @@ export class ClassLowerer {
             this.context.bindUninitializedClassDataField(
                 field.name,
                 declared,
-                ts.isClassDeclaration(field.parent) &&
+                ts.isClassLike(field.parent) &&
                     staticFieldAssignedBeforeRead(
                         this.context.checker,
                         this.table(field.parent),
@@ -729,7 +745,7 @@ export class ClassLowerer {
         method: ts.MethodDeclaration,
     ): Value | undefined {
         const owner = method.parent;
-        if (!ts.isClassDeclaration(owner) || !method.body) return undefined;
+        if (!ts.isClassLike(owner) || !method.body) return undefined;
         const statements = method.body.statements;
         if (statements.length !== 1 || !ts.isTryStatement(statements[0]!)) {
             return undefined;
@@ -935,7 +951,7 @@ export class ClassLowerer {
      */
     public construct(
         expression: ts.NewExpression,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): Value {
         this.rejectUnsupportedMembers(declaration);
         const members = this.table(declaration);
@@ -1368,7 +1384,7 @@ export class ClassLowerer {
      * name the class wrote, so field bindings are keyed by that name.
      */
     private runtimeLayout(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         structName: string,
     ): readonly StoredClassField[] {
         const layout: StoredClassField[] = [];
@@ -1409,7 +1425,7 @@ export class ClassLowerer {
      * retarget in a method, is a different node and stays a rebind.
      */
     private hoistedParameterFields(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         constructorDeclaration: ts.ConstructorDeclaration,
         layout: readonly StoredClassField[],
     ): ReadonlyMap<string, { index: number; assignment: ts.BinaryExpression }> {
@@ -1492,7 +1508,7 @@ export class ClassLowerer {
      */
     private proveHoistedFields(
         structName: string,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         fields: Record<string, Value>,
         node: ts.Node,
     ): void {
@@ -1642,16 +1658,16 @@ export class ClassLowerer {
      * interface -- admits all of them.
      */
     private staticCandidates(
-        root: ts.ClassDeclaration,
+        root: ts.ClassLikeDeclaration,
         node: ts.Node | undefined,
-    ): ts.ClassDeclaration[] {
+    ): ts.ClassLikeDeclaration[] {
         const hierarchy = this.context.dataTypes.classHierarchy;
         const all = hierarchy.concreteClasses(root);
         if (!node) return [...all];
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(node),
         );
-        const classes: ts.ClassDeclaration[] = [];
+        const classes: ts.ClassLikeDeclaration[] = [];
         for (const member of type.isUnion() ? type.types : [type]) {
             const constraint =
                 (member.flags & ts.TypeFlags.TypeParameter) !== 0
@@ -1659,7 +1675,7 @@ export class ClassLowerer {
                     : member;
             const declaration = constraint?.symbol
                 ?.getDeclarations()
-                ?.find(ts.isClassDeclaration);
+                ?.find(ts.isClassLike);
             if (!declaration || hierarchy.root(declaration) !== root) {
                 return [...all];
             }
@@ -1676,7 +1692,7 @@ export class ClassLowerer {
     /** A stored receiver read as the most derived class all `candidates` share. */
     private narrowedReceiver(
         receiver: Value,
-        candidates: readonly ts.ClassDeclaration[],
+        candidates: readonly ts.ClassLikeDeclaration[],
         node: ts.Node,
     ): Value {
         if (candidates.length === 0) {
@@ -1696,8 +1712,8 @@ export class ClassLowerer {
     /** The record a stored receiver reads as `declaration`, over the slots it names. */
     private receiverRecord(
         receiver: Value,
-        declaration: ts.ClassDeclaration,
-        candidates: readonly ts.ClassDeclaration[] | undefined,
+        declaration: ts.ClassLikeDeclaration,
+        candidates: readonly ts.ClassLikeDeclaration[] | undefined,
         type: ts.Type | undefined,
     ): Value {
         const structName = (receiver.dataType as { name: string }).name;
@@ -1789,7 +1805,7 @@ export class ClassLowerer {
         instance: Value,
         methodName: string,
         call: ts.CallExpression,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): Value {
         const dispatched = this.dispatch(
             instance,
@@ -1814,6 +1830,73 @@ export class ClassLowerer {
             call,
             declaration,
         );
+    }
+
+    /**
+     * A generator method's iterator: its body lowers as a generator over
+     * the receiver it was called on.
+     */
+    private compileGeneratorMethod(
+        instance: Value,
+        method: ts.MethodDeclaration,
+        arguments_: readonly Value[],
+        node: ts.Node,
+    ): Value {
+        if (this.activeGeneratorMethods.has(method))
+            this.context.fail(
+                node,
+                `Recursive generator method '${methodLabel(method)}' is not supported.`,
+            );
+        const previousThis = this.context.activeThis();
+        this.context.defineThis(instance);
+        this.activeGeneratorMethods.add(method);
+        try {
+            return this.context.userFunctions.compileCallbackWithValues(
+                this.context,
+                method,
+                arguments_,
+                node,
+            );
+        } finally {
+            this.activeGeneratorMethods.delete(method);
+            this.context.defineThis(previousThis);
+        }
+    }
+
+    /**
+     * The iterator `for...of` and spreads take from an instance whose class
+     * implements `[Symbol.iterator]` as a generator method; undefined when
+     * the expression is no such instance.
+     */
+    public compileIterableIterator(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const declaration = this.context.checker
+            .getTypeAtLocation(expression)
+            .getSymbol()
+            ?.declarations?.find(ts.isClassLike);
+        if (!declaration) return undefined;
+        const declared = classIteratorMethod(
+            this.context.checker,
+            this.table(declaration),
+        );
+        if (!declared) return undefined;
+        const instance = this.context.compileValue(expression);
+        const owner = this.context.classOf(instance) ?? declaration;
+        if ((instance.classCandidates?.length ?? 0) > 1)
+            this.context.fail(
+                expression,
+                "Iterating an instance of one of several classes needs one [Symbol.iterator] implementation.",
+            );
+        const method =
+            classIteratorMethod(this.context.checker, this.table(owner)) ??
+            declared;
+        if (!method.asteriskToken || !method.body)
+            this.context.fail(
+                method,
+                "A [Symbol.iterator] method is lowered as a generator method.",
+            );
+        return this.compileGeneratorMethod(instance, method, [], expression);
     }
 
     /**
@@ -1927,7 +2010,7 @@ export class ClassLowerer {
         if (!candidates || candidates.length < 2) return undefined;
         const groups = new EmissionMap<
             ts.Node | undefined,
-            ts.ClassDeclaration[]
+            ts.ClassLikeDeclaration[]
         >();
         for (const candidate of candidates) {
             const key = implementation(this.table(candidate));
@@ -2042,7 +2125,7 @@ export class ClassLowerer {
         method: ts.MethodDeclaration | undefined,
         methodName: string,
         call: ts.CallExpression,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): Value {
         if (!method) {
             this.context.fail(
@@ -2056,6 +2139,13 @@ export class ClassLowerer {
                 `Reached method '${methodLabel(method)}' requires a body.`,
             );
         }
+        if (method.asteriskToken)
+            return this.compileGeneratorMethod(
+                instance,
+                method,
+                this.compileClassArguments(method, call.arguments, "method"),
+                call,
+            );
         if (
             this.context.options.workers &&
             method.modifiers?.some(
@@ -2606,7 +2696,7 @@ export class ClassLowerer {
     private receiverClasses(
         structName: string,
         method: ts.MethodDeclaration,
-    ): ts.ClassDeclaration[] {
+    ): ts.ClassLikeDeclaration[] {
         const stored = this.context.dataTypes.classStruct(structName);
         const hierarchy = this.context.dataTypes.classHierarchy;
         const name = method.name.getText();
@@ -2635,7 +2725,7 @@ export class ClassLowerer {
      * methods it calls on other instances of local classes.
      */
     private recursesThroughReceivers(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         method: ts.MethodDeclaration,
     ): boolean {
         const table = this.table(declaration);
@@ -2770,9 +2860,9 @@ export class ClassLowerer {
      * receiver read as a base class -- as it would run.
      */
     private methodRecurses(
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         method: ts.MethodDeclaration,
-        candidates: readonly ts.ClassDeclaration[] = [declaration],
+        candidates: readonly ts.ClassLikeDeclaration[] = [declaration],
     ): boolean {
         const exact = candidates.length === 1;
         const cache =
@@ -3160,7 +3250,7 @@ export class ClassLowerer {
         )?.declarations?.some(
             (declaration) =>
                 ts.isSetAccessorDeclaration(declaration) &&
-                ts.isClassDeclaration(declaration.parent) &&
+                ts.isClassLike(declaration.parent) &&
                 !declaration.getSourceFile().isDeclarationFile,
         );
         const stored =
@@ -3217,7 +3307,7 @@ export class ClassLowerer {
      */
     public instanceOf(
         value: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         node: ts.Expression,
     ): string | undefined {
         if (value.dataType?.kind === "error") {
@@ -3269,7 +3359,7 @@ export class ClassLowerer {
 
     private errorRecord(
         value: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         node: ts.Node,
     ): Value {
         const type = this.context.dataTypes.fromStoredTsType(
@@ -3290,9 +3380,7 @@ export class ClassLowerer {
     public errorView(value: Value, node: ts.Node): Value | undefined {
         if (value.dataType?.kind !== "error") return undefined;
         const type = this.context.checker.getTypeAtLocation(node);
-        const declaration = type.symbol?.declarations?.find(
-            ts.isClassDeclaration,
-        );
+        const declaration = type.symbol?.declarations?.find(ts.isClassLike);
         return declaration && classErrorBase(this.table(declaration))
             ? this.errorRecord(value, declaration, node)
             : undefined;
@@ -3310,7 +3398,7 @@ export class ClassLowerer {
             name,
         )?.declarations?.find(ts.isClassElement);
         const owner = member?.parent;
-        if (!member || !owner || !ts.isClassDeclaration(owner)) {
+        if (!member || !owner || !ts.isClassLike(owner)) {
             this.context.fail(
                 name,
                 `Private name '${name.text}' does not resolve to a class member.`,
@@ -3334,9 +3422,11 @@ export class ClassLowerer {
         );
     }
 
-    private rejectUnsupportedMembers(declaration: ts.ClassDeclaration): void {
+    private rejectUnsupportedMembers(
+        declaration: ts.ClassLikeDeclaration,
+    ): void {
         const chain = classChain(this.table(declaration));
-        const privateNames = new Map<string, ts.ClassDeclaration>();
+        const privateNames = new Map<string, ts.ClassLikeDeclaration>();
         for (const link of chain) {
             if (link.unsupportedHeritage) {
                 this.context.fail(

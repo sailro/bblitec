@@ -3295,6 +3295,39 @@ export class StatementLowerer {
         iterator: Value,
         type: DataType<"iterator">,
     ): void {
+        this.emitIteratorWalk(context, statement, iterator, type, (element) => {
+            context.bindDataIterationVariable(
+                declaration.name,
+                element,
+                type.element,
+            );
+            this.inRuntimeIteration(
+                context,
+                () =>
+                    this.inRuntimeControlFlow(context, () => {
+                        for (const nested of bodyStatements(statement)) {
+                            this.emit(context, nested);
+                            if (this.terminatesAfterLowering(nested)) break;
+                        }
+                    }),
+                statement,
+            );
+        });
+    }
+
+    /**
+     * Pulls an iterator to completion, `emitElement` lowering each value; an
+     * exit before completion (a jump, a throw, a generator closed while
+     * suspended in it) closes the iterator, whose own throw wins unless a
+     * throw is already pending (IteratorClose).
+     */
+    public emitIteratorWalk(
+        context: StatementLoweringContext,
+        owner: ts.Node,
+        iterator: Value,
+        type: DataType<"iterator">,
+        emitElement: (element: string) => void,
+    ): void {
         const source = context.allocateTemporaryCppName("iterator_source");
         const complete = context.allocateTemporaryCppName("iterator_complete");
         const next = context.allocateTemporaryCppName("iterator_result");
@@ -3304,7 +3337,7 @@ export class StatementLowerer {
         context.emit(`bool ${complete} = false;`);
         this.emitSuspendingCleanup(
             context,
-            statement,
+            owner,
             () => {
                 context.emit({
                     kind: "open",
@@ -3324,25 +3357,7 @@ export class StatementLowerer {
                         next,
                         `typename ${context.dataTypes.cppType(type)}::Result`,
                     );
-                    context.bindDataIterationVariable(
-                        declaration.name,
-                        `(*${next}.value)`,
-                        type.element,
-                    );
-                    this.inRuntimeIteration(
-                        context,
-                        () =>
-                            this.inRuntimeControlFlow(context, () => {
-                                for (const nested of bodyStatements(
-                                    statement,
-                                )) {
-                                    this.emit(context, nested);
-                                    if (this.terminatesAfterLowering(nested))
-                                        break;
-                                }
-                            }),
-                        statement,
-                    );
+                    emitElement(`(*${next}.value)`);
                 } finally {
                     context.bindings.popScope();
                 }

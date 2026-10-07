@@ -156,8 +156,8 @@ test("stored generator callbacks retain records, tuples, parameters and their le
 test("unsupported generator protocol and retained iterator cycles refuse explicitly", () => {
     for (const [source, message] of [
         [
-            "function* values(){yield* [1,2];}const iterator=values();iterator.next();",
-            /delegation/,
+            "function* values(){yield* new Set([1,2]);}const iterator=values();iterator.next();",
+            /yield\* delegates to a generator, an iterator or an array/,
         ],
         [
             "function* values():Generator<number,void,unknown>{yield;}const iterator=values();iterator.next();",

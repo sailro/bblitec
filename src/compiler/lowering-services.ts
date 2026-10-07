@@ -389,9 +389,9 @@ export interface LoweringServices {
     activeThis(): Value | undefined;
     registerClassInstance(
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): void;
-    classOf(instance: Value): ts.ClassDeclaration | undefined;
+    classOf(instance: Value): ts.ClassLikeDeclaration | undefined;
     callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
     defaultEngine(): string | undefined;
     reachJsRandom(): void;

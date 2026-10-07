@@ -33,6 +33,7 @@ import {
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
 import { provenUndefinedValue } from "./undefined-values.js";
+import { localClassOfSymbol } from "./class-members.js";
 import { ownKeysKnown } from "./object-statics.js";
 import {
     staticNumberValue,
@@ -96,6 +97,7 @@ interface DeclarationContext
         Pick<
             LoweringServices,
             | "allocateTemporaryCppName"
+            | "classLowerer"
             | "callbackIdentity"
             | "captureManagedClosureLines"
             | "compileCallbackWithValues"
@@ -873,6 +875,22 @@ export class DeclarationLowerer {
             return;
         }
 
+        // `const K = class { ... }` declares the class `K`: what the
+        // declaration runs (static fields and blocks) runs here.
+        const classExpression = this.context.unwrap(declaration.initializer);
+        if (ts.isClassExpression(classExpression)) {
+            if (
+                localClassOfSymbol(
+                    this.context.symbols.valueSymbol(declaration.name),
+                ) !== classExpression
+            )
+                this.context.fail(
+                    declaration.initializer,
+                    "A class expression is lowered as the initializer of a const it names.",
+                );
+            this.context.classLowerer.emitDeclaration(classExpression);
+            return;
+        }
         const forwardCallback = this.prepareForwardFunctionResult(
             declaration,
             cppName,

@@ -871,7 +871,7 @@ class Compiler implements LoweringServices {
     @journaled private accessor thisInstance: Value | undefined;
     private readonly classInstances = new EmissionMap<
         Value,
-        ts.ClassDeclaration
+        ts.ClassLikeDeclaration
     >();
     /**
      * JavaScript identities minted for materialized callbacks, per
@@ -5410,13 +5410,13 @@ class Compiler implements LoweringServices {
 
     public registerClassInstance(
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): void {
         writable(instance).classDeclaration = declaration;
         this.classInstances.set(instance, declaration);
     }
 
-    public classOf(instance: Value): ts.ClassDeclaration | undefined {
+    public classOf(instance: Value): ts.ClassLikeDeclaration | undefined {
         return instance.classDeclaration ?? this.classInstances.get(instance);
     }
 
@@ -6469,11 +6469,6 @@ class Compiler implements LoweringServices {
         const frame = this.returnFrames.at(-1);
         if (frame?.kind !== "native" || !frame.generator)
             this.fail(expression, "Yield requires an active generator body.");
-        if (expression.asteriskToken || !expression.expression)
-            this.fail(
-                expression,
-                "Generator delegation and empty yields require a typed protocol channel.",
-            );
         for (
             let owner: ts.Node = expression.parent;
             !ts.isFunctionLike(owner);
@@ -6489,20 +6484,107 @@ class Compiler implements LoweringServices {
                     "Yield in finally requires a resumable cleanup protocol.",
                 );
         }
-        const value = frame.generator.asynchronous
-            ? this.asyncActivations.compileAsyncReturn(
-                  expression.expression,
-                  frame.generator.element,
+        if (expression.asteriskToken) {
+            this.emitDelegatedYield(expression, frame.generator);
+            return;
+        }
+        const element = frame.generator.element;
+        // `yield;` yields undefined, which the pull channel must tell from
+        // completion: an empty reference or function would read as done.
+        if (
+            !expression.expression &&
+            element.kind !== "undefined" &&
+            (element.kind !== "optional" ||
+                element.inner.kind === "struct" ||
+                element.inner.kind === "function")
+        )
+            this.fail(
+                expression,
+                "A generator's empty yields produce undefined, which its element storage holds only as an optional value apart from completion.",
+            );
+        const value = !expression.expression
+            ? this.dataLowerer.compileKnownValueForSink(
+                  { kind: "json-null", cpp: "std::nullopt" },
+                  element,
+                  expression,
               )
-            : this.dataLowerer.compileForSink(
-                  expression.expression,
-                  frame.generator.element,
-              );
+            : frame.generator.asynchronous
+              ? this.asyncActivations.compileAsyncReturn(
+                    expression.expression,
+                    element,
+                )
+              : this.dataLowerer.compileForSink(expression.expression, element);
         this.emit({
             kind: "control",
-            code: `co_yield ${frame.generator.asynchronous ? `co_await bbl::js::generator_yield_value<${this.dataTypes.cppType(frame.generator.element)}>(${value})` : value};`,
+            code: `co_yield ${frame.generator.asynchronous ? `co_await bbl::js::generator_yield_value<${this.dataTypes.cppType(element)}>(${value})` : value};`,
             transfer: "suspend",
         });
+    }
+
+    /**
+     * `yield* delegate` in a synchronous generator: each value the delegate
+     * produces is yielded in turn, and closing the generator while it is
+     * suspended there closes the delegate. `next` takes no inbound value and
+     * `throw` is not represented, so forwarding `next` and `return` is the
+     * whole protocol; the delegate's completion value is `undefined`.
+     */
+    private emitDelegatedYield(
+        expression: ts.YieldExpression,
+        generator: DataType<"iterator">,
+    ): void {
+        if (generator.asynchronous || !expression.expression)
+            this.fail(
+                expression,
+                "yield* delegates to a synchronous iterable from a synchronous generator.",
+            );
+        const delegateType = this.dataLowerer.dataTypeAt(expression.expression);
+        const yieldElement = (cpp: string, type: DataType): void =>
+            this.emit({
+                kind: "control",
+                code: `co_yield ${this.dataLowerer.compileKnownValueForSink(this.dataLowerer.leafValue(cpp, type), generator.element, expression)};`,
+                transfer: "suspend",
+            });
+        if (delegateType?.kind === "iterator" && !delegateType.asynchronous) {
+            const delegate = this.dataLowerer.compileForSink(
+                expression.expression,
+                delegateType,
+            );
+            this.statements.emitIteratorWalk(
+                this,
+                expression,
+                this.dataLowerer.leafValue(delegate, delegateType),
+                delegateType,
+                (element) => yieldElement(element, delegateType.element),
+            );
+            return;
+        }
+        if (delegateType?.kind === "vector" || delegateType?.kind === "span") {
+            // The array iterator reads the length and the element at each
+            // step, so the array may change while the generator waits.
+            const source = this.allocateTemporaryCppName("delegated_array");
+            const index = this.allocateTemporaryCppName("delegated_index");
+            this.emit({ kind: "open", code: "{" });
+            this.increaseIndent();
+            this.emit(
+                `const auto ${source} = ${this.dataLowerer.compileForSink(expression.expression, delegateType)};`,
+            );
+            this.emit({
+                kind: "open",
+                code: `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
+                iteration: true,
+            });
+            this.increaseIndent();
+            yieldElement(`${source}[${index}]`, delegateType.element);
+            this.decreaseIndent();
+            this.emit({ kind: "close", code: "}" });
+            this.decreaseIndent();
+            this.emit({ kind: "close", code: "}" });
+            return;
+        }
+        this.fail(
+            expression.expression,
+            "yield* delegates to a generator, an iterator or an array.",
+        );
     }
 
     public activeGeneratorType(): DataType<"iterator"> | undefined {

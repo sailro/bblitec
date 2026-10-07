@@ -396,7 +396,7 @@ function lengthExtents(
                     ts.isBindingElement(node.parent) ||
                     ts.isFunctionDeclaration(node.parent) ||
                     ts.isFunctionExpression(node.parent) ||
-                    ts.isClassDeclaration(node.parent) ||
+                    ts.isClassLike(node.parent) ||
                     ts.isClassExpression(node.parent)) &&
                     node.parent.name === node)
             )
@@ -10279,7 +10279,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             field.type,
                             spread,
                             ts.isMethodDeclaration(method) &&
-                                ts.isClassDeclaration(method.parent),
+                                ts.isClassLike(method.parent),
                         );
                         this.context.emit({
                             kind: "expression",
@@ -13676,7 +13676,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? resolvedSymbol(this.context.checker, owner.expression)
                       ?.valueDeclaration
                 : undefined;
-        if (!declaration || !ts.isClassDeclaration(declaration))
+        if (!declaration || !ts.isClassLike(declaration))
             return this.context.fail(
                 call,
                 "Object.getPrototypeOf is lowered in a comparison with a class's prototype only.",
@@ -14510,6 +14510,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (iteratorRange) {
             return iteratorRange;
         }
+        // An instance whose class implements `[Symbol.iterator]`.
+        const iterable = knownTuple
+            ? undefined
+            : this.context.classLowerer.compileIterableIterator(expression);
+        if (iterable?.dataType?.kind === "iterator")
+            return { container: iterable, element: iterable.dataType.element };
         const rawValue =
             knownTuple && !ts.isIdentifier(this.context.unwrap(expression))
                 ? this.materializeKnownTuple(expression, knownTuple)
@@ -15464,6 +15470,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const rawIterable =
             projected ??
+            this.context.classLowerer.compileIterableIterator(
+                spread.expression,
+            ) ??
             (ts.isIdentifier(expression)
                 ? this.materializeConstantArray(expression)
                 : undefined) ??

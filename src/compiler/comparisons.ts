@@ -13,6 +13,7 @@ import {
     PINNED_COMPARISON_OPERATORS,
     foldNumericComparison,
 } from "../lowering/pinned-operators.js";
+import { localClassOfSymbol } from "./class-members.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -188,8 +189,8 @@ export function compileClassInstanceOf(
     className: ts.Identifier,
 ): string | undefined {
     const symbol = context.symbols.valueSymbol(className);
-    const declaration = symbol?.valueDeclaration;
-    if (!declaration || !ts.isClassDeclaration(declaration)) {
+    const declaration = localClassOfSymbol(symbol);
+    if (!symbol || !declaration) {
         return undefined;
     }
     const value = context.compileValue(expression.left);

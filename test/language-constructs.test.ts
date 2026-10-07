@@ -4054,8 +4054,8 @@ check(
 test("unsupported language shapes refuse explicitly", () => {
     for (const [source, message] of [
         [
-            "function* gen(): Generator<number> { yield* [1]; } for (const v of gen()) {}",
-            /delegation/,
+            "function* gen(): Generator<number> { yield* new Set([1]); } for (const v of gen()) {}",
+            /yield\* delegates to a generator, an iterator or an array/,
         ],
         [
             "const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}",
@@ -9549,3 +9549,99 @@ check(
     if (copy[1] !== -1n || copy.buffer === u.buffer) throw new Error("copy");
 `,
 );
+
+check(
+    "generator-delegation-empty-yields-and-iterable-classes",
+    `
+    function* inner(): Generator<number> { yield 1; yield 2; }
+    function* outer(): Generator<number> { yield* inner(); yield* [3, 4]; yield 5; }
+    if ([...outer()].join(",") !== "1,2,3,4,5") throw new Error("delegation");
+    function* gaps(): Generator<number | undefined> { yield 1; yield; yield 3; }
+    const seen: Array<number | undefined> = [];
+    for (const value of gaps()) seen.push(value);
+    if (seen.length !== 3 || seen[1] !== undefined || seen[2] !== 3) throw new Error("empty yield");
+    const log: string[] = [];
+    function* guarded(): Generator<number> {
+        try { yield 1; yield 2; } finally { log.push("inner closed"); }
+    }
+    function* delegating(): Generator<number> {
+        try { yield* guarded(); yield 9; } finally { log.push("outer closed"); }
+    }
+    for (const value of delegating()) { if (value === 1) break; }
+    if (log.join(",") !== "inner closed,outer closed") throw new Error("return forwarded to the delegate");
+    const items = [1, 2];
+    function* live(): Generator<number> { yield* items; }
+    const iterator = live();
+    const first = iterator.next();
+    items.push(3);
+    if (first.value !== 1 || [...iterator].join(",") !== "2,3") throw new Error("array delegate reads live");
+    class Range {
+        constructor(private readonly end: number) {}
+        *[Symbol.iterator](): Generator<number> { for (let i = 0; i < this.end; i++) yield i; }
+        *scaled(factor: number): Generator<number> { for (const value of this) yield value * factor; }
+    }
+    const range = new Range(3);
+    if ([...range].join(",") !== "0,1,2") throw new Error("iterable class spread");
+    let sum = 0;
+    for (const value of range.scaled(10)) sum += value;
+    if (sum !== 30) throw new Error("generator method");
+    class Bag { items = [1, 2]; *[Symbol.iterator](): Iterator<number> { yield* this.items; } }
+    let total = 0;
+    for (const value of new Bag()) total += value;
+    if (total !== 3) throw new Error("iterable class");
+`,
+);
+
+test("generator delegation and empty yields refuse unrepresented protocols", () => {
+    for (const [source, message] of [
+        [
+            "function* g(): Generator<number> { yield* new Set([1]); } const xs = [...g()]; export {};",
+            /yield\* delegates to a generator, an iterator or an array/,
+        ],
+        [
+            "interface P { a: number } function* g(): Generator<P | undefined> { yield; } const xs = [...g()]; export {};",
+            /A generator's empty yields produce undefined/,
+        ],
+        [
+            "class Bag { [Symbol.iterator](): Iterator<number> { return [1, 2][Symbol.iterator](); } } let t = 0; for (const v of new Bag()) t += v; export {};",
+            /A \[Symbol\.iterator\] method is lowered as a generator method/,
+        ],
+        [
+            "class N { constructor(readonly v: number, readonly next: N | null) {} *walk(): Generator<number> { yield this.v; if (this.next) yield* this.next.walk(); } } const xs = [...new N(1, new N(2, null)).walk()]; export {};",
+            /Recursive generator method 'N\.walk' is not supported/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
+check(
+    "class-expressions-bound-to-constants",
+    `
+    const K = class { n = 1; };
+    if (new K().n !== 1) throw new Error("class expression");
+    const Counter = class Tally {
+        static created = 0;
+        count: number;
+        constructor(start: number) { this.count = start; Tally.created++; }
+        bump(): number { return ++this.count; }
+    };
+    const first = new Counter(5);
+    const second = new Counter(1);
+    if (first.bump() !== 6 || second.bump() !== 2 || Counter.created !== 2) throw new Error("named class expression");
+    if (!(first instanceof Counter)) throw new Error("instanceof");
+    class Base { kind(): string { return "base"; } }
+    const Derived = class extends Base { kind(): string { return "derived:" + super.kind(); } };
+    if (new Derived().kind() !== "derived:base") throw new Error("extends");
+`,
+);
+
+test("a class expression outside a const initializer refuses", () => {
+    for (const source of [
+        "let K = class { n = 1; }; const k = new K(); export {};",
+        "function make(c: new () => { n: number }): number { return new c().n; } const n = make(class { n = 1; }); export {};",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /A class expression is lowered as the initializer of a const it names/,
+        );
+});
