@@ -3092,8 +3092,9 @@ export class DataTypeRegistry {
                 const declared = this.checker.getTypeOfSymbol(parameter);
                 if (
                     (declared.flags & ts.TypeFlags.Unknown) === 0 &&
-                    !this.checker.getNonNullableType(declared).getCallSignatures()
-                        .length
+                    !this.checker
+                        .getNonNullableType(declared)
+                        .getCallSignatures().length
                 )
                     return undefined;
                 return (
