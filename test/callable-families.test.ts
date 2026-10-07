@@ -327,3 +327,29 @@ test("deferred recursive callbacks and async record methods retain independent a
 `,
         true,
     ));
+
+test("value-or-promise unions await either arm in an asynchronous realm", (t) =>
+    nativeCheck(
+        t,
+        "value-or-promise-realm",
+        `
+    type Result={changed:true;hostId:number}|{changed:false;reason:string};
+    type MaybeAsync<T>=T|Promise<T>;
+    let prepared=0;
+    const pick=(id:number,slow:boolean):MaybeAsync<Result>=>{
+        if(id<=0)return {changed:false,reason:"missing"};
+        if(slow)return (async():Promise<Result>=>{prepared++;return {changed:true,hostId:id};})();
+        return {changed:true,hostId:id};
+    };
+    const picks:Array<typeof pick>=[pick];
+    let pending:boolean|Promise<boolean>=true;
+    void(async()=>{
+        const quick=await picks[0]!(3,false);const slow=await picks[0]!(4,true);const missing=await picks[0]!(0,true);
+        pending=Promise.resolve(false);const settled=await Promise.resolve(pending);
+        if(!quick.changed||quick.hostId!==3||!slow.changed||slow.hostId!==4||missing.changed||prepared!==1||settled)
+            throw new Error("value or promise arms");
+        globalThis.close();
+    })();
+`,
+        true,
+    ));

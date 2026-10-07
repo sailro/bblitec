@@ -9249,3 +9249,48 @@ test("a type parameter no argument determines and no constraint fixes still refu
         /Type parameter 'D' is not determined by this call's arguments/,
     );
 });
+
+checkInRealm(
+    "value-or-promise-results-are-awaited-as-either-arm",
+    `
+    type Result = { changed: true; hostId: number } | { changed: false; reason: "stale" | "missing" };
+    type MaybeAsync<T> = T | Promise<T>;
+    function createCommand(deps: { read(id: number): { mix: number } | undefined; prepare: () => Promise<void> }) {
+        const refused = (reason: "stale" | "missing"): Result => ({ changed: false, reason });
+        const publish = (id: number, slow: boolean): MaybeAsync<Result> => {
+            if (slow)
+                return (async (): Promise<Result> => {
+                    await deps.prepare();
+                    return { changed: true, hostId: id };
+                })();
+            return { changed: true, hostId: id };
+        };
+        const pick = (id: number, slow: boolean): MaybeAsync<Result> => {
+            const record = deps.read(id);
+            if (!record) return refused("missing");
+            if (record.mix < 0) return refused("stale");
+            return publish(id, slow);
+        };
+        return {
+            preview: (id: number): MaybeAsync<Result> => pick(id, false),
+            commit: async (id: number): Promise<boolean> => (await pick(id, true)).changed,
+        };
+    }
+    const creates: Array<typeof createCommand> = [createCommand];
+    let prepared = 0;
+    const command = creates[0]!({ read: (id) => (id > 0 ? { mix: id - 2 } : undefined), prepare: async () => { prepared++; } });
+    const order: string[] = [];
+    void (async () => {
+        const quick = await command.preview(3);
+        order.push("quick:" + quick.changed);
+        const missing = await command.preview(0);
+        order.push("missing:" + (missing.changed ? "" : missing.reason));
+        const committed = await command.commit(4);
+        order.push("commit:" + committed + ":" + prepared);
+        const stale = await command.commit(1);
+        order.push("stale:" + stale);
+        if (order.join(",") !== "quick:true,missing:missing,commit:true:1,stale:false") throw new Error(order.join(","));
+        globalThis.close();
+    })();
+`,
+);

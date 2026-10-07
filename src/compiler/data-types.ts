@@ -3003,6 +3003,8 @@ export class DataTypeRegistry {
         }
         const tuple = this.fromTupleUnion(type, node);
         if (tuple) return tuple;
+        const settled = this.fromValueOrPromiseUnion(type, node);
+        if (settled) return settled;
         // Tuple alternatives with different lengths still share array storage.
         // Ask the checker for their indexed element union instead of treating
         // length and the array methods as fields of a common record.
@@ -3059,6 +3061,45 @@ export class DataTypeRegistry {
             : undefined;
         if (object === null) return undefined;
         return object ?? this.fromMixedUnion(type, node);
+    }
+
+    /**
+     * `T | Promise<T>` (a result that may settle later) holds either the
+     * value or the promise, as one union of the two: awaiting it adopts the
+     * promise arm or resolves the value arm. Where a promise is stored as
+     * its value, both arms are that value.
+     */
+    private fromValueOrPromiseUnion(
+        type: ts.UnionType,
+        node: ts.Node,
+    ): DataType | undefined {
+        const promises = type.types.filter(
+            (member): member is ts.TypeReference =>
+                member.symbol?.name === "Promise" &&
+                declaredInDefaultLibrary(member.symbol) &&
+                isTypeReference(member),
+        );
+        const promise = promises[0];
+        if (!promise || promises.length > 1) return undefined;
+        const [argument] = this.checker.getTypeArguments(promise);
+        if (!argument) return undefined;
+        const settled = argument.isUnion() ? argument.types : [argument];
+        const values = type.types.filter((member) => member !== promise);
+        if (
+            values.length !== settled.length ||
+            !values.every((member) => settled.includes(member))
+        )
+            return undefined;
+        const value = this.fromTsType(argument, node);
+        const promised = this.fromTsType(promise, node);
+        if (!value || !promised) return undefined;
+        // Outside an asynchronous realm a promise is stored as its value.
+        if (dataTypesEqual(promised, value)) return value;
+        return promised.kind === "promise" &&
+            promised.result &&
+            dataTypesEqual(promised.result, value)
+            ? { kind: "union", members: [value, promised] }
+            : undefined;
     }
 
     private readonly arrayUnionsInProgress = new EmissionSet<ts.Type>();
@@ -4050,7 +4091,8 @@ export class DataTypeRegistry {
         const members = resolved.isUnion() ? resolved.types : [resolved];
         return members.every(
             (member) =>
-                (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+                (member.flags &
+                    (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
                 0,
         )
             ? { kind: "undefined" }

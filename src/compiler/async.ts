@@ -25,6 +25,7 @@ import {
 } from "./types.js";
 import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
+    dataTypesEqual,
     propertyIsReadOnly,
     type DataType,
     type DataStructField,
@@ -119,7 +120,10 @@ export class AsyncLowerer {
                     node,
                 ));
         const raw = context.compileValue(expression);
-        const value = this.adoptOptionalPromise(raw, expression) ?? raw;
+        const value =
+            this.adoptOptionalPromise(raw, expression) ??
+            this.adoptValueOrPromise(raw) ??
+            raw;
         if (value.kind === "promise") {
             const expected = type
                 ? context.dataTypes.cppType(type)
@@ -1625,7 +1629,9 @@ export class AsyncLowerer {
         source = this.context.checker.getTypeAtLocation(node),
     ): Value {
         if (value.kind === "promise") return value;
-        const adopted = this.adoptOptionalPromise(value, node, source);
+        const adopted =
+            this.adoptOptionalPromise(value, node, source) ??
+            this.adoptValueOrPromise(value);
         if (adopted) return adopted;
         value = this.normalizeUndefined(
             value,
@@ -1822,6 +1828,34 @@ export class AsyncLowerer {
             owned,
         );
     }
+    /**
+     * A value-or-promise union (`T | Promise<T>`) as a promise: its promise
+     * arm itself, or its value arm resolved.
+     */
+    private adoptValueOrPromise(value: Value): Value | undefined {
+        const type = value.dataType;
+        if (value.kind !== "data" || type?.kind !== "union") return undefined;
+        const promiseIndex = type.members.findIndex(
+            (member) => member.kind === "promise",
+        );
+        const promise = type.members[promiseIndex];
+        const settled = type.members[1 - promiseIndex];
+        if (
+            type.members.length !== 2 ||
+            promise?.kind !== "promise" ||
+            !promise.result ||
+            !settled ||
+            !dataTypesEqual(promise.result, settled)
+        )
+            return undefined;
+        this.context.useNativeValue(value);
+        const cppType = this.context.dataTypes.cppType(promise);
+        return this.context.dataLowerer.leafValue(
+            `([](const auto& settled) -> ${cppType} { return settled.index() == ${promiseIndex} ? std::get<${promiseIndex}>(settled) : ${cppType}::resolved(std::get<${1 - promiseIndex}>(settled)); }(${value.cpp}))`,
+            promise,
+        );
+    }
+
     private refuseThenable(value: Value, node: ts.Node): void {
         const property = value.recordProperties?.then;
         const field =
