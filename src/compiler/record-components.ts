@@ -396,6 +396,13 @@ function heldRecords(
 }
 
 /**
+ * @unjournaled A pure function of the checked program's types, kept across
+ * replays. Only whole answers are kept: a nested pair is assumed compatible
+ * while its own comparison is in progress.
+ */
+const compatibleLayouts = new WeakMap<ts.Type, Map<ts.Type, boolean>>();
+
+/**
  * Whether one layout can store both record types' common fields: each held
  * in storage of one kind (`?` and `| undefined`, string literals and
  * strings, numeric tuples and number arrays aside; functions as their
@@ -407,7 +414,23 @@ export function layoutsCompatible(
     checker: ts.TypeChecker,
     left: ts.Type,
     right: ts.Type,
-    seen = new Map<ts.Type, Set<ts.Type>>(),
+): boolean {
+    let byRight = compatibleLayouts.get(left);
+    if (!byRight)
+        compatibleLayouts.set(left, (byRight = new Map<ts.Type, boolean>()));
+    let compatible = byRight.get(right);
+    if (compatible === undefined) {
+        compatible = layoutsHoldBoth(checker, left, right, new Map());
+        byRight.set(right, compatible);
+    }
+    return compatible;
+}
+
+function layoutsHoldBoth(
+    checker: ts.TypeChecker,
+    left: ts.Type,
+    right: ts.Type,
+    seen: Map<ts.Type, Set<ts.Type>>,
 ): boolean {
     const a = checker.getNonNullableType(left);
     const b = checker.getNonNullableType(right);
@@ -441,7 +464,7 @@ export function layoutsCompatible(
     const elementA = element(a);
     const elementB = element(b);
     if (elementA && elementB)
-        return layoutsCompatible(checker, elementA, elementB, seen);
+        return layoutsHoldBoth(checker, elementA, elementB, seen);
     if (isRecordLike(checker, a) && isRecordLike(checker, b)) {
         const fields = (type: ts.Type, name: string): readonly ts.Type[] =>
             type.isUnion()
@@ -450,7 +473,7 @@ export function layoutsCompatible(
         return recordProperties(checker, b).every((property) =>
             fields(a, property.name).every((held) =>
                 fields(b, property.name).every((field) =>
-                    layoutsCompatible(checker, held, field, seen),
+                    layoutsHoldBoth(checker, held, field, seen),
                 ),
             ),
         );
@@ -469,14 +492,14 @@ export function layoutsCompatible(
     )
         return (
             signatureA.parameters.every((parameter, index) =>
-                layoutsCompatible(
+                layoutsHoldBoth(
                     checker,
                     checker.getTypeOfSymbol(parameter),
                     checker.getTypeOfSymbol(signatureB.parameters[index]!),
                     seen,
                 ),
             ) &&
-            layoutsCompatible(
+            layoutsHoldBoth(
                 checker,
                 signatureA.getReturnType(),
                 signatureB.getReturnType(),
