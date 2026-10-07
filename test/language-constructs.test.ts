@@ -9142,3 +9142,16 @@ checkInRealm(
     if (shown !== 1 || saves !== 0) throw new Error("save waits for its promise");
 `,
 );
+
+check(
+    "number-as-a-callback-converts-each-value",
+    `
+    const parsed = JSON.parse('{"errors":[1,"2.5",true,null,"x"]}') as { errors: unknown };
+    if (!Array.isArray(parsed.errors)) throw new Error("array");
+    const errors = Float32Array.from(parsed.errors.map(Number));
+    if (errors[0] !== 1 || errors[1] !== 2.5 || errors[2] !== 1 || errors[3] !== 0 || !Number.isNaN(errors[4]!))
+        throw new Error("Number over parsed values");
+    const plain = ["1", "", " 4 "].map(Number);
+    if (plain.join(",") !== "1,0,4") throw new Error("Number over strings " + plain.join(","));
+`,
+);

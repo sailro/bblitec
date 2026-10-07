@@ -1,11 +1,13 @@
 import {
     commonResourceValue,
+    isStringValue,
     optionalPresentCpp,
     statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
+import { isJsonValue } from "./json-bridge.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -3927,6 +3929,55 @@ export class UserFunctionLowerer {
         };
     }
 
+    /**
+     * The global `Number` passed as a callback (`values.map(Number)`):
+     * ToNumber of its first argument, `0` without one.
+     */
+    private numberCallback(
+        context: UserFunctionContext,
+        declaration: ts.Node,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(declaration) ||
+            context.bindings.lookupOptional(declaration) !== undefined ||
+            libraryGlobal(this.checker, declaration) !== "Number"
+        )
+            return undefined;
+        const argument = arguments_[0];
+        if (!argument) return { kind: "number", cpp: "0.0", staticNumber: 0 };
+        const number = { kind: "number" } as const;
+        if (argument.kind === "number" || argument.dataType?.kind === "number")
+            return argument;
+        context.reachJsData();
+        if (isStringValue(argument))
+            return {
+                kind: "number",
+                cpp: `bbl::js::number_from_string(${argument.cpp})`,
+                dataType: number,
+            };
+        if (
+            argument.kind === "boolean" ||
+            argument.dataType?.kind === "boolean"
+        )
+            return {
+                kind: "number",
+                cpp: `(${argument.cpp} ? 1.0 : 0.0)`,
+                dataType: number,
+            };
+        if (isJsonValue(argument))
+            return {
+                kind: "number",
+                cpp: `${argument.cpp}.to_number()`,
+                dataType: number,
+            };
+        return context.fail(
+            callNode,
+            `Number as a callback supports number, string, boolean and parsed values, received ${argument.kind}.`,
+        );
+    }
+
     /** Invokes a callback over values supplied by a lowering operation. */
     public compileCallbackWithValues(
         context: UserFunctionContext,
@@ -3940,12 +3991,9 @@ export class UserFunctionLowerer {
         discardReturn = false,
         body?: CallbackInvocationOptions,
     ): Value {
-        const truth = this.booleanCallback(
-            context,
-            declaration,
-            arguments_,
-            callNode,
-        );
+        const truth =
+            this.booleanCallback(context, declaration, arguments_, callNode) ??
+            this.numberCallback(context, declaration, arguments_, callNode);
         if (truth) return truth;
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
@@ -4609,12 +4657,9 @@ export class UserFunctionLowerer {
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
             : undefined;
-        const truth = this.booleanCallback(
-            context,
-            declaration,
-            arguments_,
-            callNode,
-        );
+        const truth =
+            this.booleanCallback(context, declaration, arguments_, callNode) ??
+            this.numberCallback(context, declaration, arguments_, callNode);
         if (truth) return truth;
         if (
             bound?.kind === "callback" ||
