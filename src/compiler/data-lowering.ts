@@ -49,7 +49,13 @@ import {
     presentValuesTruthy,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
-import { dataUnionEquality } from "./data-comparisons.js";
+import {
+    absentAwareEquality,
+    absentAwareIdentity,
+    dataUnionEquality,
+    pinSlotFound,
+    sameAbsenceCpp,
+} from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { compileTextCodecNew } from "./text-codecs.js";
 import { compileWeakRefNew } from "./weak-refs.js";
@@ -6739,9 +6745,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * later writes reach the original object instead of a value copy.
      */
     public objectIdentity(expression: ts.Expression): string | undefined {
+        return this.objectIdentityRead(expression)?.cpp;
+    }
+
+    /**
+     * {@link objectIdentity} with the read it was taken from, whose recorded
+     * slot presence tells which absent value a null token stands for.
+     */
+    private objectIdentityRead(
+        expression: ts.Expression,
+    ): { readonly cpp: string; readonly read?: Value } | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
-            return "nullptr";
+            return { cpp: "nullptr" };
         }
         if (ts.isConditionalExpression(unwrapped)) {
             const whenTrue = this.compileArm(() =>
@@ -6768,11 +6784,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 whenFalse.lines,
                 whenFalse.value,
             );
-            return condition === "true"
-                ? trueCpp
-                : condition === "false"
-                  ? falseCpp
-                  : `(${condition} ? ${trueCpp} : ${falseCpp})`;
+            return {
+                cpp:
+                    condition === "true"
+                        ? trueCpp
+                        : condition === "false"
+                          ? falseCpp
+                          : `(${condition} ? ${trueCpp} : ${falseCpp})`,
+            };
         }
         const path = this.compileDataPath(unwrapped, "read");
         const computed =
@@ -6786,16 +6805,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         const value = this.narrowOptional(computed, unwrapped);
-        if (value.objectIdentityCpp !== undefined) {
-            return value.objectIdentityCpp;
-        }
-        return isOpaqueReference(value.dataType)
-            ? `${value.cpp}.get()`
-            : value.dataType?.kind === "struct"
-              ? this.context.dataTypes.isReferenceStruct(value.dataType.name)
-                  ? `${value.cpp}.get()`
-                  : `std::addressof(${value.cpp})`
-              : undefined;
+        const cpp =
+            value.objectIdentityCpp ??
+            (isOpaqueReference(value.dataType)
+                ? `${value.cpp}.get()`
+                : value.dataType?.kind === "struct"
+                  ? this.context.dataTypes.isReferenceStruct(
+                        value.dataType.name,
+                    )
+                      ? `${value.cpp}.get()`
+                      : `std::addressof(${value.cpp})`
+                  : undefined);
+        return cpp === undefined ? undefined : { cpp, read: computed };
     }
 
     /** Runtime record callbacks must observe the source array's object identities. */
@@ -15656,12 +15677,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const lowered = this.context.probeEmission(() =>
                 loweredOptional(operand),
             );
-            return this.context.bindings.pinValueToTemporary(
-                lowered ??
-                    this.compileDataPath(operand, "read") ??
-                    this.context.compileValue(operand),
-                label,
-                operand,
+            return pinSlotFound(
+                this,
+                this.context.bindings.pinValueToTemporary(
+                    lowered ??
+                        this.compileDataPath(operand, "read") ??
+                        this.context.compileValue(operand),
+                    label,
+                    operand,
+                ),
             );
         };
         const leftOptional = hasOptional
@@ -15814,10 +15838,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             return temporary;
         };
+        // Two optionals are equal when both hold equal values, or both are
+        // the same absent value. Strings and tags of two closed sets compare
+        // as the strings they spell.
+        const textual = (type: DataType): boolean =>
+            type.kind === "string" || type.kind === "enum";
         if (
             optionalComparable(leftType) &&
             optionalComparable(rightType) &&
-            dataTypesEqual(leftType.inner, rightType.inner)
+            (dataTypesEqual(leftType.inner, rightType.inner) ||
+                (textual(leftType.inner) && textual(rightType.inner)))
         ) {
             const leftCpp = bindOptional(
                 left,
@@ -15831,9 +15861,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 rightOptional,
                 false,
             );
-            const equal =
-                `(${optionalPresentCpp(leftCpp)} == ${optionalPresentCpp(rightCpp)} && ` +
-                `(!${optionalPresentCpp(leftCpp)} || (*${leftCpp}) == (*${rightCpp})))`;
+            const presentEqual = dataTypesEqual(leftType.inner, rightType.inner)
+                ? `(*${leftCpp}) == (*${rightCpp})`
+                : `std::string(${widenTag({ cpp: `(*${leftCpp})`, dataType: leftType.inner }, left).cpp}) == ` +
+                  `std::string(${widenTag({ cpp: `(*${rightCpp})`, dataType: rightType.inner }, right).cpp})`;
+            const equal = absentAwareEquality(
+                sameAbsenceCpp(
+                    this,
+                    { node: left, value: leftOptional },
+                    { node: right, value: rightOptional },
+                ),
+                optionalPresentCpp(leftCpp),
+                optionalPresentCpp(rightCpp),
+                presentEqual,
+            );
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(leftType)) {
@@ -15890,13 +15931,41 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             type.kind === "boolean"
                 ? `(${leftCpp}) ${negated ? "!=" : "=="} (${rightCpp})`
                 : `${leftCpp} ${negated ? "!=" : "=="} ${rightCpp}`;
-        const leftValue = this.context.probeEmission(() =>
-            this.comparableOperand(left),
-        );
+        // Dynamic storage keeps both absent values and each primitive's type,
+        // which its own strict equality compares; a sink of another type
+        // would coerce it.
+        const dynamicEquality = (leftCpp: string, rightCpp: string): string =>
+            `${negated ? "!" : ""}(${leftCpp}.strict_equals(${rightCpp}))`;
+        const leftValue = this.context.probeEmission(() => {
+            const operand = this.comparableOperand(left);
+            return operand?.read
+                ? { ...operand, read: pinSlotFound(this, operand.read) }
+                : operand;
+        });
         if (leftValue) {
             const rightValue = this.context.probeEmission(() =>
                 this.comparableOperand(right),
             );
+            if (
+                leftValue.dataType.kind === "json" ||
+                rightValue?.dataType.kind === "json"
+            ) {
+                const boxed = (
+                    operand: { cpp: string; dataType: DataType },
+                    node: ts.Expression,
+                ): string =>
+                    this.compileKnownValueForSink(
+                        this.leafValue(operand.cpp, operand.dataType),
+                        { kind: "json" },
+                        node,
+                    );
+                return dynamicEquality(
+                    boxed(leftValue, left),
+                    rightValue
+                        ? boxed(rightValue, right)
+                        : this.compileForSink(right, { kind: "json" }),
+                );
+            }
             if (
                 rightValue &&
                 !dataTypesEqual(leftValue.dataType, rightValue.dataType) &&
@@ -15934,6 +16003,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     `${negated ? "!=" : "=="} std::string(${rightCpp})`
                 );
             }
+            // Two empty functions are identical; their absent values must
+            // also be the same one.
+            if (leftValue.dataType.kind === "function")
+                return absentAwareIdentity(
+                    sameAbsenceCpp(
+                        this,
+                        { node: left, value: leftValue.read },
+                        { node: right, value: rightValue?.read },
+                    ),
+                    `static_cast<bool>(${leftValue.cpp})`,
+                    (operator) => `${leftValue.cpp} ${operator} ${rightCpp}`,
+                    negated,
+                );
             return compare(leftValue.cpp, rightCpp, leftValue.dataType);
         }
         const rightValue = this.context.probeEmission(() =>
@@ -15941,6 +16023,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         if (rightValue) {
             const leftCpp = this.compileForSink(left, rightValue.dataType);
+            if (rightValue.dataType.kind === "json")
+                return dynamicEquality(leftCpp, rightValue.cpp);
             if (rightValue.dataType.kind === "string") {
                 return (
                     `std::string(${leftCpp}) ${negated ? "!=" : "=="} ` +
@@ -15949,10 +16033,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             return compare(leftCpp, rightValue.cpp, rightValue.dataType);
         }
-        const leftObject = this.objectIdentity(left);
-        const rightObject = this.objectIdentity(right);
+        const leftObject = this.objectIdentityRead(left);
+        const leftRead =
+            leftObject?.read && pinSlotFound(this, leftObject.read);
+        const rightObject = this.objectIdentityRead(right);
         if (leftObject && rightObject) {
-            return `static_cast<const void*>(${leftObject}) ${negated ? "!=" : "=="} static_cast<const void*>(${rightObject})`;
+            const leftPointer = `static_cast<const void*>(${leftObject.cpp})`;
+            return absentAwareIdentity(
+                sameAbsenceCpp(
+                    this,
+                    { node: left, value: leftRead },
+                    { node: right, value: rightObject.read },
+                ),
+                `${leftPointer} != nullptr`,
+                (operator) =>
+                    `${leftPointer} ${operator} static_cast<const void*>(${rightObject.cpp})`,
+                negated,
+            );
         }
         return undefined;
     }
@@ -15960,12 +16057,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * An operand whose data type the native `==`/`!=` serve directly, so the
      * other side compiles against it through the ordinary sink path — an enum
-     * tag or a string. Numbers keep the numeric comparison above, which
-     * carries its own precision contract.
+     * tag, a string or a dynamic value. Numbers keep the numeric comparison
+     * above, which carries its own precision contract.
      */
-    private comparableOperand(
-        expression: ts.Expression,
-    ): { cpp: string; dataType: DataType; staticString?: string } | undefined {
+    private comparableOperand(expression: ts.Expression):
+        | {
+              cpp: string;
+              dataType: DataType;
+              staticString?: string;
+              /** The read a stored function came from. */
+              read?: Value;
+          }
+        | undefined {
         const value =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
@@ -16012,16 +16115,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 value.dataType.kind === "iterator" ||
                 value.dataType.kind === "undefined" ||
                 value.dataType.kind === "function" ||
+                value.dataType.kind === "json" ||
                 value.dataType?.kind === "enum" ||
                 value.dataType?.kind === "string" ||
                 value.dataType?.kind === "boolean")
         ) {
             return {
                 cpp: value.cpp,
-                dataType:
-                    value.dataType.kind === "function"
-                        ? { ...value.dataType, identity: true }
-                        : value.dataType,
+                ...(value.dataType.kind === "function"
+                    ? {
+                          dataType: { ...value.dataType, identity: true },
+                          read: value,
+                      }
+                    : { dataType: value.dataType }),
                 ...(value.staticString === undefined
                     ? {}
                     : { staticString: value.staticString }),

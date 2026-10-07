@@ -31,6 +31,12 @@ import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
 import { numericSlotKind } from "./numeric-slot-storage.js";
+import { cppIdentifierPattern } from "../cpp-literals.js";
+import {
+    absentAwareIdentity,
+    pinSlotFound,
+    sameAbsenceCpp,
+} from "./data-comparisons.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -562,11 +568,14 @@ export class ConditionLowerer {
                     unwrapped.right,
                 ])[0]
             )
-                leftValue = pinOperand(
-                    this.context,
-                    leftValue,
-                    unwrapped.left,
-                    "comparison_left",
+                leftValue = pinSlotFound(
+                    this.context.dataLowerer,
+                    pinOperand(
+                        this.context,
+                        leftValue,
+                        unwrapped.left,
+                        "comparison_left",
+                    ),
                 );
             const textKind = (value: Value) =>
                 ["text-data", "text-renderable", "text-vector"].includes(
@@ -763,6 +772,44 @@ export class ConditionLowerer {
                         "A numeric view compares by identity only with a present numeric array.",
                     );
                 return `(${leftValue.cpp}).identity() ${operator} (${rightValue.cpp}).identity()`;
+            }
+            // A shared record or a function is absent as one native null;
+            // two absent ones must also be the same absent value.
+            const nullable = (value: Value): string | undefined =>
+                value.kind === "data" &&
+                (value.dataType?.kind === "function" ||
+                    value.dataType?.kind === "struct")
+                    ? this.context.dataTypes.slotPresentCpp(
+                          value.dataType,
+                          value.cpp,
+                      )
+                    : undefined;
+            if (
+                equality &&
+                nullable(leftValue) !== undefined &&
+                nullable(rightValue) !== undefined
+            ) {
+                const same = sameAbsenceCpp(
+                    this.context.dataLowerer,
+                    { node: unwrapped.left, value: leftValue },
+                    { node: unwrapped.right, value: rightValue },
+                );
+                if (same !== "true") {
+                    const stable = cppIdentifierPattern.test(leftValue.cpp)
+                        ? leftValue
+                        : this.context.bindings.pinValueToTemporary(
+                              leftValue,
+                              "comparison_left",
+                              unwrapped.left,
+                          );
+                    return absentAwareIdentity(
+                        same,
+                        `static_cast<bool>(${stable.cpp})`,
+                        (identity) =>
+                            `${stable.cpp} ${identity} ${rightValue.cpp}`,
+                        operator === "!=",
+                    );
+                }
             }
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
