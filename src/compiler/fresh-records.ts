@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { libraryGlobal } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    libraryGlobal,
+    resolvedSymbol,
+} from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 
 /**
@@ -172,8 +176,8 @@ function returnsOnlyFresh(
     }
 }
 
-/** Methods and statics that return a new array of the receiver's elements. */
-const ARRAY_COPIES: ReadonlySet<string> = new Set([
+/** Array methods whose result is a new array, never their receiver. */
+const FRESH_ARRAY_METHODS: ReadonlySet<string> = new Set([
     "concat",
     "filter",
     "flat",
@@ -184,15 +188,51 @@ const ARRAY_COPIES: ReadonlySet<string> = new Set([
     "toSorted",
     "toSpliced",
     "with",
-    "from",
-    "of",
-    "values",
+]);
+
+/** The `Array` and `Object` statics that return a new array. */
+const FRESH_ARRAY_STATICS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+    ["Array", new Set(["from", "of"])],
+    ["Object", new Set(["keys", "values", "entries"])],
 ]);
 
 /**
+ * Whether `expression` calls a built-in that returns a new array it
+ * created: an Array method above, `Array.from`/`Array.of`, or
+ * `Object.keys`/`values`/`entries`. A method a user type declares under
+ * the same name can return an array it keeps, so only the library's own
+ * declaration counts.
+ */
+export function callsFreshArrayBuiltin(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const call = unwrapExpression(expression);
+    if (!ts.isCallExpression(call)) return false;
+    const callee = unwrapExpression(call.expression);
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const name = callee.name.text;
+    const statics = FRESH_ARRAY_STATICS.get(
+        libraryGlobal(checker, callee.expression) ?? "",
+    );
+    if (statics) return statics.has(name);
+    const symbol = resolvedSymbol(checker, callee);
+    return (
+        FRESH_ARRAY_METHODS.has(name) &&
+        declaredInDefaultLibrary(symbol) &&
+        (symbol?.declarations ?? []).some(
+            (declaration) =>
+                ts.isInterfaceDeclaration(declaration.parent) &&
+                (declaration.parent.name.text === "Array" ||
+                    declaration.parent.name.text === "ReadonlyArray"),
+        )
+    );
+}
+
+/**
  * Whether an array expression evaluates to an array no other reference
- * holds: a fresh object, or a copy an array method or `Array`/`Object`
- * static builds (whose elements may still be shared).
+ * holds: a fresh object, or one {@link callsFreshArrayBuiltin} builds (whose
+ * elements may still be shared).
  */
 export function yieldsNewArray(
     checker: ts.TypeChecker,
@@ -201,15 +241,6 @@ export function yieldsNewArray(
     const unwrapped = unwrapExpression(expression);
     return (
         yieldsFreshObject(checker, unwrapped) ||
-        (ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ARRAY_COPIES.has(unwrapped.expression.name.text) &&
-            (checker.isArrayLikeType(
-                checker.getTypeAtLocation(unwrapped.expression.expression),
-            ) ||
-                ["Array", "Object"].includes(
-                    libraryGlobal(checker, unwrapped.expression.expression) ??
-                        "",
-                )))
+        callsFreshArrayBuiltin(checker, unwrapped)
     );
 }

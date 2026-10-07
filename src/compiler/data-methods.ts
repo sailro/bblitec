@@ -56,7 +56,8 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import { resolvedSymbol } from "./symbols.js";
+import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
@@ -359,52 +360,6 @@ function plainRecordReceiver(lowerer: DataLowerer): Value | undefined {
         !lowerer.context.dataTypes.isClassStruct(receiver.dataType.name)
         ? receiver
         : undefined;
-}
-
-/** Array methods whose result is a new array, never their receiver. */
-const freshArrayMethods: ReadonlySet<string> = new EmissionSet([
-    "concat",
-    "filter",
-    "flat",
-    "flatMap",
-    "map",
-    "slice",
-    "toReversed",
-    "toSorted",
-    "toSpliced",
-    "with",
-]);
-
-/**
- * Whether `expression` calls a built-in that returns a new array it
- * created: an Array method above, `Array.from`/`Array.of`, or
- * `Object.keys`/`values`/`entries`. A method a user type declares under
- * the same name can return an array it keeps, so only the library's own
- * declaration counts.
- */
-function returnsFreshArray(
-    lowerer: DataLowerer,
-    expression: ts.Expression,
-): boolean {
-    if (!ts.isCallExpression(expression)) return false;
-    const callee = lowerer.context.unwrap(expression.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return false;
-    const name = callee.name.text;
-    const owner = lowerer.context.libraryGlobal(callee.expression);
-    if (owner === "Array") return name === "from" || name === "of";
-    if (owner === "Object")
-        return name === "keys" || name === "values" || name === "entries";
-    const symbol = resolvedSymbol(lowerer.context.checker, callee);
-    return (
-        freshArrayMethods.has(name) &&
-        declaredInDefaultLibrary(symbol) &&
-        (symbol?.declarations ?? []).some(
-            (declaration) =>
-                ts.isInterfaceDeclaration(declaration.parent) &&
-                (declaration.parent.name.text === "Array" ||
-                    declaration.parent.name.text === "ReadonlyArray"),
-        )
-    );
 }
 
 export function compileDataMethodCall(
@@ -904,7 +859,7 @@ export function compileDataMethodCall(
     // method that changes it runs on a native copy of its elements, as it
     // would on the array JavaScript builds.
     const freshElement =
-        returnsFreshArray(lowerer, ownerExpression) &&
+        callsFreshArrayBuiltin(lowerer.context.checker, ownerExpression) &&
         dynamicOwner?.kind === "tuple" &&
         receiverWritingMethods.has(method)
             ? lowerer.knownTupleElement(callee.expression, dynamicOwner)
