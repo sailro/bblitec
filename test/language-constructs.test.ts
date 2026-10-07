@@ -14090,6 +14090,57 @@ test("imported capability records issue class instances behind empty-object toke
     await executeGeneratedAssertions(t, "imported-capability-records", cpp);
 });
 
+test("imported module records reached through holders and element reads are one object", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-module-record-receivers"),
+        [
+            [
+                "records",
+                `export const sequence = (() => {
+                    let next = 0;
+                    const issue = (): number => ++next;
+                    const peek = (): number => next;
+                    return { issue, peek } as const;
+                })();
+                export const counter = {
+                    count: 0,
+                    bump(): number { this.count += 1; return this.count; },
+                };`,
+            ],
+        ],
+        `import { counter, sequence } from "./records.js";
+        const issue = sequence["issue"];
+        if (issue() !== 1 || sequence["peek"]() !== 1) throw new Error("element reads");
+        const holders = [sequence];
+        if (holders[0]!.issue() !== 2 || [sequence].map((s) => s.peek())[0] !== 2) throw new Error("holders");
+        const counters = [counter];
+        counters[0]!.bump();
+        if (counter.count !== 1 || counters[0] !== counter) throw new Error("home object through a holder");`,
+    );
+    await executeGeneratedAssertions(
+        t,
+        "imported-module-record-receivers",
+        cpp,
+    );
+});
+
+// A record handed to a function that compares it is the one object its
+// literal created, whether the call is inlined or runs a compiled body.
+check(
+    "records-compared-by-a-called-function-stay-one-object",
+    `
+    interface Point { x: number; y: number }
+    const point = { x: 1, y: 2 };
+    const other = { x: 1, y: 2 };
+    function sameAs(value: Point, against: Point): boolean { return value === against; }
+    const compares: Array<typeof sameAs> = [sameAs];
+    if (!sameAs(point, point) || sameAs(point, other)) throw new Error("direct");
+    if (!compares[0]!(point, point) || compares[0]!(point, other)) throw new Error("stored");
+    const alias = point;
+    if (alias !== point || alias === other) throw new Error("alias");
+`,
+);
+
 check(
     "empty-object-tokens-compare-by-identity",
     `

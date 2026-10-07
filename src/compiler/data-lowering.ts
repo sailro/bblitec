@@ -1950,11 +1950,12 @@ export class DataLowerer {
 
     /**
      * A method writing `this.field` of an object literal lowered as a
-     * compile-time record, where the field holds a generation-time constant:
-     * the binding the literal initializes takes the one object it creates,
-     * which the method then writes.
+     * compile-time record, where the field holds a generation-time constant,
+     * has no object to write: a binding the literal initializes takes the
+     * one object it creates before lowering reaches here
+     * (`oneObjectObservation`), and any other literal refuses.
      */
-    private requireHomeObjectStorage(
+    private refuseConstantReceiverWrite(
         instance: Value,
         access: ts.PropertyAccessExpression,
     ): void {
@@ -1968,12 +1969,6 @@ export class DataLowerer {
                 member.staticString === undefined)
         )
             return;
-        const declaration = this.context.bindings.recordDeclaration(
-            instance,
-            access.expression,
-        );
-        if (declaration && !this.context.dynamicBindings.has(declaration))
-            throw new DynamicBindingStorageRequired(declaration, "source");
         this.context.fail(
             access,
             "A write through `this` needs the object its literal creates stored where a binding names it.",
@@ -2080,7 +2075,7 @@ export class DataLowerer {
                 instance.kind === "record" &&
                 !this.context.classOf(instance)
             )
-                this.requireHomeObjectStorage(instance, unwrapped);
+                this.refuseConstantReceiverWrite(instance, unwrapped);
             // A class field resolves to the local it was bound to, so
             // container methods and alias tracking see the same
             // storage a field read outside the method sees.

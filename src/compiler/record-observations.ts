@@ -8,8 +8,18 @@ import {
     type ProgramObservations,
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
-import { declaredSymbol } from "./symbols.js";
-import { expressionMayRunCode, unwrapExpression } from "./syntax.js";
+import {
+    declarationOrigin,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./symbols.js";
+import {
+    assignmentTargets,
+    expressionMayRunCode,
+    isAssignmentExpression,
+    isUpdateExpression,
+    unwrapExpression,
+} from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
 export interface RecordObservationContext {
@@ -41,6 +51,13 @@ const answers = new WeakMap<
     ts.Type,
     WeakMap<ts.Type, Map<string, string | null>>
 >();
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const arrayCopyAnswers = new WeakMap<
+    ts.Type,
+    WeakMap<ts.Type, string | null>
+>();
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const arrayIdentityAnswers = new WeakMap<ts.Type, string | null>();
 
 /**
  * Why a native copy of a `source` record stored as `target` could be told
@@ -141,6 +158,21 @@ export function arrayCopyObservation(
     source: ts.Type,
     target: ts.Type,
 ): string | undefined {
+    let byTarget = arrayCopyAnswers.get(source);
+    if (!byTarget) arrayCopyAnswers.set(source, (byTarget = new WeakMap()));
+    let answer = byTarget.get(target);
+    if (answer === undefined) {
+        answer = observedArrayCopy(context, source, target) ?? null;
+        byTarget.set(target, answer);
+    }
+    return answer ?? undefined;
+}
+
+function observedArrayCopy(
+    context: RecordObservationContext,
+    source: ts.Type,
+    target: ts.Type,
+): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
     const elementOf = (type: ts.Type): ts.Type | undefined =>
@@ -220,6 +252,18 @@ export function arrayIdentityObservation(
     context: RecordObservationContext,
     target: ts.Type,
 ): string | undefined {
+    let answer = arrayIdentityAnswers.get(target);
+    if (answer === undefined) {
+        answer = observedArrayIdentity(context, target) ?? null;
+        arrayIdentityAnswers.set(target, answer);
+    }
+    return answer ?? undefined;
+}
+
+function observedArrayIdentity(
+    context: RecordObservationContext,
+    target: ts.Type,
+): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
     const copyTypes = [
@@ -250,6 +294,433 @@ export function arrayIdentityObservation(
     )
         return "the program compares such arrays by identity";
     return undefined;
+}
+
+/**
+ * Why a copy stored where the program reads it as `target` could be told
+ * apart from the one object JavaScript keeps by its identity alone: the
+ * array half (`arrayIdentityObservation`), or for a record an identity use
+ * of a type that may hold it.
+ */
+export function identityObservation(
+    context: RecordObservationContext,
+    target: ts.Type,
+): string | undefined {
+    const { checker } = context;
+    if (checker.isArrayLikeType(target))
+        return arrayIdentityObservation(context, target);
+    const observations = programObservations(context.program);
+    const copyTypes = [
+        target,
+        ...observations.assertions
+            .filter(
+                ({ asserted, open }) =>
+                    open || checker.isTypeAssignableTo(asserted, target),
+            )
+            .map(({ asserted }) => asserted),
+    ];
+    return [...observations.identities].some((type) =>
+        holdsRecord(checker, type, copyTypes),
+    )
+        ? "the program compares such records by identity"
+        : undefined;
+}
+
+/**
+ * Why the object a declaration's literal creates must stay one runtime
+ * object rather than a compile-time record or tuple rebuilt at each use,
+ * found before lowering from the program's uses of the binding:
+ *
+ * - `identity`: a use may compare it by identity. Its references are
+ *   followed through wrappers, selections, aliases and the parameters of
+ *   program functions it is handed to; a use that only reads it (a member,
+ *   an element, iteration, a callee that only reads the argument) observes
+ *   nothing, an equality operand compares it, and any other use stores it
+ *   where an identity use of that type may reach (`identityObservation`).
+ *   Two empty-object tokens compared with each other are settled at
+ *   generation (`foldSettledComparison`) unless either is one object.
+ * - `receiverWrites`: the fields its methods write through `this`, which
+ *   need the object where they hold generation-time constants.
+ */
+export interface OneObjectObservation {
+    readonly identity?: string;
+    readonly receiverWrites: readonly string[];
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const oneObjectAnswers = new WeakMap<
+    ts.VariableDeclaration,
+    OneObjectObservation
+>();
+
+export function oneObjectObservation(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): OneObjectObservation {
+    let known = oneObjectAnswers.get(declaration);
+    if (!known) {
+        const identity = tokenGroupIdentity(context, declaration);
+        known = {
+            ...(identity ? { identity } : {}),
+            receiverWrites: receiverWrites(declaration.initializer),
+        };
+        oneObjectAnswers.set(declaration, known);
+    }
+    return known;
+}
+
+/** One declaration's own identity use, and the tokens it is compared with. */
+interface IdentityUses {
+    readonly reason?: string;
+    readonly tokens: readonly ts.VariableDeclaration[];
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const identityUseAnswers = new WeakMap<ts.VariableDeclaration, IdentityUses>();
+
+/**
+ * The identity use of a declaration or of any empty-object token it is
+ * compared with, transitively: one of them becoming one object leaves the
+ * others' comparisons to run.
+ */
+function tokenGroupIdentity(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    const group = new Set([declaration]);
+    for (const member of group) {
+        const uses = identityUses(context, member);
+        if (uses.reason) return uses.reason;
+        for (const token of uses.tokens) group.add(token);
+    }
+    return undefined;
+}
+
+function identityUses(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): IdentityUses {
+    const known = identityUseAnswers.get(declaration);
+    if (known) return known;
+    const { checker } = context;
+    const tokens: ts.VariableDeclaration[] = [];
+    const token = emptyTokenRoot(checker, declaration) === declaration;
+    const followed: ts.Symbol[] = [];
+    const follow = (name: ts.BindingName): void => {
+        const symbol = ts.isIdentifier(name)
+            ? declaredSymbol(checker, name)
+            : undefined;
+        if (symbol && !followed.includes(symbol)) followed.push(symbol);
+    };
+    follow(declaration.name);
+    let reason: string | undefined;
+    for (let index = 0; index < followed.length && !reason; index++)
+        for (const reference of bindingReferences(context, followed[index]!)) {
+            const use = flowingUse(reference);
+            const parent = use.parent;
+            if (isIdentityComparison(parent)) {
+                const other = parent.left === use ? parent.right : parent.left;
+                const partner = token
+                    ? emptyTokenRoot(checker, other)
+                    : undefined;
+                if (partner) tokens.push(partner);
+                else if (!nullishOperand(other))
+                    reason = "the program compares it by identity";
+            } else if (
+                (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
+                parent.initializer === use &&
+                ts.isIdentifier(parent.name)
+            )
+                follow(parent.name);
+            else if (
+                (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+                parent.expression !== use
+            ) {
+                const position = parent.arguments?.indexOf(use) ?? -1;
+                const callee =
+                    checker.getResolvedSignature(parent)?.declaration;
+                // The engine takes what it is handed in its own storage:
+                // a record or array converts at the call.
+                if (
+                    (callee && declarationOrigin(callee) === "babylon") ||
+                    (ts.isCallExpression(parent) &&
+                        callOnlyReadsArgument(checker, parent, position))
+                )
+                    continue;
+                const parameter = programParameter(callee, parent, position);
+                if (parameter) follow(parameter.name);
+                else reason = storedIdentity(context, use);
+            } else if (!onlyReads(use, parent))
+                reason = storedIdentity(context, use);
+            if (reason) break;
+        }
+    const uses = { ...(reason ? { reason } : {}), tokens };
+    identityUseAnswers.set(declaration, uses);
+    return uses;
+}
+
+/** Why a value stored where the program reads it may be compared by identity. */
+function storedIdentity(
+    context: RecordObservationContext,
+    use: ts.Expression,
+): string | undefined {
+    const { checker } = context;
+    return identityObservation(
+        context,
+        checker.getContextualType(use) ?? checker.getTypeAtLocation(use),
+    );
+}
+
+/** An equality, which compares object operands by identity. */
+function isIdentityComparison(node: ts.Node): node is ts.BinaryExpression {
+    if (!ts.isBinaryExpression(node)) return false;
+    const operator = node.operatorToken.kind;
+    return (
+        operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        operator === ts.SyntaxKind.EqualsEqualsToken ||
+        operator === ts.SyntaxKind.ExclamationEqualsToken
+    );
+}
+
+function nullishOperand(node: ts.Expression): boolean {
+    const unwrapped = unwrapExpression(node);
+    return (
+        unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined") ||
+        ts.isVoidExpression(unwrapped)
+    );
+}
+
+/**
+ * A use that reads the value without keeping, comparing or handing it on:
+ * a member or element read, iteration, a spread of its contents, a
+ * destructuring, a statement of its own, or an operator reading it as a
+ * primitive.
+ */
+function onlyReads(use: ts.Expression, parent: ts.Node): boolean {
+    return (
+        ((ts.isPropertyAccessExpression(parent) ||
+            ts.isElementAccessExpression(parent)) &&
+            parent.expression === use) ||
+        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
+            parent.expression === use) ||
+        ts.isSpreadElement(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isExpressionStatement(parent) ||
+        ts.isTypeOfExpression(parent) ||
+        ts.isVoidExpression(parent) ||
+        ts.isTemplateSpan(parent) ||
+        ts.isPrefixUnaryExpression(parent) ||
+        (isAssignmentExpression(parent) && parent.left === use) ||
+        (ts.isVariableDeclaration(parent) && !ts.isIdentifier(parent.name)) ||
+        (ts.isBinaryExpression(parent) &&
+            !isAssignmentExpression(parent) &&
+            parent.operatorToken.kind !== ts.SyntaxKind.CommaToken)
+    );
+}
+
+/**
+ * The expression a reference's value flows on as: through wrappers and
+ * the arms of a selection (`?:`, `??`, `||`, the right of `&&`).
+ */
+function flowingUse(reference: ts.Expression): ts.Expression {
+    let current = climb(reference);
+    for (;;) {
+        const parent = current.parent;
+        if (
+            (ts.isConditionalExpression(parent) &&
+                parent.condition !== current) ||
+            (ts.isBinaryExpression(parent) &&
+                (parent.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken ||
+                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                    (parent.operatorToken.kind ===
+                        ts.SyntaxKind.AmpersandAmpersandToken &&
+                        parent.right === current)))
+        )
+            current = climb(parent);
+        else return current;
+    }
+}
+
+/**
+ * The parameter an argument at `position` binds in a function the program
+ * holds; undefined for a rest parameter, after a spread, or where the
+ * callee's body is not the program's.
+ */
+function programParameter(
+    declaration: ts.Declaration | undefined,
+    call: ts.CallExpression | ts.NewExpression,
+    position: number,
+): ts.ParameterDeclaration | undefined {
+    if (
+        position < 0 ||
+        !declaration ||
+        !ts.isFunctionLike(declaration) ||
+        !("body" in declaration) ||
+        !declaration.body ||
+        call.arguments?.slice(0, position).some(ts.isSpreadElement)
+    )
+        return undefined;
+    const parameter = declaration.parameters[position];
+    return parameter && !parameter.dotDotDotToken ? parameter : undefined;
+}
+
+/**
+ * The empty-object token (`const token = {}`) a declaration is, or an
+ * expression names through `const` aliases.
+ */
+function emptyTokenRoot(
+    checker: ts.TypeChecker,
+    node: ts.Expression | ts.VariableDeclaration,
+): ts.VariableDeclaration | undefined {
+    const named = (expression: ts.Expression) => {
+        const name = unwrapExpression(expression);
+        const declaration = ts.isIdentifier(name)
+            ? resolvedSymbol(checker, name)?.valueDeclaration
+            : undefined;
+        return declaration && ts.isVariableDeclaration(declaration)
+            ? declaration
+            : undefined;
+    };
+    const seen = new Set<ts.VariableDeclaration>();
+    let current = ts.isVariableDeclaration(node) ? node : named(node);
+    while (current?.initializer && !seen.has(current)) {
+        seen.add(current);
+        if (
+            !ts.isVariableDeclarationList(current.parent) ||
+            (current.parent.flags & ts.NodeFlags.Const) === 0
+        )
+            return undefined;
+        const initializer = unwrapExpression(current.initializer);
+        if (
+            ts.isObjectLiteralExpression(initializer) &&
+            initializer.properties.length === 0
+        )
+            return current;
+        current = named(initializer);
+    }
+    return undefined;
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const namedIdentifiers = new WeakMap<
+    ts.SourceFile,
+    ReadonlyMap<string, readonly ts.Identifier[]>
+>();
+
+/** A file's identifiers outside type positions, by name. */
+function identifiersByName(
+    file: ts.SourceFile,
+): ReadonlyMap<string, readonly ts.Identifier[]> {
+    let known = namedIdentifiers.get(file);
+    if (!known) {
+        const names = new Map<string, ts.Identifier[]>();
+        const visit = (node: ts.Node): void => {
+            if (ts.isTypeNode(node)) return;
+            if (ts.isIdentifier(node)) {
+                const list = names.get(node.text);
+                if (list) list.push(node);
+                else names.set(node.text, [node]);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(file);
+        namedIdentifiers.set(file, (known = names));
+    }
+    return known;
+}
+
+/**
+ * The expressions reading a binding: in its own file, and for a module
+ * binding in every file of the program, by its name or the local name an
+ * import gives it.
+ */
+function bindingReferences(
+    context: RecordObservationContext,
+    symbol: ts.Symbol,
+): ts.Expression[] {
+    const declaration = symbol.valueDeclaration;
+    if (!declaration) return [];
+    const moduleBinding =
+        ts.isVariableDeclaration(declaration) &&
+        ts.isVariableStatement(declaration.parent.parent) &&
+        ts.isSourceFile(declaration.parent.parent.parent);
+    const files = moduleBinding
+        ? context.program
+              .getSourceFiles()
+              .filter((file) => !file.isDeclarationFile)
+        : [declaration.getSourceFile()];
+    const declared = ts.getNameOfDeclaration(declaration);
+    return files.flatMap((file) => {
+        const byName = identifiersByName(file);
+        const names = new Set([symbol.name]);
+        for (const identifier of byName.get(symbol.name) ?? []) {
+            const specifier = identifier.parent;
+            if (
+                (ts.isImportSpecifier(specifier) ||
+                    ts.isExportSpecifier(specifier)) &&
+                specifier.propertyName === identifier
+            )
+                names.add(specifier.name.text);
+        }
+        return [...names].flatMap((name) =>
+            (byName.get(name) ?? []).flatMap((identifier) => {
+                const parent = identifier.parent;
+                // A namespace import reads a module binding as `m.name`.
+                const member =
+                    ts.isPropertyAccessExpression(parent) &&
+                    parent.name === identifier;
+                return identifier !== declared &&
+                    !ts.isImportSpecifier(parent) &&
+                    !ts.isExportSpecifier(parent) &&
+                    (!member || moduleBinding) &&
+                    resolvedSymbol(context.checker, identifier) === symbol
+                    ? [member ? parent : identifier]
+                    : [];
+            }),
+        );
+    });
+}
+
+/** The fields a literal's methods write through `this`. */
+function receiverWrites(initializer: ts.Expression | undefined): string[] {
+    const literal = initializer && unwrapExpression(initializer);
+    if (!literal || !ts.isObjectLiteralExpression(literal)) return [];
+    const fields = new Set<string>();
+    const written = (target: ts.Expression): void => {
+        const access = unwrapExpression(target);
+        if (
+            ts.isPropertyAccessExpression(access) &&
+            access.expression.kind === ts.SyntaxKind.ThisKeyword
+        )
+            fields.add(access.name.text);
+    };
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isClassLike(node) ||
+            (ts.isFunctionLike(node) && !ts.isArrowFunction(node))
+        )
+            return;
+        if (isAssignmentExpression(node))
+            assignmentTargets(node.left).forEach(written);
+        else if (isUpdateExpression(node)) written(node.operand);
+        ts.forEachChild(node, visit);
+    };
+    for (const property of literal.properties) {
+        const method =
+            ts.isMethodDeclaration(property) ||
+            ts.isGetAccessorDeclaration(property) ||
+            ts.isSetAccessorDeclaration(property)
+                ? property
+                : ts.isPropertyAssignment(property) &&
+                    ts.isFunctionExpression(property.initializer)
+                  ? property.initializer
+                  : undefined;
+        if (method?.body) ts.forEachChild(method.body, visit);
+    }
+    return [...fields];
 }
 
 /**
