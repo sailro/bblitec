@@ -631,6 +631,7 @@ export class StaticEvaluator {
         const castOptionalNumber = (
             value: Value,
             uncheckedElement = false,
+            node: ts.Expression = unwrapExpression(expression),
         ): string | undefined => {
             if (
                 value.kind !== "data" ||
@@ -644,11 +645,7 @@ export class StaticEvaluator {
             }
             this.onJsData();
             const compiled =
-                numberFromOptionalCpp(
-                    this.checker,
-                    value,
-                    unwrapExpression(expression),
-                ) ??
+                numberFromOptionalCpp(this.checker, value, node) ??
                 this.fail(
                     expression,
                     "Numeric coercion requires distinguishable null and undefined storage.",
@@ -774,13 +771,19 @@ export class StaticEvaluator {
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
             }
             // Unary plus and minus apply ToNumber, which `castNumber` is for
-            // typed numeric data and dynamic JSON alike.
-            if (!isNumericValue(operand))
+            // typed numeric data and dynamic JSON alike; an unchecked lookup
+            // that misses reads NaN.
+            const unchecked = castOptionalNumber(
+                operand,
+                false,
+                unwrapped.operand,
+            );
+            if (unchecked === undefined && !isNumericValue(operand))
                 this.fail(
                     unwrapped.operand,
                     `Unary numeric input requires a number or string, received ${operand.kind}.`,
                 );
-            const cast = this.castNumber(operand, precision);
+            const cast = unchecked ?? this.castNumber(operand, precision);
             // `-` before a negative spelling must not read as a decrement.
             return `(${operator}${cast.startsWith(operator) ? " " : ""}${cast})`;
         }

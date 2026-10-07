@@ -1021,6 +1021,11 @@ export class DataTypeRegistry {
     private readonly partialRecords = new EmissionSet<
         ts.Symbol | ts.Type | string
     >();
+    /** The required properties asserted literals lack, by record identity. */
+    private readonly lackedProperties = new EmissionMap<
+        ts.Symbol | ts.Type | string,
+        ReadonlySet<string>
+    >();
     private readonly absentProperties = new AbsentRecordProperties(
         (node, message) => this.fail(node, message),
     );
@@ -1191,13 +1196,23 @@ export class DataTypeRegistry {
     private registerAssertedRecord(
         node: ts.AsExpression | ts.TypeAssertion,
     ): void {
-        // Only the two shapes resolve types here: resolving every cast's
+        // Only these shapes resolve types here: resolving every cast's
         // type ahead of emission would reorder the checker's unions.
         const source = unwrapExpression(node.expression);
-        const partial =
-            ts.isObjectLiteralExpression(source) &&
-            source.properties.length === 0;
-        if (!partial && !this.spellsRecordType(node.type)) return;
+        const literal = ts.isObjectLiteralExpression(source)
+            ? source
+            : undefined;
+        const partial = literal?.properties.length === 0;
+        if (
+            !partial &&
+            !this.spellsRecordType(node.type) &&
+            !(
+                literal &&
+                ts.isTypeReferenceNode(node.type) &&
+                !ts.isConstTypeReference(node.type)
+            )
+        )
+            return;
         const type = this.checker.getTypeAtLocation(node);
         if (
             type.getCallSignatures().length ||
@@ -1210,7 +1225,10 @@ export class DataTypeRegistry {
             this.partialRecords.add(this.structIdentity(type));
             return;
         }
-        if (ts.isObjectLiteralExpression(source)) return;
+        if (literal) {
+            this.registerLackedProperties(type, literal);
+            return;
+        }
         const sourceType = this.checker.getTypeAtLocation(source);
         if (
             this.checker.getIndexInfoOfType(sourceType, ts.IndexKind.String) &&
@@ -1240,8 +1258,61 @@ export class DataTypeRegistry {
         );
     }
 
+    /**
+     * An object literal asserted to a record type it lacks required
+     * properties of (`{ depth } as Spec`): records of that type can lack
+     * them, as an asserted empty object can lack every property.
+     */
+    private registerLackedProperties(
+        type: ts.Type,
+        literal: ts.ObjectLiteralExpression,
+    ): void {
+        const required = (property: ts.Symbol): boolean =>
+            (property.flags & ts.SymbolFlags.Optional) === 0;
+        const provided = new Set(
+            this.checker
+                .getPropertiesOfType(this.checker.getTypeAtLocation(literal))
+                .filter(required)
+                .map((property) => property.name),
+        );
+        const lacked = this.checker
+            .getPropertiesOfType(type)
+            .filter(
+                (property) =>
+                    required(property) && !provided.has(property.name),
+            )
+            .map((property) => property.name);
+        if (!lacked.length) return;
+        const identity = recordIdentity(this.checker, type);
+        this.lackedProperties.set(
+            identity,
+            new Set([
+                ...(this.lackedProperties.get(identity) ?? []),
+                ...lacked,
+            ]),
+        );
+    }
+
+    /**
+     * Records of the type can lack some property they declare required: an
+     * asserted empty object lacks them all, an asserted literal those it
+     * does not write.
+     */
     public isPartialRecord(type: ts.Type): boolean {
-        return this.partialRecords.has(this.structIdentity(type));
+        return (
+            this.partialRecords.has(this.structIdentity(type)) ||
+            this.lackedProperties.has(recordIdentity(this.checker, type))
+        );
+    }
+
+    /** Whether a record of the type can lack this property it declares required. */
+    public mayLackProperty(type: ts.Type, name: string): boolean {
+        return (
+            this.partialRecords.has(this.structIdentity(type)) ||
+            this.lackedProperties
+                .get(recordIdentity(this.checker, type))
+                ?.has(name) === true
+        );
     }
 
     /** Property declarations a getter, and a setter, define. */
@@ -1263,6 +1334,13 @@ export class DataTypeRegistry {
         ts.Symbol | ts.Type,
         RecordComponent
     > = new Map();
+    /**
+     * Unions whose records hold fields only some members declare, by struct
+     * identity: they store every member's fields, not their common view.
+     */
+    private readonly armFieldUnions = new EmissionSet<
+        ts.Symbol | ts.Type | string
+    >();
     /** Union layouts being resolved, so a member mapped through one maps once. */
     private readonly resolvingLayouts = new EmissionSet<ts.Type>();
 
@@ -1276,11 +1354,83 @@ export class DataTypeRegistry {
         demands: Iterable<NativeRecordStorageDemand>,
     ): void {
         this.recordComponents = components;
-        for (const demand of demands)
+        for (const demand of demands) {
             if (demand.proxy)
                 this.withRecordDemand(demand, () =>
                     this.proxyRecords.add(this.structIdentity(demand.type)),
                 );
+            if (demand.armFields)
+                this.withRecordDemand(demand, () =>
+                    this.armFieldUnions.add(this.structIdentity(demand.type)),
+                );
+            for (const { name, setter } of demand.accessors ?? [])
+                for (const declaration of this.checker.getPropertyOfType(
+                    demand.type,
+                    name,
+                )?.declarations ?? []) {
+                    this.getterProperties.add(declaration);
+                    if (setter) this.setterProperties.add(declaration);
+                }
+        }
+    }
+
+    /**
+     * A use of a union's struct names a field only some members declare (a
+     * literal `{ ok: false, reason }`, a read through a view) where the
+     * union stores its members' common view: replays store every member's
+     * fields, the arms its tags cannot tell apart told apart by those
+     * fields' slots. Refuses with `message` otherwise.
+     */
+    public requireArmFields(
+        structName: string,
+        field: string,
+        node: ts.Node,
+        message: string,
+    ): never {
+        const source = this.nativeRecordSources.get(structName);
+        const union = source?.type;
+        if (
+            !source ||
+            !union?.isUnion() ||
+            this.armFieldUnions.has(this.structIdentity(union)) ||
+            !union.types.some((member) => member.getProperty(field))
+        )
+            this.fail(node, message);
+        throw new NativeRecordStorageRequired({ ...source, armFields: true });
+    }
+
+    /**
+     * A record converted into the struct defines a property it stores as
+     * data with accessors (a class getter, without an `implements` naming
+     * the type): replays give the property an accessor slot.
+     */
+    public requireAccessorSlot(
+        type: DataType<"struct">,
+        name: string,
+        setter: boolean,
+        node: ts.Node,
+    ): never {
+        const source = this.nativeRecordSources.get(type.name);
+        const declarations =
+            source &&
+            this.checker.getPropertyOfType(source.type, name)?.declarations;
+        if (
+            !source ||
+            !declarations?.length ||
+            declarations.some(
+                (declaration) =>
+                    this.getterProperties.has(declaration) &&
+                    (!setter || this.setterProperties.has(declaration)),
+            )
+        )
+            this.fail(
+                node,
+                `Property '${name}' is an accessor; the native record stores it as data.`,
+            );
+        throw new NativeRecordStorageRequired({
+            ...source,
+            accessors: [{ name, setter }],
+        });
     }
 
     /** Whether two record types already share one record component. */
@@ -1829,9 +1979,10 @@ export class DataTypeRegistry {
 
     /**
      * A spread copying a field the source's records may lack (its static
-     * type can hold narrower records, `mayHoldNarrower`) into a field its
-     * new object requires: the new object's type joins the source's record
-     * component, so the copy holds the field absent as the source does.
+     * type can hold narrower records, `mayHoldNarrower`, or an asserted
+     * literal lacks it) into a field its new object requires, or one the new
+     * object's type does not store: the new object's type joins the source's
+     * record component, so the copy holds the field as the source does.
      */
     public joinSpreadTarget(
         sourceType: DataType<"struct">,
@@ -3279,6 +3430,7 @@ export class DataTypeRegistry {
                       type,
                       node,
                       name,
+                      this.armFieldUnions.has(this.structIdentity(type)),
                   );
                   return discriminated !== undefined
                       ? discriminated
@@ -3643,6 +3795,7 @@ export class DataTypeRegistry {
         type: ts.UnionType,
         node: ts.Node,
         name: string,
+        armFields: boolean,
     ): DataType | undefined | null {
         if (
             type.types.length < 2 ||
@@ -3738,13 +3891,29 @@ export class DataTypeRegistry {
             );
         };
         const indices = type.types.map((_member, index) => index);
+        // Arms no tag tells apart form one group. A union whose records hold
+        // every member's fields (`armFields`) tells the members of a group
+        // apart by the slots of the fields only some of them declare; other
+        // unions need every arm told apart by its tags.
+        const group = indices.map((index) => index);
+        const root = (index: number): number =>
+            group[index] === index ? index : root(group[index]!);
+        for (const index of indices)
+            for (const other of indices.slice(index + 1))
+                if (
+                    !distinguish(index, [other]) ||
+                    !distinguish(other, [index])
+                )
+                    group[root(other)] = root(index);
+        const outside = (index: number, among: readonly number[]): number[] =>
+            among.filter((other) => root(other) !== root(index));
+        const grouped = indices.some(
+            (index) => outside(index, indices).length < indices.length - 1,
+        );
         if (
+            (grouped && !armFields) ||
             indices.some(
-                (index) =>
-                    !distinguish(
-                        index,
-                        indices.filter((other) => other !== index),
-                    ),
+                (index) => !distinguish(index, outside(index, indices)),
             )
         )
             return undefined;
@@ -3782,6 +3951,54 @@ export class DataTypeRegistry {
                     ),
                 ];
             });
+            const declaring = indices.filter((index) =>
+                propertiesByMember[index]!.some(
+                    (property) => property.name === propertyName,
+                ),
+            );
+            const absent = indices.filter(
+                (index) => !declaring.includes(index),
+            );
+            // A declaring arm's group mates lacking the field tell it apart
+            // by its slot: an empty one is absent, so no declaring arm may
+            // hold null there, nor a required arm undefined.
+            const bySlot = declaring.some((index) =>
+                absent.some((other) => root(other) === root(index)),
+            );
+            if (
+                bySlot &&
+                propertyTypes.some((propertyType, index) => {
+                    const empty = nullability(propertyType);
+                    return (
+                        empty.null ||
+                        ((memberProperties[index]!.flags &
+                            ts.SymbolFlags.Optional) ===
+                            0 &&
+                            (empty.undefined || empty.void))
+                    );
+                })
+            )
+                return undefined;
+            // The tags tell a declaring arm apart from the arms lacking the
+            // field outside its group; an arm no tag restricts leaves the
+            // slot alone to decide.
+            const tagConditions = declaring.map((index) => {
+                const conditions = distinguish(
+                    index,
+                    outside(index, absent),
+                    propertyName,
+                );
+                if (!conditions)
+                    throw new Error(
+                        "A union field must be distinguished by another tag.",
+                    );
+                return conditions;
+            });
+            const presentForTags = tagConditions.some((alternatives) =>
+                alternatives.some((alternative) => alternative.length === 0),
+            )
+                ? undefined
+                : tagConditions.flat();
             let mapped: DataType | undefined;
             const literalStrings = propertyTypes.flatMap((propertyType) =>
                 propertyType.isUnion() ? propertyType.types : [propertyType],
@@ -3828,16 +4045,19 @@ export class DataTypeRegistry {
                               node,
                           )
                         : undefined;
-                    if (!mapped) return null;
+                    // Grouped arms fall back to the members' common view.
+                    if (!mapped) return grouped ? undefined : null;
                 } else {
                     mapped = first;
                 }
             }
+            if (bySlot) mapped = this.nullableType(mapped, true);
             fields.push({
                 sourceName: propertyName,
                 name: sanitizeIdentifier(propertyName),
                 type: this.markStoredObjectReferences(mapped),
-                ...(memberProperties.some(
+                ...(bySlot ||
+                memberProperties.some(
                     (property) =>
                         (property.flags & ts.SymbolFlags.Optional) !== 0,
                 )
@@ -3852,47 +4072,25 @@ export class DataTypeRegistry {
                 memberProperties.every(propertyIsReadOnly)
                     ? { readOnly: true }
                     : {}),
-                ...(propertyTypes.length < type.types.length
+                ...(absent.length
                     ? {
                           defaultWhenMissing: true,
-                          presentForTags: indices.flatMap((index) => {
-                              if (
-                                  !propertiesByMember[index]!.some(
-                                      (property) =>
-                                          property.name === propertyName,
-                                  )
-                              )
-                                  return [];
-                              const absent = indices.filter(
-                                  (other) =>
-                                      !propertiesByMember[other]!.some(
-                                          (property) =>
-                                              property.name === propertyName,
-                                      ),
-                              );
-                              const conditions = distinguish(
-                                  index,
-                                  absent,
-                                  propertyName,
-                              );
-                              if (!conditions)
-                                  throw new Error(
-                                      "A union field must be distinguished by another tag.",
-                                  );
-                              return conditions;
-                          }),
+                          ...(presentForTags ? { presentForTags } : {}),
                       }
                     : {}),
             });
             // A field some arms lack is an own key by tag, which no
             // presence read decides; its presence within those arms is
-            // kept apart for reads that test the tags.
-            const presence = unionPresence(
-                memberProperties,
-                propertyTypes,
-                fields.at(-1)!.type,
-            );
-            const tagged = propertyTypes.length < type.types.length;
+            // kept apart for reads that test the tags. A field group mates
+            // lack is own while its slot holds a value.
+            const presence = bySlot
+                ? storedPresence(fields.at(-1)!.type, false)
+                : unionPresence(
+                      memberProperties,
+                      propertyTypes,
+                      fields.at(-1)!.type,
+                  );
+            const tagged = presentForTags !== undefined;
             presences.push(
                 fieldPresence(
                     tagged ? "ambiguous" : presence,
@@ -4485,7 +4683,8 @@ export class DataTypeRegistry {
         }
         const fields: DataStructField[] = [];
         const presences: FieldPresence[] = [];
-        const partial = this.isPartialRecord(type);
+        // An asserted empty object is filled through its views later.
+        const partial = this.partialRecords.has(this.structIdentity(type));
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
         const valueOf = (
@@ -4574,7 +4773,10 @@ export class DataTypeRegistry {
             }
             // Records of a member not declaring it hold it absent.
             const absent = declared.length < layout.shapes;
-            const unchecked = partial || absent;
+            const unchecked =
+                partial ||
+                absent ||
+                declared.some(({ owner }) => this.mayLackProperty(owner, name));
             const optional =
                 unchecked ||
                 declared.some(
@@ -5852,9 +6054,13 @@ export class DataTypeRegistry {
             (candidate) =>
                 candidate.sourceName === field || candidate.name === field,
         );
-        if (!found) {
-            this.fail(node, `Struct ${name} has no field '${field}'.`);
-        }
+        if (!found)
+            this.requireArmFields(
+                name,
+                field,
+                node,
+                `Struct ${name} has no field '${field}'.`,
+            );
         if (found.accessor && !accessors) this.failAccessorField(found, node);
         return found;
     }

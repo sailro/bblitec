@@ -10143,12 +10143,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.compileForSink(initializer, field.type),
             );
         });
-        if (provided.size > 0) {
-            this.context.fail(
+        const unknown = [...provided.keys()][0];
+        if (unknown !== undefined)
+            this.context.dataTypes.requireArmFields(
+                dataType.name,
+                unknown,
                 literal,
-                `Struct literal has unknown field '${[...provided.keys()][0]}'.`,
+                `Struct literal has unknown field '${unknown}'.`,
             );
-        }
         if (self)
             return completeLiteralSelf(
                 this.context,
@@ -10310,6 +10312,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ]);
                     continue;
                 }
+                // A copy carrying a property its new (or assigned) object's
+                // type does not store gives that object the source's layout.
+                if (operation !== "rest")
+                    this.context.dataTypes.joinSpreadTarget(
+                        sourceType,
+                        target.type,
+                    );
                 this.context.fail(
                     source,
                     `${operation === "spread" ? "Spread" : operation === "rest" ? "Object rest" : operation} property '${entry.key}' cannot be retained in the narrower '${target.type.name}' storage.`,
@@ -10326,23 +10335,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 entry.presence?.emptySlot === "ambiguous" &&
                 targetField.type.kind === "optional" &&
                 options.fresh?.(targetField.name) === true;
-            // A field a shared layout holds absent for other record types is
-            // present when the source's own type declares it required,
-            // unless that type's storage can hold such a record (a narrower
-            // record pushed through an array view, or asserted to it): then
-            // its slot says.
+            // A field a shared layout holds absent for other record types, or
+            // stores as another type's `?` property, is present when the
+            // source's own type declares it required (and, for a `?` slot,
+            // not nullable), unless that type's storage can hold a record
+            // lacking it (a narrower record pushed through an array view,
+            // asserted to it, or an asserted literal lacking it): then its
+            // slot says.
+            const declaredRequired =
+                declared !== undefined &&
+                (declared.flags & ts.SymbolFlags.Optional) === 0 &&
+                !this.context.dataTypes.mayHoldNarrower(declaredType) &&
+                !this.context.dataTypes.mayLackProperty(
+                    declaredType,
+                    entry.key,
+                );
             const presentCpp =
                 raw ||
-                (sourceField.sharedAbsent &&
-                    declared !== undefined &&
-                    (declared.flags & ts.SymbolFlags.Optional) === 0 &&
-                    !this.context.dataTypes.mayHoldNarrower(declaredType))
+                (declaredRequired &&
+                    (sourceField.sharedAbsent ||
+                        (sourceField.optionalProperty &&
+                            !isNullable(
+                                this.context.checker.getTypeOfSymbol(declared),
+                            ))))
                     ? undefined
                     : entry.presence?.ownCpp;
             // A copy that can lack a field its new object requires gives
-            // that object the source's layout, absent fields and all.
+            // that object the source's layout, absent fields and all: one a
+            // shared layout holds absent, or one an asserted literal lacks.
             if (
-                sourceField.sharedAbsent &&
+                (sourceField.sharedAbsent || sourceField.uncheckedProperty) &&
                 presentCpp !== undefined &&
                 !targetField.optionalProperty &&
                 targetField.type.kind !== "optional"

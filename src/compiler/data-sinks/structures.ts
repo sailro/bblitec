@@ -3,6 +3,7 @@ import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
     isOpaqueReference,
+    propertyIsReadOnly,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -329,7 +330,7 @@ function valueStruct(
                 value.recordGetters?.[field.sourceName] ||
                 value.recordSetters?.[field.sourceName]
             )
-                accessorGetter(lowerer, field, value, node);
+                accessorGetter(lowerer, dataType, field, value, node);
         if (
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
             !lowerer.context.bindings.containsPlatformEvent(value) &&
@@ -384,7 +385,14 @@ function valueStruct(
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
-                    return accessorSlot(lowerer, field, value, node, self);
+                    return accessorSlot(
+                        lowerer,
+                        dataType,
+                        field,
+                        value,
+                        node,
+                        self,
+                    );
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -597,6 +605,7 @@ function recordExpression(
 
 function accessorGetter(
     lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
     field: DataStructField,
     record: Value,
     node: ts.Node,
@@ -607,12 +616,52 @@ function accessorGetter(
             node,
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
         );
-    if (!field.accessor)
-        lowerer.context.fail(
+    if (!field.accessor) {
+        refuseClassFieldCopy(lowerer, dataType, record, node);
+        lowerer.context.dataTypes.requireAccessorSlot(
+            dataType,
+            field.sourceName,
+            record.recordSetters?.[field.sourceName] !== undefined,
             node,
-            `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
         );
+    }
     return getter;
+}
+
+/**
+ * A class instance stored as a record type is one object: its accessors
+ * and methods stay bound to it, but a mutable field the record stores as
+ * data would be a copy.
+ */
+function refuseClassFieldCopy(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    record: Value,
+    node: ts.Node,
+): void {
+    const declaration = record.classDeclaration;
+    const symbol = declaration?.name
+        ? lowerer.context.checker.getSymbolAtLocation(declaration.name)
+        : undefined;
+    if (!symbol) return;
+    const instance = lowerer.context.checker.getDeclaredTypeOfSymbol(symbol);
+    for (const field of lowerer.context.dataTypes.structFields(
+        dataType.name,
+        node,
+        "accessors",
+    )) {
+        const property = instance.getProperty(field.sourceName);
+        if (
+            field.type.kind !== "function" &&
+            record.recordProperties?.[field.sourceName] &&
+            property &&
+            !propertyIsReadOnly(property)
+        )
+            lowerer.context.fail(
+                node,
+                `A '${symbol.name}' instance stored as '${dataType.name}' would copy its mutable field '${field.sourceName}'; JavaScript keeps one object.`,
+            );
+    }
 }
 
 /**
@@ -622,12 +671,13 @@ function accessorGetter(
  */
 function accessorSlot(
     lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
     field: DataStructField,
     record: Value,
     node: ts.Node,
     self: LiteralSelf | undefined,
 ): string {
-    const getter = accessorGetter(lowerer, field, record, node);
+    const getter = accessorGetter(lowerer, dataType, field, record, node);
     const setter = record.recordSetters?.[field.sourceName];
     const receiver: DataType<"struct"> | undefined = field.accessorReceiver
         ? { kind: "struct", name: field.accessorReceiver }

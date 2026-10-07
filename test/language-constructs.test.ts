@@ -2106,6 +2106,178 @@ check(
 `,
 );
 
+check(
+    "asserted-literals-lacking-required-properties",
+    `
+    interface Spec { span: number; height: number; depth: number; seed?: number; }
+    interface Ctx { spec: Spec; leaf: number; }
+    function ctx(depth: number): Ctx { return { spec: { depth } as Spec, leaf: 0.7 }; }
+    function layout(spec: Spec, n: number): number[] { return [-spec.span * 0.5, +spec.height, spec.depth, n]; }
+    function lay(r: Ctx, span: number): number[] { return layout({ ...r.spec, span }, 1); }
+    const partial = ctx(3).spec;
+    if (partial.depth !== 3 || (partial.span as number | undefined) !== undefined || "height" in partial) throw new Error("absent");
+    if (Object.keys(partial).join(",") !== "depth" || JSON.stringify(partial) !== '{"depth":3}') throw new Error("own keys");
+    const half = layout(partial, 0);
+    if (!Number.isNaN(half[0]!) || !Number.isNaN(half[1]!) || half[2] !== 3) throw new Error("absent numbers");
+    if (lay(ctx(2), 4).join(",") !== "-2,NaN,2,1") throw new Error("spread copy");
+    if (lay({ spec: { span: 1, height: 2, depth: 3 }, leaf: 0.5 }, 6).join(",") !== "-3,2,3,1") throw new Error("complete");
+    partial.height = 5;
+    if (!("height" in partial) || partial.height !== 5) throw new Error("written");
+    interface Swallow { groups: number; tail: boolean; spans: number[]; }
+    interface Report extends Swallow { head: { x: number }; }
+    function clear(report: Swallow): void { report.groups = 0; report.tail = false; report.spans = []; }
+    function empty(): Report { const report = { head: { x: 0 } } as Report; clear(report); return report; }
+    const report = empty();
+    if (report.groups !== 0 || report.tail || report.spans.length !== 0 || report.head.x !== 0) throw new Error("filled");
+`,
+);
+
+check(
+    "class-getters-stored-as-record-accessors",
+    `
+    interface Envelope { readonly compact: boolean; preferred(a: number): number; }
+    class Pairs {
+        count = 0;
+        get compact(): boolean { return this.count > 0; }
+        preferred(a: number): number { return a * 2; }
+        envelope(slot?: number): Envelope { return this.count > 0 && (slot === undefined || slot > 0) ? this : normal; }
+    }
+    const normal: Envelope = { compact: false, preferred: (a) => a };
+    const registry = new Map<number, Pairs>();
+    function envelopeFor(key: number, slot?: number): Envelope { return registry.get(key)?.envelope(slot) ?? normal; }
+    registry.set(1, new Pairs());
+    const e0 = envelopeFor(1);
+    if (e0.compact || e0.preferred(3) !== 3) throw new Error("normal");
+    registry.get(1)!.count = 2;
+    const e1 = envelopeFor(1, 1);
+    if (!e1.compact || e1.preferred(3) !== 6) throw new Error("pairs");
+    registry.get(1)!.count = 0;
+    if (e1.compact || envelopeFor(2).compact) throw new Error("live getter");
+    interface Knob { value: number; readonly label: string; }
+    class Clamp {
+        private stored = 1;
+        get value(): number { return this.stored; }
+        set value(next: number) { this.stored = Math.min(10, Math.max(0, next)); }
+        get label(): string { return "clamp:" + this.stored; }
+        view(): Knob { return this; }
+    }
+    const clamp = new Clamp();
+    const knobs: Knob[] = [{ value: 3, label: "plain" }, clamp.view()];
+    for (const knob of knobs) knob.value = 42;
+    if (knobs[0]!.value !== 42 || clamp.value !== 10 || knobs[1]!.label !== "clamp:10") throw new Error("setter");
+    knobs[1]!.value = -3;
+    if (clamp.value !== 0 || knobs[1]!.value !== 0) throw new Error("live setter");
+`,
+);
+
+test("a class instance stored as a record refuses copying its mutable fields", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Counter { count: number; readonly busy: boolean; }
+            class Tally {
+                count = 0;
+                get busy(): boolean { return this.count > 0; }
+                view(): Counter { return this; }
+            }
+            const tallies = new Map<number, Tally>([[1, new Tally()]]);
+            const view = tallies.get(1)!.view();
+            if (view.busy) throw new Error("busy");
+            `),
+        /A 'Tally' instance stored as 'Counter' would copy its mutable field 'count'/,
+    );
+});
+
+check(
+    "union-arms-told-apart-by-their-fields",
+    `
+    type Refusal = { owner: string; reason: "surface" | "busy" };
+    type Outcome = { readonly changed: true; readonly created?: number } | { readonly changed: false; readonly refusal: Refusal };
+    type Result =
+        | { readonly changed: true; readonly hostId: number; readonly created?: number }
+        | { readonly changed: false; readonly reason: "invalid-request" | "unknown-host" }
+        | { readonly changed: false; readonly refusal: Refusal };
+    function success(hostId: number, outcome: Outcome): Result {
+        if (!outcome.changed) return outcome;
+        return outcome.created === undefined ? { changed: true, hostId } : { changed: true, hostId, created: outcome.created };
+    }
+    function execute(raw: number): Result {
+        if (raw < 0) return { changed: false, reason: "invalid-request" };
+        if (raw === 0) return { changed: false, refusal: { owner: "x", reason: "busy" } };
+        return success(raw, { changed: true });
+    }
+    const a = execute(-1), b = execute(0), c = execute(2);
+    if (JSON.stringify(a) !== '{"changed":false,"reason":"invalid-request"}') throw new Error("reason arm");
+    if (JSON.stringify(b) !== '{"changed":false,"refusal":{"owner":"x","reason":"busy"}}') throw new Error("refusal arm");
+    if (JSON.stringify(c) !== '{"changed":true,"hostId":2}') throw new Error("changed arm");
+    if ("refusal" in a || "reason" in b || "hostId" in a || Object.keys(a).join(",") !== "changed,reason") throw new Error("own keys");
+    const all: Result[] = [a, b, c, success(5, { changed: true, created: 9 })];
+    const reasons = all.map((r) => (!r.changed && "reason" in r ? r.reason : r.changed ? "ok:" + (r.created ?? "-") : "refused:" + r.refusal.reason));
+    if (reasons.join(",") !== "invalid-request,refused:busy,ok:-,ok:9") throw new Error("narrowing");
+    type Tie = { kind: "tree"; id: number } | { kind: "post"; x: number };
+    type Plan = { key: number; tie: Tie; a: number; b: number } | { key: number; tie: null; reason: string };
+    const why = new Map<number, { reason: string }>([[2, { reason: "blocked" }]]);
+    const plans: Plan[] = [];
+    for (const key of [1, 2, 3]) {
+        if (key === 1) plans.push({ key, tie: { kind: "tree", id: 2 }, a: 1, b: 2 });
+        else plans.push({ key, tie: null, reason: why.get(key)?.reason ?? "unknown" });
+    }
+    const [first, second, third] = plans;
+    if (!first || first.tie === null || first.a !== 1 || !second || second.tie !== null || second.reason !== "blocked") throw new Error("plans");
+    if (!third || third.tie !== null || third.reason !== "unknown" || JSON.stringify(third) !== '{"key":3,"tie":null,"reason":"unknown"}') throw new Error("null tie");
+`,
+);
+
+test("union arms told apart by a field that admits null refuse", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
+            const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
+            if (rs.length !== 3) throw new Error("n");
+            `),
+        /Struct literal has unknown field 'a'/,
+    );
+});
+
+check(
+    "spreads-carrying-properties-the-target-type-lacks",
+    `
+    interface Options { widthPad?: number; clusterDist?: number; pillarGap?: number; arcAt?: (x: number) => number; }
+    function fromHits(hits: readonly number[], opts: Pick<Options, "clusterDist" | "pillarGap" | "arcAt"> = {}): number[] {
+        const arc = opts.arcAt ?? ((x: number) => x * 2);
+        return hits.map((hit) => arc(hit) + (opts.clusterDist ?? 0) + (opts.pillarGap ?? 0));
+    }
+    function crossings(hits: readonly number[], opts: Options = {}): number[] {
+        return fromHits(hits, { ...opts, arcAt: (x) => x + 100 });
+    }
+    const inputs: Options[] = [{ widthPad: 3, clusterDist: 0.5 }, {}];
+    if (crossings([1, 2], inputs[0]).join(",") !== "101.5,102.5" || crossings([4], inputs[1]).join(",") !== "104" ||
+        crossings([5]).join(",") !== "105") throw new Error("crossings");
+    interface CommandKey { villagerId: number; incarnation: number; }
+    interface Command extends CommandKey { kind: "chop" | "carry"; targetId: number; quantity?: number; expectedEpoch: number; }
+    interface CommandResult extends CommandKey { code: "APPLIED" | "REJECTED_RETRY"; targetId: number; resultingVersion?: number; quantity?: number; }
+    function executeForLive(command: Command, alive: readonly number[], resultOf: (command: Command) => CommandResult | null,
+        execute: (command: Command) => CommandResult): CommandResult {
+        const existing = resultOf(command);
+        if (existing) return existing;
+        const villager = alive.find((id) => id === command.villagerId) ?? null;
+        return villager !== null ? execute(command) : { ...command, code: "REJECTED_RETRY" };
+    }
+    const journal = new Map<number, CommandResult>();
+    const resultOf = (command: Command): CommandResult | null => journal.get(command.targetId) ?? null;
+    const run = (command: Command): CommandResult =>
+        ({ villagerId: command.villagerId, incarnation: command.incarnation, code: "APPLIED", targetId: command.targetId, resultingVersion: 2 });
+    const command: Command = { villagerId: 1, incarnation: 3, kind: "chop", targetId: 7, expectedEpoch: 9 };
+    const applied = executeForLive(command, [1], resultOf, run);
+    const retried = executeForLive(command, [], resultOf, run);
+    journal.set(7, applied);
+    if (applied.code !== "APPLIED" || applied.resultingVersion !== 2 || executeForLive(command, [], resultOf, run) !== applied) throw new Error("applied");
+    if (retried.code !== "REJECTED_RETRY" || retried.targetId !== 7 || retried.villagerId !== 1) throw new Error("retried");
+    if (Object.keys(retried).sort().join(",") !== "code,expectedEpoch,incarnation,kind,targetId,villagerId" || "quantity" in retried) throw new Error("spread keys");
+`,
+);
+
 async function executeGeneratedAssertions(
     t: TestContext,
     name: string,
