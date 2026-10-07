@@ -9239,7 +9239,7 @@ checkInRealm(
     let fired = 0;
     let settle: ReturnType<typeof setTimeout> | undefined;
     function end(): void { fired++; }
-    function key(): void { clearTimeout(settle); settle = setTimeout(end, 5); }
+    function key(): void { clearTimeout(settle); settle = setTimeout(end, 0); }
     function cancel(): void { clearTimeout(settle); settle = undefined; }
     const handlers: Array<() => void> = [key, cancel];
     void (async () => {
@@ -9247,11 +9247,11 @@ checkInRealm(
         handlers[1]!();
         handlers[0]!();
         handlers[0]!();
-        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
         if (fired !== 1) throw new Error("one settled burst " + fired);
         handlers[0]!();
         handlers[1]!();
-        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
         if (fired !== 1) throw new Error("cancelled burst");
         globalThis.close();
     })();
