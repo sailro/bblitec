@@ -55,7 +55,12 @@ import {
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
-import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
+import {
+    commonResourceValue,
+    presenceCpp,
+    runtimeMeshValue,
+    type Value,
+} from "./types.js";
 import { resolvedSymbol } from "./symbols.js";
 import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import { replacementCallback } from "./string-replacement.js";
@@ -952,6 +957,69 @@ export function compileDataMethodCall(
     );
 }
 
+/**
+ * A method the receiver's primitive lacks (`text.map(...)`), called on
+ * storage holding only that primitive or nothing: JavaScript reads
+ * `undefined` (or throws reading from an absent receiver), then the
+ * call throws TypeError. A branch its storage cannot take, such as the
+ * array arm of `typeof value === "string" ? ... : value.map(...)` over a
+ * dictionary of strings, throws as JavaScript would. Arguments must be
+ * effect-free: a present receiver evaluates them before throwing.
+ */
+function compileMissingPrimitiveMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    receiver: Value,
+): Value | undefined {
+    const { checker, evaluationOrder } = lowerer.context;
+    const stored =
+        receiver.dataType?.kind === "optional"
+            ? receiver.dataType.inner
+            : receiver.dataType;
+    const primitive =
+        stored?.kind === "string" || stored?.kind === "enum"
+            ? checker.getStringType()
+            : stored?.kind === "number"
+              ? checker.getNumberType()
+              : stored?.kind === "boolean"
+                ? checker.getBooleanType()
+                : undefined;
+    const name = callee.name.text;
+    if (
+        receiver.kind !== "data" ||
+        !primitive ||
+        ts.isOptionalChain(callee) ||
+        !ts.isIdentifier(callee.name) ||
+        checker.getPropertyOfType(checker.getApparentType(primitive), name) ||
+        !call.arguments.every(
+            (argument) =>
+                ts.isArrowFunction(argument) ||
+                ts.isFunctionExpression(argument) ||
+                evaluationOrder.isPureExpression(argument),
+        )
+    )
+        return undefined;
+    const result = lowerer.dataTypeAt(call);
+    if (!result) return undefined;
+    lowerer.context.reachJsData();
+    const thrown = (message: string): string =>
+        `bbl::js::absent_receiver_read<${lowerer.context.dataTypes.cppType(result)}>(${lowerer.context.cppString(message)})`;
+    const notCallable = thrown(`${callee.getText()} is not a function`);
+    const present = presenceCpp(receiver);
+    const absent =
+        receiver.dataType?.kind === "optional" &&
+        receiver.dataType.undefinedOnly
+            ? "undefined"
+            : "null or undefined";
+    return lowerer.leafValue(
+        present === undefined
+            ? `(static_cast<void>(${receiver.cpp}), ${notCallable})`
+            : `(${present} ? ${notCallable} : ${thrown(`Cannot read properties of ${absent} (reading '${name}')`)})`,
+        result,
+    );
+}
+
 function compileKnownDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -960,6 +1028,8 @@ function compileKnownDataMethod(
     dynamicOwner: Value | undefined,
     expectedResult?: DataType<"vector">,
 ): Value | undefined {
+    const missing = compileMissingPrimitiveMethod(lowerer, call, callee, owner);
+    if (missing) return missing;
     const method = callee.name.text;
     const ownerExpression = lowerer.context.unwrap(callee.expression);
     let narrowedOwner = lowerer.stringReceiver(
