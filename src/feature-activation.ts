@@ -1526,6 +1526,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "beside the records a scene's own stringify reaches",
         consumers: CMAKE,
     },
+    "data:bigint": {
+        provenance:
+            "the ECMAScript BigInt values and BigInt64Array/BigUint64Array views",
+        consumers: INVENTORY,
+    },
+    "data:symbol": {
+        provenance: "the ECMAScript Symbol values",
+        consumers: INVENTORY,
+    },
+    "data:tagged-template": {
+        provenance: "the ECMAScript tagged template string arrays",
+        consumers: INVENTORY,
+    },
     "storage:local": {
         provenance:
             "the Web Storage localStorage object -- a host service like the " +

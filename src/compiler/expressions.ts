@@ -1770,6 +1770,7 @@ export class ExpressionLowerer {
                 expression.tag,
                 "A template tag is a function named by an identifier.",
             );
+        this.context.reachFeature("data:tagged-template", expression);
         let accessor = this.templateSites.get(expression);
         if (!accessor) {
             const strings = (texts: readonly string[]): string =>

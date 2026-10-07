@@ -4562,11 +4562,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType.kind === "vector" &&
             property === "raw" &&
             isTemplateStringsArray(this.context.checker, access.expression)
-        )
+        ) {
+            this.context.reachFeature("data:tagged-template", access);
             return this.leafValue(
                 `bbl::js::template_raw(${owner.cpp})`,
                 dataType,
             );
+        }
         if (dataType.kind === "handle") {
             // The path left the data model at a resource handle; the
             // engine's own property lowering owns everything past it.

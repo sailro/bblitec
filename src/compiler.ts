@@ -1177,6 +1177,10 @@ class Compiler implements LoweringServices {
         this.ui.validateUiStaticProjection();
 
         if (this.dataTypes.usesJsonStorage()) this.reachJson();
+        if (this.dataTypes.usesBigIntStorage())
+            this.reachFeature("data:bigint");
+        if (this.dataTypes.usesSymbolStorage())
+            this.reachFeature("data:symbol");
         if (this.dataTypes.usesFileStorage())
             this.reachFeature("browser:file", this.sourceFile);
 

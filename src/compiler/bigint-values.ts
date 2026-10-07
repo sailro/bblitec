@@ -25,6 +25,7 @@ type BigIntContext = Pick<
     | "evaluationOrder"
     | "fail"
     | "libraryGlobal"
+    | "reachFeature"
     | "reachJsData"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
@@ -139,6 +140,7 @@ export function compileBigIntValue(
 ): Value | undefined {
     if (ts.isBigIntLiteral(expression)) {
         context.reachJsData();
+        context.reachFeature("data:bigint", expression);
         return context.dataValue(
             bigintLiteralCpp(context, literalValue(expression)),
             bigintType,
@@ -201,6 +203,7 @@ function compileBigIntCall(
     if (context.libraryGlobal(callee) !== "BigInt" && method === undefined)
         return undefined;
     context.reachJsData();
+    context.reachFeature("data:bigint", call);
     if (call.arguments.some(ts.isSpreadElement))
         return context.fail(
             call,
@@ -337,6 +340,7 @@ export function compileBigIntArrayNew(
     const kind = constructor ? BIGINT_ARRAY_KINDS.get(constructor) : undefined;
     if (!kind) return undefined;
     context.reachJsData();
+    context.reachFeature("data:bigint", expression);
     const type = { kind } as const;
     const cppType = context.dataTypes.cppType(type);
     const element = bigintArrayElement(kind);
