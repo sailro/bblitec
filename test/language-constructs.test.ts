@@ -6677,7 +6677,7 @@ function checkInRealm(name: string, source: string): void {
                     module: ts.ModuleKind.None,
                 },
             }).outputText,
-            { close: () => (closed = true), setTimeout },
+            { close: () => (closed = true), setTimeout, clearTimeout },
         );
         // A realm may close from a timer callback as well as a reaction.
         for (let turn = 0; turn < 20 && !closed; turn++)
@@ -9227,5 +9227,33 @@ check(
     const names: Array<typeof meshName> = [meshName];
     if (names[0]!('{"nodes":[{"name":"a"},{"name":"b","mesh":0}],"meshes":[{"name":"m"}]}') !== "b:m" || names[0]!('{"nodes":[{}]}') !== "none")
         throw new Error("found node");
+`,
+);
+
+// Cancelling a timer whose identifier may be absent cancels nothing while it
+// is absent.
+checkInRealm(
+    "timer-cancellation-of-an-absent-identifier",
+    `
+    const ready = new Promise<void>((resolve) => setTimeout(resolve, 0));
+    let fired = 0;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    function end(): void { fired++; }
+    function key(): void { clearTimeout(settle); settle = setTimeout(end, 5); }
+    function cancel(): void { clearTimeout(settle); settle = undefined; }
+    const handlers: Array<() => void> = [key, cancel];
+    void (async () => {
+        await ready;
+        handlers[1]!();
+        handlers[0]!();
+        handlers[0]!();
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        if (fired !== 1) throw new Error("one settled burst " + fired);
+        handlers[0]!();
+        handlers[1]!();
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        if (fired !== 1) throw new Error("cancelled burst");
+        globalThis.close();
+    })();
 `,
 );
