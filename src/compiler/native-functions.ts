@@ -842,11 +842,17 @@ export class NativeFunctionLowerer {
         if (target.kind === "span" && target.element.kind === "number") {
             const actual =
                 this.context.knownValueWithoutEvaluation(argument)?.dataType ??
+                this.context.dataTypes.numericSlotReadStorage(argument) ??
                 this.context.dataLowerer.dataTypeAt(argument);
             const inner = actual?.kind === "optional" ? actual.inner : actual;
-            // Typed arrays require their concrete live view, not a copied
-            // double span. The shared/inlined call binds that actual owner.
-            if (inner && isTypedArrayType(inner)) return false;
+            // Typed arrays and numeric views require their concrete live
+            // view, not a copied double span. The shared/inlined call binds
+            // that actual owner.
+            if (
+                inner &&
+                (isTypedArrayType(inner) || inner.kind === "numberindex")
+            )
+                return false;
         }
         if (
             target.kind === "map" &&

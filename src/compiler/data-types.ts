@@ -54,6 +54,13 @@ import {
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import {
+    numericSlotRead,
+    numericSlotStorage,
+    withNumericSlotStorage,
+    type NumericSlotKind,
+    type NumericSlots,
+} from "./numeric-slot-storage.js";
+import {
     recordCopyObservation,
     type RecordObservationContext,
 } from "./record-observations.js";
@@ -1129,7 +1136,51 @@ export class DataTypeRegistry {
         private readonly absenceTags: ReadonlySet<ts.Declaration> = new Set(),
         /** Record properties storing their numeric tuples as growable arrays. */
         private readonly tupleArraySlots: ReadonlySet<ts.Declaration> = new Set(),
+        /** `ArrayLike<number>` slots retyped for the numeric arrays they store. */
+        private readonly numericSlots: NumericSlots = new Map(),
     ) {}
+
+    /** The numeric array kinds a demand retyped `declaration`'s `ArrayLike<number>` position for. */
+    public numericSlotKinds(
+        declaration: ts.Declaration,
+    ): ReadonlySet<NumericSlotKind> | undefined {
+        return this.numericSlots.get(declaration);
+    }
+
+    /** The storage a demand gave the `ArrayLike<number>` slot `expression` reads, if any. */
+    public numericSlotReadStorage(
+        expression: ts.Expression,
+    ): DataType | undefined {
+        const declaration = numericSlotRead(this.checker, expression);
+        const kinds = declaration && this.numericSlots.get(declaration);
+        return kinds && numericSlotStorage(kinds);
+    }
+
+    /**
+     * `mapped`, the storage `declaration` of `type` takes, with its
+     * `ArrayLike<number>` position stored as the numeric arrays a demand
+     * found there (`NumericSlotStorageRequired`).
+     */
+    public numericSlotStorage(
+        declaration: ts.Declaration | undefined,
+        type: ts.Type,
+        mapped: DataType,
+    ): DataType {
+        const kinds = declaration && this.numericSlots.get(declaration);
+        if (!kinds) return mapped;
+        return (
+            withNumericSlotStorage(
+                this.checker,
+                type,
+                mapped,
+                numericSlotStorage(kinds),
+            ) ??
+            this.fail(
+                declaration,
+                "A demanded ArrayLike slot no longer maps to a numeric array position.",
+            )
+        );
+    }
 
     /**
      * `type` as the storage of `declaration`: tagged when the program
@@ -5075,39 +5126,37 @@ export class DataTypeRegistry {
             const callable =
                 callableType.getCallSignatures().length > 0 &&
                 !this.isCallableRecordType(callableType);
+            const mapped = callable
+                ? allowStoredFunctions &&
+                  declaration !== undefined &&
+                  (ts.isPropertySignature(declaration) ||
+                      ts.isMethodSignature(declaration) ||
+                      ts.isMethodDeclaration(declaration) ||
+                      (this.classDemanded &&
+                          (ts.isPropertyAssignment(declaration) ||
+                              ts.isShorthandPropertyAssignment(declaration))))
+                    ? this.fromFunctionType(callableType, declaration ?? node)
+                    : undefined
+                : // A record's own field inherits the position the record is in
+                  // rather than demanding one: an interface written to carry a
+                  // scene's singletons -- a tool context holding the workspace, the
+                  // mouse and the dragger -- is a compile-time record, and giving
+                  // each of those a runtime object because a field names them would
+                  // turn every one of them into a shared allocation nothing shares.
+                  // Its tagged absence is the layout's, decided below.
+                  withoutAbsenceTag(
+                      this.fromRecordFieldType(
+                          propertyType,
+                          declaration ?? node,
+                          property,
+                      ),
+                  );
             return {
                 type: propertyType,
                 callable,
-                mapped: callable
-                    ? allowStoredFunctions &&
-                      declaration !== undefined &&
-                      (ts.isPropertySignature(declaration) ||
-                          ts.isMethodSignature(declaration) ||
-                          ts.isMethodDeclaration(declaration) ||
-                          (this.classDemanded &&
-                              (ts.isPropertyAssignment(declaration) ||
-                                  ts.isShorthandPropertyAssignment(
-                                      declaration,
-                                  ))))
-                        ? this.fromFunctionType(
-                              callableType,
-                              declaration ?? node,
-                          )
-                        : undefined
-                    : // A record's own field inherits the position the record is in
-                      // rather than demanding one: an interface written to carry a
-                      // scene's singletons -- a tool context holding the workspace, the
-                      // mouse and the dragger -- is a compile-time record, and giving
-                      // each of those a runtime object because a field names them would
-                      // turn every one of them into a shared allocation nothing shares.
-                      // Its tagged absence is the layout's, decided below.
-                      withoutAbsenceTag(
-                          this.fromRecordFieldType(
-                              propertyType,
-                              declaration ?? node,
-                              property,
-                          ),
-                      ),
+                mapped:
+                    mapped &&
+                    this.numericSlotStorage(declaration, propertyType, mapped),
             };
         };
         for (const [name, declared] of layout.properties) {
@@ -5798,12 +5847,15 @@ export class DataTypeRegistry {
             const propertyType = property
                 ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
                 : this.checker.getTypeAtLocation(member.name);
-            const mapped =
+            const declared =
                 this.fromFunctionType(
                     this.checker.getNonNullableType(propertyType),
                     member.name,
                     true,
                 ) ?? this.fromClassFieldType(propertyType, member.name);
+            const mapped =
+                declared &&
+                this.numericSlotStorage(member, propertyType, declared);
             if (
                 !mapped &&
                 this.checker
@@ -5897,10 +5949,18 @@ export class DataTypeRegistry {
         if (!property) {
             return undefined;
         }
-        const mapped = this.fromClassFieldType(
-            this.checker.getTypeOfSymbolAtLocation(property, name),
+        const fieldType = this.checker.getTypeOfSymbolAtLocation(
+            property,
             name,
         );
+        const declared = this.fromClassFieldType(fieldType, name);
+        const mapped =
+            declared &&
+            this.numericSlotStorage(
+                property.valueDeclaration,
+                fieldType,
+                declared,
+            );
         // A class outlives the constructor expression that initializes it.
         // In particular, `readonly T[]` is readonly through the field but it is
         // still an owned JavaScript Array.  Keeping the ordinary parameter/view

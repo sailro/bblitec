@@ -75,6 +75,10 @@ import {
 } from "./compiler/native-record-storage.js";
 import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
 import type { AbsenceTagDeclaration } from "./compiler/absence-tag-storage.js";
+import type {
+    NumericSlotKind,
+    NumericSlots,
+} from "./compiler/numeric-slot-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
@@ -598,6 +602,7 @@ function compileSourceApplication(
         const genericFunctions = new GenericFunctionStorage();
         const absenceTags = new Set<AbsenceTagDeclaration>();
         const tupleArraySlots = new Set<ts.Declaration>();
+        const numericSlots = new Map<ts.Declaration, Set<NumericSlotKind>>();
         const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planning: boolean): Compiler => {
             recordStorageCompileAttempt(planning);
@@ -612,6 +617,7 @@ function compileSourceApplication(
                 lazyModules,
                 absenceTags,
                 tupleArraySlots,
+                numericSlots,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -668,6 +674,17 @@ function compileSourceApplication(
                 !tupleArraySlots.has(request.declaration)
             ) {
                 tupleArraySlots.add(request.declaration);
+            } else if (
+                request.kind === "numeric-slot" &&
+                !numericSlots.get(request.declaration)?.has(request.numeric)
+            ) {
+                const kinds = numericSlots.get(request.declaration);
+                if (kinds) kinds.add(request.numeric);
+                else
+                    numericSlots.set(
+                        request.declaration,
+                        new Set([request.numeric]),
+                    );
             } else return false;
             return true;
         };
@@ -999,6 +1016,7 @@ class Compiler implements LoweringServices {
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
         public readonly absenceTags: ReadonlySet<ts.Declaration>,
         public readonly tupleArraySlots: ReadonlySet<ts.Declaration>,
+        numericSlots: NumericSlots,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -1010,6 +1028,7 @@ class Compiler implements LoweringServices {
             genericFunctions,
             absenceTags,
             tupleArraySlots,
+            numericSlots,
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
